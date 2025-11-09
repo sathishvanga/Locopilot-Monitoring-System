@@ -1,0 +1,5 @@
+example_data/
+yolov8m.pt
+.DS_Store
+.venv/
+locopilot_evidence/

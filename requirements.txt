@@ -1,0 +1,26 @@
+# Core dependencies for Locopilot Activity Monitor
+# OpenCV for video processing and computer vision
+opencv-contrib-python>=4.11.0.86
+
+# MediaPipe for pose and face mesh detection
+mediapipe==0.10.21
+
+# Ultralytics YOLO for object detection
+ultralytics>=8.0.0
+
+# NumPy - using version compatible with both opencv and mediapipe
+numpy>=1.26.0,<2.0.0
+
+# Additional dependencies (auto-installed with above packages)
+# These are listed for reference and version pinning:
+absl-py>=2.3.0
+attrs>=19.1.0
+flatbuffers>=2.0
+protobuf>=4.25.3,<5
+matplotlib>=3.10.0
+pillow>=8.0.0
+scipy>=1.12.0
+
+# Note: mediapipe requires numpy<2, which is incompatible with opencv-python>=4.12
+# Using opencv-contrib-python instead, which includes all opencv-python features
+
