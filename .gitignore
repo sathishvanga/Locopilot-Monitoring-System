@@ -1,5 +1,5 @@
 example_data/
-yolov8m.pt
+yolo*.pt
 .DS_Store
 .venv/
 locopilot_evidence/
