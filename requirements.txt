@@ -11,6 +11,14 @@ ultralytics>=8.0.0
 # NumPy - using version compatible with both opencv and mediapipe
 numpy>=1.26.0,<2.0.0
 
+# FastAPI and web framework dependencies
+fastapi>=0.104.0
+uvicorn[standard]>=0.24.0
+gunicorn>=21.2.0
+python-multipart>=0.0.6  # For file upload support
+pydantic>=2.5.0
+pydantic-settings>=2.1.0
+
 # Additional dependencies (auto-installed with above packages)
 # These are listed for reference and version pinning:
 absl-py>=2.3.0

@@ -11,8 +11,6 @@ class LocopilotActivityMonitor:
     def __init__(self, video_path, output_dir="evidence", save_annotated_frames=False, frame_save_interval=1, sample_fps=1.0):
         self.video_path = video_path
         self.output_dir = output_dir
-        self.evidence_clips_dir = os.path.join(output_dir, "clips")
-        self.json_dir = os.path.join(output_dir, "json")
         
         # Frame sampling configuration
         self.sample_fps = sample_fps  # Sample frames at this rate (e.g., 0.5 = 1 frame every 2 seconds)
@@ -21,14 +19,16 @@ class LocopilotActivityMonitor:
         self.save_annotated_frames = save_annotated_frames
         self.frame_save_interval = frame_save_interval  # Save 1 frame every N sampled frames (1 = save all sampled frames)
         
-        if self.save_annotated_frames:
-            self.run_timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            self.frames_dir = os.path.join(output_dir, "frames", f"run_{self.run_timestamp}")
-            os.makedirs(self.frames_dir, exist_ok=True)
+        # Create run-specific directory
+        self.run_timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        self.run_dir = os.path.join(output_dir, f"run_{self.run_timestamp}")
+        self.evidence_clips_dir = os.path.join(self.run_dir, "clips")
+        self.frames_dir = os.path.join(self.run_dir, "frames")
         
         # Create directories
         os.makedirs(self.evidence_clips_dir, exist_ok=True)
-        os.makedirs(self.json_dir, exist_ok=True)
+        if self.save_annotated_frames:
+            os.makedirs(self.frames_dir, exist_ok=True)
         
         # Initialize models
         print("Loading YOLO model...")
@@ -59,22 +59,23 @@ class LocopilotActivityMonitor:
             'sleep': {'active': False, 'start_time': None, 'frames': [], 'duration': 0},
             'cell_phone': {'active': False, 'start_time': None, 'frames': [], 'duration': 0},
             'writing': {'active': False, 'start_time': None, 'frames': [], 'duration': 0},
-            'packing_bags': {'active': False, 'start_time': None, 'frames': [], 'duration': 0}
+            'packing_bags': {'active': False, 'start_time': None, 'frames': [], 'duration': 0},
+            'group_detected': {'active': False, 'start_time': None, 'frames': [], 'duration': 0}
         }
         
         # Activity thresholds: minimum duration and required consecutive frames before recording starts
         self.activity_thresholds = {
             'packing_bags': {
-                'min_duration': 3.0,          # Must last 3 seconds minimum (reduced from 5.0)
-                'required_consecutive': 60,   # 2 seconds @ 30fps (reduced from 150)
+                'min_duration': 3.0,          # Must last 3 seconds minimum
+                'required_consecutive': 3,    # 3 samples @ 0.5fps = 6 seconds before recording
                 'margin': 50,                 # More lenient proximity (increased from 30)
-                'grace_frames': 15            # Allow 15 frames (0.5s) of non-detection
+                'grace_frames': 5             # Allow 5 samples (~10s) gap to group nearby detections
             },
             'writing': {
-                'min_duration': 2.0,          # Must last 2 seconds minimum (reduced from 3.0)
-                'required_consecutive': 45,   # 1.5 seconds @ 30fps (reduced from 90)
+                'min_duration': 2.0,          # Must last 2 seconds minimum
+                'required_consecutive': 3,    # 3 samples @ 0.5fps = 6 seconds before recording
                 'margin': 60,                 # More lenient proximity (increased from 50)
-                'grace_frames': 15            # Allow 15 frames (0.5s) of non-detection
+                'grace_frames': 5             # Allow 5 samples (~10s) gap to group nearby detections
             },
             'cell_phone': {
                 'min_duration': 0.0,          # NO minimum duration - any detection creates activity
@@ -93,6 +94,12 @@ class LocopilotActivityMonitor:
                 'required_consecutive': 5,    # 5 samples @ 0.5fps = 10 seconds (reduced from 30)
                 'margin': None,               # N/A for eye-based detection
                 'grace_frames': 10            # Allow 10 frames (~20s) of non-detection
+            },
+            'group_detected': {
+                'min_duration': 2.0,          # Must last 2 seconds minimum
+                'required_consecutive': 3,    # 3 samples @ 0.5fps = 6 seconds before recording
+                'margin': None,               # N/A for person count detection
+                'grace_frames': 5             # Allow 5 samples (~10s) gap
             }
         }
         
@@ -102,7 +109,8 @@ class LocopilotActivityMonitor:
             'sleep': 0,
             'cell_phone': 0,
             'writing': 0,
-            'packing_bags': 0
+            'packing_bags': 0,
+            'group_detected': 0
         }
         
         # Grace period counters - allows brief interruptions without resetting
@@ -111,7 +119,8 @@ class LocopilotActivityMonitor:
             'sleep': 0,
             'cell_phone': 0,
             'writing': 0,
-            'packing_bags': 0
+            'packing_bags': 0,
+            'group_detected': 0
         }
         
         # Buffer for pre-activity frames (5 seconds before at sampled rate)
@@ -139,7 +148,8 @@ class LocopilotActivityMonitor:
             'microsleep': 3,
             'sleep': 4,
             'writing': 5,
-            'packing_bags': 6
+            'packing_bags': 6,
+            'group_detected': 7
         }
         
         # Activity descriptions
@@ -148,7 +158,8 @@ class LocopilotActivityMonitor:
             'microsleep': 'Micro-sleep detected (5+ seconds)',
             'sleep': 'Sleep detected (30+ seconds)',
             'writing': 'Writing activity detected',
-            'packing_bags': 'Packing bags activity detected'
+            'packing_bags': 'Packing bags activity detected',
+            'group_detected': 'More than 2 people (group) detected'
         }
         
         # Evidence rules
@@ -157,7 +168,8 @@ class LocopilotActivityMonitor:
             'microsleep': 'eyes_closed_5s_or_pose_indicators',
             'sleep': 'eyes_closed_30s_or_pose_indicators',
             'writing': 'hand_near_book',
-            'packing_bags': 'hand_near_backpack'
+            'packing_bags': 'hand_near_backpack',
+            'group_detected': 'more_than_2_deduplicated_persons'
         }
         
         # Default crew/trip information
@@ -410,14 +422,98 @@ class LocopilotActivityMonitor:
             
             return False, False, debug_info
     
-    def detect_objects(self, frame):
-        """Detect objects using YOLO - relevant items for locomotive cabin"""
-        results = self.yolo_model(frame, verbose=False)  # Suppress YOLO output
+    def get_roi_around_keypoint(self, keypoint_coords, frame_shape, roi_size=150):
+        """Create Region of Interest (ROI) box around a keypoint.
+        
+        Args:
+            keypoint_coords: (x, y) coordinates of keypoint
+            frame_shape: (height, width) of frame
+            roi_size: Size of ROI box in pixels (default 150x150)
+            
+        Returns:
+            (x1, y1, x2, y2) ROI bounding box, or None if invalid
+        """
+        if keypoint_coords is None:
+            return None
+        
+        h, w = frame_shape[:2]
+        x, y = keypoint_coords
+        
+        # Create square ROI centered on keypoint
+        half_size = roi_size // 2
+        x1 = max(0, x - half_size)
+        y1 = max(0, y - half_size)
+        x2 = min(w, x + half_size)
+        y2 = min(h, y + half_size)
+        
+        # Ensure minimum ROI size
+        if (x2 - x1) < 50 or (y2 - y1) < 50:
+            return None
+        
+        return (int(x1), int(y1), int(x2), int(y2))
+    
+    def detect_objects_in_roi(self, frame, roi_bbox, target_classes=['cell phone', 'book', 'pen', 'pencil']):
+        """Run YOLO detection on a specific ROI region.
+        
+        Args:
+            frame: Full frame
+            roi_bbox: (x1, y1, x2, y2) ROI bounding box
+            target_classes: List of class names to detect in ROI
+            
+        Returns:
+            List of detections with global coordinates: [(class_name, conf, x1, y1, x2, y2), ...]
+        """
+        if roi_bbox is None:
+            return []
+        
+        x1, y1, x2, y2 = roi_bbox
+        roi_frame = frame[y1:y2, x1:x2]
+        
+        # Run YOLO on ROI with lower confidence threshold
+        results = self.yolo_model(roi_frame, verbose=False, conf=0.1)
+        
+        detections = []
+        for r in results:
+            boxes = r.boxes
+            for box in boxes:
+                cls = int(box.cls[0])
+                conf = float(box.conf[0])
+                xyxy_local = box.xyxy[0].cpu().numpy()
+                
+                class_name = self.yolo_model.names[cls]
+                
+                # Check if this is a target class
+                if class_name in target_classes:
+                    # Convert local ROI coordinates to global frame coordinates
+                    global_x1 = xyxy_local[0] + x1
+                    global_y1 = xyxy_local[1] + y1
+                    global_x2 = xyxy_local[2] + x1
+                    global_y2 = xyxy_local[3] + y1
+                    
+                    detections.append((class_name, conf, global_x1, global_y1, global_x2, global_y2))
+        
+        return detections
+    
+    def detect_objects(self, frame, pose_landmarks=None, use_pose_guided=True):
+        """Detect objects using YOLO with optional pose-guided detection.
+        
+        Args:
+            frame: Input frame
+            pose_landmarks: MediaPipe pose landmarks (optional)
+            use_pose_guided: Enable pose-guided ROI detection (default True)
+            
+        Returns:
+            Dictionary with detections and ROI information
+        """
+        # Stage 1: Full frame detection
+        results = self.yolo_model(frame, verbose=False)
         detections = {
             'person': [],
             'cell_phone': [],
             'book': [],
-            'backpack': []
+            'backpack': [],
+            'roi_detections': [],  # Additional detections from pose-guided approach
+            'roi_boxes': []  # ROI boxes for visualization
         }
         
         for r in results:
@@ -430,27 +526,142 @@ class LocopilotActivityMonitor:
                 class_name = self.yolo_model.names[cls]
                 if class_name == 'person' and conf > 0.5:
                     detections['person'].append(xyxy)
-                elif class_name == 'cell phone' and conf > 0.5:  # Lowered from 0.5 for better detection
+                elif class_name == 'cell phone' and conf > 0.65:
                     detections['cell_phone'].append(xyxy)
-                elif class_name == 'book' and conf > 0.1:  # Lowered threshold for better book detection
+                elif class_name == 'book' and conf > 0.05:  # Very low threshold - books hard to detect
                     detections['book'].append(xyxy)
-                elif class_name == 'backpack' and conf > 0.4:
+                elif class_name == 'backpack' and conf > 0.5:
                     detections['backpack'].append(xyxy)
+        
+        # Stage 2: Pose-guided ROI detection (if pose landmarks available)
+        if use_pose_guided and pose_landmarks is not None:
+            landmarks = pose_landmarks.landmark
+            h, w = frame.shape[:2]
+            
+            # Define keypoints of interest with ROI sizes
+            keypoints_of_interest = [
+                # Hands (for phone, book, pen, pencil)
+                ('RIGHT_WRIST', self.mp_pose.PoseLandmark.RIGHT_WRIST, 180),
+                ('LEFT_WRIST', self.mp_pose.PoseLandmark.LEFT_WRIST, 180),
+                ('RIGHT_INDEX', self.mp_pose.PoseLandmark.RIGHT_INDEX, 150),
+                ('LEFT_INDEX', self.mp_pose.PoseLandmark.LEFT_INDEX, 150),
+                
+                # Ears (for phone calls)
+                ('RIGHT_EAR', self.mp_pose.PoseLandmark.RIGHT_EAR, 120),
+                ('LEFT_EAR', self.mp_pose.PoseLandmark.LEFT_EAR, 120),
+                
+                # Mouth (for eating, drinking, phone)
+                ('MOUTH_LEFT', self.mp_pose.PoseLandmark.MOUTH_LEFT, 100),
+                ('MOUTH_RIGHT', self.mp_pose.PoseLandmark.MOUTH_RIGHT, 100),
+            ]
+            
+            # Create ROIs and run focused detection
+            for keypoint_name, keypoint_idx, roi_size in keypoints_of_interest:
+                try:
+                    landmark = landmarks[keypoint_idx]
+                    
+                    # Check visibility
+                    if landmark.visibility < 0.5:
+                        continue
+                    
+                    keypoint_coords = (int(landmark.x * w), int(landmark.y * h))
+                    roi_bbox = self.get_roi_around_keypoint(keypoint_coords, frame.shape, roi_size)
+                    
+                    if roi_bbox is not None:
+                        detections['roi_boxes'].append((keypoint_name, roi_bbox))
+                        
+                        # Detect objects in ROI
+                        roi_detections = self.detect_objects_in_roi(
+                            frame, roi_bbox, 
+                            target_classes=['cell phone', 'book', 'pen', 'pencil', 'paper', 'bottle', 'cup']
+                        )
+                        
+                        for det in roi_detections:
+                            class_name, conf, x1, y1, x2, y2 = det
+                            detections['roi_detections'].append({
+                                'class': class_name,
+                                'confidence': conf,
+                                'bbox': [x1, y1, x2, y2],
+                                'keypoint': keypoint_name,
+                                'source': 'pose_guided_roi'
+                            })
+                            
+                            # Also add to main detection lists
+                            if class_name == 'cell phone':
+                                detections['cell_phone'].append([x1, y1, x2, y2])
+                            elif class_name == 'book':
+                                detections['book'].append([x1, y1, x2, y2])
+                
+                except Exception as e:
+                    continue
         
         return detections
     
-    def draw_bounding_boxes(self, frame, detections):
-        """Draw bounding boxes on frame for detected objects"""
+    def draw_bounding_boxes(self, frame, detections, show_roi_boxes=True):
+        """Draw bounding boxes on frame for detected objects and ROI regions.
+        
+        Args:
+            frame: Input frame
+            detections: Dictionary with detection results
+            show_roi_boxes: Whether to show ROI boxes (default True)
+        """
         annotated_frame = frame.copy()
         
         colors = {
             'person': (0, 255, 0),
             'cell_phone': (0, 0, 255),
             'book': (255, 0, 0),
-            'backpack': (0, 255, 255)
+            'backpack': (0, 255, 255),
+            'deduplicated_person': (0, 255, 0)  # Green for deduplicated persons
         }
         
+        # Draw ROI boxes (semi-transparent cyan boxes)
+        if show_roi_boxes and 'roi_boxes' in detections:
+            for keypoint_name, roi_bbox in detections['roi_boxes']:
+                x1, y1, x2, y2 = roi_bbox
+                # Draw semi-transparent ROI box
+                cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), (255, 255, 0), 1)
+                
+                # Add keypoint label
+                label = keypoint_name.replace('_', ' ')
+                cv2.putText(annotated_frame, label, 
+                           (x1 + 5, y1 + 15), 
+                           cv2.FONT_HERSHEY_SIMPLEX, 
+                           0.4, (255, 255, 0), 1)
+        
+        # Draw ROI detections (objects found via pose-guided detection)
+        if 'roi_detections' in detections:
+            for roi_det in detections['roi_detections']:
+                bbox = roi_det['bbox']
+                x1, y1, x2, y2 = map(int, bbox)
+                
+                # Use magenta color for pose-guided detections
+                color = (255, 0, 255)
+                thickness = 3  # Thicker border to distinguish from regular detections
+                
+                cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), color, thickness)
+                
+                # Add label with confidence and keypoint
+                label = f"{roi_det['class']} {roi_det['confidence']:.2f} (ROI: {roi_det['keypoint']})"
+                label_size, _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.4, 1)
+                label_w, label_h = label_size
+                
+                # Background for label
+                cv2.rectangle(annotated_frame, 
+                            (x1, y1 - label_h - 10), 
+                            (x1 + label_w + 10, y1), 
+                            color, -1)
+                
+                cv2.putText(annotated_frame, label, 
+                           (x1 + 5, y1 - 5), 
+                           cv2.FONT_HERSHEY_SIMPLEX, 
+                           0.4, (255, 255, 255), 1)
+        
+        # Draw regular detections
         for obj_type, bboxes in detections.items():
+            if obj_type in ['roi_detections', 'roi_boxes', 'deduplicated_person']:
+                continue
+            
             color = colors.get(obj_type, (255, 255, 255))
             for bbox in bboxes:
                 x1, y1, x2, y2 = map(int, bbox)
@@ -469,6 +680,41 @@ class LocopilotActivityMonitor:
                            (x1 + 5, y1 - 5), 
                            cv2.FONT_HERSHEY_SIMPLEX, 
                            0.5, (255, 255, 255), 2)
+        
+        # Draw deduplicated person boxes (with thicker border and count label)
+        if 'deduplicated_person' in detections and len(detections['deduplicated_person']) > 0:
+            person_count = len(detections['deduplicated_person'])
+            for idx, bbox in enumerate(detections['deduplicated_person']):
+                x1, y1, x2, y2 = map(int, bbox)
+                # Thicker border for deduplicated persons
+                cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), (0, 255, 0), 3)
+                
+                label = f"Person {idx+1}"
+                label_size, _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)
+                label_w, label_h = label_size
+                
+                cv2.rectangle(annotated_frame, 
+                            (x1, y1 - label_h - 10), 
+                            (x1 + label_w + 10, y1), 
+                            (0, 255, 0), -1)
+                
+                cv2.putText(annotated_frame, label, 
+                           (x1 + 5, y1 - 5), 
+                           cv2.FONT_HERSHEY_SIMPLEX, 
+                           0.6, (255, 255, 255), 2)
+            
+            # Add person count overlay at top
+            if person_count > 2:
+                count_text = f"GROUP DETECTED: {person_count} PEOPLE"
+                count_color = (0, 0, 255)  # Red for group alert
+            else:
+                count_text = f"People Count: {person_count}"
+                count_color = (0, 255, 0)
+            
+            cv2.putText(annotated_frame, count_text, 
+                       (frame.shape[1] - 400, 30), 
+                       cv2.FONT_HERSHEY_SIMPLEX, 
+                       0.8, count_color, 2, cv2.LINE_AA)
         
         return annotated_frame
     
@@ -599,6 +845,86 @@ class LocopilotActivityMonitor:
         return (x1 - margin <= hx <= x2 + margin and 
                 y1 - margin <= hy <= y2 + margin)
     
+    def calculate_iou(self, bbox1, bbox2):
+        """Calculate Intersection over Union (IoU) between two bounding boxes.
+        
+        Args:
+            bbox1: [x1, y1, x2, y2] first bounding box
+            bbox2: [x1, y1, x2, y2] second bounding box
+            
+        Returns:
+            float: IoU value between 0 and 1
+        """
+        x1_1, y1_1, x2_1, y2_1 = bbox1
+        x1_2, y1_2, x2_2, y2_2 = bbox2
+        
+        # Calculate intersection area
+        x_left = max(x1_1, x1_2)
+        y_top = max(y1_1, y1_2)
+        x_right = min(x2_1, x2_2)
+        y_bottom = min(y2_1, y2_2)
+        
+        if x_right < x_left or y_bottom < y_top:
+            return 0.0
+        
+        intersection_area = (x_right - x_left) * (y_bottom - y_top)
+        
+        # Calculate union area
+        bbox1_area = (x2_1 - x1_1) * (y2_1 - y1_1)
+        bbox2_area = (x2_2 - x1_2) * (y2_2 - y1_2)
+        union_area = bbox1_area + bbox2_area - intersection_area
+        
+        if union_area == 0:
+            return 0.0
+        
+        iou = intersection_area / union_area
+        return iou
+    
+    def deduplicate_person_boxes(self, person_boxes, iou_threshold=0.3):
+        """De-duplicate overlapping person bounding boxes using Non-Maximum Suppression.
+        
+        Args:
+            person_boxes: List of person bounding boxes [x1, y1, x2, y2]
+            iou_threshold: IoU threshold for considering boxes as duplicates (default 0.3)
+            
+        Returns:
+            List of de-duplicated person boxes
+        """
+        if len(person_boxes) == 0:
+            return []
+        
+        # Convert to list of lists if numpy arrays
+        boxes = [list(box) if hasattr(box, 'tolist') else box for box in person_boxes]
+        
+        # Calculate areas for each box
+        areas = [(box[2] - box[0]) * (box[3] - box[1]) for box in boxes]
+        
+        # Sort by area (larger boxes first - usually more confident detections)
+        sorted_indices = sorted(range(len(boxes)), key=lambda i: areas[i], reverse=True)
+        
+        keep_boxes = []
+        keep_indices = []
+        
+        while sorted_indices:
+            # Take the first box (largest remaining)
+            idx = sorted_indices[0]
+            keep_boxes.append(boxes[idx])
+            keep_indices.append(idx)
+            sorted_indices.pop(0)
+            
+            # Remove boxes that significantly overlap with this box
+            remaining_indices = []
+            for other_idx in sorted_indices:
+                iou = self.calculate_iou(boxes[idx], boxes[other_idx])
+                if iou < iou_threshold:
+                    # Keep this box (not a duplicate)
+                    remaining_indices.append(other_idx)
+                # else: discard as duplicate
+            
+            sorted_indices = remaining_indices
+        
+        return keep_boxes
+    
     def start_activity(self, activity_name, timestamp, fps, frame_count):
         """Start tracking an activity"""
         if not self.activities[activity_name]['active']:
@@ -617,13 +943,17 @@ class LocopilotActivityMonitor:
             activity['active'] = False
             
             start_frame = activity.get('start_frame_count', frame_count)
-            duration = (frame_count - start_frame) / fps
+            
+            # Calculate duration based on ACTUAL captured frames, not elapsed time
+            # This ensures clip duration matches exactly the activity duration
+            total_clip_frames = len(activity['frames'])
+            actual_clip_duration = total_clip_frames / self.sample_fps  # Duration in seconds based on captured frames
             
             # Check if activity meets minimum duration threshold
             min_duration = self.activity_thresholds[activity_name]['min_duration']
             
-            if duration < min_duration:
-                print(f"[{timestamp}] Activity '{activity_name}' too short ({duration:.2f}s < {min_duration}s) - discarded")
+            if actual_clip_duration < min_duration:
+                print(f"[{timestamp}] Activity '{activity_name}' too short ({actual_clip_duration:.2f}s < {min_duration}s) - discarded")
                 activity['frames'] = []
                 activity['duration'] = 0
                 self.consecutive_detections[activity_name] = 0
@@ -631,9 +961,8 @@ class LocopilotActivityMonitor:
                 return
             
             start_time_str = activity['start_time']
-            end_time_str = timestamp
             
-            # Parse activity start and end times in seconds
+            # Parse activity start time in seconds
             def time_to_seconds(time_str):
                 """Convert HH:MM:SS.microseconds to seconds"""
                 parts = time_str.split(':')
@@ -643,29 +972,29 @@ class LocopilotActivityMonitor:
                 return hours * 3600 + minutes * 60 + seconds
             
             activity_start_seconds = time_to_seconds(start_time_str)
-            activity_end_seconds = time_to_seconds(end_time_str)
+            # Calculate end time based on actual clip duration, not elapsed time
+            activity_end_seconds = activity_start_seconds + actual_clip_duration
             
-            # Generate filenames
+            # Generate filenames with composite naming: {video}_{activity}_frame{number}_{counter}
             video_filename = os.path.basename(self.video_path)
             video_name_without_ext = os.path.splitext(video_filename)[0]
             
-            clip_filename = f"{video_name_without_ext}_ts{int(activity_start_seconds):04d}_{self.evidence_counter:03d}_clip.mp4"
-            image_filename = f"{video_name_without_ext}_ts{int(activity_start_seconds):04d}_{self.evidence_counter:03d}_activity.jpg"
+            clip_filename = f"{video_name_without_ext}_{activity_name}_frame{start_frame:08d}_{self.evidence_counter:03d}_clip.mp4"
+            image_filename = f"{video_name_without_ext}_{activity_name}_frame{start_frame:08d}_{self.evidence_counter:03d}_activity.jpg"
             
             clip_path = os.path.join(self.evidence_clips_dir, clip_filename)
             image_path = os.path.join(self.evidence_clips_dir, image_filename)
             
-            # Save video clip
-            self.save_video_clip(activity['frames'], clip_path, fps)
+            # Save video clip at sample FPS for full-duration playback
+            # This creates clips with real-time duration instead of fast-motion
+            # Example: 13 frames @ 0.5 FPS = 26 seconds (not 0.43 seconds @ 30 FPS)
+            self.save_video_clip(activity['frames'], clip_path, self.sample_fps)
             
             # Save activity image (middle frame of the activity)
             if len(activity['frames']) > 0:
                 middle_frame_idx = len(activity['frames']) // 2
                 activity_image = activity['frames'][middle_frame_idx]
                 cv2.imwrite(image_path, activity_image)
-            
-            total_clip_frames = len(activity['frames'])
-            total_clip_duration = total_clip_frames / fps
             
             # Get video duration in HH:MM:SS format
             cap = cv2.VideoCapture(self.video_path)
@@ -705,17 +1034,13 @@ class LocopilotActivityMonitor:
             # Add to all activities list
             self.all_activities.append(json_data)
             
-            # Also save individual JSON file for backward compatibility
-            json_filename = f"{activity_name}_{self.evidence_counter:04d}.json"
-            json_path = os.path.join(self.json_dir, json_filename)
-            
-            with open(json_path, 'w') as f:
-                json.dump(json_data, f, indent=2)
+            # Calculate end time string for logging
+            end_time_str = str(timedelta(seconds=activity_end_seconds))
             
             print(f"[{end_time_str}] Activity ended: {activity_name}")
-            print(f"  Activity Duration: {duration:.2f}s | Total Clip: {total_clip_duration:.2f}s")
+            print(f"  Clip Duration: {actual_clip_duration:.2f}s ({total_clip_frames} frames @ {self.sample_fps} FPS)")
             print(f"  Min Duration Threshold: {min_duration}s | Required Consecutive: {self.activity_thresholds[activity_name]['required_consecutive']} frames")
-            print(f"  Evidence saved: {clip_filename} ({total_clip_frames} frames)")
+            print(f"  Evidence saved: {clip_filename}")
             print(f"  Activity image: {image_filename}")
             
             activity['frames'] = []
@@ -726,12 +1051,22 @@ class LocopilotActivityMonitor:
             self.evidence_counter += 1
     
     def save_video_clip(self, frames, output_path, fps):
-        """Save frames as video clip"""
+        """Save frames as video clip at sample FPS for full-duration playback.
+        
+        Args:
+            frames: List of frames to save
+            output_path: Path to save video
+            fps: FPS to use for video (should be sample_fps for real-time duration)
+        """
         if len(frames) == 0:
             return
         
         height, width = frames[0].shape[:2]
         fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+        
+        # Use the provided FPS (sample_fps) to create full-duration clips
+        # Example: 13 frames @ 0.5 FPS = 26 seconds (real-time)
+        # instead of: 13 frames @ 30 FPS = 0.43 seconds (fast-motion)
         out = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
         
         for frame in frames:
@@ -758,13 +1093,14 @@ class LocopilotActivityMonitor:
         print(f"Expected duration: {total_frames/fps/60:.2f} minutes")
         print(f"Expected sampled frames: ~{expected_samples}")
         print(f"Processing speed-up: ~{step}x faster")
+        print(f"Run directory: {self.run_dir}")
         if self.save_annotated_frames:
             if self.frame_save_interval == 1:
-                print(f"Saving ALL sampled frames (~{expected_samples} frames) to: {self.frames_dir}")
+                print(f"  Saving ALL sampled frames (~{expected_samples} frames) to: {self.frames_dir}")
             else:
-                print(f"Saving every {self.frame_save_interval}th sampled frame (~{expected_samples//self.frame_save_interval} frames) to: {self.frames_dir}")
+                print(f"  Saving every {self.frame_save_interval}th sampled frame (~{expected_samples//self.frame_save_interval} frames) to: {self.frames_dir}")
         else:
-            print("Annotated frame saving is disabled (faster processing)")
+            print("  Annotated frame saving is disabled (faster processing)")
         print("-" * 60)
         
         sampled_count = 0
@@ -802,14 +1138,6 @@ class LocopilotActivityMonitor:
                         min_ear_value = min(ear_values)
                         ear_value = min_ear_value  # For display purposes
                 
-                # Detect objects
-                detections = self.detect_objects(frame)
-                
-                # Count people in frame
-                people_count = len(detections['person'])
-                if people_count == 0:
-                    people_count = 1  # Default to 1 if no person detected
-                
                 # Run pose-based sleep detection (always, as backup or primary method)
                 pose_sleep_detected = False
                 pose_microsleep_detected = False
@@ -820,18 +1148,16 @@ class LocopilotActivityMonitor:
                         pose_results.pose_landmarks, timestamp_sec
                     )
                 
-                # Save annotated frames periodically if enabled
-                if self.save_annotated_frames and sample_idx % self.frame_save_interval == 0:
-                    annotated_frame = self.draw_bounding_boxes(frame, detections)
-                    annotated_frame = self.draw_mediapipe_outputs(
-                        annotated_frame, pose_results, face_results, 
-                        ear_value, self.eye_closure_duration, pose_sleep_info
-                    )
-                    frame_filename = f"frame_{frame_idx:08d}.jpg"
-                    frame_path = os.path.join(self.frames_dir, frame_filename)
-                    cv2.imwrite(frame_path, annotated_frame)
+                # Detect objects with pose-guided detection
+                detections = self.detect_objects(frame, pose_results.pose_landmarks, use_pose_guided=True)
                 
-                # Initialize detection flags
+                # Count people in frame  
+                people_count = len(detections['person'])
+                if people_count == 0:
+                    people_count = 1  # Default to 1 if no person detected
+                
+                # Initialize detection flags AND detect new activities BEFORE frame saving
+                # This ensures all detections are available for visualization
                 microsleep_detected = False
                 sleep_detected = False
                 cell_phone_detected = False
@@ -864,27 +1190,60 @@ class LocopilotActivityMonitor:
                     elif pose_microsleep_detected:
                         microsleep_detected = True
                 
-                # Check for cell phone usage
+                # Check for cell phone usage with stricter validation
                 if pose_results.pose_landmarks and len(detections['cell_phone']) > 0:
                     landmarks = pose_results.pose_landmarks.landmark
                     right_hand = landmarks[self.mp_pose.PoseLandmark.RIGHT_WRIST]
                     left_hand = landmarks[self.mp_pose.PoseLandmark.LEFT_WRIST]
+                    right_shoulder = landmarks[self.mp_pose.PoseLandmark.RIGHT_SHOULDER]
+                    left_shoulder = landmarks[self.mp_pose.PoseLandmark.LEFT_SHOULDER]
+                    nose = landmarks[self.mp_pose.PoseLandmark.NOSE]
                     
                     h, w = frame.shape[:2]
                     right_hand_coords = (int(right_hand.x * w), int(right_hand.y * h))
                     left_hand_coords = (int(left_hand.x * w), int(left_hand.y * h))
+                    right_shoulder_y = int(right_shoulder.y * h)
+                    left_shoulder_y = int(left_shoulder.y * h)
+                    avg_shoulder_y = (right_shoulder_y + left_shoulder_y) / 2
+                    nose_y = int(nose.y * h)
                     
                     margin = self.activity_thresholds['cell_phone']['margin']
                     for phone_bbox in detections['cell_phone']:
-                        if (self.check_hand_object_interaction(right_hand_coords, phone_bbox, margin) or
-                            self.check_hand_object_interaction(left_hand_coords, phone_bbox, margin)):
-                            cell_phone_detected = True
+                        # Check if hand is near phone
+                        right_hand_near = self.check_hand_object_interaction(right_hand_coords, phone_bbox, margin)
+                        left_hand_near = self.check_hand_object_interaction(left_hand_coords, phone_bbox, margin)
+                        
+                        if right_hand_near or left_hand_near:
+                            # STRICTER VALIDATION: Ensure phone is being actively used, not just in pocket
+                            # 1. Phone should be in upper body area (above hip level = top 60% of frame)
+                            phone_center_y = (phone_bbox[1] + phone_bbox[3]) / 2
+                            phone_in_upper_body = phone_center_y < (h * 0.6)
                             
-                            # Log cell phone in hand detection
-                            if self.consecutive_detections['cell_phone'] == 0:
-                                print(f"[{timestamp}] Cell phone detected in hand (frame {frame_idx}, sample {sample_idx})")
+                            # 2. At least one hand should be raised (above shoulder level or near face)
+                            right_hand_raised = right_hand_coords[1] < (avg_shoulder_y + 100)  # Within 100px below shoulder
+                            left_hand_raised = left_hand_coords[1] < (avg_shoulder_y + 100)
+                            hand_raised = right_hand_raised or left_hand_raised
                             
-                            break
+                            # 3. Hand should be in front of body (typical phone usage), not hanging at sides
+                            # Check if hand that's near phone is also elevated
+                            active_hand_raised = (right_hand_near and right_hand_raised) or (left_hand_near and left_hand_raised)
+                            
+                            if phone_in_upper_body and hand_raised and active_hand_raised:
+                                cell_phone_detected = True
+                                
+                                # Log cell phone in hand detection
+                                if self.consecutive_detections['cell_phone'] == 0:
+                                    print(f"[{timestamp}] Cell phone ACTIVELY USED in hand (frame {frame_idx}, hand raised, upper body)")
+                                
+                                break
+                            else:
+                                # Log rejection for debugging
+                                if self.consecutive_detections['cell_phone'] == 0:
+                                    reason = []
+                                    if not phone_in_upper_body: reason.append("phone too low")
+                                    if not hand_raised: reason.append("hands down")
+                                    if not active_hand_raised: reason.append("active hand not raised")
+                                    print(f"[{timestamp}] Cell phone detected but REJECTED - likely in pocket/holder ({', '.join(reason)})")
                 
                 # Check for writing
                 if pose_results.pose_landmarks and len(detections['book']) > 0:
@@ -919,13 +1278,108 @@ class LocopilotActivityMonitor:
                             packing_detected = True
                             break
                 
+                # NEW: Check for group detection (more than 2 people)
+                group_detected_flag = False
+                if len(detections['person']) > 0:
+                    # De-duplicate person boxes to get accurate count
+                    deduplicated_persons = self.deduplicate_person_boxes(detections['person'], iou_threshold=0.3)
+                    deduplicated_count = len(deduplicated_persons)
+                    
+                    # Store deduplicated boxes back in detections for visualization
+                    detections['deduplicated_person'] = deduplicated_persons
+                    
+                    if deduplicated_count > 2:
+                        group_detected_flag = True
+                        if self.consecutive_detections['group_detected'] == 0:
+                            print(f"[{timestamp}] Group detected - {deduplicated_count} people (de-duplicated from {len(detections['person'])} raw detections)")
+                else:
+                    # No person detected at all
+                    detections['deduplicated_person'] = []
+                
+                # HEURISTIC: Detect "writing/reading posture" even if YOLO misses objects
+                holding_object_heuristic = False
+                writing_posture_heuristic = False
+                
+                if pose_results.pose_landmarks:
+                    landmarks = pose_results.pose_landmarks.landmark
+                    right_hand = landmarks[self.mp_pose.PoseLandmark.RIGHT_WRIST]
+                    left_hand = landmarks[self.mp_pose.PoseLandmark.LEFT_WRIST]
+                    right_elbow = landmarks[self.mp_pose.PoseLandmark.RIGHT_ELBOW]
+                    right_shoulder = landmarks[self.mp_pose.PoseLandmark.RIGHT_SHOULDER]
+                    
+                    h, w = frame.shape[:2]
+                    right_hand_coords = (int(right_hand.x * w), int(right_hand.y * h))
+                    left_hand_coords = (int(left_hand.x * w), int(left_hand.y * h))
+                    right_elbow_coords = (int(right_elbow.x * w), int(right_elbow.y * h))
+                    right_shoulder_coords = (int(right_shoulder.x * w), int(right_shoulder.y * h))
+                    
+                    # HEURISTIC 1: Reading posture - hands close together (holding book/phone)
+                    hand_distance = np.sqrt((right_hand_coords[0] - left_hand_coords[0])**2 + 
+                                           (right_hand_coords[1] - left_hand_coords[1])**2)
+                    
+                    if hand_distance < 150:
+                        holding_object_heuristic = True
+                        if not writing_detected and not cell_phone_detected:
+                            print(f"[{timestamp}] Heuristic: Hands together (d={hand_distance:.0f}px) - writing posture")
+                    
+                    # HEURISTIC 2: Writing posture - right hand low and forward (writing on desk/logbook)
+                    # Writing characteristics:
+                    # 1. Right hand is below elbow (hand lower than elbow = writing down)
+                    # 2. Right hand is in lower 60% of frame (near desk/table)
+                    # 3. Elbow is bent (elbow Y between shoulder and hand)
+                    hand_below_elbow = right_hand_coords[1] > right_elbow_coords[1]  # Y increases downward
+                    hand_in_lower_area = right_hand_coords[1] > (h * 0.4)  # Lower 60% of frame
+                    elbow_bent = right_elbow_coords[1] > right_shoulder_coords[1] and right_elbow_coords[1] < right_hand_coords[1]
+                    
+                    if hand_below_elbow and hand_in_lower_area and elbow_bent:
+                        writing_posture_heuristic = True
+                        if not writing_detected:
+                            writing_detected = True  # Activate writing detection via heuristic
+                            print(f"[{timestamp}] Heuristic: Writing posture detected (hand Y={right_hand_coords[1]}, elbow Y={right_elbow_coords[1]})")
+                
+                # CRITICAL: Exclude sleep detection if person is holding objects or in active posture
+                # If someone has a phone, book, or backpack in hand, they're clearly NOT sleeping
+                # Also use heuristic detection (hands together, writing posture) as fallback
+                if cell_phone_detected or writing_detected or packing_detected or holding_object_heuristic:
+                    if microsleep_detected or sleep_detected:
+                        reason = []
+                        if cell_phone_detected: reason.append("phone")
+                        if writing_detected: 
+                            if writing_posture_heuristic:
+                                reason.append("writing-posture-heuristic")
+                            else:
+                                reason.append("book")
+                        if packing_detected: reason.append("backpack")
+                        if holding_object_heuristic and not (cell_phone_detected or writing_detected or packing_detected):
+                            reason.append("writing-posture-heuristic")
+                        print(f"[{timestamp}] Sleep detection OVERRIDDEN - person active ({', '.join(reason)})")
+                    microsleep_detected = False
+                    sleep_detected = False
+                    # Reset sleep tracking counters
+                    self.eye_closure_start = None
+                    self.eye_closure_duration = 0
+                    self.pose_sleep_start = None
+                    self.pose_sleep_duration = 0
+                
+                # Save annotated frames periodically if enabled (AFTER all detections)
+                if self.save_annotated_frames and sample_idx % self.frame_save_interval == 0:
+                    annotated_frame = self.draw_bounding_boxes(frame, detections, show_roi_boxes=True)
+                    annotated_frame = self.draw_mediapipe_outputs(
+                        annotated_frame, pose_results, face_results, 
+                        ear_value, self.eye_closure_duration, pose_sleep_info
+                    )
+                    frame_filename = f"frame_{frame_idx:08d}.jpg"
+                    frame_path = os.path.join(self.frames_dir, frame_filename)
+                    cv2.imwrite(frame_path, annotated_frame)
+                
                 # Update activity states with temporal filtering
                 activities_map = {
                     'microsleep': microsleep_detected and not sleep_detected,
                     'sleep': sleep_detected,
                     'cell_phone': cell_phone_detected,
                     'writing': writing_detected,
-                    'packing_bags': packing_detected
+                    'packing_bags': packing_detected,
+                    'group_detected': group_detected_flag
                 }
                 
                 for activity_name, detected in activities_map.items():
@@ -942,10 +1396,11 @@ class LocopilotActivityMonitor:
                             if not self.activities[activity_name]['active']:
                                 self.start_activity(activity_name, timestamp, fps, frame_idx)
                             
-                            # Continue recording frames
+                            # Continue recording frames ONLY when activity is actively detected
                             if self.activities[activity_name]['active']:
                                 self.activities[activity_name]['frames'].append(frame.copy())
                                 self.activities[activity_name]['last_frame_count'] = frame_idx
+                                self.activities[activity_name]['last_detected_frame'] = frame_idx  # Track last actual detection
                     else:
                         # Activity not detected - use grace period before resetting
                         if self.consecutive_detections[activity_name] > 0 or self.activities[activity_name]['active']:
@@ -953,12 +1408,11 @@ class LocopilotActivityMonitor:
                             self.grace_counters[activity_name] += 1
                             grace_frames = self.activity_thresholds[activity_name]['grace_frames']
                             
-                            # If still within grace period, continue as if detected
+                            # If still within grace period, keep activity alive but DON'T add frames
                             if self.grace_counters[activity_name] <= grace_frames:
-                                # Still in grace period - continue recording if active
-                                if self.activities[activity_name]['active']:
-                                    self.activities[activity_name]['frames'].append(frame.copy())
-                                    self.activities[activity_name]['last_frame_count'] = frame_idx
+                                # Still in grace period - keep activity active but don't record frames
+                                # This allows brief interruptions without ending the activity
+                                pass
                             else:
                                 # Grace period exceeded - end activity and reset counters
                                 if self.activities[activity_name]['active']:
@@ -1001,60 +1455,44 @@ class LocopilotActivityMonitor:
         print(f"Sampling rate: {self.sample_fps} FPS (1 frame every {1.0/self.sample_fps:.1f} seconds)")
         print(f"Processing speed-up: ~{step}x faster than full-frame processing")
         print(f"Evidence clips created: {self.evidence_counter}")
-        print(f"Evidence saved in: {self.output_dir}")
+        print(f"Run directory: {self.run_dir}")
+        print(f"  - Clips: {self.evidence_clips_dir}")
         if self.save_annotated_frames:
-            print(f"Annotated frames saved in: {self.frames_dir}")
+            print(f"  - Frames: {self.frames_dir}")
+        print(f"  - Activities: {os.path.join(self.run_dir, 'activities.json')}")
         print(f"{'=' * 60}")
         
         # Generate summary report
         self.generate_summary_report()
     
     def generate_summary_report(self):
-        """Generate a summary report of all activities in JSON array format"""
-        # Save the activities array in the main output directory
-        activities_json_path = os.path.join(self.output_dir, "activities.json")
+        """Generate activities.json in the run directory"""
+        # Save the activities array in the run directory
+        activities_json_path = os.path.join(self.run_dir, "activities.json")
         with open(activities_json_path, 'w') as f:
             json.dump(self.all_activities, f, indent=2)
         
         print(f"\nActivities JSON saved: {activities_json_path}")
         print(f"Total activities detected: {len(self.all_activities)}")
         
-        # Also create a detailed summary for reference
-        summary = {
-            "video_path": self.video_path,
-            "processing_date": datetime.now().isoformat(),
-            "total_evidence_clips": self.evidence_counter,
-            "total_activities": len(self.all_activities),
-            "activities_by_type": {}
-        }
-        
-        if self.save_annotated_frames:
-            summary["run_id"] = self.run_timestamp
-            summary["frames_directory"] = self.frames_dir
-        
-        # Count activities by type
+        # Count and print activity breakdown
+        activities_by_type = {}
         for activity in self.all_activities:
             activity_type = activity['des']
-            if activity_type not in summary["activities_by_type"]:
-                summary["activities_by_type"][activity_type] = 0
-            summary["activities_by_type"][activity_type] += 1
-        
-        summary_path = os.path.join(self.output_dir, "summary_report.json")
-        with open(summary_path, 'w') as f:
-            json.dump(summary, f, indent=2)
-        
-        print(f"Summary report saved: {summary_path}")
+            if activity_type not in activities_by_type:
+                activities_by_type[activity_type] = 0
+            activities_by_type[activity_type] += 1
         
         # Print activity breakdown
-        if summary["activities_by_type"]:
+        if activities_by_type:
             print("\nActivity Breakdown:")
-            for activity_type, count in summary["activities_by_type"].items():
+            for activity_type, count in activities_by_type.items():
                 print(f"  - {activity_type}: {count}")
 
 
 # Usage example
 if __name__ == "__main__":
-    video_path = "example_data/latest_1.mp4"
+    video_path = "example_data/latest.mp4"
     
     # Option 1: Sample at 0.5 FPS and save ALL sampled frames
     # This samples 1 frame every 2 seconds, making processing ~60x faster for 30fps videos
