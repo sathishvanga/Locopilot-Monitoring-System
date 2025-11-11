@@ -8,7 +8,7 @@ from ultralytics import YOLO
 import os
 
 class LocopilotActivityMonitor:
-    def __init__(self, video_path, output_dir="evidence", save_annotated_frames=False, frame_save_interval=1, sample_fps=1.0):
+    def __init__(self, video_path, output_dir="evidence", save_annotated_frames=False, frame_save_interval=1, sample_fps=1.0, run_dir=None, create_run_dir=True):
         self.video_path = video_path
         self.output_dir = output_dir
         
@@ -19,16 +19,33 @@ class LocopilotActivityMonitor:
         self.save_annotated_frames = save_annotated_frames
         self.frame_save_interval = frame_save_interval  # Save 1 frame every N sampled frames (1 = save all sampled frames)
         
-        # Create run-specific directory
-        self.run_timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        self.run_dir = os.path.join(output_dir, f"run_{self.run_timestamp}")
-        self.evidence_clips_dir = os.path.join(self.run_dir, "clips")
-        self.frames_dir = os.path.join(self.run_dir, "frames")
+        # Create or use existing run directory
+        if run_dir is not None:
+            # Use provided run directory (for multiprocessing)
+            self.run_dir = run_dir
+            self.run_timestamp = os.path.basename(run_dir).replace("run_", "")
+        elif create_run_dir:
+            # Create new run-specific directory
+            self.run_timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            self.run_dir = os.path.join(output_dir, f"run_{self.run_timestamp}")
+        else:
+            # No run directory (for multiprocessing workers)
+            self.run_dir = None
+            self.run_timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         
-        # Create directories
-        os.makedirs(self.evidence_clips_dir, exist_ok=True)
-        if self.save_annotated_frames:
-            os.makedirs(self.frames_dir, exist_ok=True)
+        # Create directories only if run_dir is set
+        if self.run_dir:
+            self.evidence_clips_dir = os.path.join(self.run_dir, "clips")
+            self.frames_dir = os.path.join(self.run_dir, "frames")
+            
+            # Create directories
+            os.makedirs(self.evidence_clips_dir, exist_ok=True)
+            if self.save_annotated_frames:
+                os.makedirs(self.frames_dir, exist_ok=True)
+        else:
+            # No directories for multiprocessing workers (activities in memory only)
+            self.evidence_clips_dir = None
+            self.frames_dir = None
         
         # Initialize models
         print("Loading YOLO model...")
@@ -181,13 +198,15 @@ class LocopilotActivityMonitor:
         # Store all activities for final JSON array output
         self.all_activities = []
     
-    def sample_video_frames(self, video_path):
+    def sample_video_frames(self, video_path, start_frame=None, end_frame=None):
         """Sample frames at fixed intervals based on sample_fps.
         
         Yields tuples: (sample_index, timestamp_sec, frame_bgr, frame_idx)
         
         Args:
             video_path: Path to video file
+            start_frame: Optional starting frame index (for range processing)
+            end_frame: Optional ending frame index (for range processing)
             
         Yields:
             sample_index: Sequential index of sampled frames (0, 1, 2, ...)
@@ -202,15 +221,23 @@ class LocopilotActivityMonitor:
         native_fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
         total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
         
+        # Determine frame range
+        start_frame = start_frame if start_frame is not None else 0
+        end_frame = end_frame if end_frame is not None else total_frames
+        
         # Calculate stride: how many frames to skip between samples
         step = max(1, int(round(native_fps / max(1e-6, float(self.sample_fps)))))
         
         print(f"[Frame Sampling] Native FPS: {native_fps:.2f}, Sample FPS: {self.sample_fps}")
         print(f"[Frame Sampling] Step: {step} (sampling 1 frame every {step} frames)")
-        print(f"[Frame Sampling] Expected sampled frames: ~{(total_frames // step)}")
+        print(f"[Frame Sampling] Frame range: {start_frame} - {end_frame}")
+        print(f"[Frame Sampling] Expected sampled frames: ~{((end_frame - start_frame) // step)}")
         
         sampled_idx = 0
-        for frame_idx in range(0, total_frames, step):
+        # Start from the beginning of the range, aligned to step
+        first_sample_frame = start_frame + (step - (start_frame % step)) % step
+        
+        for frame_idx in range(first_sample_frame, end_frame, step):
             cap.set(cv2.CAP_PROP_POS_FRAMES, int(frame_idx))
             ret, frame = cap.read()
             
@@ -936,8 +963,8 @@ class LocopilotActivityMonitor:
             self.activities[activity_name]['duration'] = 0
             print(f"[{timestamp}] Activity started: {activity_name}")
     
-    def end_activity(self, activity_name, timestamp, fps, frame_count, people_count=1):
-        """End tracking an activity and save evidence (only if meets minimum duration)"""
+    def end_activity(self, activity_name, timestamp, fps, frame_count, people_count=1, save_clips=True):
+        """End tracking an activity and optionally save evidence (only if meets minimum duration)"""
         if self.activities[activity_name]['active']:
             activity = self.activities[activity_name]
             activity['active'] = False
@@ -982,19 +1009,27 @@ class LocopilotActivityMonitor:
             clip_filename = f"{video_name_without_ext}_{activity_name}_frame{start_frame:08d}_{self.evidence_counter:03d}_clip.mp4"
             image_filename = f"{video_name_without_ext}_{activity_name}_frame{start_frame:08d}_{self.evidence_counter:03d}_activity.jpg"
             
-            clip_path = os.path.join(self.evidence_clips_dir, clip_filename)
-            image_path = os.path.join(self.evidence_clips_dir, image_filename)
+            # Generate full paths for clips (even if not saving immediately)
+            if self.evidence_clips_dir:
+                clip_path = os.path.join(self.evidence_clips_dir, clip_filename)
+                image_path = os.path.join(self.evidence_clips_dir, image_filename)
+            else:
+                # For multiprocessing workers without directories, use relative paths
+                clip_path = clip_filename
+                image_path = image_filename
             
-            # Save video clip at sample FPS for full-duration playback
-            # This creates clips with real-time duration instead of fast-motion
-            # Example: 13 frames @ 0.5 FPS = 26 seconds (not 0.43 seconds @ 30 FPS)
-            self.save_video_clip(activity['frames'], clip_path, self.sample_fps)
-            
-            # Save activity image (middle frame of the activity)
-            if len(activity['frames']) > 0:
-                middle_frame_idx = len(activity['frames']) // 2
-                activity_image = activity['frames'][middle_frame_idx]
-                cv2.imwrite(image_path, activity_image)
+            # Only save clips/images if save_clips is True and directories exist
+            if save_clips and self.evidence_clips_dir:
+                # Save video clip at sample FPS for full-duration playback
+                # This creates clips with real-time duration instead of fast-motion
+                # Example: 13 frames @ 0.5 FPS = 26 seconds (not 0.43 seconds @ 30 FPS)
+                self.save_video_clip(activity['frames'], clip_path, self.sample_fps)
+                
+                # Save activity image (middle frame of the activity)
+                if len(activity['frames']) > 0:
+                    middle_frame_idx = len(activity['frames']) // 2
+                    activity_image = activity['frames'][middle_frame_idx]
+                    cv2.imwrite(image_path, activity_image)
             
             # Get video duration in HH:MM:SS format
             cap = cv2.VideoCapture(self.video_path)
@@ -1010,6 +1045,7 @@ class LocopilotActivityMonitor:
             current_time = now.strftime("%H:%M:%S")
             
             # Create JSON data in the required format
+            # Store FULL PATHS for clips and images
             json_data = {
                 "tripId": self.trip_id,
                 "activityType": self.activity_type_map[activity_name],
@@ -1027,8 +1063,8 @@ class LocopilotActivityMonitor:
                 "filename": video_filename,
                 "peopleCount": people_count,
                 "evidence": {"rule": self.evidence_rules[activity_name]},
-                "activityImage": image_filename,
-                "activityClip": clip_filename
+                "activityImage": os.path.abspath(image_path) if self.evidence_clips_dir else image_filename,
+                "activityClip": os.path.abspath(clip_path) if self.evidence_clips_dir else clip_filename
             }
             
             # Add to all activities list
@@ -1465,6 +1501,286 @@ class LocopilotActivityMonitor:
         # Generate summary report
         self.generate_summary_report()
     
+    def process_video_range(self, start_frame: int, end_frame: int, save_clips: bool = False) -> list:
+        """
+        Process a specific frame range (for multiprocessing support)
+        
+        This method processes only frames within the specified range and returns
+        detected activities without saving clips/images to disk (activities in memory only).
+        
+        Args:
+            start_frame: Starting frame index (inclusive)
+            end_frame: Ending frame index (exclusive)
+            save_clips: Whether to save video clips and images (default: False for multiprocessing)
+            
+        Returns:
+            List of detected activities in this range
+        """
+        # Get video metadata
+        cap = cv2.VideoCapture(self.video_path)
+        fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
+        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        cap.release()
+        
+        print(f"Processing frame range {start_frame}-{end_frame} (worker {os.getpid()})")
+        
+        sampled_count = 0
+        
+        # Use the frame sampling generator with range limits
+        for sample_idx, timestamp_sec, frame, frame_idx in self.sample_video_frames(
+            self.video_path, start_frame=start_frame, end_frame=end_frame
+        ):
+            sampled_count += 1
+            
+            try:
+                # Convert timestamp to HH:MM:SS format
+                timestamp = str(timedelta(seconds=timestamp_sec))
+                
+                # Add frame to buffer
+                self.frame_buffer.append(frame.copy())
+                
+                # Process pose and face
+                rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                pose_results = self.pose.process(rgb_frame)
+                face_results = self.face_mesh.process(rgb_frame)
+                
+                # Calculate EAR for all detected faces
+                ear_value = None
+                min_ear_value = None
+                
+                if face_results.multi_face_landmarks:
+                    ear_values = []
+                    for face_landmarks in face_results.multi_face_landmarks:
+                        ear = self.calculate_eye_aspect_ratio(face_landmarks.landmark)
+                        if ear is not None:
+                            ear_values.append(ear)
+                    
+                    if ear_values:
+                        min_ear_value = min(ear_values)
+                        ear_value = min_ear_value
+                
+                # Run pose-based sleep detection
+                pose_sleep_detected = False
+                pose_microsleep_detected = False
+                pose_sleep_info = {}
+                
+                if pose_results.pose_landmarks:
+                    pose_sleep_detected, pose_microsleep_detected, pose_sleep_info = self.detect_pose_based_sleep(
+                        pose_results.pose_landmarks, timestamp_sec
+                    )
+                
+                # Detect objects with pose-guided detection
+                detections = self.detect_objects(frame, pose_results.pose_landmarks, use_pose_guided=True)
+                
+                # Count people in frame
+                people_count = len(detections['person'])
+                if people_count == 0:
+                    people_count = 1
+                
+                # Initialize detection flags
+                microsleep_detected = False
+                sleep_detected = False
+                cell_phone_detected = False
+                writing_detected = False
+                packing_detected = False
+                
+                # Check for sleep/microsleep (face-based)
+                if face_results.multi_face_landmarks and ear_value is not None:
+                    if ear_value < 0.2:
+                        if self.eye_closure_start is None:
+                            self.eye_closure_start = timestamp_sec
+                        
+                        self.eye_closure_duration = timestamp_sec - self.eye_closure_start
+                        
+                        if self.eye_closure_duration >= 30:
+                            sleep_detected = True
+                        elif self.eye_closure_duration >= 5:
+                            microsleep_detected = True
+                    else:
+                        self.eye_closure_start = None
+                        self.eye_closure_duration = 0
+                else:
+                    # Use pose-based detection as fallback
+                    if pose_sleep_detected:
+                        sleep_detected = True
+                    elif pose_microsleep_detected:
+                        microsleep_detected = True
+                
+                # Check for cell phone usage
+                if pose_results.pose_landmarks and len(detections['cell_phone']) > 0:
+                    landmarks = pose_results.pose_landmarks.landmark
+                    right_hand = landmarks[self.mp_pose.PoseLandmark.RIGHT_WRIST]
+                    left_hand = landmarks[self.mp_pose.PoseLandmark.LEFT_WRIST]
+                    right_shoulder = landmarks[self.mp_pose.PoseLandmark.RIGHT_SHOULDER]
+                    left_shoulder = landmarks[self.mp_pose.PoseLandmark.LEFT_SHOULDER]
+                    nose = landmarks[self.mp_pose.PoseLandmark.NOSE]
+                    
+                    h, w = frame.shape[:2]
+                    right_hand_coords = (int(right_hand.x * w), int(right_hand.y * h))
+                    left_hand_coords = (int(left_hand.x * w), int(left_hand.y * h))
+                    right_shoulder_y = int(right_shoulder.y * h)
+                    left_shoulder_y = int(left_shoulder.y * h)
+                    avg_shoulder_y = (right_shoulder_y + left_shoulder_y) / 2
+                    
+                    margin = self.activity_thresholds['cell_phone']['margin']
+                    for phone_bbox in detections['cell_phone']:
+                        right_hand_near = self.check_hand_object_interaction(right_hand_coords, phone_bbox, margin)
+                        left_hand_near = self.check_hand_object_interaction(left_hand_coords, phone_bbox, margin)
+                        
+                        if right_hand_near or left_hand_near:
+                            phone_center_y = (phone_bbox[1] + phone_bbox[3]) / 2
+                            phone_in_upper_body = phone_center_y < (h * 0.6)
+                            
+                            right_hand_raised = right_hand_coords[1] < (avg_shoulder_y + 100)
+                            left_hand_raised = left_hand_coords[1] < (avg_shoulder_y + 100)
+                            hand_raised = right_hand_raised or left_hand_raised
+                            
+                            active_hand_raised = (right_hand_near and right_hand_raised) or (left_hand_near and left_hand_raised)
+                            
+                            if phone_in_upper_body and hand_raised and active_hand_raised:
+                                cell_phone_detected = True
+                                break
+                
+                # Check for writing
+                if pose_results.pose_landmarks and len(detections['book']) > 0:
+                    landmarks = pose_results.pose_landmarks.landmark
+                    right_hand = landmarks[self.mp_pose.PoseLandmark.RIGHT_WRIST]
+                    
+                    h, w = frame.shape[:2]
+                    right_hand_coords = (int(right_hand.x * w), int(right_hand.y * h))
+                    
+                    margin = self.activity_thresholds['writing']['margin']
+                    for book_bbox in detections['book']:
+                        if self.check_hand_object_interaction(right_hand_coords, book_bbox, margin):
+                            writing_detected = True
+                            break
+                
+                # Check for packing bags
+                if pose_results.pose_landmarks and len(detections['backpack']) > 0:
+                    landmarks = pose_results.pose_landmarks.landmark
+                    right_hand = landmarks[self.mp_pose.PoseLandmark.RIGHT_WRIST]
+                    left_hand = landmarks[self.mp_pose.PoseLandmark.LEFT_WRIST]
+                    
+                    h, w = frame.shape[:2]
+                    right_hand_coords = (int(right_hand.x * w), int(right_hand.y * h))
+                    left_hand_coords = (int(left_hand.x * w), int(left_hand.y * h))
+                    
+                    margin = self.activity_thresholds['packing_bags']['margin']
+                    
+                    for backpack_bbox in detections['backpack']:
+                        if (self.check_hand_object_interaction(right_hand_coords, backpack_bbox, margin) or
+                            self.check_hand_object_interaction(left_hand_coords, backpack_bbox, margin)):
+                            packing_detected = True
+                            break
+                
+                # Check for group detection
+                group_detected_flag = False
+                if len(detections['person']) > 0:
+                    deduplicated_persons = self.deduplicate_person_boxes(detections['person'], iou_threshold=0.3)
+                    deduplicated_count = len(deduplicated_persons)
+                    detections['deduplicated_person'] = deduplicated_persons
+                    
+                    if deduplicated_count > 2:
+                        group_detected_flag = True
+                else:
+                    detections['deduplicated_person'] = []
+                
+                # Writing/reading posture heuristics
+                holding_object_heuristic = False
+                writing_posture_heuristic = False
+                
+                if pose_results.pose_landmarks:
+                    landmarks = pose_results.pose_landmarks.landmark
+                    right_hand = landmarks[self.mp_pose.PoseLandmark.RIGHT_WRIST]
+                    left_hand = landmarks[self.mp_pose.PoseLandmark.LEFT_WRIST]
+                    right_elbow = landmarks[self.mp_pose.PoseLandmark.RIGHT_ELBOW]
+                    right_shoulder = landmarks[self.mp_pose.PoseLandmark.RIGHT_SHOULDER]
+                    
+                    h, w = frame.shape[:2]
+                    right_hand_coords = (int(right_hand.x * w), int(right_hand.y * h))
+                    left_hand_coords = (int(left_hand.x * w), int(left_hand.y * h))
+                    right_elbow_coords = (int(right_elbow.x * w), int(right_elbow.y * h))
+                    right_shoulder_coords = (int(right_shoulder.x * w), int(right_shoulder.y * h))
+                    
+                    hand_distance = np.sqrt((right_hand_coords[0] - left_hand_coords[0])**2 + 
+                                           (right_hand_coords[1] - left_hand_coords[1])**2)
+                    
+                    if hand_distance < 150:
+                        holding_object_heuristic = True
+                    
+                    hand_below_elbow = right_hand_coords[1] > right_elbow_coords[1]
+                    hand_in_lower_area = right_hand_coords[1] > (h * 0.4)
+                    elbow_bent = right_elbow_coords[1] > right_shoulder_coords[1] and right_elbow_coords[1] < right_hand_coords[1]
+                    
+                    if hand_below_elbow and hand_in_lower_area and elbow_bent:
+                        writing_posture_heuristic = True
+                        if not writing_detected:
+                            writing_detected = True
+                
+                # Override sleep detection if person is active
+                if cell_phone_detected or writing_detected or packing_detected or holding_object_heuristic:
+                    microsleep_detected = False
+                    sleep_detected = False
+                    self.eye_closure_start = None
+                    self.eye_closure_duration = 0
+                    self.pose_sleep_start = None
+                    self.pose_sleep_duration = 0
+                
+                # Update activity states with temporal filtering
+                activities_map = {
+                    'microsleep': microsleep_detected and not sleep_detected,
+                    'sleep': sleep_detected,
+                    'cell_phone': cell_phone_detected,
+                    'writing': writing_detected,
+                    'packing_bags': packing_detected,
+                    'group_detected': group_detected_flag
+                }
+                
+                for activity_name, detected in activities_map.items():
+                    if detected:
+                        self.consecutive_detections[activity_name] += 1
+                        self.grace_counters[activity_name] = 0
+                        
+                        required_consecutive = self.activity_thresholds[activity_name]['required_consecutive']
+                        
+                        if self.consecutive_detections[activity_name] >= required_consecutive:
+                            if not self.activities[activity_name]['active']:
+                                self.start_activity(activity_name, timestamp, fps, frame_idx)
+                            
+                            if self.activities[activity_name]['active']:
+                                self.activities[activity_name]['frames'].append(frame.copy())
+                                self.activities[activity_name]['last_frame_count'] = frame_idx
+                                self.activities[activity_name]['last_detected_frame'] = frame_idx
+                    else:
+                        if self.consecutive_detections[activity_name] > 0 or self.activities[activity_name]['active']:
+                            self.grace_counters[activity_name] += 1
+                            grace_frames = self.activity_thresholds[activity_name]['grace_frames']
+                            
+                            if self.grace_counters[activity_name] <= grace_frames:
+                                pass
+                            else:
+                                if self.activities[activity_name]['active']:
+                                    self.end_activity(activity_name, timestamp, fps, frame_idx, people_count, save_clips=save_clips)
+                                self.consecutive_detections[activity_name] = 0
+                                self.grace_counters[activity_name] = 0
+                        else:
+                            self.grace_counters[activity_name] = 0
+            
+            except Exception as e:
+                print(f"\nError processing sample {sample_idx} (frame {frame_idx}): {e}")
+                continue
+        
+        # End any remaining active activities
+        final_timestamp = str(timedelta(seconds=timestamp_sec))
+        for activity_name in self.activities:
+            if self.activities[activity_name]['active']:
+                self.end_activity(activity_name, final_timestamp, fps, frame_idx, 1, save_clips=save_clips)
+        
+        print(f"Frame range {start_frame}-{end_frame} completed: {len(self.all_activities)} activities")
+        
+        # Return detected activities (without generating summary reports)
+        return self.all_activities
+
     def generate_summary_report(self):
         """Generate activities.json in the run directory"""
         # Save the activities array in the run directory

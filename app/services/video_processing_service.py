@@ -124,7 +124,9 @@ class VideoProcessingService:
         crew_name: str = "John Doe",
         crew_id: str = "C-001",
         crew_role: int = 1,
-        use_mock_detection: bool = False
+        use_mock_detection: bool = False,
+        use_multiprocessing: bool = False,
+        save_clips: bool = True
     ) -> Dict[str, Any]:
         """
         Process video and detect activities
@@ -136,6 +138,8 @@ class VideoProcessingService:
             crew_id: Crew member ID
             crew_role: Crew role
             use_mock_detection: Use mock detection instead of real ML models
+            use_multiprocessing: Enable multiprocessing for faster processing
+            save_clips: Whether to save video clips and images (default: True)
             
         Returns:
             Dict[str, Any]: Processing results with activities
@@ -146,13 +150,14 @@ class VideoProcessingService:
         start_time = time.time()
         
         try:
-            logger.info(f"Starting video processing for trip {trip_id}")
+            logger.info(f"Starting video processing for trip {trip_id} "
+                       f"(multiprocessing={'enabled' if use_multiprocessing else 'disabled'})")
             
             # Validate video file exists
             if not os.path.exists(video_path):
                 raise FileNotFoundError(f"Video file not found: {video_path}")
             
-            # Create run directory
+            # Create run directory ONCE at the top level
             run_dir = self.activity_repository.create_run_directory(base_name=f"run")
             
             # Run activity detection
@@ -166,16 +171,33 @@ class VideoProcessingService:
                     crew_role=crew_role
                 )
             else:
-                logger.info("Using real activity detection")
-                activities = self.activity_detection_service.detect_activities_real(
-                    video_path=video_path,
-                    trip_id=trip_id,
-                    crew_name=crew_name,
-                    crew_id=crew_id,
-                    crew_role=crew_role,
-                    output_dir=settings.output_dir,
-                    sample_fps=settings.sample_fps
-                )
+                logger.info(f"Using real activity detection "
+                          f"(multiprocessing={'enabled' if use_multiprocessing else 'disabled'})")
+                
+                # Pass run_dir and save_clips settings
+                if use_multiprocessing:
+                    activities = self.activity_detection_service._detect_activities_multiprocess(
+                        video_path=video_path,
+                        trip_id=trip_id,
+                        crew_name=crew_name,
+                        crew_id=crew_id,
+                        crew_role=crew_role,
+                        output_dir=settings.output_dir,
+                        sample_fps=settings.sample_fps,
+                        run_dir=run_dir,  # Pass existing run_dir to avoid nested directories
+                        save_clips=save_clips
+                    )
+                else:
+                    activities = self.activity_detection_service._detect_activities_single_process(
+                        video_path=video_path,
+                        trip_id=trip_id,
+                        crew_name=crew_name,
+                        crew_id=crew_id,
+                        crew_role=crew_role,
+                        output_dir=settings.output_dir,
+                        sample_fps=settings.sample_fps,
+                        run_dir=run_dir  # Pass existing run_dir
+                    )
             
             # Save activities to JSON
             activities_json_path = self.activity_repository.save_activities(
@@ -204,7 +226,9 @@ class VideoProcessingService:
                 "activitiesCount": len(activities),
                 "activities": activities,
                 "processingTime": processing_time,
-                "summary": summary
+                "summary": summary,
+                "multiprocessingEnabled": use_multiprocessing,
+                "clipsGenerated": save_clips
             }
             
         except Exception as e:

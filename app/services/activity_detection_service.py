@@ -158,12 +158,14 @@ class ActivityDetectionService:
         crew_id: str = "C-001",
         crew_role: int = 1,
         output_dir: str = "locopilot_evidence",
-        sample_fps: float = 0.5
+        sample_fps: float = 0.5,
+        use_multiprocessing: bool = False
     ) -> List[Dict[str, Any]]:
         """
         Real activity detection using the LocopilotActivityMonitor
         
         This integrates with the existing locopilot_monitor.py logic.
+        Supports both single-process and multi-process execution.
         
         Args:
             video_path: Path to video file
@@ -173,22 +175,84 @@ class ActivityDetectionService:
             crew_role: Crew role
             output_dir: Output directory for evidence
             sample_fps: Frame sampling rate
+            use_multiprocessing: Enable multiprocessing (default: False)
+            
+        Returns:
+            List[Dict[str, Any]]: List of detected activities
+        """
+        if use_multiprocessing:
+            logger.info(f"Running real activity detection with MULTIPROCESSING for {video_path}")
+            return self._detect_activities_multiprocess(
+                video_path=video_path,
+                trip_id=trip_id,
+                crew_name=crew_name,
+                crew_id=crew_id,
+                crew_role=crew_role,
+                output_dir=output_dir,
+                sample_fps=sample_fps
+            )
+        else:
+            logger.info(f"Running real activity detection with SINGLE PROCESS for {video_path}")
+            return self._detect_activities_single_process(
+                video_path=video_path,
+                trip_id=trip_id,
+                crew_name=crew_name,
+                crew_id=crew_id,
+                crew_role=crew_role,
+                output_dir=output_dir,
+                sample_fps=sample_fps
+            )
+    
+    def _detect_activities_single_process(
+        self,
+        video_path: str,
+        trip_id: str,
+        crew_name: str,
+        crew_id: str,
+        crew_role: int,
+        output_dir: str,
+        sample_fps: float,
+        run_dir: str = None
+    ) -> List[Dict[str, Any]]:
+        """
+        Single-process activity detection (original implementation)
+        
+        Args:
+            video_path: Path to video file
+            trip_id: Trip identifier
+            crew_name: Crew member name
+            crew_id: Crew member ID
+            crew_role: Crew role
+            output_dir: Output directory for evidence (base directory)
+            sample_fps: Frame sampling rate
+            run_dir: Run directory to use (if None, creates new one)
             
         Returns:
             List[Dict[str, Any]]: List of detected activities
         """
         from locopilot_monitor import LocopilotActivityMonitor
         
-        logger.info(f"Running real activity detection for {video_path}")
-        
-        # Create monitor instance
-        monitor = LocopilotActivityMonitor(
-            video_path=video_path,
-            output_dir=output_dir,
-            save_annotated_frames=False,  # Disable for API use
-            frame_save_interval=1,
-            sample_fps=sample_fps
-        )
+        # Create monitor instance (with or without run_dir)
+        if run_dir:
+            # Use existing run directory
+            monitor = LocopilotActivityMonitor(
+                video_path=video_path,
+                output_dir=output_dir,
+                save_annotated_frames=False,
+                frame_save_interval=1,
+                sample_fps=sample_fps,
+                run_dir=run_dir,
+                create_run_dir=False  # Don't create new directory
+            )
+        else:
+            # Create new run directory
+            monitor = LocopilotActivityMonitor(
+                video_path=video_path,
+                output_dir=output_dir,
+                save_annotated_frames=False,
+                frame_save_interval=1,
+                sample_fps=sample_fps
+            )
         
         # Set trip and crew information
         monitor.trip_id = trip_id
@@ -200,6 +264,79 @@ class ActivityDetectionService:
         monitor.process_video()
         
         # Return detected activities
-        logger.info(f"Real detection found {len(monitor.all_activities)} activities")
+        logger.info(f"Single-process detection found {len(monitor.all_activities)} activities")
         return monitor.all_activities
+    
+    def _detect_activities_multiprocess(
+        self,
+        video_path: str,
+        trip_id: str,
+        crew_name: str,
+        crew_id: str,
+        crew_role: int,
+        output_dir: str,
+        sample_fps: float,
+        run_dir: str = None,
+        save_clips: bool = True
+    ) -> List[Dict[str, Any]]:
+        """
+        Multi-process activity detection using parallel processing
+        
+        Args:
+            video_path: Path to video file
+            trip_id: Trip identifier
+            crew_name: Crew member name
+            crew_id: Crew member ID
+            crew_role: Crew role
+            output_dir: Output directory for evidence (base directory)
+            sample_fps: Frame sampling rate
+            run_dir: Run directory to use (if None, creates new one)
+            save_clips: Whether to save video clips and images (default: True)
+            
+        Returns:
+            List[Dict[str, Any]]: List of detected activities
+        """
+        from ..utils.video_multiprocessing import VideoMultiprocessingOrchestrator
+        from ..utils.multiprocessing_config import MultiprocessingConfig
+        from ..repositories.activity_repository import ActivityRepository
+        
+        # Create run directory only if not provided
+        if run_dir is None:
+            activity_repo = ActivityRepository(output_dir=output_dir)
+            run_dir = activity_repo.create_run_directory(base_name="run")
+        
+        # Create multiprocessing configuration
+        config = MultiprocessingConfig(
+            chunk_duration_seconds=6.0,
+            max_workers=None,  # Auto-detect
+            max_workers_cap=8,
+            preload_models=True
+        )
+        
+        # Create orchestrator
+        orchestrator = VideoMultiprocessingOrchestrator(
+            config=config,
+            output_dir=run_dir
+        )
+        
+        try:
+            # Process video in parallel with clip generation
+            activities = orchestrator.process_video_parallel(
+                video_path=video_path,
+                trip_id=trip_id,
+                crew_name=crew_name,
+                crew_id=crew_id,
+                crew_role=crew_role,
+                sample_fps=sample_fps,
+                run_dir=run_dir,
+                save_clips=save_clips
+            )
+            
+            logger.info(f"Multi-process detection found {len(activities)} activities "
+                       f"(clips {'generated' if save_clips else 'not generated'})")
+            return activities
+            
+        finally:
+            # Cleanup: shutdown pool
+            orchestrator.shutdown_pool(wait=True)
 

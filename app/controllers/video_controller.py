@@ -41,6 +41,8 @@ video_processing_service = VideoProcessingService()
     - crewId: Crew member ID (optional, default: "C-001")
     - crewRole: Crew role (optional, default: 1)
     - useMockDetection: Use mock detection for testing (optional, default: false)
+    - useMultiprocessing: Enable parallel processing (optional, default: from config)
+    - saveClips: Generate video clips and images (optional, default: true)
     
     Returns:
     - Processing results with detected activities
@@ -55,7 +57,9 @@ async def process_video(
     crewName: Optional[str] = Form(default="John Doe", description="Crew member name"),
     crewId: Optional[str] = Form(default="C-001", description="Crew member ID"),
     crewRole: Optional[int] = Form(default=1, description="Crew role (1 = primary pilot)"),
-    useMockDetection: Optional[bool] = Form(default=False, description="Use mock detection for testing")
+    useMockDetection: Optional[bool] = Form(default=False, description="Use mock detection for testing"),
+    useMultiprocessing: Optional[bool] = Form(default=None, description="Enable multiprocessing (default: from config)"),
+    saveClips: Optional[bool] = Form(default=True, description="Generate video clips and images (default: true)")
 ):
     """
     Process uploaded video and detect activities
@@ -97,6 +101,12 @@ async def process_video(
             trip_id=tripId
         )
         
+        # Determine multiprocessing setting
+        # Priority: request parameter > config setting > default (False)
+        use_mp = useMultiprocessing if useMultiprocessing is not None else settings.enable_multiprocessing
+        
+        logger.info(f"Processing with multiprocessing: {use_mp}, save_clips: {saveClips}")
+        
         # Process video (synchronous for now, can be made async)
         result = video_processing_service.process_video(
             video_path=video_path,
@@ -104,7 +114,9 @@ async def process_video(
             crew_name=crewName,
             crew_id=crewId,
             crew_role=crewRole,
-            use_mock_detection=useMockDetection
+            use_mock_detection=useMockDetection,
+            use_multiprocessing=use_mp,
+            save_clips=saveClips
         )
         
         # Schedule cleanup of uploaded video (optional)
@@ -185,6 +197,8 @@ async def health_check():
     
     Returns service status and configuration.
     """
+    import multiprocessing as mp
+    
     return {
         "status": "healthy",
         "service": "video-processing",
@@ -193,7 +207,14 @@ async def health_check():
             "max_upload_size_mb": settings.max_upload_size / (1024 * 1024),
             "allowed_extensions": settings.allowed_video_extensions,
             "sample_fps": settings.sample_fps,
-            "output_dir": settings.output_dir
+            "output_dir": settings.output_dir,
+            "multiprocessing": {
+                "enabled": settings.enable_multiprocessing,
+                "chunk_duration": settings.mp_chunk_duration,
+                "max_workers": settings.mp_max_workers,
+                "max_workers_cap": settings.mp_max_workers_cap,
+                "cpu_count": mp.cpu_count()
+            }
         }
     }
 

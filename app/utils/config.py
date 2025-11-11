@@ -39,6 +39,12 @@ class Settings(BaseSettings):
     # Video processing settings
     sample_fps: float = 0.5  # Sample at 0.5 FPS (1 frame every 2 seconds)
     
+    # Multiprocessing settings
+    enable_multiprocessing: bool = True
+    mp_chunk_duration: float = 6.0  # Chunk duration in seconds
+    mp_max_workers: int = 5  # 0 = auto-detect
+    mp_max_workers_cap: int = 8  # Maximum number of workers
+    
     # Model settings
     yolo_weights: str = os.getenv("YOLO_WEIGHTS_PRELOAD", "yolo11s.pt")
     preload_ocr: bool = bool(int(os.getenv("PRELOAD_OCR", "0")))
