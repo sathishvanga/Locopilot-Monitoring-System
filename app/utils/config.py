@@ -33,7 +33,7 @@ class Settings(BaseSettings):
     
     # Output settings
     output_dir: str = "locopilot_evidence"
-    save_annotated_frames: bool = False
+    save_annotated_frames: bool = True
     frame_save_interval: int = 1
     
     # Video processing settings

@@ -1398,15 +1398,28 @@ class LocopilotActivityMonitor:
                     self.pose_sleep_duration = 0
                 
                 # Save annotated frames periodically if enabled (AFTER all detections)
-                if self.save_annotated_frames and sample_idx % self.frame_save_interval == 0:
-                    annotated_frame = self.draw_bounding_boxes(frame, detections, show_roi_boxes=True)
+                if (
+                    self.save_annotated_frames
+                    and self.frames_dir
+                    and sample_idx % self.frame_save_interval == 0
+                ):
+                    annotated_frame = self.draw_bounding_boxes(
+                        frame, detections, show_roi_boxes=True
+                    )
                     annotated_frame = self.draw_mediapipe_outputs(
-                        annotated_frame, pose_results, face_results, 
-                        ear_value, self.eye_closure_duration, pose_sleep_info
+                        annotated_frame,
+                        pose_results,
+                        face_results,
+                        ear_value,
+                        self.eye_closure_duration,
+                        pose_sleep_info,
                     )
                     frame_filename = f"frame_{frame_idx:08d}.jpg"
                     frame_path = os.path.join(self.frames_dir, frame_filename)
-                    cv2.imwrite(frame_path, annotated_frame)
+                    if not cv2.imwrite(frame_path, annotated_frame):
+                        print(
+                            f"[{timestamp}] Warning: Failed to save annotated frame to {frame_path}"
+                        )
                 
                 # Update activity states with temporal filtering
                 activities_map = {

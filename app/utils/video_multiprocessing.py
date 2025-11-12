@@ -20,9 +20,11 @@ import multiprocessing as mp
 
 from .multiprocessing_config import MultiprocessingConfig
 from .logger import get_logger
+from .config import get_settings
 
 
 logger = get_logger(__name__)
+settings = get_settings()
 
 
 # Global variables for worker processes (initialized once per worker)
@@ -264,14 +266,17 @@ def process_frame_range(
                    f"({frame_range.start_time:.2f}s - {frame_range.end_time:.2f}s) "
                    f"[save_clips={save_clips}]")
         
+        # Determine whether annotated frames should be persisted
+        save_frames = save_clips and settings.save_annotated_frames
+
         # Create a monitor instance with or without run directory
         if run_dir and save_clips:
             # Use provided run directory for saving clips
             monitor = LocopilotActivityMonitor(
                 video_path=video_path,
                 output_dir=output_dir,
-                save_annotated_frames=False,
-                frame_save_interval=1,
+                save_annotated_frames=save_frames,
+                frame_save_interval=settings.frame_save_interval,
                 sample_fps=sample_fps,
                 run_dir=run_dir,  # Use shared run directory
                 create_run_dir=False  # Don't create new directory
@@ -282,7 +287,7 @@ def process_frame_range(
                 video_path=video_path,
                 output_dir=output_dir,
                 save_annotated_frames=False,
-                frame_save_interval=1,
+                frame_save_interval=settings.frame_save_interval,
                 sample_fps=sample_fps,
                 run_dir=None,
                 create_run_dir=False

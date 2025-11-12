@@ -11,6 +11,7 @@ from datetime import datetime, timedelta
 
 from ..utils.logger import get_logger
 from ..models.activity_models import ActivityTypeEnum
+from ..utils.config import get_settings
 
 
 logger = get_logger(__name__)
@@ -53,6 +54,7 @@ class ActivityDetectionService:
             'group_detected': 'more_than_2_deduplicated_persons'
         }
         
+        self.settings = get_settings()
         logger.info("Activity detection service initialized (mock mode)")
     
     def detect_activities_mock(
@@ -238,8 +240,8 @@ class ActivityDetectionService:
             monitor = LocopilotActivityMonitor(
                 video_path=video_path,
                 output_dir=output_dir,
-                save_annotated_frames=False,
-                frame_save_interval=1,
+                save_annotated_frames=self.settings.save_annotated_frames,
+                frame_save_interval=self.settings.frame_save_interval,
                 sample_fps=sample_fps,
                 run_dir=run_dir,
                 create_run_dir=False  # Don't create new directory
@@ -249,8 +251,8 @@ class ActivityDetectionService:
             monitor = LocopilotActivityMonitor(
                 video_path=video_path,
                 output_dir=output_dir,
-                save_annotated_frames=False,
-                frame_save_interval=1,
+                save_annotated_frames=self.settings.save_annotated_frames,
+                frame_save_interval=self.settings.frame_save_interval,
                 sample_fps=sample_fps
             )
         
