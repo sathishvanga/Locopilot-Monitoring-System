@@ -61,6 +61,7 @@ class ActivityDetectionService:
         self,
         video_path: str,
         trip_id: str,
+        crew_members: Dict[str, Dict[str, str]] = None,
         crew_name: str = "John Doe",
         crew_id: str = "C-001",
         crew_role: int = 1
@@ -209,11 +210,12 @@ class ActivityDetectionService:
         self,
         video_path: str,
         trip_id: str,
-        crew_name: str,
-        crew_id: str,
-        crew_role: int,
-        output_dir: str,
-        sample_fps: float,
+        crew_members: Dict[str, Dict[str, str]] = None,
+        crew_name: str = "John Doe",
+        crew_id: str = "C-001",
+        crew_role: int = 1,
+        output_dir: str = "locopilot_evidence",
+        sample_fps: float = 1.0,
         run_dir: str = None
     ) -> List[Dict[str, Any]]:
         """
@@ -262,6 +264,10 @@ class ActivityDetectionService:
         monitor.crew_id = crew_id
         monitor.crew_role = crew_role
         
+        # Set crew members mapping if provided
+        if crew_members:
+            monitor.crew_members = crew_members
+        
         # Process video
         monitor.process_video()
         
@@ -273,11 +279,12 @@ class ActivityDetectionService:
         self,
         video_path: str,
         trip_id: str,
-        crew_name: str,
-        crew_id: str,
-        crew_role: int,
-        output_dir: str,
-        sample_fps: float,
+        crew_members: Dict[str, Dict[str, str]] = None,
+        crew_name: str = "John Doe",
+        crew_id: str = "C-001",
+        crew_role: int = 1,
+        output_dir: str = "locopilot_evidence",
+        sample_fps: float = 1.0,
         run_dir: str = None,
         save_clips: bool = True
     ) -> List[Dict[str, Any]]:
@@ -326,6 +333,7 @@ class ActivityDetectionService:
             activities = orchestrator.process_video_parallel(
                 video_path=video_path,
                 trip_id=trip_id,
+                crew_members=crew_members,
                 crew_name=crew_name,
                 crew_id=crew_id,
                 crew_role=crew_role,

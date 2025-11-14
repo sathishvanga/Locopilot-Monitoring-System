@@ -37,9 +37,10 @@ video_processing_service = VideoProcessingService()
     The endpoint accepts:
     - video: Video file (multipart/form-data)
     - tripId: Unique trip identifier (required)
-    - crewName: Crew member name (optional, default: "John Doe")
-    - crewId: Crew member ID (optional, default: "C-001")
-    - crewRole: Crew role (optional, default: 1)
+    - lpCrewName: LP crew member name (required)
+    - lpCrewId: LP crew member ID (required)
+    - alpCrewName: ALP crew member name (optional)
+    - alpCrewId: ALP crew member ID (optional)
     - useMockDetection: Use mock detection for testing (optional, default: false)
     - useMultiprocessing: Enable parallel processing (optional, default: from config)
     - saveClips: Generate video clips and images (optional, default: true)
@@ -54,9 +55,10 @@ async def process_video(
     background_tasks: BackgroundTasks,
     video: UploadFile = File(..., description="Video file to process"),
     tripId: str = Form(..., description="Unique trip identifier"),
-    crewName: Optional[str] = Form(default="John Doe", description="Crew member name"),
-    crewId: Optional[str] = Form(default="C-001", description="Crew member ID"),
-    crewRole: Optional[int] = Form(default=1, description="Crew role (1 = primary pilot)"),
+    lpCrewName: str = Form(..., description="Loco Pilot crew member name"),
+    lpCrewId: str = Form(..., description="Loco Pilot crew member ID"),
+    alpCrewName: Optional[str] = Form(default=None, description="Assistant Loco Pilot crew member name"),
+    alpCrewId: Optional[str] = Form(default=None, description="Assistant Loco Pilot crew member ID"),
     useMockDetection: Optional[bool] = Form(default=False, description="Use mock detection for testing"),
     useMultiprocessing: Optional[bool] = Form(default=None, description="Enable multiprocessing (default: from config)"),
     saveClips: Optional[bool] = Form(default=True, description="Generate video clips and images (default: true)")
@@ -78,6 +80,39 @@ async def process_video(
                 status_code=400,
                 detail="tripId is required and cannot be empty"
             )
+        
+        # Validate LP crew (required)
+        if not lpCrewName or not lpCrewName.strip():
+            raise HTTPException(
+                status_code=400,
+                detail="lpCrewName is required and cannot be empty"
+            )
+        if not lpCrewId or not lpCrewId.strip():
+            raise HTTPException(
+                status_code=400,
+                detail="lpCrewId is required and cannot be empty"
+            )
+        
+        # Build crew members dictionary
+        crew_members = {}
+        
+        # Add LP crew (required)
+        crew_members['LP'] = {
+            'name': lpCrewName.strip(),
+            'id': lpCrewId.strip(),
+            'role': 'LP'
+        }
+        logger.info(f"LP Crew: {lpCrewName} ({lpCrewId})")
+        
+        # Add ALP crew if provided
+        if alpCrewName and alpCrewId:
+            if alpCrewName.strip() and alpCrewId.strip():
+                crew_members['ALP'] = {
+                    'name': alpCrewName.strip(),
+                    'id': alpCrewId.strip(),
+                    'role': 'ALP'
+                }
+                logger.info(f"ALP Crew: {alpCrewName} ({alpCrewId})")
         
         # Read video content
         video_content = await video.read()
@@ -111,9 +146,10 @@ async def process_video(
         result = video_processing_service.process_video(
             video_path=video_path,
             trip_id=tripId,
-            crew_name=crewName,
-            crew_id=crewId,
-            crew_role=crewRole,
+            crew_members=crew_members,  # Pass crew members dict
+            crew_name=lpCrewName,  # Use LP as default
+            crew_id=lpCrewId,  # Use LP as default
+            crew_role=1,  # LP role
             use_mock_detection=useMockDetection,
             use_multiprocessing=use_mp,
             save_clips=saveClips

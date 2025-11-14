@@ -228,6 +228,7 @@ def process_frame_range(
     config_dict: Dict[str, Any],
     sample_fps: float,
     trip_id: str,
+    crew_members: Dict[str, Dict[str, str]],
     crew_name: str,
     crew_id: str,
     crew_role: int,
@@ -267,15 +268,16 @@ def process_frame_range(
                    f"[save_clips={save_clips}]")
         
         # Determine whether annotated frames should be persisted
+        # Frames are saved when clips are enabled AND save_annotated_frames config is True
         save_frames = save_clips and settings.save_annotated_frames
 
         # Create a monitor instance with or without run directory
         if run_dir and save_clips:
-            # Use provided run directory for saving clips
+            # Use provided run directory for saving clips and frames
             monitor = LocopilotActivityMonitor(
                 video_path=video_path,
                 output_dir=output_dir,
-                save_annotated_frames=save_frames,
+                save_annotated_frames=save_frames,  # Enable frame saving if configured
                 frame_save_interval=settings.frame_save_interval,
                 sample_fps=sample_fps,
                 run_dir=run_dir,  # Use shared run directory
@@ -286,7 +288,7 @@ def process_frame_range(
             monitor = LocopilotActivityMonitor(
                 video_path=video_path,
                 output_dir=output_dir,
-                save_annotated_frames=False,
+                save_annotated_frames=False,  # Disable frame saving
                 frame_save_interval=settings.frame_save_interval,
                 sample_fps=sample_fps,
                 run_dir=None,
@@ -298,6 +300,10 @@ def process_frame_range(
         monitor.crew_name = crew_name
         monitor.crew_id = crew_id
         monitor.crew_role = crew_role
+        
+        # Set crew members mapping if provided
+        if crew_members:
+            monitor.crew_members = crew_members
         
         # Process the assigned frame range with optional clip saving
         activities = monitor.process_video_range(
@@ -430,11 +436,12 @@ class VideoMultiprocessingOrchestrator:
         self,
         video_path: str,
         trip_id: str,
-        crew_name: str,
-        crew_id: str,
-        crew_role: int,
-        sample_fps: float,
-        run_dir: str,
+        crew_members: Dict[str, Dict[str, str]] = None,
+        crew_name: str = "John Doe",
+        crew_id: str = "C-001",
+        crew_role: int = 1,
+        sample_fps: float = 1.0,
+        run_dir: str = None,
         save_clips: bool = True
     ) -> List[Dict[str, Any]]:
         """
@@ -497,6 +504,7 @@ class VideoMultiprocessingOrchestrator:
                 config_dict=config_dict,
                 sample_fps=sample_fps,
                 trip_id=trip_id,
+                crew_members=crew_members,
                 crew_name=crew_name,
                 crew_id=crew_id,
                 crew_role=crew_role,

@@ -7,6 +7,40 @@ from pydantic import BaseModel, Field, validator
 from .activity_models import ActivityModel
 
 
+class CrewMember(BaseModel):
+    """
+    Model for individual crew member information
+    """
+    
+    name: str = Field(
+        ...,
+        description="Crew member name",
+        min_length=1,
+        max_length=100
+    )
+    id: str = Field(
+        ...,
+        description="Unique crew member ID",
+        min_length=1,
+        max_length=50
+    )
+    role: str = Field(
+        ...,
+        description="Crew role (LP or ALP)",
+        pattern="^(LP|ALP)$"
+    )
+    
+    class Config:
+        """Pydantic configuration"""
+        json_schema_extra = {
+            "example": {
+                "name": "John Doe",
+                "id": "LP-001",
+                "role": "LP"
+            }
+        }
+
+
 class VideoUploadRequest(BaseModel):
     """
     Request model for video upload and processing
@@ -21,19 +55,13 @@ class VideoUploadRequest(BaseModel):
         min_length=1,
         max_length=100
     )
-    crewName: Optional[str] = Field(
-        default="John Doe",
-        description="Crew member name"
+    lpCrew: Optional[CrewMember] = Field(
+        None,
+        description="Loco Pilot crew member information"
     )
-    crewId: Optional[str] = Field(
-        default="C-001",
-        description="Crew member ID"
-    )
-    crewRole: Optional[int] = Field(
-        default=1,
-        description="Crew role (1 = primary loco pilot)",
-        ge=1,
-        le=10
+    alpCrew: Optional[CrewMember] = Field(
+        None,
+        description="Assistant Loco Pilot crew member information"
     )
     
     @validator('tripId')
@@ -48,9 +76,16 @@ class VideoUploadRequest(BaseModel):
         json_schema_extra = {
             "example": {
                 "tripId": "TRIP-20251110-001",
-                "crewName": "John Doe",
-                "crewId": "C-001",
-                "crewRole": 1
+                "lpCrew": {
+                    "name": "John Doe",
+                    "id": "LP-001",
+                    "role": "LP"
+                },
+                "alpCrew": {
+                    "name": "Jane Smith",
+                    "id": "ALP-002",
+                    "role": "ALP"
+                }
             }
         }
 

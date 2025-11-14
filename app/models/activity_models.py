@@ -3,7 +3,7 @@ Activity models - Domain models for activity detection and monitoring
 """
 
 from enum import IntEnum
-from typing import Optional, Dict
+from typing import Optional, Dict, List
 from pydantic import BaseModel, Field
 
 
@@ -23,6 +23,15 @@ class EvidenceModel(BaseModel):
     rule: str = Field(..., description="Evidence rule that triggered the activity")
 
 
+class PersonRoleModel(BaseModel):
+    """Person role information with LP/ALP identification"""
+    personIndex: int = Field(..., description="Index of the person (0, 1, 2, ...)")
+    role: str = Field(..., description="Role code (LP, ALP, SUPERVISOR, TRAINEE, VISITOR)")
+    roleName: str = Field(..., description="Human-readable role name")
+    lpScore: int = Field(..., description="Loco Pilot score based on detected objects")
+    alpScore: int = Field(..., description="Assistant Loco Pilot score based on detected objects")
+
+
 class ActivityModel(BaseModel):
     """
     Activity detection model matching the existing activities.json format
@@ -39,9 +48,10 @@ class ActivityModel(BaseModel):
     fileDuration: str = Field(..., description="Total video duration (HH:MM:SS)")
     activityStartTime: str = Field(..., description="Activity start time in seconds")
     activityEndTime: str = Field(..., description="Activity end time in seconds")
-    crewName: str = Field(..., description="Crew member name")
-    crewId: str = Field(..., description="Crew member ID")
-    crewRole: int = Field(..., description="Crew role (1 = primary loco pilot)")
+    crewName: str = Field(..., description="Crew member name who performed the activity")
+    crewId: str = Field(..., description="Crew member ID who performed the activity")
+    crewRole: int = Field(..., description="Crew role (1 = LP, 2 = ALP)")
+    performingRole: Optional[str] = Field(None, description="Role of crew member who performed activity (LP or ALP)")
     date: str = Field(..., description="Date of activity (YYYY-MM-DD)")
     time: str = Field(..., description="Time of activity (HH:MM:SS)")
     filename: str = Field(..., description="Source video filename")
@@ -49,6 +59,7 @@ class ActivityModel(BaseModel):
     evidence: EvidenceModel = Field(..., description="Evidence details")
     activityImage: str = Field(..., description="Activity screenshot filename")
     activityClip: str = Field(..., description="Activity video clip filename")
+    personRoles: Optional[List[PersonRoleModel]] = Field(None, description="List of person roles identified (LP, ALP, etc.)")
     
     class Config:
         """Pydantic configuration"""
@@ -63,15 +74,25 @@ class ActivityModel(BaseModel):
                 "activityStartTime": "125.50",
                 "activityEndTime": "132.75",
                 "crewName": "John Doe",
-                "crewId": "C-001",
+                "crewId": "LP-001",
                 "crewRole": 1,
+                "performingRole": "LP",
                 "date": "2025-11-10",
                 "time": "14:30:45",
                 "filename": "latest.mp4",
                 "peopleCount": 1,
                 "evidence": {"rule": "phone_in_hand"},
                 "activityImage": "latest_cell_phone_frame00001250_001_activity.jpg",
-                "activityClip": "latest_cell_phone_frame00001250_001_clip.mp4"
+                "activityClip": "latest_cell_phone_frame00001250_001_clip.mp4",
+                "personRoles": [
+                    {
+                        "personIndex": 0,
+                        "role": "LP",
+                        "roleName": "Loco Pilot",
+                        "lpScore": 5,
+                        "alpScore": 1
+                    }
+                ]
             }
         }
 

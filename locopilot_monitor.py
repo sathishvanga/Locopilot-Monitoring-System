@@ -195,6 +195,9 @@ class LocopilotActivityMonitor:
         self.crew_id = "C-001"
         self.crew_role = 1  # 1 for primary loco pilot
         
+        # Crew members mapping: role (LP/ALP) -> {name, id, role}
+        self.crew_members = {}  # Will be populated from API input
+        
         # Store all activities for final JSON array output
         self.all_activities = []
     
@@ -624,13 +627,14 @@ class LocopilotActivityMonitor:
         
         return detections
     
-    def draw_bounding_boxes(self, frame, detections, show_roi_boxes=True):
+    def draw_bounding_boxes(self, frame, detections, show_roi_boxes=True, person_roles=None):
         """Draw bounding boxes on frame for detected objects and ROI regions.
         
         Args:
             frame: Input frame
             detections: Dictionary with detection results
             show_roi_boxes: Whether to show ROI boxes (default True)
+            person_roles: Dictionary of person roles (optional)
         """
         annotated_frame = frame.copy()
         
@@ -639,7 +643,12 @@ class LocopilotActivityMonitor:
             'cell_phone': (0, 0, 255),
             'book': (255, 0, 0),
             'backpack': (0, 255, 255),
-            'deduplicated_person': (0, 255, 0)  # Green for deduplicated persons
+            'deduplicated_person': (0, 255, 0),  # Green for deduplicated persons
+            'LP': (0, 255, 255),  # Yellow for Loco Pilot
+            'ALP': (255, 165, 0),  # Orange for Assistant Loco Pilot
+            'SUPERVISOR': (128, 0, 128),  # Purple for Supervisor
+            'TRAINEE': (0, 255, 255),  # Cyan for Trainee
+            'VISITOR': (128, 128, 128)  # Gray for Visitor
         }
         
         # Draw ROI boxes (semi-transparent cyan boxes)
@@ -708,22 +717,40 @@ class LocopilotActivityMonitor:
                            cv2.FONT_HERSHEY_SIMPLEX, 
                            0.5, (255, 255, 255), 2)
         
-        # Draw deduplicated person boxes (with thicker border and count label)
+        # Draw deduplicated person boxes (with thicker border and role labels)
         if 'deduplicated_person' in detections and len(detections['deduplicated_person']) > 0:
             person_count = len(detections['deduplicated_person'])
             for idx, bbox in enumerate(detections['deduplicated_person']):
                 x1, y1, x2, y2 = map(int, bbox)
-                # Thicker border for deduplicated persons
-                cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), (0, 255, 0), 3)
                 
-                label = f"Person {idx+1}"
+                # Get role information if available
+                if person_roles and idx in person_roles:
+                    role_info = person_roles[idx]
+                    role = role_info['role']
+                    role_name = role_info['role_name']
+                    lp_score = role_info['lp_score']
+                    alp_score = role_info['alp_score']
+                    
+                    # Use role-specific color
+                    box_color = colors.get(role, (0, 255, 0))
+                    
+                    # Create detailed label
+                    label = f"{role_name} (LP:{lp_score}/ALP:{alp_score})"
+                else:
+                    # Default label if no role info
+                    box_color = (0, 255, 0)
+                    label = f"Person {idx+1}"
+                
+                # Thicker border for deduplicated persons
+                cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), box_color, 3)
+                
                 label_size, _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)
                 label_w, label_h = label_size
                 
                 cv2.rectangle(annotated_frame, 
                             (x1, y1 - label_h - 10), 
                             (x1 + label_w + 10, y1), 
-                            (0, 255, 0), -1)
+                            box_color, -1)
                 
                 cv2.putText(annotated_frame, label, 
                            (x1 + 5, y1 - 5), 
@@ -742,6 +769,19 @@ class LocopilotActivityMonitor:
                        (frame.shape[1] - 400, 30), 
                        cv2.FONT_HERSHEY_SIMPLEX, 
                        0.8, count_color, 2, cv2.LINE_AA)
+            
+            # Add role summary if available
+            if person_roles:
+                y_offset = 60
+                for idx in sorted(person_roles.keys()):
+                    role_info = person_roles[idx]
+                    role_text = f"{role_info['role_name']}: LP={role_info['lp_score']}, ALP={role_info['alp_score']}"
+                    role_color = colors.get(role_info['role'], (255, 255, 255))
+                    cv2.putText(annotated_frame, role_text, 
+                               (frame.shape[1] - 400, y_offset), 
+                               cv2.FONT_HERSHEY_SIMPLEX, 
+                               0.6, role_color, 2, cv2.LINE_AA)
+                    y_offset += 25
         
         return annotated_frame
     
@@ -952,8 +992,241 @@ class LocopilotActivityMonitor:
         
         return keep_boxes
     
-    def start_activity(self, activity_name, timestamp, fps, frame_count):
-        """Start tracking an activity"""
+    def identify_person_roles(self, frame, person_boxes, detections):
+        """Identify LP (Loco Pilot) and ALP (Assistant Loco Pilot) based on objects near each person.
+        
+        Logic:
+        - For each person, detect objects in front using YOLO
+        - lp_score = monitors + keyboards + cell_phone + panel-like boxes
+        - alp_score = book + empty_desk (approximated by lack of control objects)
+        - LP = person with higher lp_score
+        - ALP = the other person
+        - Third person = "Supervisor", "Trainee", or "Visitor"
+        
+        Args:
+            frame: Current video frame
+            person_boxes: List of de-duplicated person bounding boxes [[x1, y1, x2, y2], ...]
+            detections: Dictionary of all detected objects from YOLO
+            
+        Returns:
+            Dictionary mapping person index to role info: {
+                0: {'role': 'LP', 'lp_score': 5, 'alp_score': 1, 'bbox': [x1, y1, x2, y2]},
+                1: {'role': 'ALP', 'lp_score': 2, 'alp_score': 4, 'bbox': [x1, y1, x2, y2]},
+                ...
+            }
+        """
+        if len(person_boxes) == 0:
+            return {}
+        
+        # Run full-frame YOLO detection to find control objects
+        # Look for: tv/monitor, keyboard, mouse, laptop, book, backpack, cell phone
+        yolo_results = self.yolo_model(frame, verbose=False, conf=0.3)
+        
+        # Collect all detected objects with their class names
+        all_objects = []
+        for r in yolo_results:
+            boxes = r.boxes
+            for box in boxes:
+                cls = int(box.cls[0])
+                conf = float(box.conf[0])
+                xyxy = box.xyxy[0].cpu().numpy()
+                class_name = self.yolo_model.names[cls]
+                
+                all_objects.append({
+                    'class': class_name,
+                    'confidence': conf,
+                    'bbox': [float(xyxy[0]), float(xyxy[1]), float(xyxy[2]), float(xyxy[3])]
+                })
+        
+        # For each person, calculate scores based on nearby objects
+        person_scores = []
+        
+        for person_idx, person_bbox in enumerate(person_boxes):
+            px1, py1, px2, py2 = person_bbox
+            person_center_x = (px1 + px2) / 2
+            person_width = px2 - px1
+            person_height = py2 - py1
+            
+            # Define "in front of person" as region ahead of them
+            # Assuming people face the camera/controls, "in front" is area below person's upper body
+            # and within reasonable horizontal distance
+            search_margin = person_width * 1.5  # Search 1.5x person width on each side
+            search_x1 = person_center_x - search_margin
+            search_x2 = person_center_x + search_margin
+            search_y1 = py1 + (person_height * 0.3)  # Start from chest level
+            search_y2 = py2 + (person_height * 0.5)  # Extend below person (desk/console area)
+            
+            # Count relevant objects in search region
+            lp_objects = {
+                'tv': 0,
+                'laptop': 0, 
+                'keyboard': 0,
+                'mouse': 0,
+                'cell phone': 0,
+                'remote': 0  # Can act as control panel
+            }
+            
+            alp_objects = {
+                'book': 0,
+                'notebook': 0,
+                'backpack': 0
+            }
+            
+            nearby_objects = []
+            
+            for obj in all_objects:
+                obj_bbox = obj['bbox']
+                ox1, oy1, ox2, oy2 = obj_bbox
+                obj_center_x = (ox1 + ox2) / 2
+                obj_center_y = (oy1 + oy2) / 2
+                
+                # Check if object is in the search region
+                if (search_x1 <= obj_center_x <= search_x2 and 
+                    search_y1 <= obj_center_y <= search_y2):
+                    nearby_objects.append(obj)
+                    
+                    # Count LP-related objects
+                    obj_class = obj['class']
+                    if obj_class in lp_objects:
+                        lp_objects[obj_class] += 1
+                    
+                    # Count ALP-related objects
+                    if obj_class in alp_objects:
+                        alp_objects[obj_class] += 1
+            
+            # Calculate scores
+            lp_score = (
+                lp_objects['tv'] * 3 +  # Monitors are strong indicators
+                lp_objects['laptop'] * 2 +
+                lp_objects['keyboard'] * 2 +
+                lp_objects['mouse'] * 1 +
+                lp_objects['cell phone'] * 1 +
+                lp_objects['remote'] * 2  # Control panels/remotes
+            )
+            
+            alp_score = (
+                alp_objects['book'] * 3 +  # Books/logs are strong indicators
+                alp_objects['notebook'] * 3 +
+                alp_objects['backpack'] * 1
+            )
+            
+            # If no LP objects detected, consider "empty desk" as ALP indicator
+            if lp_score == 0 and alp_score == 0:
+                alp_score = 1  # Slight preference for ALP if nothing detected
+            
+            person_scores.append({
+                'person_idx': person_idx,
+                'bbox': person_bbox,
+                'lp_score': lp_score,
+                'alp_score': alp_score,
+                'lp_objects': lp_objects,
+                'alp_objects': alp_objects,
+                'nearby_objects': nearby_objects
+            })
+        
+        # Assign roles based on scores
+        person_roles = {}
+        
+        if len(person_scores) == 1:
+            # Only one person - default to LP
+            person_roles[0] = {
+                'role': 'LP',
+                'role_name': 'Loco Pilot',
+                'lp_score': person_scores[0]['lp_score'],
+                'alp_score': person_scores[0]['alp_score'],
+                'bbox': person_scores[0]['bbox'],
+                'objects': person_scores[0]['nearby_objects']
+            }
+        
+        elif len(person_scores) == 2:
+            # Two people - assign LP and ALP
+            # Sort by lp_score (descending)
+            sorted_persons = sorted(person_scores, key=lambda x: x['lp_score'], reverse=True)
+            
+            # Person with higher lp_score is LP
+            person_roles[sorted_persons[0]['person_idx']] = {
+                'role': 'LP',
+                'role_name': 'Loco Pilot',
+                'lp_score': sorted_persons[0]['lp_score'],
+                'alp_score': sorted_persons[0]['alp_score'],
+                'bbox': sorted_persons[0]['bbox'],
+                'objects': sorted_persons[0]['nearby_objects']
+            }
+            
+            # Other person is ALP
+            person_roles[sorted_persons[1]['person_idx']] = {
+                'role': 'ALP',
+                'role_name': 'Assistant Loco Pilot',
+                'lp_score': sorted_persons[1]['lp_score'],
+                'alp_score': sorted_persons[1]['alp_score'],
+                'bbox': sorted_persons[1]['bbox'],
+                'objects': sorted_persons[1]['nearby_objects']
+            }
+        
+        else:
+            # Three or more people
+            # Sort by lp_score (descending)
+            sorted_persons = sorted(person_scores, key=lambda x: x['lp_score'], reverse=True)
+            
+            # First person is LP
+            person_roles[sorted_persons[0]['person_idx']] = {
+                'role': 'LP',
+                'role_name': 'Loco Pilot',
+                'lp_score': sorted_persons[0]['lp_score'],
+                'alp_score': sorted_persons[0]['alp_score'],
+                'bbox': sorted_persons[0]['bbox'],
+                'objects': sorted_persons[0]['nearby_objects']
+            }
+            
+            # Second person is ALP
+            person_roles[sorted_persons[1]['person_idx']] = {
+                'role': 'ALP',
+                'role_name': 'Assistant Loco Pilot',
+                'lp_score': sorted_persons[1]['lp_score'],
+                'alp_score': sorted_persons[1]['alp_score'],
+                'bbox': sorted_persons[1]['bbox'],
+                'objects': sorted_persons[1]['nearby_objects']
+            }
+            
+            # Additional people - assign contextual roles
+            for i in range(2, len(sorted_persons)):
+                person_idx = sorted_persons[i]['person_idx']
+                
+                # Determine role based on context
+                # If they have books/backpacks, likely trainee
+                # If they have control objects, likely supervisor
+                # Otherwise, visitor
+                if sorted_persons[i]['alp_score'] > 0:
+                    role = 'TRAINEE'
+                    role_name = 'Trainee'
+                elif sorted_persons[i]['lp_score'] > 2:
+                    role = 'SUPERVISOR'
+                    role_name = 'Supervisor'
+                else:
+                    role = 'VISITOR'
+                    role_name = 'Visitor'
+                
+                person_roles[person_idx] = {
+                    'role': role,
+                    'role_name': role_name,
+                    'lp_score': sorted_persons[i]['lp_score'],
+                    'alp_score': sorted_persons[i]['alp_score'],
+                    'bbox': sorted_persons[i]['bbox'],
+                    'objects': sorted_persons[i]['nearby_objects']
+                }
+        
+        return person_roles
+    
+    def start_activity(self, activity_name, timestamp, fps, frame_count, person_roles=None):
+        """Start tracking an activity
+        
+        Args:
+            activity_name: Name of the activity
+            timestamp: Timestamp when activity started
+            fps: Frames per second
+            frame_count: Frame count when activity started
+            person_roles: Dictionary of person roles (optional)
+        """
         if not self.activities[activity_name]['active']:
             self.activities[activity_name]['active'] = True
             self.activities[activity_name]['start_time'] = timestamp
@@ -961,6 +1234,7 @@ class LocopilotActivityMonitor:
             self.activities[activity_name]['last_frame_count'] = frame_count
             self.activities[activity_name]['frames'] = list(self.frame_buffer)
             self.activities[activity_name]['duration'] = 0
+            self.activities[activity_name]['person_roles'] = person_roles if person_roles else {}
             print(f"[{timestamp}] Activity started: {activity_name}")
     
     def end_activity(self, activity_name, timestamp, fps, frame_count, people_count=1, save_clips=True):
@@ -1044,6 +1318,31 @@ class LocopilotActivityMonitor:
             current_date = now.strftime("%Y-%m-%d")
             current_time = now.strftime("%H:%M:%S")
             
+            # Determine which crew member performed the activity
+            # Default to LP crew info
+            activity_crew_name = self.crew_name
+            activity_crew_id = self.crew_id
+            activity_crew_role = self.crew_role
+            performing_role = 'LP'  # Default to LP
+            
+            # If we have person_roles identified, determine who performed the activity
+            if 'person_roles' in activity and activity['person_roles'] and self.crew_members:
+                # For now, assume the activity was performed by the first person detected
+                # In future, you could use more sophisticated logic (e.g., hand detection, object proximity)
+                first_person_idx = min(activity['person_roles'].keys())
+                first_person_role = activity['person_roles'][first_person_idx]['role']
+                performing_role = first_person_role
+                
+                # Get crew info from crew_members mapping
+                if first_person_role in self.crew_members:
+                    activity_crew_name = self.crew_members[first_person_role]['name']
+                    activity_crew_id = self.crew_members[first_person_role]['id']
+                    # Map role string to numeric value: LP=1, ALP=2
+                    activity_crew_role = 1 if first_person_role == 'LP' else 2
+                else:
+                    # If role not in crew_members, default to LP
+                    performing_role = 'LP'
+            
             # Create JSON data in the required format
             # Store FULL PATHS for clips and images
             json_data = {
@@ -1055,17 +1354,32 @@ class LocopilotActivityMonitor:
                 "fileDuration": video_duration_formatted,
                 "activityStartTime": f"{activity_start_seconds:.2f}",
                 "activityEndTime": f"{activity_end_seconds:.2f}",
-                "crewName": self.crew_name,
-                "crewId": self.crew_id,
-                "crewRole": self.crew_role,
+                "crewName": activity_crew_name,
+                "crewId": activity_crew_id,
+                "crewRole": activity_crew_role,
+                "performingRole": performing_role,  # LP or ALP
                 "date": current_date,
                 "time": current_time,
                 "filename": video_filename,
-                "peopleCount": people_count,
+                "peopleCount": len(activity.get('person_roles', {})) if activity.get('person_roles') else people_count,
                 "evidence": {"rule": self.evidence_rules[activity_name]},
                 "activityImage": os.path.abspath(image_path) if self.evidence_clips_dir else image_filename,
                 "activityClip": os.path.abspath(clip_path) if self.evidence_clips_dir else clip_filename
             }
+            
+            # Add person role information if available
+            if 'person_roles' in activity and activity['person_roles']:
+                person_roles_list = []
+                for person_idx in sorted(activity['person_roles'].keys()):
+                    role_info = activity['person_roles'][person_idx]
+                    person_roles_list.append({
+                        "personIndex": person_idx,
+                        "role": role_info['role'],
+                        "roleName": role_info['role_name'],
+                        "lpScore": role_info['lp_score'],
+                        "alpScore": role_info['alp_score']
+                    })
+                json_data["personRoles"] = person_roles_list
             
             # Add to all activities list
             self.all_activities.append(json_data)
@@ -1316,6 +1630,8 @@ class LocopilotActivityMonitor:
                 
                 # NEW: Check for group detection (more than 2 people)
                 group_detected_flag = False
+                person_roles = {}  # Store person role information
+                
                 if len(detections['person']) > 0:
                     # De-duplicate person boxes to get accurate count
                     deduplicated_persons = self.deduplicate_person_boxes(detections['person'], iou_threshold=0.3)
@@ -1324,6 +1640,16 @@ class LocopilotActivityMonitor:
                     # Store deduplicated boxes back in detections for visualization
                     detections['deduplicated_person'] = deduplicated_persons
                     
+                    # Identify person roles (LP, ALP, etc.)
+                    person_roles = self.identify_person_roles(frame, deduplicated_persons, detections)
+                    
+                    # Log role identification (only once per detection cycle)
+                    if self.consecutive_detections['group_detected'] == 0 and person_roles:
+                        print(f"[{timestamp}] Person roles identified:")
+                        for person_idx in sorted(person_roles.keys()):
+                            role_info = person_roles[person_idx]
+                            print(f"  Person {person_idx+1}: {role_info['role_name']} (LP score: {role_info['lp_score']}, ALP score: {role_info['alp_score']})")
+                    
                     if deduplicated_count > 2:
                         group_detected_flag = True
                         if self.consecutive_detections['group_detected'] == 0:
@@ -1331,6 +1657,7 @@ class LocopilotActivityMonitor:
                 else:
                     # No person detected at all
                     detections['deduplicated_person'] = []
+                    person_roles = {}
                 
                 # HEURISTIC: Detect "writing/reading posture" even if YOLO misses objects
                 holding_object_heuristic = False
@@ -1399,27 +1726,36 @@ class LocopilotActivityMonitor:
                 
                 # Save annotated frames periodically if enabled (AFTER all detections)
                 if (
-                    self.save_annotated_frames
-                    and self.frames_dir
+                    self.save_annotated_frames 
+                    and self.frames_dir is not None
                     and sample_idx % self.frame_save_interval == 0
                 ):
-                    annotated_frame = self.draw_bounding_boxes(
-                        frame, detections, show_roi_boxes=True
-                    )
-                    annotated_frame = self.draw_mediapipe_outputs(
-                        annotated_frame,
-                        pose_results,
-                        face_results,
-                        ear_value,
-                        self.eye_closure_duration,
-                        pose_sleep_info,
-                    )
-                    frame_filename = f"frame_{frame_idx:08d}.jpg"
-                    frame_path = os.path.join(self.frames_dir, frame_filename)
-                    if not cv2.imwrite(frame_path, annotated_frame):
-                        print(
-                            f"[{timestamp}] Warning: Failed to save annotated frame to {frame_path}"
+                    try:
+                        # Create annotated frame with all detections
+                        annotated_frame = self.draw_bounding_boxes(
+                            frame, detections, show_roi_boxes=True, person_roles=person_roles
                         )
+                        annotated_frame = self.draw_mediapipe_outputs(
+                            annotated_frame,
+                            pose_results,
+                            face_results,
+                            ear_value,
+                            self.eye_closure_duration,
+                            pose_sleep_info,
+                        )
+                        
+                        # Save frame with unique filename
+                        frame_filename = f"frame_{frame_idx:08d}.jpg"
+                        frame_path = os.path.join(self.frames_dir, frame_filename)
+                        
+                        # Ensure directory exists (for multiprocessing safety)
+                        os.makedirs(self.frames_dir, exist_ok=True)
+                        
+                        # Save with high quality
+                        cv2.imwrite(frame_path, annotated_frame, [cv2.IMWRITE_JPEG_QUALITY, 95])
+                            
+                    except Exception as e:
+                        print(f"[{timestamp}] Error saving frame {frame_idx}: {e}")
                 
                 # Update activity states with temporal filtering
                 activities_map = {
@@ -1443,13 +1779,16 @@ class LocopilotActivityMonitor:
                         if self.consecutive_detections[activity_name] >= required_consecutive:
                             # Start activity if not already active
                             if not self.activities[activity_name]['active']:
-                                self.start_activity(activity_name, timestamp, fps, frame_idx)
+                                self.start_activity(activity_name, timestamp, fps, frame_idx, person_roles=person_roles)
                             
                             # Continue recording frames ONLY when activity is actively detected
                             if self.activities[activity_name]['active']:
                                 self.activities[activity_name]['frames'].append(frame.copy())
                                 self.activities[activity_name]['last_frame_count'] = frame_idx
                                 self.activities[activity_name]['last_detected_frame'] = frame_idx  # Track last actual detection
+                                # Update person roles (in case they change during activity)
+                                if person_roles:
+                                    self.activities[activity_name]['person_roles'] = person_roles
                     else:
                         # Activity not detected - use grace period before resetting
                         if self.consecutive_detections[activity_name] > 0 or self.activities[activity_name]['active']:
@@ -1688,15 +2027,21 @@ class LocopilotActivityMonitor:
                 
                 # Check for group detection
                 group_detected_flag = False
+                person_roles = {}  # Store person role information
+                
                 if len(detections['person']) > 0:
                     deduplicated_persons = self.deduplicate_person_boxes(detections['person'], iou_threshold=0.3)
                     deduplicated_count = len(deduplicated_persons)
                     detections['deduplicated_person'] = deduplicated_persons
                     
+                    # Identify person roles (LP, ALP, etc.)
+                    person_roles = self.identify_person_roles(frame, deduplicated_persons, detections)
+                    
                     if deduplicated_count > 2:
                         group_detected_flag = True
                 else:
                     detections['deduplicated_person'] = []
+                    person_roles = {}
                 
                 # Writing/reading posture heuristics
                 holding_object_heuristic = False
@@ -1739,6 +2084,39 @@ class LocopilotActivityMonitor:
                     self.pose_sleep_start = None
                     self.pose_sleep_duration = 0
                 
+                # Save annotated frames periodically if enabled (in process_video_range for multiprocessing)
+                if (
+                    self.save_annotated_frames 
+                    and self.frames_dir is not None
+                    and sample_idx % self.frame_save_interval == 0
+                ):
+                    try:
+                        # Create annotated frame with all detections
+                        annotated_frame = self.draw_bounding_boxes(
+                            frame, detections, show_roi_boxes=True, person_roles=person_roles
+                        )
+                        annotated_frame = self.draw_mediapipe_outputs(
+                            annotated_frame,
+                            pose_results,
+                            face_results,
+                            ear_value,
+                            self.eye_closure_duration,
+                            pose_sleep_info,
+                        )
+                        
+                        # Save frame with unique filename
+                        frame_filename = f"frame_{frame_idx:08d}.jpg"
+                        frame_path = os.path.join(self.frames_dir, frame_filename)
+                        
+                        # Ensure directory exists (for multiprocessing safety)
+                        os.makedirs(self.frames_dir, exist_ok=True)
+                        
+                        # Save with high quality
+                        cv2.imwrite(frame_path, annotated_frame, [cv2.IMWRITE_JPEG_QUALITY, 95])
+                            
+                    except Exception as e:
+                        print(f"[{timestamp}] Error saving frame {frame_idx}: {e}")
+                
                 # Update activity states with temporal filtering
                 activities_map = {
                     'microsleep': microsleep_detected and not sleep_detected,
@@ -1758,12 +2136,15 @@ class LocopilotActivityMonitor:
                         
                         if self.consecutive_detections[activity_name] >= required_consecutive:
                             if not self.activities[activity_name]['active']:
-                                self.start_activity(activity_name, timestamp, fps, frame_idx)
+                                self.start_activity(activity_name, timestamp, fps, frame_idx, person_roles=person_roles)
                             
                             if self.activities[activity_name]['active']:
                                 self.activities[activity_name]['frames'].append(frame.copy())
                                 self.activities[activity_name]['last_frame_count'] = frame_idx
                                 self.activities[activity_name]['last_detected_frame'] = frame_idx
+                                # Update person roles (in case they change during activity)
+                                if person_roles:
+                                    self.activities[activity_name]['person_roles'] = person_roles
                     else:
                         if self.consecutive_detections[activity_name] > 0 or self.activities[activity_name]['active']:
                             self.grace_counters[activity_name] += 1

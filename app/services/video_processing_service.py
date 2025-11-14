@@ -121,6 +121,7 @@ class VideoProcessingService:
         self,
         video_path: str,
         trip_id: str,
+        crew_members: Dict[str, Dict[str, str]] = None,
         crew_name: str = "John Doe",
         crew_id: str = "C-001",
         crew_role: int = 1,
@@ -134,9 +135,10 @@ class VideoProcessingService:
         Args:
             video_path: Path to video file
             trip_id: Trip identifier
-            crew_name: Crew member name
-            crew_id: Crew member ID
-            crew_role: Crew role
+            crew_members: Dictionary mapping role (LP/ALP) to crew member info {name, id, role}
+            crew_name: [Legacy] Crew member name
+            crew_id: [Legacy] Crew member ID
+            crew_role: [Legacy] Crew role
             use_mock_detection: Use mock detection instead of real ML models
             use_multiprocessing: Enable multiprocessing for faster processing
             save_clips: Whether to save video clips and images (default: True)
@@ -166,6 +168,7 @@ class VideoProcessingService:
                 activities = self.activity_detection_service.detect_activities_mock(
                     video_path=video_path,
                     trip_id=trip_id,
+                    crew_members=crew_members,
                     crew_name=crew_name,
                     crew_id=crew_id,
                     crew_role=crew_role
@@ -179,6 +182,7 @@ class VideoProcessingService:
                     activities = self.activity_detection_service._detect_activities_multiprocess(
                         video_path=video_path,
                         trip_id=trip_id,
+                        crew_members=crew_members,
                         crew_name=crew_name,
                         crew_id=crew_id,
                         crew_role=crew_role,
@@ -191,6 +195,7 @@ class VideoProcessingService:
                     activities = self.activity_detection_service._detect_activities_single_process(
                         video_path=video_path,
                         trip_id=trip_id,
+                        crew_members=crew_members,
                         crew_name=crew_name,
                         crew_id=crew_id,
                         crew_role=crew_role,
