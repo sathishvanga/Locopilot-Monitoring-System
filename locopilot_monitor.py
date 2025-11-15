@@ -77,7 +77,9 @@ class LocopilotActivityMonitor:
             'cell_phone': {'active': False, 'start_time': None, 'frames': [], 'duration': 0},
             'writing': {'active': False, 'start_time': None, 'frames': [], 'duration': 0},
             'packing_bags': {'active': False, 'start_time': None, 'frames': [], 'duration': 0},
-            'group_detected': {'active': False, 'start_time': None, 'frames': [], 'duration': 0}
+            'group_detected': {'active': False, 'start_time': None, 'frames': [], 'duration': 0},
+            'lp_hand_gesture': {'active': False, 'start_time': None, 'frames': [], 'duration': 0},
+            'alp_hand_gesture': {'active': False, 'start_time': None, 'frames': [], 'duration': 0}
         }
         
         # Activity thresholds: minimum duration and required consecutive frames before recording starts
@@ -117,6 +119,18 @@ class LocopilotActivityMonitor:
                 'required_consecutive': 3,    # 3 samples @ 0.5fps = 6 seconds before recording
                 'margin': None,               # N/A for person count detection
                 'grace_frames': 5             # Allow 5 samples (~10s) gap
+            },
+            'lp_hand_gesture': {
+                'min_duration': 2.0,          # Must last 2 seconds minimum
+                'required_consecutive': 2,    # 2 samples @ 0.5fps = 4 seconds before recording
+                'margin': None,               # N/A for hand gesture detection
+                'grace_frames': 3             # Allow 3 samples (~6s) gap to handle multiple raises
+            },
+            'alp_hand_gesture': {
+                'min_duration': 2.0,          # Must last 2 seconds minimum
+                'required_consecutive': 2,    # 2 samples @ 0.5fps = 4 seconds before recording
+                'margin': None,               # N/A for hand gesture detection
+                'grace_frames': 3             # Allow 3 samples (~6s) gap to handle multiple raises
             }
         }
         
@@ -127,7 +141,9 @@ class LocopilotActivityMonitor:
             'cell_phone': 0,
             'writing': 0,
             'packing_bags': 0,
-            'group_detected': 0
+            'group_detected': 0,
+            'lp_hand_gesture': 0,
+            'alp_hand_gesture': 0
         }
         
         # Grace period counters - allows brief interruptions without resetting
@@ -137,7 +153,9 @@ class LocopilotActivityMonitor:
             'cell_phone': 0,
             'writing': 0,
             'packing_bags': 0,
-            'group_detected': 0
+            'group_detected': 0,
+            'lp_hand_gesture': 0,
+            'alp_hand_gesture': 0
         }
         
         # Buffer for pre-activity frames (5 seconds before at sampled rate)
@@ -166,7 +184,9 @@ class LocopilotActivityMonitor:
             'sleep': 4,
             'writing': 5,
             'packing_bags': 6,
-            'group_detected': 7
+            'group_detected': 7,
+            'lp_hand_gesture': 8,
+            'alp_hand_gesture': 9
         }
         
         # Activity descriptions
@@ -174,9 +194,11 @@ class LocopilotActivityMonitor:
             'cell_phone': 'Using mobile phone',
             'microsleep': 'Micro-sleep detected (5+ seconds)',
             'sleep': 'Sleep detected (30+ seconds)',
-            'writing': 'Writing activity detected',
+            'writing': 'WRITING LOG BOOK WHILE RUNNING',
             'packing_bags': 'Packing bags activity detected',
-            'group_detected': 'More than 2 people (group) detected'
+            'group_detected': 'More than 2 people (group) detected',
+            'lp_hand_gesture': 'LP not exchanging hand gesture',
+            'alp_hand_gesture': 'ALP not exchanging hand gesture'
         }
         
         # Evidence rules
@@ -186,7 +208,9 @@ class LocopilotActivityMonitor:
             'sleep': 'eyes_closed_30s_or_pose_indicators',
             'writing': 'hand_near_book',
             'packing_bags': 'hand_near_backpack',
-            'group_detected': 'more_than_2_deduplicated_persons'
+            'group_detected': 'more_than_2_deduplicated_persons',
+            'lp_hand_gesture': 'lp_hand_raised_gesture_detected',
+            'alp_hand_gesture': 'alp_hand_raised_gesture_detected'
         }
         
         # Default crew/trip information
@@ -404,15 +428,15 @@ class LocopilotActivityMonitor:
         avg_movement = np.mean(list(self.movement_history))
         
         # Sleep indicators:
-        # 1. Head tilted forward significantly (< -15 degrees)
-        # 2. Very low movement (< 0.02) - increased from 0.01 for more realistic detection
+        # 1. Head tilted forward VERY significantly (< -100 degrees) - stricter to avoid false positives during normal work
+        # 2. Low movement (< 0.05) - allows some minimal working movement
         # 3. Consistent over time (low variance)
         
         head_tilt_variance = np.var(list(self.head_tilt_history))
         movement_variance = np.var(list(self.movement_history))
         
-        is_head_down = avg_head_tilt < -15
-        is_minimal_movement = avg_movement < 0.02  # Increased from 0.01
+        is_head_down = avg_head_tilt < -100  # Changed from -15 to -100 (stricter)
+        is_minimal_movement = avg_movement < 0.1  # Changed from 0.02 to 0.05 (more lenient)
         is_stable_posture = head_tilt_variance < 100  # Low variance = stable position (increased from 50)
         
         debug_info = {
@@ -525,7 +549,18 @@ class LocopilotActivityMonitor:
         return detections
     
     def detect_objects(self, frame, pose_landmarks=None, use_pose_guided=True):
-        """Detect objects using YOLO with optional pose-guided detection.
+        """Detect objects using YOLO with pose-guided detection.
+        
+        MULTI-LAYERED DETECTION FLOW:
+        1. Full frame detection for:
+           - Person (for counting)
+           - Backpack (for packing detection)
+           - Book (low confidence, only if near person) - OPTION 3
+        2. ROI-based detection around landmarks for activity objects:
+           - Hands (wrists, index) - 250px radius (OPTION 2 - increased)
+           - Lap/Torso (hips) - 280px radius (OPTION 1 - added)
+           - Ears, mouth - for phone/eating detection
+        3. This provides comprehensive detection while minimizing false positives
         
         Args:
             frame: Input frame
@@ -535,16 +570,19 @@ class LocopilotActivityMonitor:
         Returns:
             Dictionary with detections and ROI information
         """
-        # Stage 1: Full frame detection
+        # Stage 1: Full frame detection for person, backpack, and books near person
         results = self.yolo_model(frame, verbose=False)
         detections = {
             'person': [],
             'cell_phone': [],
             'book': [],
             'backpack': [],
-            'roi_detections': [],  # Additional detections from pose-guided approach
+            'roi_detections': [],  # ROI-based detections (main activity detection)
             'roi_boxes': []  # ROI boxes for visualization
         }
+        
+        # Store person boxes for proximity checking
+        person_boxes = []
         
         for r in results:
             boxes = r.boxes
@@ -554,14 +592,35 @@ class LocopilotActivityMonitor:
                 xyxy = box.xyxy[0].cpu().numpy()
                 
                 class_name = self.yolo_model.names[cls]
+                # Detect person and backpack from full frame
                 if class_name == 'person' and conf > 0.5:
                     detections['person'].append(xyxy)
-                elif class_name == 'cell phone' and conf > 0.65:
-                    detections['cell_phone'].append(xyxy)
-                elif class_name == 'book' and conf > 0.05:  # Very low threshold - books hard to detect
-                    detections['book'].append(xyxy)
+                    person_boxes.append(xyxy)
                 elif class_name == 'backpack' and conf > 0.5:
                     detections['backpack'].append(xyxy)
+                # OPTION 3: Re-enable book detection in full frame with low confidence
+                # But only if book is within reasonable distance of a person
+                elif class_name == 'book' and conf > 0.2:  # Low threshold for books
+                    # Check if book is near any detected person
+                    if len(person_boxes) > 0:
+                        book_near_person = False
+                        book_center_x = (xyxy[0] + xyxy[2]) / 2
+                        book_center_y = (xyxy[1] + xyxy[3]) / 2
+                        
+                        for person_box in person_boxes:
+                            # Check if book center is within expanded person bounding box
+                            person_x1, person_y1, person_x2, person_y2 = person_box
+                            margin = 200  # 200px margin around person box
+                            if (person_x1 - margin <= book_center_x <= person_x2 + margin and
+                                person_y1 - margin <= book_center_y <= person_y2 + margin):
+                                book_near_person = True
+                                break
+                        
+                        if book_near_person:
+                            detections['book'].append(xyxy)
+                    else:
+                        # No person detected, add book anyway (fallback)
+                        detections['book'].append(xyxy)
         
         # Stage 2: Pose-guided ROI detection (if pose landmarks available)
         if use_pose_guided and pose_landmarks is not None:
@@ -570,11 +629,15 @@ class LocopilotActivityMonitor:
             
             # Define keypoints of interest with ROI sizes
             keypoints_of_interest = [
-                # Hands (for phone, book, pen, pencil)
-                ('RIGHT_WRIST', self.mp_pose.PoseLandmark.RIGHT_WRIST, 180),
-                ('LEFT_WRIST', self.mp_pose.PoseLandmark.LEFT_WRIST, 180),
-                ('RIGHT_INDEX', self.mp_pose.PoseLandmark.RIGHT_INDEX, 150),
-                ('LEFT_INDEX', self.mp_pose.PoseLandmark.LEFT_INDEX, 150),
+                # Hands (for phone, book, pen, pencil) - INCREASED SIZE
+                ('RIGHT_WRIST', self.mp_pose.PoseLandmark.RIGHT_WRIST, 250),  # Increased from 180
+                ('LEFT_WRIST', self.mp_pose.PoseLandmark.LEFT_WRIST, 250),    # Increased from 180
+                ('RIGHT_INDEX', self.mp_pose.PoseLandmark.RIGHT_INDEX, 200),  # Increased from 150
+                ('LEFT_INDEX', self.mp_pose.PoseLandmark.LEFT_INDEX, 200),    # Increased from 150
+                
+                # Lap/Torso area (for books, reading, writing on lap)
+                ('RIGHT_HIP', self.mp_pose.PoseLandmark.RIGHT_HIP, 280),
+                ('LEFT_HIP', self.mp_pose.PoseLandmark.LEFT_HIP, 280),
                 
                 # Ears (for phone calls)
                 ('RIGHT_EAR', self.mp_pose.PoseLandmark.RIGHT_EAR, 120),
@@ -911,6 +974,136 @@ class LocopilotActivityMonitor:
         x1, y1, x2, y2 = object_bbox
         return (x1 - margin <= hx <= x2 + margin and 
                 y1 - margin <= hy <= y2 + margin)
+    
+    def detect_hand_gesture(self, pose_landmarks, frame_shape, person_roles):
+        """Detect hand gesture (raised hand) for LP/ALP hand exchange signal.
+        
+        This detects when LP or ALP raises their hand for hand gesture exchange.
+        The gesture should be detected only when ONE person is doing it (not both).
+        
+        Args:
+            pose_landmarks: MediaPipe pose landmarks
+            frame_shape: (height, width) of the frame
+            person_roles: Dictionary of person roles from identify_person_roles()
+            
+        Returns:
+            tuple: (lp_gesture_detected, alp_gesture_detected, debug_info)
+                   Returns (False, False, {}) if both are gesturing or no one is
+        """
+        if not pose_landmarks or not person_roles:
+            return False, False, {}
+        
+        h, w = frame_shape[:2]
+        landmarks = pose_landmarks.landmark
+        
+        # Get key body landmarks
+        try:
+            right_wrist = landmarks[self.mp_pose.PoseLandmark.RIGHT_WRIST]
+            left_wrist = landmarks[self.mp_pose.PoseLandmark.LEFT_WRIST]
+            right_shoulder = landmarks[self.mp_pose.PoseLandmark.RIGHT_SHOULDER]
+            left_shoulder = landmarks[self.mp_pose.PoseLandmark.LEFT_SHOULDER]
+            right_elbow = landmarks[self.mp_pose.PoseLandmark.RIGHT_ELBOW]
+            left_elbow = landmarks[self.mp_pose.PoseLandmark.LEFT_ELBOW]
+            nose = landmarks[self.mp_pose.PoseLandmark.NOSE]
+        except (IndexError, AttributeError):
+            return False, False, {}
+        
+        # Convert to pixel coordinates
+        right_wrist_coords = (int(right_wrist.x * w), int(right_wrist.y * h))
+        left_wrist_coords = (int(left_wrist.x * w), int(left_wrist.y * h))
+        right_shoulder_y = int(right_shoulder.y * h)
+        left_shoulder_y = int(left_shoulder.y * h)
+        avg_shoulder_y = (right_shoulder_y + left_shoulder_y) / 2
+        right_elbow_y = int(right_elbow.y * h)
+        left_elbow_y = int(left_elbow.y * h)
+        nose_y = int(nose.y * h)
+        
+        # Hand gesture detection criteria:
+        # 1. Hand raised above shoulder level (at least 100px above shoulder)
+        # 2. Hand raised above elbow (showing active raising, not just resting)
+        # 3. Hand should be in visible range (not at extreme edges)
+        # 4. Check visibility confidence
+        
+        right_hand_raised = (
+            right_wrist_coords[1] < (right_shoulder_y - 80) and  # At least 80px above shoulder
+            right_wrist_coords[1] < right_elbow_y and  # Above elbow
+            right_wrist.visibility > 0.5 and  # Visible
+            0 < right_wrist_coords[0] < w  # Within frame
+        )
+        
+        left_hand_raised = (
+            left_wrist_coords[1] < (left_shoulder_y - 80) and  # At least 80px above shoulder
+            left_wrist_coords[1] < left_elbow_y and  # Above elbow
+            left_wrist.visibility > 0.5 and  # Visible
+            0 < left_wrist_coords[0] < w  # Within frame
+        )
+        
+        # Either hand raised counts as gesture
+        hand_gesture_detected = right_hand_raised or left_hand_raised
+        
+        if not hand_gesture_detected:
+            return False, False, {}
+        
+        # Now identify WHO is making the gesture
+        # Since MediaPipe Pose only tracks one person, we need to determine if that person is LP or ALP
+        # We'll use the person_roles information
+        
+        # If we only have one person detected, default behavior
+        if len(person_roles) == 1:
+            person_idx = list(person_roles.keys())[0]
+            role = person_roles[person_idx].get('role', 'UNKNOWN')
+            
+            if role == 'LP':
+                # LP is doing the gesture, ALP is not
+                return True, False, {
+                    'hand_raised': 'right' if right_hand_raised else 'left',
+                    'shoulder_y': avg_shoulder_y,
+                    'wrist_y': right_wrist_coords[1] if right_hand_raised else left_wrist_coords[1],
+                    'person_role': 'LP'
+                }
+            elif role == 'ALP':
+                # ALP is doing the gesture, LP is not
+                return False, True, {
+                    'hand_raised': 'right' if right_hand_raised else 'left',
+                    'shoulder_y': avg_shoulder_y,
+                    'wrist_y': right_wrist_coords[1] if right_hand_raised else left_wrist_coords[1],
+                    'person_role': 'ALP'
+                }
+        
+        # If we have 2+ people, we need to check if BOTH are raising hands
+        # For now, with single-person pose tracking, we can only detect one person's gesture
+        # The system will detect LP and ALP separately in different frames
+        
+        # Check which role the primary detected person is
+        # MediaPipe Pose tracks the most prominent person in frame
+        # We'll match this to the person_roles based on position
+        
+        # Simple heuristic: assign to the first detected role
+        # In production, you'd match pose to person bbox more carefully
+        if len(person_roles) >= 1:
+            # Get the first person's role (most prominent in frame)
+            person_idx = list(person_roles.keys())[0]
+            role = person_roles[person_idx].get('role', 'UNKNOWN')
+            
+            if role == 'LP':
+                return True, False, {
+                    'hand_raised': 'right' if right_hand_raised else 'left',
+                    'shoulder_y': avg_shoulder_y,
+                    'wrist_y': right_wrist_coords[1] if right_hand_raised else left_wrist_coords[1],
+                    'person_role': 'LP',
+                    'people_count': len(person_roles)
+                }
+            elif role == 'ALP':
+                return False, True, {
+                    'hand_raised': 'right' if right_hand_raised else 'left',
+                    'shoulder_y': avg_shoulder_y,
+                    'wrist_y': right_wrist_coords[1] if right_hand_raised else left_wrist_coords[1],
+                    'person_role': 'ALP',
+                    'people_count': len(person_roles)
+                }
+        
+        # No valid role identified
+        return False, False, {}
     
     def calculate_iou(self, bbox1, bbox2):
         """Calculate Intersection over Union (IoU) between two bounding boxes.
@@ -1685,20 +1878,57 @@ class LocopilotActivityMonitor:
                         if not writing_detected and not cell_phone_detected:
                             print(f"[{timestamp}] Heuristic: Hands together (d={hand_distance:.0f}px) - writing posture")
                     
-                    # HEURISTIC 2: Writing posture - right hand low and forward (writing on desk/logbook)
-                    # Writing characteristics:
-                    # 1. Right hand is below elbow (hand lower than elbow = writing down)
-                    # 2. Right hand is in lower 60% of frame (near desk/table)
-                    # 3. Elbow is bent (elbow Y between shoulder and hand)
-                    hand_below_elbow = right_hand_coords[1] > right_elbow_coords[1]  # Y increases downward
-                    hand_in_lower_area = right_hand_coords[1] > (h * 0.4)  # Lower 60% of frame
-                    elbow_bent = right_elbow_coords[1] > right_shoulder_coords[1] and right_elbow_coords[1] < right_hand_coords[1]
+                # HEURISTIC 2: Writing posture - right hand low and forward (writing on desk/logbook)
+                # Writing characteristics:
+                # 1. Right hand is below elbow (hand lower than elbow = writing down)
+                # 2. Right hand is in lower 60% of frame (near desk/table)
+                # 3. Elbow is bent (elbow Y between shoulder and hand)
+                # 4. Hands are NOT too close together (phone = both hands, writing = one hand)
+                # 5. Hand must be NEAR a detected book (no fallback to prevent false positives)
+                hand_below_elbow = right_hand_coords[1] > right_elbow_coords[1]  # Y increases downward
+                hand_in_lower_area = right_hand_coords[1] > (h * 0.4)  # Lower 60% of frame
+                elbow_bent = right_elbow_coords[1] > right_shoulder_coords[1] and right_elbow_coords[1] < right_hand_coords[1]
+                
+                # Prevent phone false positive - if hands are close together, it's likely phone usage
+                hands_separated = hand_distance >= 150  # Hands far apart = writing, close = phone
+                
+                # Check if hand is actually NEAR any detected book (not just if book exists anywhere)
+                hand_near_book = False
+                margin = self.activity_thresholds['writing']['margin']
+                if len(detections['book']) > 0:
+                    for book_bbox in detections['book']:
+                        if self.check_hand_object_interaction(right_hand_coords, book_bbox, margin):
+                            hand_near_book = True
+                            break
+                
+                # Only trigger writing if hand is NEAR a book (strict detection to prevent false positives)
+                # Removed hand_on_surface fallback as it caused too many false positives
+                if hand_below_elbow and hand_in_lower_area and elbow_bent and hands_separated and hand_near_book:
+                    writing_posture_heuristic = True
+                    if not writing_detected and not cell_phone_detected:  # Don't override cell phone detection
+                        writing_detected = True  # Activate writing detection via heuristic
+                        print(f"[{timestamp}] Heuristic: Writing posture detected (hand Y={right_hand_coords[1]}, elbow Y={right_elbow_coords[1]}, hands separated={hands_separated}, book_near_hand={hand_near_book})")
+                
+                # NEW: Check for hand gesture (LP/ALP not exchanging hand gesture)
+                lp_hand_gesture_detected = False
+                alp_hand_gesture_detected = False
+                
+                if pose_results.pose_landmarks and person_roles:
+                    lp_gesture, alp_gesture, gesture_debug = self.detect_hand_gesture(
+                        pose_results.pose_landmarks, 
+                        frame.shape, 
+                        person_roles
+                    )
                     
-                    if hand_below_elbow and hand_in_lower_area and elbow_bent:
-                        writing_posture_heuristic = True
-                        if not writing_detected:
-                            writing_detected = True  # Activate writing detection via heuristic
-                            print(f"[{timestamp}] Heuristic: Writing posture detected (hand Y={right_hand_coords[1]}, elbow Y={right_elbow_coords[1]})")
+                    if lp_gesture:
+                        lp_hand_gesture_detected = True
+                        if self.consecutive_detections['lp_hand_gesture'] == 0:
+                            print(f"[{timestamp}] LP hand gesture detected - {gesture_debug.get('hand_raised', 'unknown')} hand raised")
+                    
+                    if alp_gesture:
+                        alp_hand_gesture_detected = True
+                        if self.consecutive_detections['alp_hand_gesture'] == 0:
+                            print(f"[{timestamp}] ALP hand gesture detected - {gesture_debug.get('hand_raised', 'unknown')} hand raised")
                 
                 # CRITICAL: Exclude sleep detection if person is holding objects or in active posture
                 # If someone has a phone, book, or backpack in hand, they're clearly NOT sleeping
@@ -1724,6 +1954,20 @@ class LocopilotActivityMonitor:
                     self.pose_sleep_start = None
                     self.pose_sleep_duration = 0
                 
+                # Create annotated frame with all detections (pose landmarks + YOLO boxes)
+                # This annotated frame will be used for BOTH activity clips AND periodic frame saving
+                annotated_frame_for_activity = self.draw_bounding_boxes(
+                    frame, detections, show_roi_boxes=True, person_roles=person_roles
+                )
+                annotated_frame_for_activity = self.draw_mediapipe_outputs(
+                    annotated_frame_for_activity,
+                    pose_results,
+                    face_results,
+                    ear_value,
+                    self.eye_closure_duration,
+                    pose_sleep_info,
+                )
+                
                 # Save annotated frames periodically if enabled (AFTER all detections)
                 if (
                     self.save_annotated_frames 
@@ -1731,19 +1975,6 @@ class LocopilotActivityMonitor:
                     and sample_idx % self.frame_save_interval == 0
                 ):
                     try:
-                        # Create annotated frame with all detections
-                        annotated_frame = self.draw_bounding_boxes(
-                            frame, detections, show_roi_boxes=True, person_roles=person_roles
-                        )
-                        annotated_frame = self.draw_mediapipe_outputs(
-                            annotated_frame,
-                            pose_results,
-                            face_results,
-                            ear_value,
-                            self.eye_closure_duration,
-                            pose_sleep_info,
-                        )
-                        
                         # Save frame with unique filename
                         frame_filename = f"frame_{frame_idx:08d}.jpg"
                         frame_path = os.path.join(self.frames_dir, frame_filename)
@@ -1752,7 +1983,7 @@ class LocopilotActivityMonitor:
                         os.makedirs(self.frames_dir, exist_ok=True)
                         
                         # Save with high quality
-                        cv2.imwrite(frame_path, annotated_frame, [cv2.IMWRITE_JPEG_QUALITY, 95])
+                        cv2.imwrite(frame_path, annotated_frame_for_activity, [cv2.IMWRITE_JPEG_QUALITY, 95])
                             
                     except Exception as e:
                         print(f"[{timestamp}] Error saving frame {frame_idx}: {e}")
@@ -1764,7 +1995,9 @@ class LocopilotActivityMonitor:
                     'cell_phone': cell_phone_detected,
                     'writing': writing_detected,
                     'packing_bags': packing_detected,
-                    'group_detected': group_detected_flag
+                    'group_detected': group_detected_flag,
+                    'lp_hand_gesture': lp_hand_gesture_detected,
+                    'alp_hand_gesture': alp_hand_gesture_detected
                 }
                 
                 for activity_name, detected in activities_map.items():
@@ -1783,7 +2016,8 @@ class LocopilotActivityMonitor:
                             
                             # Continue recording frames ONLY when activity is actively detected
                             if self.activities[activity_name]['active']:
-                                self.activities[activity_name]['frames'].append(frame.copy())
+                                # Store annotated frame (with pose landmarks + YOLO boxes) instead of raw frame
+                                self.activities[activity_name]['frames'].append(annotated_frame_for_activity.copy())
                                 self.activities[activity_name]['last_frame_count'] = frame_idx
                                 self.activities[activity_name]['last_detected_frame'] = frame_idx  # Track last actual detection
                                 # Update person roles (in case they change during activity)
@@ -2066,14 +2300,52 @@ class LocopilotActivityMonitor:
                     if hand_distance < 150:
                         holding_object_heuristic = True
                     
+                    # HEURISTIC 2: Writing posture - right hand low and forward (writing on desk/logbook)
+                    # Writing characteristics:
+                    # 1. Right hand is below elbow (hand lower than elbow = writing down)
+                    # 2. Right hand is in lower 60% of frame (near desk/table)
+                    # 3. Elbow is bent (elbow Y between shoulder and hand)
+                    # 4. Hands are NOT too close together (phone = both hands, writing = one hand)
+                    # 5. Hand must be NEAR a detected book (no fallback to prevent false positives)
                     hand_below_elbow = right_hand_coords[1] > right_elbow_coords[1]
                     hand_in_lower_area = right_hand_coords[1] > (h * 0.4)
                     elbow_bent = right_elbow_coords[1] > right_shoulder_coords[1] and right_elbow_coords[1] < right_hand_coords[1]
                     
-                    if hand_below_elbow and hand_in_lower_area and elbow_bent:
+                    # Prevent phone false positive - if hands are close together, it's likely phone usage
+                    hands_separated = hand_distance >= 150  # Hands far apart = writing, close = phone
+                    
+                    # Check if hand is actually NEAR any detected book (not just if book exists anywhere)
+                    hand_near_book = False
+                    margin = self.activity_thresholds['writing']['margin']
+                    if len(detections['book']) > 0:
+                        for book_bbox in detections['book']:
+                            if self.check_hand_object_interaction(right_hand_coords, book_bbox, margin):
+                                hand_near_book = True
+                                break
+                    
+                    # Only trigger writing if hand is NEAR a book (strict detection to prevent false positives)
+                    # Removed hand_on_surface fallback as it caused too many false positives
+                    if hand_below_elbow and hand_in_lower_area and elbow_bent and hands_separated and hand_near_book:
                         writing_posture_heuristic = True
-                        if not writing_detected:
+                        if not writing_detected and not cell_phone_detected:  # Don't override cell phone detection
                             writing_detected = True
+                
+                # NEW: Check for hand gesture (LP/ALP not exchanging hand gesture)
+                lp_hand_gesture_detected = False
+                alp_hand_gesture_detected = False
+                
+                if pose_results.pose_landmarks and person_roles:
+                    lp_gesture, alp_gesture, gesture_debug = self.detect_hand_gesture(
+                        pose_results.pose_landmarks, 
+                        frame.shape, 
+                        person_roles
+                    )
+                    
+                    if lp_gesture:
+                        lp_hand_gesture_detected = True
+                    
+                    if alp_gesture:
+                        alp_hand_gesture_detected = True
                 
                 # Override sleep detection if person is active
                 if cell_phone_detected or writing_detected or packing_detected or holding_object_heuristic:
@@ -2084,6 +2356,20 @@ class LocopilotActivityMonitor:
                     self.pose_sleep_start = None
                     self.pose_sleep_duration = 0
                 
+                # Create annotated frame with all detections (pose landmarks + YOLO boxes)
+                # This annotated frame will be used for BOTH activity clips AND periodic frame saving
+                annotated_frame_for_activity = self.draw_bounding_boxes(
+                    frame, detections, show_roi_boxes=True, person_roles=person_roles
+                )
+                annotated_frame_for_activity = self.draw_mediapipe_outputs(
+                    annotated_frame_for_activity,
+                    pose_results,
+                    face_results,
+                    ear_value,
+                    self.eye_closure_duration,
+                    pose_sleep_info,
+                )
+                
                 # Save annotated frames periodically if enabled (in process_video_range for multiprocessing)
                 if (
                     self.save_annotated_frames 
@@ -2091,19 +2377,6 @@ class LocopilotActivityMonitor:
                     and sample_idx % self.frame_save_interval == 0
                 ):
                     try:
-                        # Create annotated frame with all detections
-                        annotated_frame = self.draw_bounding_boxes(
-                            frame, detections, show_roi_boxes=True, person_roles=person_roles
-                        )
-                        annotated_frame = self.draw_mediapipe_outputs(
-                            annotated_frame,
-                            pose_results,
-                            face_results,
-                            ear_value,
-                            self.eye_closure_duration,
-                            pose_sleep_info,
-                        )
-                        
                         # Save frame with unique filename
                         frame_filename = f"frame_{frame_idx:08d}.jpg"
                         frame_path = os.path.join(self.frames_dir, frame_filename)
@@ -2112,7 +2385,7 @@ class LocopilotActivityMonitor:
                         os.makedirs(self.frames_dir, exist_ok=True)
                         
                         # Save with high quality
-                        cv2.imwrite(frame_path, annotated_frame, [cv2.IMWRITE_JPEG_QUALITY, 95])
+                        cv2.imwrite(frame_path, annotated_frame_for_activity, [cv2.IMWRITE_JPEG_QUALITY, 95])
                             
                     except Exception as e:
                         print(f"[{timestamp}] Error saving frame {frame_idx}: {e}")
@@ -2124,7 +2397,9 @@ class LocopilotActivityMonitor:
                     'cell_phone': cell_phone_detected,
                     'writing': writing_detected,
                     'packing_bags': packing_detected,
-                    'group_detected': group_detected_flag
+                    'group_detected': group_detected_flag,
+                    'lp_hand_gesture': lp_hand_gesture_detected,
+                    'alp_hand_gesture': alp_hand_gesture_detected
                 }
                 
                 for activity_name, detected in activities_map.items():
@@ -2139,7 +2414,8 @@ class LocopilotActivityMonitor:
                                 self.start_activity(activity_name, timestamp, fps, frame_idx, person_roles=person_roles)
                             
                             if self.activities[activity_name]['active']:
-                                self.activities[activity_name]['frames'].append(frame.copy())
+                                # Store annotated frame (with pose landmarks + YOLO boxes) instead of raw frame
+                                self.activities[activity_name]['frames'].append(annotated_frame_for_activity.copy())
                                 self.activities[activity_name]['last_frame_count'] = frame_idx
                                 self.activities[activity_name]['last_detected_frame'] = frame_idx
                                 # Update person roles (in case they change during activity)

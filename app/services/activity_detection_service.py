@@ -33,16 +33,20 @@ class ActivityDetectionService:
             'sleep': ActivityTypeEnum.SLEEP,
             'writing': ActivityTypeEnum.WRITING,
             'packing_bags': ActivityTypeEnum.PACKING_BAGS,
-            'group_detected': ActivityTypeEnum.GROUP_DETECTED
+            'group_detected': ActivityTypeEnum.GROUP_DETECTED,
+            'lp_hand_gesture': ActivityTypeEnum.LP_NOT_EXCHANGING_HAND_GESTURE,
+            'alp_hand_gesture': ActivityTypeEnum.ALP_NOT_EXCHANGING_HAND_GESTURE
         }
         
         self.activity_descriptions = {
             'cell_phone': 'Using mobile phone',
             'microsleep': 'Micro-sleep detected (5+ seconds)',
             'sleep': 'Sleep detected (30+ seconds)',
-            'writing': 'Writing activity detected',
+            'writing': 'WRITING LOG BOOK WHILE RUNNING',
             'packing_bags': 'Packing bags activity detected',
-            'group_detected': 'More than 2 people (group) detected'
+            'group_detected': 'More than 2 people (group) detected',
+            'lp_hand_gesture': 'LP not exchanging hand gesture',
+            'alp_hand_gesture': 'ALP not exchanging hand gesture'
         }
         
         self.evidence_rules = {
@@ -51,7 +55,9 @@ class ActivityDetectionService:
             'sleep': 'eyes_closed_30s_or_pose_indicators',
             'writing': 'hand_near_book',
             'packing_bags': 'hand_near_backpack',
-            'group_detected': 'more_than_2_deduplicated_persons'
+            'group_detected': 'more_than_2_deduplicated_persons',
+            'lp_hand_gesture': 'lp_hand_raised_gesture_detected',
+            'alp_hand_gesture': 'alp_hand_raised_gesture_detected'
         }
         
         self.settings = get_settings()

@@ -16,6 +16,8 @@ class ActivityTypeEnum(IntEnum):
     WRITING = 5
     PACKING_BAGS = 6
     GROUP_DETECTED = 7
+    LP_NOT_EXCHANGING_HAND_GESTURE = 8
+    ALP_NOT_EXCHANGING_HAND_GESTURE = 9
 
 
 class EvidenceModel(BaseModel):

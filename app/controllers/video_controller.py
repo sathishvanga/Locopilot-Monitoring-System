@@ -16,14 +16,14 @@ from ..utils.config import get_settings
 
 logger = get_logger(__name__)
 settings = get_settings()
-router = APIRouter(prefix="/api/v1/video", tags=["video"])
+router = APIRouter(prefix="/api", tags=["video"])
 
 # Initialize service (singleton pattern)
 video_processing_service = VideoProcessingService()
 
 
 @router.post(
-    "/process",
+    "/jobs",
     response_model=VideoProcessingResponse,
     responses={
         200: {"description": "Video processed successfully"},
