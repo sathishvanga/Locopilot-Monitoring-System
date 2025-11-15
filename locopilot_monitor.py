@@ -66,8 +66,8 @@ class LocopilotActivityMonitor:
         self.face_mesh = self.mp_face_mesh.FaceMesh(
             max_num_faces=2,  # Track up to 2 faces (both loco pilots)
             refine_landmarks=True,
-            min_detection_confidence=0.3,
-            min_tracking_confidence=0.3
+            min_detection_confidence=0.5,
+            min_tracking_confidence=0.5
         )
         
         # Activity tracking with temporal filtering
@@ -975,16 +975,20 @@ class LocopilotActivityMonitor:
         return (x1 - margin <= hx <= x2 + margin and 
                 y1 - margin <= hy <= y2 + margin)
     
-    def detect_hand_gesture(self, pose_landmarks, frame_shape, person_roles):
+    def detect_hand_gesture(self, pose_landmarks, frame_shape, person_roles, yolo_person_boxes=None):
         """Detect hand gesture (raised hand) for LP/ALP hand exchange signal.
         
-        This detects when LP or ALP raises their hand for hand gesture exchange.
+        CRITICAL: This function ensures pose landmarks belong to the SAME person
+        we're analyzing by matching pose to YOLO person bounding boxes.
+        
         The gesture should be detected only when ONE person is doing it (not both).
         
         Args:
-            pose_landmarks: MediaPipe pose landmarks
+            pose_landmarks: MediaPipe pose landmarks (tracks 1 person)
             frame_shape: (height, width) of the frame
             person_roles: Dictionary of person roles from identify_person_roles()
+                         Format: {person_idx: {'bbox': [x1, y1, x2, y2], 'role': 'LP'/'ALP', ...}}
+            yolo_person_boxes: List of YOLO person bounding boxes (for validation)
             
         Returns:
             tuple: (lp_gesture_detected, alp_gesture_detected, debug_info)
@@ -1004,6 +1008,8 @@ class LocopilotActivityMonitor:
             left_shoulder = landmarks[self.mp_pose.PoseLandmark.LEFT_SHOULDER]
             right_elbow = landmarks[self.mp_pose.PoseLandmark.RIGHT_ELBOW]
             left_elbow = landmarks[self.mp_pose.PoseLandmark.LEFT_ELBOW]
+            right_hip = landmarks[self.mp_pose.PoseLandmark.RIGHT_HIP]
+            left_hip = landmarks[self.mp_pose.PoseLandmark.LEFT_HIP]
             nose = landmarks[self.mp_pose.PoseLandmark.NOSE]
         except (IndexError, AttributeError):
             return False, False, {}
@@ -1011,31 +1017,164 @@ class LocopilotActivityMonitor:
         # Convert to pixel coordinates
         right_wrist_coords = (int(right_wrist.x * w), int(right_wrist.y * h))
         left_wrist_coords = (int(left_wrist.x * w), int(left_wrist.y * h))
-        right_shoulder_y = int(right_shoulder.y * h)
-        left_shoulder_y = int(left_shoulder.y * h)
-        avg_shoulder_y = (right_shoulder_y + left_shoulder_y) / 2
-        right_elbow_y = int(right_elbow.y * h)
-        left_elbow_y = int(left_elbow.y * h)
-        nose_y = int(nose.y * h)
+        right_shoulder_coords = (int(right_shoulder.x * w), int(right_shoulder.y * h))
+        left_shoulder_coords = (int(left_shoulder.x * w), int(left_shoulder.y * h))
+        right_elbow_coords = (int(right_elbow.x * w), int(right_elbow.y * h))
+        left_elbow_coords = (int(left_elbow.x * w), int(left_elbow.y * h))
+        right_hip_coords = (int(right_hip.x * w), int(right_hip.y * h))
+        left_hip_coords = (int(left_hip.x * w), int(left_hip.y * h))
+        nose_coords = (int(nose.x * w), int(nose.y * h))
+        avg_shoulder_y = (right_shoulder_coords[1] + left_shoulder_coords[1]) / 2
         
-        # Hand gesture detection criteria:
-        # 1. Hand raised above shoulder level (at least 100px above shoulder)
-        # 2. Hand raised above elbow (showing active raising, not just resting)
-        # 3. Hand should be in visible range (not at extreme edges)
-        # 4. Check visibility confidence
+        # CRITICAL: Match MediaPipe Pose to the correct YOLO person bounding box
+        # MediaPipe Pose tracks only 1 person. We need to determine which person's box
+        # this pose belongs to, to avoid mixing one person's body with another's hands.
         
+        # Strategy: Check which person's bounding box contains the pose landmarks
+        # We'll use nose/shoulders as the key landmarks to match
+        
+        matched_person_idx = None
+        matched_role = None
+        
+        # Calculate pose center point (using shoulders and nose)
+        pose_center_x = (right_shoulder_coords[0] + left_shoulder_coords[0] + nose_coords[0]) / 3
+        pose_center_y = (right_shoulder_coords[1] + left_shoulder_coords[1] + nose_coords[1]) / 3
+        
+        # Match pose to person bounding box
+        best_overlap_score = 0
+        for person_idx, person_data in person_roles.items():
+            if 'bbox' not in person_data:
+                continue
+            
+            bbox = person_data['bbox']  # [x1, y1, x2, y2]
+            x1, y1, x2, y2 = bbox
+            
+            # Check if key pose landmarks fall within this person's bounding box
+            # Count how many key landmarks are inside
+            landmarks_inside = 0
+            total_landmarks = 0
+            
+            key_points = [
+                nose_coords,
+                right_shoulder_coords,
+                left_shoulder_coords,
+                right_elbow_coords,
+                left_elbow_coords,
+                right_wrist_coords,
+                left_wrist_coords,
+                right_hip_coords,
+                left_hip_coords
+            ]
+            
+            for point in key_points:
+                px, py = point
+                total_landmarks += 1
+                if x1 <= px <= x2 and y1 <= py <= y2:
+                    landmarks_inside += 1
+            
+            overlap_score = landmarks_inside / total_landmarks if total_landmarks > 0 else 0
+            
+            # Require at least 50% of key landmarks to be within the box
+            if overlap_score > best_overlap_score and overlap_score >= 0.5:
+                best_overlap_score = overlap_score
+                matched_person_idx = person_idx
+                matched_role = person_data.get('role', 'UNKNOWN')
+        
+        # If we can't match pose to any person box with high confidence, reject detection
+        if matched_person_idx is None or matched_role is None:
+            return False, False, {
+                'error': 'pose_not_matched_to_person',
+                'pose_center': (pose_center_x, pose_center_y),
+                'best_overlap': best_overlap_score
+            }
+        
+        # Additional validation: Check if wrist landmarks are plausibly within or near the matched person's box
+        # Allow some margin for extended arms
+        matched_bbox = person_roles[matched_person_idx]['bbox']
+        mx1, my1, mx2, my2 = matched_bbox
+        
+        # Expand box by 30% for arm extension tolerance
+        box_width = mx2 - mx1
+        box_height = my2 - my1
+        margin_x = box_width * 0.3
+        margin_y = box_height * 0.3
+        
+        expanded_x1 = mx1 - margin_x
+        expanded_y1 = my1 - margin_y
+        expanded_x2 = mx2 + margin_x
+        expanded_y2 = my2 + margin_y
+        
+        # Check if wrists are within expanded box (for extended arms)
+        right_wrist_in_expanded = (expanded_x1 <= right_wrist_coords[0] <= expanded_x2 and 
+                                   expanded_y1 <= right_wrist_coords[1] <= expanded_y2)
+        left_wrist_in_expanded = (expanded_x1 <= left_wrist_coords[0] <= expanded_x2 and 
+                                  expanded_y1 <= left_wrist_coords[1] <= expanded_y2)
+        
+        # Hand Gesture Detection Logic:
+        # Detect when LP/ALP raises their hand in a signaling gesture (extended arm with raised hand)
+        # This is the typical hand gesture used for communication signals between crew members
+        
+        # Key criteria:
+        # 1. Hand raised above shoulder (minimum 80px above shoulder)
+        # 2. Arm is extended (wrist significantly away from body centerline)
+        # 3. Wrist above elbow (active raising, not resting)
+        # 4. Wrist must be within expanded bounding box of the SAME person (critical for multi-person)
+        # 5. Good visibility of landmarks
+        
+        # Calculate arm extension (how far hand is from shoulder horizontally)
+        right_arm_extension = abs(right_wrist_coords[0] - right_shoulder_coords[0])
+        left_arm_extension = abs(left_wrist_coords[0] - left_shoulder_coords[0])
+        
+        # Calculate vertical distance from wrist to elbow
+        right_wrist_elbow_distance = right_elbow_coords[1] - right_wrist_coords[1]  # Positive if wrist above elbow
+        left_wrist_elbow_distance = left_elbow_coords[1] - left_wrist_coords[1]
+        
+        # Right hand gesture detection
         right_hand_raised = (
-            right_wrist_coords[1] < (right_shoulder_y - 80) and  # At least 80px above shoulder
-            right_wrist_coords[1] < right_elbow_y and  # Above elbow
-            right_wrist.visibility > 0.5 and  # Visible
-            0 < right_wrist_coords[0] < w  # Within frame
+            # CRITICAL: Wrist must belong to the same person (within expanded bbox)
+            right_wrist_in_expanded and
+            
+            # Core criteria: Hand raised above shoulder level
+            right_wrist_coords[1] < (right_shoulder_coords[1] - 80) and
+            
+            # Wrist must be above elbow (showing active raising)
+            right_wrist_elbow_distance > 20 and  # At least 20px above elbow
+            
+            # Arm should be somewhat extended (not tucked close to body)
+            right_arm_extension > 50 and  # Minimum extension from shoulder
+            
+            # Visibility checks
+            right_wrist.visibility > 0.5 and
+            right_elbow.visibility > 0.4 and
+            right_shoulder.visibility > 0.5 and
+            
+            # Within frame bounds
+            0 < right_wrist_coords[0] < w and
+            0 < right_wrist_coords[1] < h
         )
         
+        # Left hand gesture detection
         left_hand_raised = (
-            left_wrist_coords[1] < (left_shoulder_y - 80) and  # At least 80px above shoulder
-            left_wrist_coords[1] < left_elbow_y and  # Above elbow
-            left_wrist.visibility > 0.5 and  # Visible
-            0 < left_wrist_coords[0] < w  # Within frame
+            # CRITICAL: Wrist must belong to the same person (within expanded bbox)
+            left_wrist_in_expanded and
+            
+            # Core criteria: Hand raised above shoulder level
+            left_wrist_coords[1] < (left_shoulder_coords[1] - 80) and
+            
+            # Wrist must be above elbow (showing active raising)
+            left_wrist_elbow_distance > 20 and  # At least 20px above elbow
+            
+            # Arm should be somewhat extended (not tucked close to body)
+            left_arm_extension > 50 and  # Minimum extension from shoulder
+            
+            # Visibility checks
+            left_wrist.visibility > 0.5 and
+            left_elbow.visibility > 0.4 and
+            left_shoulder.visibility > 0.5 and
+            
+            # Within frame bounds
+            0 < left_wrist_coords[0] < w and
+            0 < left_wrist_coords[1] < h
         )
         
         # Either hand raised counts as gesture
@@ -1044,65 +1183,27 @@ class LocopilotActivityMonitor:
         if not hand_gesture_detected:
             return False, False, {}
         
-        # Now identify WHO is making the gesture
-        # Since MediaPipe Pose only tracks one person, we need to determine if that person is LP or ALP
-        # We'll use the person_roles information
+        # Return result based on the MATCHED person's role
+        if matched_role == 'LP':
+            return True, False, {
+                'hand_raised': 'right' if right_hand_raised else 'left',
+                'shoulder_y': avg_shoulder_y,
+                'wrist_y': right_wrist_coords[1] if right_hand_raised else left_wrist_coords[1],
+                'person_role': 'LP',
+                'matched_person_idx': matched_person_idx,
+                'overlap_score': best_overlap_score
+            }
+        elif matched_role == 'ALP':
+            return False, True, {
+                'hand_raised': 'right' if right_hand_raised else 'left',
+                'shoulder_y': avg_shoulder_y,
+                'wrist_y': right_wrist_coords[1] if right_hand_raised else left_wrist_coords[1],
+                'person_role': 'ALP',
+                'matched_person_idx': matched_person_idx,
+                'overlap_score': best_overlap_score
+            }
         
-        # If we only have one person detected, default behavior
-        if len(person_roles) == 1:
-            person_idx = list(person_roles.keys())[0]
-            role = person_roles[person_idx].get('role', 'UNKNOWN')
-            
-            if role == 'LP':
-                # LP is doing the gesture, ALP is not
-                return True, False, {
-                    'hand_raised': 'right' if right_hand_raised else 'left',
-                    'shoulder_y': avg_shoulder_y,
-                    'wrist_y': right_wrist_coords[1] if right_hand_raised else left_wrist_coords[1],
-                    'person_role': 'LP'
-                }
-            elif role == 'ALP':
-                # ALP is doing the gesture, LP is not
-                return False, True, {
-                    'hand_raised': 'right' if right_hand_raised else 'left',
-                    'shoulder_y': avg_shoulder_y,
-                    'wrist_y': right_wrist_coords[1] if right_hand_raised else left_wrist_coords[1],
-                    'person_role': 'ALP'
-                }
-        
-        # If we have 2+ people, we need to check if BOTH are raising hands
-        # For now, with single-person pose tracking, we can only detect one person's gesture
-        # The system will detect LP and ALP separately in different frames
-        
-        # Check which role the primary detected person is
-        # MediaPipe Pose tracks the most prominent person in frame
-        # We'll match this to the person_roles based on position
-        
-        # Simple heuristic: assign to the first detected role
-        # In production, you'd match pose to person bbox more carefully
-        if len(person_roles) >= 1:
-            # Get the first person's role (most prominent in frame)
-            person_idx = list(person_roles.keys())[0]
-            role = person_roles[person_idx].get('role', 'UNKNOWN')
-            
-            if role == 'LP':
-                return True, False, {
-                    'hand_raised': 'right' if right_hand_raised else 'left',
-                    'shoulder_y': avg_shoulder_y,
-                    'wrist_y': right_wrist_coords[1] if right_hand_raised else left_wrist_coords[1],
-                    'person_role': 'LP',
-                    'people_count': len(person_roles)
-                }
-            elif role == 'ALP':
-                return False, True, {
-                    'hand_raised': 'right' if right_hand_raised else 'left',
-                    'shoulder_y': avg_shoulder_y,
-                    'wrist_y': right_wrist_coords[1] if right_hand_raised else left_wrist_coords[1],
-                    'person_role': 'ALP',
-                    'people_count': len(person_roles)
-                }
-        
-        # No valid role identified
+        # Unknown role
         return False, False, {}
     
     def calculate_iou(self, bbox1, bbox2):
