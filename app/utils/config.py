@@ -5,9 +5,15 @@ Uses environment variables with sensible defaults for production deployment.
 """
 
 import os
-from typing import Optional
+import json
+from typing import Optional, List
 from functools import lru_cache
-from pydantic_settings import BaseSettings
+from pydantic import field_validator
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+# Suppress PyTorch/YOLO NNPACK warnings early (before torch imports)
+os.environ.setdefault('OMP_NUM_THREADS', '1')
+os.environ.setdefault('MKL_NUM_THREADS', '1')
 
 
 class Settings(BaseSettings):
@@ -16,6 +22,13 @@ class Settings(BaseSettings):
     
     All settings can be overridden via environment variables.
     """
+    
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        case_sensitive=False,
+        extra="ignore"
+    )
     
     # Application settings
     app_name: str = "Locopilot Monitoring System"
@@ -28,8 +41,8 @@ class Settings(BaseSettings):
     
     # File upload settings
     max_upload_size: int = 500 * 1024 * 1024  # 500 MB
-    allowed_video_extensions: list = [".mp4", ".avi", ".mov", ".mkv"]
-    upload_dir: str = "uploads"
+    allowed_video_extensions: List[str] = [".mp4", ".avi", ".mov", ".mkv"]
+    upload_dir: str = os.getenv("UPLOAD_DIR", "/tmp/locopilot_uploads")  # Use temp dir for production
     
     # Output settings
     output_dir: str = "locopilot_evidence"
@@ -52,18 +65,24 @@ class Settings(BaseSettings):
     # Logging settings
     log_level: str = "INFO"
     log_format: str = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+    log_dir: str = os.getenv("LOG_DIR", "logs")  # Directory for log files
+    environment: str = os.getenv("ENVIRONMENT", "development")  # production or development
+    prod_log_level: str = os.getenv("PROD_LOG_LEVEL", "INFO")
+    dev_log_level: str = os.getenv("DEV_LOG_LEVEL", "DEBUG")
     
-    # CORS settings
-    cors_origins: list = ["*"]
-    cors_allow_credentials: bool = True
-    cors_allow_methods: list = ["*"]
-    cors_allow_headers: list = ["*"]
-    
-    class Config:
-        """Pydantic configuration"""
-        env_file = ".env"
-        env_file_encoding = "utf-8"
-        case_sensitive = False
+    # External API settings (CVVR API)
+    cvvr_api_url: str = os.getenv(
+        "CVVR_API_URL", 
+        "https://api.mindcoinapps.com/ai_demo_api/cvvr/cvvrTripViolations/addUpdateBulk"
+    )
+    cvvr_api_url_no_events: str = os.getenv(
+        "CVVR_API_URL_NO_EVENTS",
+        "https://api.mindcoinapps.com/ai_demo_api/cvvr/cvvrTripViolations/addUpdateBulkNoEvents"
+    )
+    cvvr_api_token: Optional[str] = os.getenv("CVVR_API_TOKEN", None)
+    cvvr_api_timeout: int = int(os.getenv("CVVR_API_TIMEOUT", "30"))
+    cvvr_api_enabled: bool = bool(int(os.getenv("CVVR_API_ENABLED", "1")))  # Enable by default
+    host_url: str = os.getenv("HOST_URL", "https://celebxmedia.info")  # URL for building fileUrl
 
 
 @lru_cache()
@@ -77,4 +96,3 @@ def get_settings() -> Settings:
         Settings: Application settings instance
     """
     return Settings()
-

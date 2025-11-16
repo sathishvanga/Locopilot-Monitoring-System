@@ -18,6 +18,7 @@ gunicorn>=21.2.0
 python-multipart>=0.0.6  # For file upload support
 pydantic>=2.5.0
 pydantic-settings>=2.1.0
+requests>=2.31.0  # For external API calls
 
 # Additional dependencies (auto-installed with above packages)
 # These are listed for reference and version pinning:

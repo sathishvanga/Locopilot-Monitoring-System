@@ -1,90 +1,165 @@
 """
-Logging utilities for the Locopilot Monitoring System
+Enhanced logging configuration with request context support
 
-Provides centralized logging configuration with proper formatting.
+Provides structured logging with request tracking, file rotation,
+and custom formatting for production environments.
 """
 
+import os
 import logging
-import sys
+from logging.handlers import TimedRotatingFileHandler
 from typing import Optional
 
+from .request_context import get_request_context
+from .config import get_settings
 
-def get_logger(
-    name: str,
-    level: Optional[str] = None,
-    log_format: Optional[str] = None
-) -> logging.Logger:
+
+settings = get_settings()
+
+# Create logs directory if it doesn't exist
+log_dir = settings.log_dir
+os.makedirs(log_dir, exist_ok=True)
+
+
+class RequestFormatter(logging.Formatter):
     """
-    Get a configured logger instance
+    Custom formatter that includes request context in log messages
     
-    Creates a logger with proper formatting and handlers. If the logger
-    already exists, returns the existing instance.
+    Extracts context metadata (user_id, request_id, etc.) and includes
+    it in formatted log output.
+    """
+    
+    def format(self, record):
+        """
+        Format log record with request context
+        
+        Args:
+            record: Log record to format
+            
+        Returns:
+            Formatted log string
+        """
+        context = get_request_context()
+        record.cookie_id = context.get("cookie_id", "N/A")
+        record.user_id = context.get("user_id", "N/A")
+        record.url = context.get("url", "N/A")
+        record.method = context.get("method", "N/A")
+        record.request_id = context.get("request_id", "N/A")
+        record.source_request_id = context.get("source_request_id", "N/A")
+        return super().format(record)
+
+
+def setup_logging(level: Optional[str] = None) -> None:
+    """
+    Setup application logging with file rotation and request tracking
+    
+    Configures:
+    - Root logger with appropriate level
+    - File handler with daily rotation (4-day retention)
+    - Console handler for errors
+    - Custom formatter with request context
+    - Disables noisy third-party loggers
     
     Args:
-        name: Logger name (typically __name__)
-        level: Log level (DEBUG, INFO, WARNING, ERROR, CRITICAL)
-        log_format: Custom log format string
+        level: Logging level (DEBUG, INFO, WARNING, ERROR, CRITICAL)
+              If None, uses settings based on environment
+    """
+    # Configure root logger
+    root_logger = logging.getLogger()
+    
+    # Determine log level based on environment
+    if level:
+        log_level = getattr(logging, level.upper())
+    else:
+        if settings.environment == "production":
+            log_level = getattr(logging, settings.prod_log_level.upper())
+        else:
+            log_level = getattr(logging, settings.dev_log_level.upper())
+    
+    root_logger.setLevel(log_level)
+    
+    # Disable noisy third-party loggers
+    noisy_loggers = [
+        "httpcore.connection",
+        "httpcore.http11",
+        "openai._base_client",
+        "langsmith",
+        "langsmith._internal._serde",
+        "urllib3.connectionpool",
+        "langsmith.client",
+        "asyncio",
+        "multipart.multipart",
+        "PIL.PngImagePlugin",
+        "PIL.TiffImagePlugin"
+    ]
+    
+    # Disable PyTorch/YOLO warnings (NNPACK, etc.)
+    import warnings
+    warnings.filterwarnings('ignore', category=UserWarning, module='torch')
+    import logging as std_logging
+    std_logging.getLogger('ultralytics').setLevel(std_logging.ERROR)
+    
+    # Set environment variable to suppress NNPACK warnings
+    os.environ['OMP_NUM_THREADS'] = '1'
+    os.environ['MKL_NUM_THREADS'] = '1'
+    
+    for logger_name in noisy_loggers:
+        logging.getLogger(logger_name).disabled = True
+    
+    # Create log file path
+    log_file_path = os.path.join(log_dir, "LocopilotMonitoring.log")
+    
+    # File handler with daily rotation (keeps 4 days of logs)
+    file_handler = TimedRotatingFileHandler(
+        filename=log_file_path,
+        when="midnight",
+        interval=1,
+        backupCount=4,
+        encoding="utf-8",
+        utc=True,
+    )
+    
+    # Only add handler if not already present (avoid duplicates)
+    if not any(
+        isinstance(h, TimedRotatingFileHandler) 
+        and getattr(h, "baseFilename", None) == file_handler.baseFilename 
+        for h in root_logger.handlers
+    ):
+        root_logger.addHandler(file_handler)
+    
+    # Console handler for errors (production) or all messages (development)
+    stream_handler = logging.StreamHandler()
+    if settings.environment == "production":
+        stream_handler.setLevel(logging.ERROR)
+    else:
+        stream_handler.setLevel(logging.DEBUG)
+    
+    if not any(isinstance(h, logging.StreamHandler) for h in root_logger.handlers):
+        root_logger.addHandler(stream_handler)
+    
+    # Custom formatter with request context
+    formatter = RequestFormatter(
+        "%(asctime)s [%(user_id)s] [%(cookie_id)s] [%(source_request_id)s] "
+        "[%(request_id)s] [%(levelname)s] [%(name)s] [%(method)s %(url)s] %(message)s"
+    )
+    
+    file_handler.setFormatter(formatter)
+    stream_handler.setFormatter(formatter)
+    
+    # Log initialization
+    logger = logging.getLogger(__name__)
+    logger.info(f"Logging initialized - Level: {logging.getLevelName(log_level)}, "
+                f"Environment: {settings.environment}, Log file: {log_file_path}")
+
+
+def get_logger(name: str) -> logging.Logger:
+    """
+    Get a logger instance for a specific module
+    
+    Args:
+        name: Logger name (typically __name__ of the calling module)
         
     Returns:
         logging.Logger: Configured logger instance
-        
-    Example:
-        >>> logger = get_logger(__name__)
-        >>> logger.info("Processing started")
-        >>> logger.error("An error occurred", exc_info=True)
     """
-    logger = logging.getLogger(name)
-    
-    # Only configure if not already configured
-    if not logger.handlers:
-        # Set log level
-        log_level = getattr(logging, (level or "INFO").upper(), logging.INFO)
-        logger.setLevel(log_level)
-        
-        # Create console handler
-        handler = logging.StreamHandler(sys.stdout)
-        handler.setLevel(log_level)
-        
-        # Create formatter
-        default_format = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-        formatter = logging.Formatter(
-            log_format or default_format,
-            datefmt="%Y-%m-%d %H:%M:%S"
-        )
-        handler.setFormatter(formatter)
-        
-        # Add handler to logger
-        logger.addHandler(handler)
-        
-        # Prevent propagation to root logger
-        logger.propagate = False
-    
-    return logger
-
-
-def setup_logging(level: str = "INFO", log_format: Optional[str] = None) -> None:
-    """
-    Setup application-wide logging configuration
-    
-    Configures the root logger with proper formatting.
-    
-    Args:
-        level: Log level (DEBUG, INFO, WARNING, ERROR, CRITICAL)
-        log_format: Custom log format string
-    """
-    log_level = getattr(logging, level.upper(), logging.INFO)
-    
-    default_format = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-    
-    logging.basicConfig(
-        level=log_level,
-        format=log_format or default_format,
-        datefmt="%Y-%m-%d %H:%M:%S",
-        handlers=[logging.StreamHandler(sys.stdout)]
-    )
-    
-    # Suppress overly verbose third-party loggers
-    logging.getLogger("ultralytics").setLevel(logging.WARNING)
-    logging.getLogger("mediapipe").setLevel(logging.WARNING)
-    logging.getLogger("cv2").setLevel(logging.WARNING)
-
+    return logging.getLogger(name)

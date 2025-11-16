@@ -4,6 +4,13 @@ Main FastAPI application - Locopilot Monitoring System
 A production-ready API for video processing and activity detection.
 """
 
+import os
+
+# Suppress PyTorch/YOLO warnings BEFORE any imports
+os.environ.setdefault('OMP_NUM_THREADS', '1')
+os.environ.setdefault('MKL_NUM_THREADS', '1')
+os.environ.setdefault('TORCH_CPP_LOG_LEVEL', 'ERROR')
+
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -12,6 +19,7 @@ from fastapi.exceptions import RequestValidationError
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from .controllers import video_router
+from .middleware import LoggingMiddleware
 from .utils.logger import setup_logging, get_logger
 from .utils.config import get_settings
 
@@ -86,11 +94,14 @@ app = FastAPI(
 # Configure CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=settings.cors_origins,
-    allow_credentials=settings.cors_allow_credentials,
-    allow_methods=settings.cors_allow_methods,
-    allow_headers=settings.cors_allow_headers,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
+
+# Add logging middleware for request/response tracking
+app.add_middleware(LoggingMiddleware)
 
 
 # Exception handlers
@@ -181,37 +192,6 @@ async def health():
         "application": settings.app_name,
         "version": settings.app_version
     }
-
-
-# Middleware for request logging
-@app.middleware("http")
-async def log_requests(request: Request, call_next):
-    """
-    Log all incoming requests
-    
-    Logs request method, path, and processing time.
-    """
-    import time
-    
-    start_time = time.time()
-    
-    # Process request
-    response = await call_next(request)
-    
-    # Calculate processing time
-    process_time = time.time() - start_time
-    
-    # Log request
-    logger.info(
-        f"{request.method} {request.url.path} - "
-        f"Status: {response.status_code} - "
-        f"Time: {process_time:.3f}s"
-    )
-    
-    # Add processing time header
-    response.headers["X-Process-Time"] = str(process_time)
-    
-    return response
 
 
 if __name__ == "__main__":

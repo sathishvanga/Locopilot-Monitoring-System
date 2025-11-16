@@ -61,7 +61,7 @@ async def process_video(
     alpCrewId: Optional[str] = Form(default=None, description="Assistant Loco Pilot crew member ID"),
     useMockDetection: Optional[bool] = Form(default=False, description="Use mock detection for testing"),
     useMultiprocessing: Optional[bool] = Form(default=None, description="Enable multiprocessing (default: from config)"),
-    saveClips: Optional[bool] = Form(default=True, description="Generate video clips and images (default: true)")
+    saveClips: Optional[bool] = Form(default=False, description="Generate video clips and images (default: false for production)")
 ):
     """
     Process uploaded video and detect activities
@@ -72,10 +72,11 @@ async def process_video(
     video_path = None
     
     try:
-        logger.info(f"Received video processing request for trip: {tripId}")
+        logger.info(f"📥 Received video processing request for trip: {tripId}")
         
         # Validate tripId
         if not tripId or not tripId.strip():
+            logger.warning(f"⚠️ Invalid request: tripId is empty")
             raise HTTPException(
                 status_code=400,
                 detail="tripId is required and cannot be empty"
@@ -83,11 +84,13 @@ async def process_video(
         
         # Validate LP crew (required)
         if not lpCrewName or not lpCrewName.strip():
+            logger.warning(f"⚠️ Invalid request: lpCrewName is empty for trip {tripId}")
             raise HTTPException(
                 status_code=400,
                 detail="lpCrewName is required and cannot be empty"
             )
         if not lpCrewId or not lpCrewId.strip():
+            logger.warning(f"⚠️ Invalid request: lpCrewId is empty for trip {tripId}")
             raise HTTPException(
                 status_code=400,
                 detail="lpCrewId is required and cannot be empty"
@@ -118,7 +121,7 @@ async def process_video(
         video_content = await video.read()
         file_size = len(video_content)
         
-        logger.info(f"Uploaded video: {video.filename} ({file_size} bytes)")
+        logger.info(f"📹 Uploaded video: {video.filename} ({file_size / (1024*1024):.2f} MB)")
         
         # Validate video file
         is_valid, error_message = video_processing_service.validate_video_file(
@@ -127,6 +130,7 @@ async def process_video(
         )
         
         if not is_valid:
+            logger.warning(f"⚠️ Video validation failed: {error_message}")
             raise HTTPException(status_code=400, detail=error_message)
         
         # Save uploaded video
@@ -140,7 +144,10 @@ async def process_video(
         # Priority: request parameter > config setting > default (False)
         use_mp = useMultiprocessing if useMultiprocessing is not None else settings.enable_multiprocessing
         
-        logger.info(f"Processing with multiprocessing: {use_mp}, save_clips: {saveClips}")
+        logger.info(
+            f"🎮 Processing configuration - "
+            f"Multiprocessing: {use_mp}, SaveClips: {saveClips}, Mock: {useMockDetection}"
+        )
         
         # Process video (synchronous for now, can be made async)
         result = video_processing_service.process_video(
@@ -155,14 +162,17 @@ async def process_video(
             save_clips=saveClips
         )
         
-        # Schedule cleanup of uploaded video (optional)
-        # Uncomment to enable automatic cleanup after processing
-        # background_tasks.add_task(
-        #     video_processing_service.cleanup_uploaded_video,
-        #     video_path
-        # )
+        # Schedule cleanup of uploaded video after processing (production mode)
+        background_tasks.add_task(
+            video_processing_service.cleanup_uploaded_video,
+            video_path
+        )
         
-        logger.info(f"Successfully processed video for trip {tripId}")
+        logger.info(
+            f"✅ Successfully processed video for trip {tripId} - "
+            f"Activities: {result.get('activitiesCount', 0)}, "
+            f"Time: {result.get('processingTime', 0):.2f}s"
+        )
         
         return VideoProcessingResponse(**result)
         
@@ -171,7 +181,7 @@ async def process_video(
         raise
         
     except Exception as e:
-        logger.error(f"Video processing failed: {e}", exc_info=True)
+        logger.error(f"❌ Video processing failed for trip {tripId}: {e}", exc_info=True)
         
         # Cleanup on error
         if video_path:

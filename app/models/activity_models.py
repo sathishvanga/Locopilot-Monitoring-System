@@ -18,6 +18,7 @@ class ActivityTypeEnum(IntEnum):
     GROUP_DETECTED = 7
     LP_NOT_EXCHANGING_HAND_GESTURE = 8
     ALP_NOT_EXCHANGING_HAND_GESTURE = 9
+    MIND_DIVERSION = 10
 
 
 class EvidenceModel(BaseModel):

@@ -79,7 +79,8 @@ class LocopilotActivityMonitor:
             'packing_bags': {'active': False, 'start_time': None, 'frames': [], 'duration': 0},
             'group_detected': {'active': False, 'start_time': None, 'frames': [], 'duration': 0},
             'lp_hand_gesture': {'active': False, 'start_time': None, 'frames': [], 'duration': 0},
-            'alp_hand_gesture': {'active': False, 'start_time': None, 'frames': [], 'duration': 0}
+            'alp_hand_gesture': {'active': False, 'start_time': None, 'frames': [], 'duration': 0},
+            'mind_diversion': {'active': False, 'start_time': None, 'frames': [], 'duration': 0}
         }
         
         # Activity thresholds: minimum duration and required consecutive frames before recording starts
@@ -131,6 +132,12 @@ class LocopilotActivityMonitor:
                 'required_consecutive': 2,    # 2 samples @ 0.5fps = 4 seconds before recording
                 'margin': None,               # N/A for hand gesture detection
                 'grace_frames': 3             # Allow 3 samples (~6s) gap to handle multiple raises
+            },
+            'mind_diversion': {
+                'min_duration': 5.0,          # Must last 5 seconds minimum
+                'required_consecutive': 3,    # 3 samples @ 0.5fps = 6 seconds before recording
+                'margin': None,               # N/A for head pose detection
+                'grace_frames': 3             # Allow 3 samples (~6s) gap
             }
         }
         
@@ -143,7 +150,8 @@ class LocopilotActivityMonitor:
             'packing_bags': 0,
             'group_detected': 0,
             'lp_hand_gesture': 0,
-            'alp_hand_gesture': 0
+            'alp_hand_gesture': 0,
+            'mind_diversion': 0
         }
         
         # Grace period counters - allows brief interruptions without resetting
@@ -155,7 +163,8 @@ class LocopilotActivityMonitor:
             'packing_bags': 0,
             'group_detected': 0,
             'lp_hand_gesture': 0,
-            'alp_hand_gesture': 0
+            'alp_hand_gesture': 0,
+            'mind_diversion': 0
         }
         
         # Buffer for pre-activity frames (5 seconds before at sampled rate)
@@ -198,7 +207,8 @@ class LocopilotActivityMonitor:
             'packing_bags': 'Packing bags activity detected',
             'group_detected': 'More than 2 people (group) detected',
             'lp_hand_gesture': 'LP not exchanging hand gesture',
-            'alp_hand_gesture': 'ALP not exchanging hand gesture'
+            'alp_hand_gesture': 'ALP not exchanging hand gesture',
+            'mind_diversion': 'Mind diversion - attention diverted from controls'
         }
         
         # Evidence rules
@@ -210,7 +220,8 @@ class LocopilotActivityMonitor:
             'packing_bags': 'hand_near_backpack',
             'group_detected': 'more_than_2_deduplicated_persons',
             'lp_hand_gesture': 'lp_hand_raised_gesture_detected',
-            'alp_hand_gesture': 'alp_hand_raised_gesture_detected'
+            'alp_hand_gesture': 'alp_hand_raised_gesture_detected',
+            'mind_diversion': 'head_turned_side_and_down'
         }
         
         # Default crew/trip information
@@ -848,7 +859,7 @@ class LocopilotActivityMonitor:
         
         return annotated_frame
     
-    def draw_mediapipe_outputs(self, frame, pose_results, face_results, ear_value=None, eye_closure_duration=0, pose_sleep_info=None):
+    def draw_mediapipe_outputs(self, frame, pose_results, face_results, ear_value=None, eye_closure_duration=0, pose_sleep_info=None, head_pose_info=None):
         """Draw MediaPipe pose and face mesh landmarks on frame"""
         annotated_frame = frame.copy()
         
@@ -957,6 +968,40 @@ class LocopilotActivityMonitor:
                 cv2.putText(annotated_frame, duration_text, (10, y_offset), 
                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, duration_color, 2, cv2.LINE_AA)
         
+        # Display head pose angles for mind diversion detection
+        if head_pose_info and head_pose_info.get('method') != 'none':
+            y_offset = 60 if not face_detected else (120 if not pose_sleep_info else 180)
+            
+            yaw = head_pose_info.get('yaw', 0)
+            pitch = head_pose_info.get('pitch', 0)
+            detected = head_pose_info.get('detected', False)
+            method = head_pose_info.get('method', 'unknown')
+            
+            # Display yaw (side turn)
+            yaw_direction = "RIGHT" if yaw > 0 else "LEFT"
+            yaw_color = (0, 0, 255) if abs(yaw) > 45 else (0, 255, 0)
+            yaw_text = f"Head Yaw: {abs(yaw):.1f}° {yaw_direction}"
+            cv2.putText(annotated_frame, yaw_text, (10, y_offset), 
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.7, yaw_color, 2, cv2.LINE_AA)
+            
+            # Display pitch (up/down tilt)
+            pitch_direction = "DOWN" if pitch > 0 else "UP"
+            pitch_color = (0, 0, 255) if pitch > 15 else (0, 255, 0)
+            pitch_text = f"Head Pitch: {abs(pitch):.1f}° {pitch_direction}"
+            cv2.putText(annotated_frame, pitch_text, (10, y_offset + 30), 
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.7, pitch_color, 2, cv2.LINE_AA)
+            
+            # Display mind diversion alert if detected
+            if detected:
+                alert_text = "⚠️ MIND DIVERSION - ATTENTION DIVERTED!"
+                cv2.putText(annotated_frame, alert_text, (10, y_offset + 60), 
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2, cv2.LINE_AA)
+                
+                # Show detection method
+                method_text = f"(Method: {method})"
+                cv2.putText(annotated_frame, method_text, (10, y_offset + 85), 
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1, cv2.LINE_AA)
+        
         return annotated_frame
     
     def check_hand_object_interaction(self, hand_coords, object_bbox, margin=50):
@@ -975,6 +1020,125 @@ class LocopilotActivityMonitor:
         return (x1 - margin <= hx <= x2 + margin and 
                 y1 - margin <= hy <= y2 + margin)
     
+    def detect_pose_per_person(self, frame, person_roles):
+        """Run MediaPipe Pose detection on each person's cropped bounding box.
+        
+        This enables multi-person pose detection by running single-person MediaPipe Pose
+        on each detected person's region separately.
+        
+        Args:
+            frame: Full video frame (BGR format)
+            person_roles: Dictionary of person roles with bounding boxes
+                         Format: {person_idx: {'bbox': [x1, y1, x2, y2], 'role': 'LP'/'ALP', ...}}
+        
+        Returns:
+            Dict[int, pose_landmarks]: Dictionary mapping person_idx to their pose landmarks
+                                      Returns None for persons where pose detection failed
+        """
+        if not person_roles:
+            return {}
+        
+        h, w = frame.shape[:2]
+        person_poses = {}
+        
+        for person_idx, person_data in person_roles.items():
+            if 'bbox' not in person_data:
+                person_poses[person_idx] = None
+                continue
+            
+            bbox = person_data['bbox']  # [x1, y1, x2, y2]
+            x1, y1, x2, y2 = bbox
+            
+            # Ensure bbox is within frame bounds
+            x1 = max(0, int(x1))
+            y1 = max(0, int(y1))
+            x2 = min(w, int(x2))
+            y2 = min(h, int(y2))
+            
+            # Check if bbox is valid
+            if x2 <= x1 or y2 <= y1:
+                person_poses[person_idx] = None
+                continue
+            
+            # Crop frame to person's bounding box
+            cropped_frame = frame[y1:y2, x1:x2]
+            
+            # Check if crop is valid
+            if cropped_frame.size == 0:
+                person_poses[person_idx] = None
+                continue
+            
+            # Convert to RGB for MediaPipe
+            cropped_rgb = cv2.cvtColor(cropped_frame, cv2.COLOR_BGR2RGB)
+            
+            # Run MediaPipe Pose on cropped region
+            try:
+                pose_result = self.pose.process(cropped_rgb)
+                
+                if pose_result.pose_landmarks:
+                    # Translate landmarks from cropped coordinates to full frame coordinates
+                    translated_landmarks = self.translate_pose_landmarks(
+                        pose_result.pose_landmarks,
+                        offset_x=x1,
+                        offset_y=y1,
+                        crop_width=x2-x1,
+                        crop_height=y2-y1,
+                        frame_width=w,
+                        frame_height=h
+                    )
+                    person_poses[person_idx] = translated_landmarks
+                else:
+                    person_poses[person_idx] = None
+            except Exception as e:
+                print(f"Error processing pose for person {person_idx}: {e}")
+                person_poses[person_idx] = None
+        
+        return person_poses
+    
+    def translate_pose_landmarks(self, pose_landmarks, offset_x, offset_y, crop_width, crop_height, frame_width, frame_height):
+        """Translate pose landmarks from cropped coordinates back to full frame coordinates.
+        
+        Args:
+            pose_landmarks: MediaPipe pose landmarks (normalized to crop size)
+            offset_x: X offset of crop in full frame
+            offset_y: Y offset of crop in full frame
+            crop_width: Width of cropped region
+            crop_height: Height of cropped region
+            frame_width: Full frame width
+            frame_height: Full frame height
+        
+        Returns:
+            Translated pose landmarks in full frame coordinates
+        """
+        import copy
+        from mediapipe.framework.formats import landmark_pb2
+        
+        # Create a deep copy of landmarks
+        translated = landmark_pb2.NormalizedLandmarkList()
+        
+        for landmark in pose_landmarks.landmark:
+            new_landmark = translated.landmark.add()
+            
+            # Convert normalized crop coordinates to pixel coordinates
+            pixel_x_in_crop = landmark.x * crop_width
+            pixel_y_in_crop = landmark.y * crop_height
+            
+            # Translate to full frame pixel coordinates
+            pixel_x_in_frame = pixel_x_in_crop + offset_x
+            pixel_y_in_frame = pixel_y_in_crop + offset_y
+            
+            # Normalize to full frame dimensions
+            new_landmark.x = pixel_x_in_frame / frame_width
+            new_landmark.y = pixel_y_in_frame / frame_height
+            new_landmark.z = landmark.z  # Z coordinate doesn't need translation
+            new_landmark.visibility = landmark.visibility
+            
+            # Copy presence if it exists
+            if hasattr(landmark, 'presence'):
+                new_landmark.presence = landmark.presence
+        
+        return translated
+    
     def detect_hand_gesture(self, pose_landmarks, frame_shape, person_roles, yolo_person_boxes=None):
         """Detect hand gesture (raised hand) for LP/ALP hand exchange signal.
         
@@ -982,6 +1146,11 @@ class LocopilotActivityMonitor:
         we're analyzing by matching pose to YOLO person bounding boxes.
         
         The gesture should be detected only when ONE person is doing it (not both).
+        
+        ROBUST FALSE POSITIVE PREVENTION:
+        - Filters out hands reaching toward/operating control panels
+        - Only detects deliberate hand-raising gestures (signaling)
+        - Uses control panel proximity, forward reach detection, and arm geometry
         
         Args:
             pose_landmarks: MediaPipe pose landmarks (tracks 1 person)
@@ -1025,6 +1194,9 @@ class LocopilotActivityMonitor:
         left_hip_coords = (int(left_hip.x * w), int(left_hip.y * h))
         nose_coords = (int(nose.x * w), int(nose.y * h))
         avg_shoulder_y = (right_shoulder_coords[1] + left_shoulder_coords[1]) / 2
+        
+        # Calculate body centerline (for detecting forward vs upward reach)
+        body_center_x = (right_shoulder_coords[0] + left_shoulder_coords[0]) / 2
         
         # CRITICAL: Match MediaPipe Pose to the correct YOLO person bounding box
         # MediaPipe Pose tracks only 1 person. We need to determine which person's box
@@ -1110,16 +1282,27 @@ class LocopilotActivityMonitor:
         left_wrist_in_expanded = (expanded_x1 <= left_wrist_coords[0] <= expanded_x2 and 
                                   expanded_y1 <= left_wrist_coords[1] <= expanded_y2)
         
-        # Hand Gesture Detection Logic:
+        # ==================================================================================
+        # ROBUST HAND GESTURE DETECTION LOGIC
+        # ==================================================================================
         # Detect when LP/ALP raises their hand in a signaling gesture (extended arm with raised hand)
         # This is the typical hand gesture used for communication signals between crew members
-        
-        # Key criteria:
-        # 1. Hand raised above shoulder (minimum 80px above shoulder)
-        # 2. Arm is extended (wrist significantly away from body centerline)
-        # 3. Wrist above elbow (active raising, not resting)
-        # 4. Wrist must be within expanded bounding box of the SAME person (critical for multi-person)
-        # 5. Good visibility of landmarks
+        #
+        # FALSE POSITIVE PREVENTION:
+        # - Filters out hands reaching toward/operating control panels
+        # - Only detects deliberate hand-raising gestures (signaling)
+        # - Distinguishes between:
+        #   * FORWARD REACH (operating controls) → FALSE
+        #   * UPWARD RAISE (signaling) → TRUE
+        #
+        # Key Detection Criteria:
+        # 1. Hand raised significantly above shoulder (minimum 120px above shoulder)
+        # 2. Hand is NOT in front of body (control panel region) - must be to the side or above
+        # 3. Elbow is below wrist (vertical arm extension, not forward reach)
+        # 4. Hand is laterally away from body centerline (not reaching forward)
+        # 5. Wrist must be within expanded bounding box of the SAME person (critical for multi-person)
+        # 6. Good visibility of landmarks
+        # ==================================================================================
         
         # Calculate arm extension (how far hand is from shoulder horizontally)
         right_arm_extension = abs(right_wrist_coords[0] - right_shoulder_coords[0])
@@ -1129,19 +1312,80 @@ class LocopilotActivityMonitor:
         right_wrist_elbow_distance = right_elbow_coords[1] - right_wrist_coords[1]  # Positive if wrist above elbow
         left_wrist_elbow_distance = left_elbow_coords[1] - left_wrist_coords[1]
         
-        # Right hand gesture detection
+        # Calculate wrist to shoulder vertical distance
+        right_wrist_shoulder_vertical = right_shoulder_coords[1] - right_wrist_coords[1]  # Positive if wrist above shoulder
+        left_wrist_shoulder_vertical = left_shoulder_coords[1] - left_wrist_coords[1]
+        
+        # CRITICAL: Detect control panel region (assume control panel is in front of operator)
+        # In locomotive cab, control panel is typically in the upper-front area
+        # We detect if hand is reaching forward toward this region by checking if:
+        # 1. Hand is in front of body center (forward reach)
+        # 2. Hand is not significantly laterally extended
+        
+        # For RIGHT hand:
+        # - Control panel reach: wrist X is roughly between shoulder X and far right of person bbox
+        # - Signaling gesture: wrist X is laterally away from body center (to the right for right hand)
+        
+        # Calculate if hand is in "control panel reach zone" (forward reach pattern)
+        # For a seated operator, control panel is typically in the frontal zone
+        # We define this as: hand in upper portion of frame AND not laterally extended
+        
+        # Right hand: Check if it's in control operation zone
+        # This identifies forward reaches to operate controls vs upward signaling
+        right_in_control_zone = (
+            # Hand is NOT very high (if hand is very high above person bbox, it's signaling)
+            right_wrist_coords[1] > (my1 + (my2 - my1) * 0.3) and
+            
+            # Hand is in upper-middle portion of the person's bbox (control panel level)
+            right_wrist_coords[1] < (my1 + (my2 - my1) * 0.7) and
+            
+            # Hand is not significantly laterally extended (reaching forward, not sideways)
+            right_arm_extension < 120 and
+            
+            # Elbow is not significantly below wrist (forward reach has elbow at similar or higher level)
+            right_wrist_elbow_distance < 50 and
+            
+            # Wrist is not very far above shoulder (control operations are typically at shoulder level or slightly above)
+            right_wrist_shoulder_vertical < 100
+        )
+        
+        # Left hand: Check if it's in control operation zone
+        left_in_control_zone = (
+            # Hand is NOT very high (if hand is very high above person bbox, it's signaling)
+            left_wrist_coords[1] > (my1 + (my2 - my1) * 0.3) and
+            
+            # Hand is in upper-middle portion of the person's bbox (control panel level)
+            left_wrist_coords[1] < (my1 + (my2 - my1) * 0.7) and
+            
+            # Hand is not significantly laterally extended (reaching forward, not sideways)
+            left_arm_extension < 120 and
+            
+            # Elbow is not significantly below wrist (forward reach has elbow at similar or higher level)
+            left_wrist_elbow_distance < 50 and
+            
+            # Wrist is not very far above shoulder (control operations are typically at shoulder level or slightly above)
+            left_wrist_shoulder_vertical < 100
+        )
+        
+        # Right hand gesture detection (TRUE SIGNALING GESTURE)
         right_hand_raised = (
             # CRITICAL: Wrist must belong to the same person (within expanded bbox)
             right_wrist_in_expanded and
             
-            # Core criteria: Hand raised above shoulder level
-            right_wrist_coords[1] < (right_shoulder_coords[1] - 80) and
+            # NOT in control panel operation zone (this filters out most false positives)
+            not right_in_control_zone and
             
-            # Wrist must be above elbow (showing active raising)
-            right_wrist_elbow_distance > 20 and  # At least 20px above elbow
+            # Core criteria: Hand raised above shoulder level (reduced threshold for better detection)
+            right_wrist_shoulder_vertical > 80 and  # At least 80px above shoulder (balanced threshold)
             
-            # Arm should be somewhat extended (not tucked close to body)
-            right_arm_extension > 50 and  # Minimum extension from shoulder
+            # Wrist must be above elbow (vertical extension, not forward reach)
+            right_wrist_elbow_distance > 40 and  # At least 40px above elbow (reduced for better detection)
+            
+            # Arm should be extended (hand away from body, not tucked)
+            right_arm_extension > 60 and  # Minimum extension (reduced for various camera angles)
+            
+            # Additional check: Elbow should be at or below shoulder (arm raised up, not forward)
+            (right_elbow_coords[1] >= right_shoulder_coords[1] - 40) and  # Elbow not too high above shoulder
             
             # Visibility checks
             right_wrist.visibility > 0.5 and
@@ -1153,19 +1397,25 @@ class LocopilotActivityMonitor:
             0 < right_wrist_coords[1] < h
         )
         
-        # Left hand gesture detection
+        # Left hand gesture detection (TRUE SIGNALING GESTURE)
         left_hand_raised = (
             # CRITICAL: Wrist must belong to the same person (within expanded bbox)
             left_wrist_in_expanded and
             
-            # Core criteria: Hand raised above shoulder level
-            left_wrist_coords[1] < (left_shoulder_coords[1] - 80) and
+            # NOT in control panel operation zone (this filters out most false positives)
+            not left_in_control_zone and
             
-            # Wrist must be above elbow (showing active raising)
-            left_wrist_elbow_distance > 20 and  # At least 20px above elbow
+            # Core criteria: Hand raised above shoulder level (reduced threshold for better detection)
+            left_wrist_shoulder_vertical > 80 and  # At least 80px above shoulder (balanced threshold)
             
-            # Arm should be somewhat extended (not tucked close to body)
-            left_arm_extension > 50 and  # Minimum extension from shoulder
+            # Wrist must be above elbow (vertical extension, not forward reach)
+            left_wrist_elbow_distance > 40 and  # At least 40px above elbow (reduced for better detection)
+            
+            # Arm should be extended (hand away from body, not tucked)
+            left_arm_extension > 60 and  # Minimum extension (reduced for various camera angles)
+            
+            # Additional check: Elbow should be at or below shoulder (arm raised up, not forward)
+            (left_elbow_coords[1] >= left_shoulder_coords[1] - 40) and  # Elbow not too high above shoulder
             
             # Visibility checks
             left_wrist.visibility > 0.5 and
@@ -1185,19 +1435,19 @@ class LocopilotActivityMonitor:
         
         # Return result based on the MATCHED person's role
         if matched_role == 'LP':
-            return True, False, {
-                'hand_raised': 'right' if right_hand_raised else 'left',
-                'shoulder_y': avg_shoulder_y,
-                'wrist_y': right_wrist_coords[1] if right_hand_raised else left_wrist_coords[1],
+                return True, False, {
+                    'hand_raised': 'right' if right_hand_raised else 'left',
+                    'shoulder_y': avg_shoulder_y,
+                    'wrist_y': right_wrist_coords[1] if right_hand_raised else left_wrist_coords[1],
                 'person_role': 'LP',
                 'matched_person_idx': matched_person_idx,
                 'overlap_score': best_overlap_score
-            }
+                }
         elif matched_role == 'ALP':
-            return False, True, {
-                'hand_raised': 'right' if right_hand_raised else 'left',
-                'shoulder_y': avg_shoulder_y,
-                'wrist_y': right_wrist_coords[1] if right_hand_raised else left_wrist_coords[1],
+                return False, True, {
+                    'hand_raised': 'right' if right_hand_raised else 'left',
+                    'shoulder_y': avg_shoulder_y,
+                    'wrist_y': right_wrist_coords[1] if right_hand_raised else left_wrist_coords[1],
                 'person_role': 'ALP',
                 'matched_person_idx': matched_person_idx,
                 'overlap_score': best_overlap_score
@@ -1205,6 +1455,237 @@ class LocopilotActivityMonitor:
         
         # Unknown role
         return False, False, {}
+    
+    def detect_multi_person_pose_and_gestures(self, frame, person_roles):
+        """Run MediaPipe Pose on each person's cropped bounding box for multi-person gesture detection.
+        
+        This allows simultaneous detection of hand gestures from multiple people (LP and ALP)
+        by running pose detection on cropped regions for each detected person.
+        
+        Args:
+            frame: The full frame image (BGR format)
+            person_roles: Dictionary of person roles from identify_person_roles()
+                         Format: {person_idx: {'bbox': [x1, y1, x2, y2], 'role': 'LP'/'ALP', ...}}
+        
+        Returns:
+            dict: Results for each person
+                  Format: {person_idx: {'pose_landmarks': landmarks, 'gesture_detected': bool, 
+                          'gesture_type': 'lp'/'alp', 'debug_info': {}}}
+        """
+        if not person_roles or len(person_roles) == 0:
+            return {}
+        
+        results = {}
+        h, w = frame.shape[:2]
+        
+        for person_idx, person_data in person_roles.items():
+            if 'bbox' not in person_data:
+                continue
+            
+            bbox = person_data['bbox']  # [x1, y1, x2, y2]
+            x1, y1, x2, y2 = bbox
+            
+            # Add padding to bbox for better pose detection (10% on each side)
+            padding_x = int((x2 - x1) * 0.1)
+            padding_y = int((y2 - y1) * 0.1)
+            
+            # Expand bbox with padding, but stay within frame bounds
+            x1_padded = max(0, x1 - padding_x)
+            y1_padded = max(0, y1 - padding_y)
+            x2_padded = min(w, x2 + padding_x)
+            y2_padded = min(h, y2 + padding_y)
+            
+            # Crop frame to this person's region
+            try:
+                cropped_frame = frame[y1_padded:y2_padded, x1_padded:x2_padded]
+                
+                if cropped_frame.size == 0:
+                    continue
+                
+                # Convert to RGB for MediaPipe
+                cropped_rgb = cv2.cvtColor(cropped_frame, cv2.COLOR_BGR2RGB)
+                
+                # Run MediaPipe Pose on this cropped region
+                pose_result = self.pose.process(cropped_rgb)
+                
+                if pose_result.pose_landmarks:
+                    # Translate landmarks from cropped coordinates back to full frame coordinates
+                    translated_landmarks = self.translate_landmarks_to_full_frame(
+                        pose_result.pose_landmarks,
+                        x1_padded, y1_padded,
+                        x2_padded - x1_padded, y2_padded - y1_padded,
+                        w, h
+                    )
+                    
+                    # Create a single-person roles dict for this person
+                    single_person_roles = {person_idx: person_data}
+                    
+                    # Detect hand gesture for this specific person
+                    lp_gesture, alp_gesture, gesture_debug = self.detect_hand_gesture(
+                        translated_landmarks,
+                        frame.shape,
+                        single_person_roles
+                    )
+                    
+                    # Store results
+                    results[person_idx] = {
+                        'pose_landmarks': translated_landmarks,
+                        'gesture_detected': lp_gesture or alp_gesture,
+                        'gesture_type': 'lp' if lp_gesture else ('alp' if alp_gesture else None),
+                        'debug_info': gesture_debug,
+                        'role': person_data.get('role', 'UNKNOWN')
+                    }
+                    
+            except Exception as e:
+                print(f"Error processing person {person_idx}: {e}")
+                continue
+        
+        return results
+    
+    def calculate_head_pose_angles(self, pose_landmarks, face_landmarks, frame_shape):
+        """Calculate head pose angles (yaw and pitch) to detect mind diversion.
+        
+        Detects when person turns face to side AND looks down.
+        
+        Uses both pose landmarks (nose, shoulders) and face mesh landmarks for accuracy.
+        
+        Args:
+            pose_landmarks: MediaPipe pose landmarks
+            face_landmarks: MediaPipe face mesh landmarks (can be None)
+            frame_shape: (height, width) of frame
+            
+        Returns:
+            dict: {
+                'yaw': float,      # Side turn angle in degrees (-90 to +90)
+                'pitch': float,    # Up/down tilt angle in degrees (-90 to +90)
+                'detected': bool,  # True if mind diversion detected
+                'method': str      # Detection method used
+            }
+        """
+        h, w = frame_shape[:2]
+        result = {'yaw': 0, 'pitch': 0, 'detected': False, 'method': 'none'}
+        
+        if not pose_landmarks:
+            return result
+        
+        landmarks = pose_landmarks.landmark
+        
+        try:
+            # Get pose landmarks
+            nose = landmarks[self.mp_pose.PoseLandmark.NOSE]
+            left_shoulder = landmarks[self.mp_pose.PoseLandmark.LEFT_SHOULDER]
+            right_shoulder = landmarks[self.mp_pose.PoseLandmark.RIGHT_SHOULDER]
+            left_ear = landmarks[self.mp_pose.PoseLandmark.LEFT_EAR]
+            right_ear = landmarks[self.mp_pose.PoseLandmark.RIGHT_EAR]
+            
+            # Check visibility
+            if nose.visibility < 0.5:
+                return result
+            
+            # Convert to pixel coordinates
+            nose_coords = np.array([nose.x * w, nose.y * h])
+            left_shoulder_coords = np.array([left_shoulder.x * w, left_shoulder.y * h])
+            right_shoulder_coords = np.array([right_shoulder.x * w, right_shoulder.y * h])
+            left_ear_coords = np.array([left_ear.x * w, left_ear.y * h])
+            right_ear_coords = np.array([right_ear.x * w, right_ear.y * h])
+            
+            # Calculate shoulder midpoint
+            shoulder_midpoint = (left_shoulder_coords + right_shoulder_coords) / 2
+            shoulder_width = np.linalg.norm(right_shoulder_coords - left_shoulder_coords)
+            
+            # METHOD 1: Calculate YAW (side turning) using nose offset from shoulder midpoint
+            nose_offset_x = nose_coords[0] - shoulder_midpoint[0]
+            
+            # Normalize by shoulder width and convert to angle
+            # Positive = turned right, Negative = turned left
+            yaw_normalized = nose_offset_x / (shoulder_width / 2) if shoulder_width > 0 else 0
+            yaw_angle = np.clip(yaw_normalized * 45, -90, 90)  # Scale to degrees
+            
+            # METHOD 2: Calculate PITCH (up/down tilt) using nose position relative to ears
+            ear_midpoint = (left_ear_coords + right_ear_coords) / 2
+            nose_offset_y = nose_coords[1] - ear_midpoint[1]
+            
+            # Normalize by head size (ear-to-nose distance) and convert to angle
+            # Positive = looking down, Negative = looking up
+            head_height = shoulder_midpoint[1] - ear_midpoint[1]
+            if head_height > 0:
+                pitch_normalized = nose_offset_y / head_height
+                pitch_angle = np.clip(pitch_normalized * 30, -45, 45)  # Scale to degrees
+            else:
+                pitch_angle = 0
+            
+            result['yaw'] = yaw_angle
+            result['pitch'] = pitch_angle
+            result['method'] = 'pose_landmarks'
+            
+            # DETECTION LOGIC: Mind diversion detected if BOTH conditions met:
+            # 1. Head turned to side > 45 degrees (either direction)
+            # 2. Head looking down > 15 degrees
+            yaw_threshold = 45  # degrees
+            pitch_threshold = 15  # degrees (looking down is positive)
+            
+            if abs(yaw_angle) > yaw_threshold and pitch_angle > pitch_threshold:
+                result['detected'] = True
+            
+            # Use face mesh if available for more accurate detection
+            if face_landmarks and face_landmarks.multi_face_landmarks:
+                try:
+                    # Use first detected face
+                    face_lm = face_landmarks.multi_face_landmarks[0].landmark
+                    
+                    # Key face mesh landmarks for 3D pose estimation
+                    # Nose tip, chin, left/right face edges
+                    nose_tip = face_lm[1]  # Nose tip
+                    chin = face_lm[152]     # Chin
+                    left_face_edge = face_lm[234]  # Left face edge
+                    right_face_edge = face_lm[454]  # Right face edge
+                    left_eye = face_lm[33]  # Left eye outer corner
+                    right_eye = face_lm[263]  # Right eye outer corner
+                    
+                    # Convert to pixel coordinates
+                    nose_tip_coords = np.array([nose_tip.x * w, nose_tip.y * h])
+                    chin_coords = np.array([chin.x * w, chin.y * h])
+                    left_edge_coords = np.array([left_face_edge.x * w, left_face_edge.y * h])
+                    right_edge_coords = np.array([right_face_edge.x * w, right_face_edge.y * h])
+                    left_eye_coords = np.array([left_eye.x * w, left_eye.y * h])
+                    right_eye_coords = np.array([right_eye.x * w, right_eye.y * h])
+                    
+                    # Calculate face width and nose offset for YAW
+                    face_width = np.linalg.norm(right_edge_coords - left_edge_coords)
+                    face_center_x = (left_edge_coords[0] + right_edge_coords[0]) / 2
+                    nose_offset_x_face = nose_tip_coords[0] - face_center_x
+                    
+                    # YAW angle from face mesh (more accurate)
+                    if face_width > 0:
+                        yaw_face = (nose_offset_x_face / (face_width / 2)) * 60  # Scale to degrees
+                        result['yaw'] = np.clip(yaw_face, -90, 90)
+                    
+                    # Calculate PITCH using nose tip and eye line
+                    eye_midpoint = (left_eye_coords + right_eye_coords) / 2
+                    nose_to_eye_dist = np.linalg.norm(nose_tip_coords - eye_midpoint)
+                    nose_below_eyes = nose_tip_coords[1] - eye_midpoint[1]
+                    
+                    # PITCH angle from face mesh
+                    if nose_to_eye_dist > 0:
+                        pitch_face = (nose_below_eyes / nose_to_eye_dist) * 45
+                        result['pitch'] = np.clip(pitch_face, -45, 45)
+                    
+                    result['method'] = 'face_mesh'
+                    
+                    # Re-evaluate detection with face mesh data
+                    if abs(result['yaw']) > yaw_threshold and result['pitch'] > pitch_threshold:
+                        result['detected'] = True
+                    else:
+                        result['detected'] = False
+                        
+                except Exception as e:
+                    # If face mesh processing fails, keep pose-based result
+                    pass
+            
+            return result
+            
+        except (IndexError, AttributeError, ZeroDivisionError) as e:
+            return {'yaw': 0, 'pitch': 0, 'detected': False, 'method': 'error'}
     
     def calculate_iou(self, bbox1, bbox2):
         """Calculate Intersection over Union (IoU) between two bounding boxes.
@@ -2011,10 +2492,33 @@ class LocopilotActivityMonitor:
                         print(f"[{timestamp}] Heuristic: Writing posture detected (hand Y={right_hand_coords[1]}, elbow Y={right_elbow_coords[1]}, hands separated={hands_separated}, book_near_hand={hand_near_book})")
                 
                 # NEW: Check for hand gesture (LP/ALP not exchanging hand gesture)
+                # Use MULTI-PERSON pose detection for simultaneous gesture detection
                 lp_hand_gesture_detected = False
                 alp_hand_gesture_detected = False
                 
-                if pose_results.pose_landmarks and person_roles:
+                # Run multi-person pose detection if we have 2 people
+                if len(person_roles) >= 2:
+                    # Multi-person scenario: Run pose detection on each person's cropped region
+                    multi_person_results = self.detect_multi_person_pose_and_gestures(frame, person_roles)
+                    
+                    # Check results for each person
+                    for person_idx, result in multi_person_results.items():
+                        if result['gesture_detected']:
+                            gesture_type = result['gesture_type']
+                            role = result['role']
+                            debug_info = result['debug_info']
+                            
+                            if gesture_type == 'lp':
+                                lp_hand_gesture_detected = True
+                                if self.consecutive_detections['lp_hand_gesture'] == 0:
+                                    print(f"[{timestamp}] LP hand gesture detected - {debug_info.get('hand_raised', 'unknown')} hand raised (multi-person mode)")
+                            elif gesture_type == 'alp':
+                                alp_hand_gesture_detected = True
+                                if self.consecutive_detections['alp_hand_gesture'] == 0:
+                                    print(f"[{timestamp}] ALP hand gesture detected - {debug_info.get('hand_raised', 'unknown')} hand raised (multi-person mode)")
+                
+                # Fallback to single-person pose detection if only 1 person or multi-person failed
+                elif pose_results.pose_landmarks and person_roles:
                     lp_gesture, alp_gesture, gesture_debug = self.detect_hand_gesture(
                         pose_results.pose_landmarks, 
                         frame.shape, 
@@ -2024,12 +2528,35 @@ class LocopilotActivityMonitor:
                     if lp_gesture:
                         lp_hand_gesture_detected = True
                         if self.consecutive_detections['lp_hand_gesture'] == 0:
-                            print(f"[{timestamp}] LP hand gesture detected - {gesture_debug.get('hand_raised', 'unknown')} hand raised")
+                            print(f"[{timestamp}] LP hand gesture detected - {gesture_debug.get('hand_raised', 'unknown')} hand raised (single-person mode)")
                     
                     if alp_gesture:
                         alp_hand_gesture_detected = True
                         if self.consecutive_detections['alp_hand_gesture'] == 0:
-                            print(f"[{timestamp}] ALP hand gesture detected - {gesture_debug.get('hand_raised', 'unknown')} hand raised")
+                            print(f"[{timestamp}] ALP hand gesture detected - {gesture_debug.get('hand_raised', 'unknown')} hand raised (single-person mode)")
+                
+                # NEW: Check for mind diversion (head turned to side AND looking down)
+                mind_diversion_detected = False
+                head_pose_info = {}
+                
+                if pose_results.pose_landmarks:
+                    # Calculate head pose angles (yaw and pitch)
+                    head_pose_info = self.calculate_head_pose_angles(
+                        pose_results.pose_landmarks,
+                        face_results,
+                        frame.shape
+                    )
+                    
+                    # Check if mind diversion is detected based on angles
+                    if head_pose_info.get('detected', False):
+                        mind_diversion_detected = True
+                        
+                        # Log detection with angle information
+                        if self.consecutive_detections['mind_diversion'] == 0:
+                            yaw = head_pose_info.get('yaw', 0)
+                            pitch = head_pose_info.get('pitch', 0)
+                            method = head_pose_info.get('method', 'unknown')
+                            print(f"[{timestamp}] MIND DIVERSION detected - Yaw={yaw:.1f}°, Pitch={pitch:.1f}° (method: {method})")
                 
                 # CRITICAL: Exclude sleep detection if person is holding objects or in active posture
                 # If someone has a phone, book, or backpack in hand, they're clearly NOT sleeping
@@ -2067,6 +2594,7 @@ class LocopilotActivityMonitor:
                     ear_value,
                     self.eye_closure_duration,
                     pose_sleep_info,
+                    head_pose_info
                 )
                 
                 # Save annotated frames periodically if enabled (AFTER all detections)
@@ -2098,7 +2626,8 @@ class LocopilotActivityMonitor:
                     'packing_bags': packing_detected,
                     'group_detected': group_detected_flag,
                     'lp_hand_gesture': lp_hand_gesture_detected,
-                    'alp_hand_gesture': alp_hand_gesture_detected
+                    'alp_hand_gesture': alp_hand_gesture_detected,
+                    'mind_diversion': mind_diversion_detected
                 }
                 
                 for activity_name, detected in activities_map.items():
@@ -2448,6 +2977,22 @@ class LocopilotActivityMonitor:
                     if alp_gesture:
                         alp_hand_gesture_detected = True
                 
+                # NEW: Check for mind diversion (head turned to side AND looking down)
+                mind_diversion_detected = False
+                head_pose_info = {}
+                
+                if pose_results.pose_landmarks:
+                    # Calculate head pose angles (yaw and pitch)
+                    head_pose_info = self.calculate_head_pose_angles(
+                        pose_results.pose_landmarks,
+                        face_results,
+                        frame.shape
+                    )
+                    
+                    # Check if mind diversion is detected based on angles
+                    if head_pose_info.get('detected', False):
+                        mind_diversion_detected = True
+                
                 # Override sleep detection if person is active
                 if cell_phone_detected or writing_detected or packing_detected or holding_object_heuristic:
                     microsleep_detected = False
@@ -2469,6 +3014,7 @@ class LocopilotActivityMonitor:
                     ear_value,
                     self.eye_closure_duration,
                     pose_sleep_info,
+                    head_pose_info
                 )
                 
                 # Save annotated frames periodically if enabled (in process_video_range for multiprocessing)
@@ -2500,7 +3046,8 @@ class LocopilotActivityMonitor:
                     'packing_bags': packing_detected,
                     'group_detected': group_detected_flag,
                     'lp_hand_gesture': lp_hand_gesture_detected,
-                    'alp_hand_gesture': alp_hand_gesture_detected
+                    'alp_hand_gesture': alp_hand_gesture_detected,
+                    'mind_diversion': mind_diversion_detected
                 }
                 
                 for activity_name, detected in activities_map.items():

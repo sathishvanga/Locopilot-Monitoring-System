@@ -14,6 +14,7 @@ from ..utils.logger import get_logger
 from ..utils.config import get_settings
 from ..repositories.activity_repository import ActivityRepository
 from .activity_detection_service import ActivityDetectionService
+from .external_api_service import get_external_api_service
 
 
 logger = get_logger(__name__)
@@ -51,7 +52,10 @@ class VideoProcessingService:
         # Ensure upload directory exists
         os.makedirs(settings.upload_dir, exist_ok=True)
         
-        logger.info("Video processing service initialized")
+        logger.info(
+            f"🚀 Video processing service initialized - "
+            f"Output dir: {settings.output_dir}, Upload dir: {settings.upload_dir}"
+        )
     
     def validate_video_file(self, filename: str, file_size: int) -> tuple[bool, Optional[str]]:
         """
@@ -152,19 +156,26 @@ class VideoProcessingService:
         start_time = time.time()
         
         try:
-            logger.info(f"Starting video processing for trip {trip_id} "
-                       f"(multiprocessing={'enabled' if use_multiprocessing else 'disabled'})")
+            logger.info(
+                f"🎬 Starting video processing for trip {trip_id} - "
+                f"Multiprocessing: {'enabled' if use_multiprocessing else 'disabled'}, "
+                f"Save clips: {save_clips}, Mock detection: {use_mock_detection}"
+            )
             
             # Validate video file exists
             if not os.path.exists(video_path):
+                logger.error(f"❌ Video file not found: {video_path}")
                 raise FileNotFoundError(f"Video file not found: {video_path}")
+            
+            logger.info(f"✅ Video file validated: {video_path}")
             
             # Create run directory ONCE at the top level
             run_dir = self.activity_repository.create_run_directory(base_name=f"run")
+            logger.info(f"📁 Created run directory: {run_dir}")
             
             # Run activity detection
             if use_mock_detection:
-                logger.info("Using mock activity detection")
+                logger.info("🎭 Using mock activity detection")
                 activities = self.activity_detection_service.detect_activities_mock(
                     video_path=video_path,
                     trip_id=trip_id,
@@ -174,8 +185,10 @@ class VideoProcessingService:
                     crew_role=crew_role
                 )
             else:
-                logger.info(f"Using real activity detection "
-                          f"(multiprocessing={'enabled' if use_multiprocessing else 'disabled'})")
+                logger.info(
+                    f"🔍 Using real activity detection - "
+                    f"Multiprocessing: {'enabled' if use_multiprocessing else 'disabled'}"
+                )
                 
                 # Pass run_dir and save_clips settings
                 if use_multiprocessing:
@@ -209,6 +222,44 @@ class VideoProcessingService:
                 activities=activities,
                 run_dir=run_dir
             )
+            logger.info(f"💾 Saved {len(activities)} activities to {activities_json_path}")
+            
+            # Post results to external API (non-blocking, errors don't fail the job)
+            api_result = None
+            try:
+                logger.info(f"🌐 Attempting to post results to external API...")
+                external_api_service = get_external_api_service()
+                
+                # Extract run_id from run_dir for constructing job_id
+                run_id = os.path.basename(run_dir)
+                
+                # Post to external API
+                api_result = external_api_service.post_cvvr_results(
+                    trip_id=trip_id,
+                    events=activities,
+                    job_id=run_id,
+                    host_url=settings.host_url
+                )
+                
+                if api_result.get("success"):
+                    logger.info(
+                        f"✅ [external_api] Successfully posted {api_result.get('violations_count', 0)} "
+                        f"violations to external API for trip {trip_id}"
+                    )
+                else:
+                    logger.warning(
+                        f"⚠️ [external_api] Failed to post to external API: {api_result.get('message')}"
+                    )
+            except Exception as e:
+                logger.error(
+                    f"❌ [external_api] Exception while posting to external API: {e}",
+                    exc_info=True
+                )
+                api_result = {
+                    "success": False,
+                    "message": f"Exception: {str(e)}",
+                    "posted": False
+                }
             
             # Calculate processing time
             processing_time = time.time() - start_time
@@ -217,11 +268,12 @@ class VideoProcessingService:
             summary = self.activity_repository.get_activity_summary(activities)
             
             logger.info(
-                f"Video processing completed in {processing_time:.2f}s. "
-                f"Found {len(activities)} activities."
+                f"✅ Video processing completed in {processing_time:.2f}s - "
+                f"Found {len(activities)} activities for trip {trip_id}"
             )
             
-            return {
+            # Build response with API result
+            response = {
                 "status": "success",
                 "message": "Video processed successfully",
                 "tripId": trip_id,
@@ -236,10 +288,16 @@ class VideoProcessingService:
                 "clipsGenerated": save_clips
             }
             
+            # Add external API result if available
+            if api_result is not None:
+                response["externalApiResult"] = api_result
+            
+            return response
+            
         except Exception as e:
             processing_time = time.time() - start_time
             logger.error(
-                f"Video processing failed after {processing_time:.2f}s: {e}",
+                f"❌ Video processing failed after {processing_time:.2f}s for trip {trip_id}: {e}",
                 exc_info=True
             )
             raise
@@ -254,9 +312,9 @@ class VideoProcessingService:
         try:
             if os.path.exists(video_path):
                 os.remove(video_path)
-                logger.info(f"Cleaned up uploaded video: {video_path}")
+                logger.info(f"🗑️ Cleaned up uploaded video: {video_path}")
         except Exception as e:
-            logger.warning(f"Failed to cleanup video {video_path}: {e}")
+            logger.warning(f"⚠️ Failed to cleanup video {video_path}: {e}")
     
     def get_processing_status(self, run_dir: str) -> Dict[str, Any]:
         """
