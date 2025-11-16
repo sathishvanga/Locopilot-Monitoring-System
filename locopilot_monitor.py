@@ -86,8 +86,8 @@ class LocopilotActivityMonitor:
         # Activity thresholds: minimum duration and required consecutive frames before recording starts
         self.activity_thresholds = {
             'packing_bags': {
-                'min_duration': 3.0,          # Must last 3 seconds minimum
-                'required_consecutive': 3,    # 3 samples @ 0.5fps = 6 seconds before recording
+                'min_duration': 1.5,          # Must last 1.5 seconds minimum (reduced from 3.0)
+                'required_consecutive': 1,    # 1 sample @ 0.5fps = 2 seconds before recording (equivalent to ~50 frames at 30fps)
                 'margin': 50,                 # More lenient proximity (increased from 30)
                 'grace_frames': 5             # Allow 5 samples (~10s) gap to group nearby detections
             },
