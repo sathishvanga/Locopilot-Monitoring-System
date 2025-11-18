@@ -234,7 +234,9 @@ def process_frame_range(
     crew_role: int,
     output_dir: str,
     run_dir: str = None,
-    save_clips: bool = True
+    save_clips: bool = True,
+    enable_gesture_debug: bool = False,
+    gesture_sensitivity: str = 'balanced'
 ) -> Dict[str, Any]:
     """
     Process a specific frame range (worker task function)
@@ -281,7 +283,9 @@ def process_frame_range(
                 frame_save_interval=settings.frame_save_interval,
                 sample_fps=sample_fps,
                 run_dir=run_dir,  # Use shared run directory
-                create_run_dir=False  # Don't create new directory
+                create_run_dir=False,  # Don't create new directory
+                enable_gesture_debug=enable_gesture_debug,
+                gesture_sensitivity=gesture_sensitivity
             )
         else:
             # No run directory - activities in memory only
@@ -292,7 +296,9 @@ def process_frame_range(
                 frame_save_interval=settings.frame_save_interval,
                 sample_fps=sample_fps,
                 run_dir=None,
-                create_run_dir=False
+                create_run_dir=False,
+                enable_gesture_debug=enable_gesture_debug,
+                gesture_sensitivity=gesture_sensitivity
             )
         
         # Set trip and crew information
@@ -442,7 +448,9 @@ class VideoMultiprocessingOrchestrator:
         crew_role: int = 1,
         sample_fps: float = 1.0,
         run_dir: str = None,
-        save_clips: bool = True
+        save_clips: bool = True,
+        enable_gesture_debug: bool = False,
+        gesture_sensitivity: str = 'balanced'
     ) -> List[Dict[str, Any]]:
         """
         Process video in parallel using multiple workers
@@ -510,7 +518,9 @@ class VideoMultiprocessingOrchestrator:
                 crew_role=crew_role,
                 output_dir=self.output_dir,
                 run_dir=run_dir,  # Pass run_dir for clip saving
-                save_clips=save_clips
+                save_clips=save_clips,
+                enable_gesture_debug=enable_gesture_debug,
+                gesture_sensitivity=gesture_sensitivity
             )
             futures[future] = frame_range
         

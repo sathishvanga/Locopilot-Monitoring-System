@@ -44,6 +44,8 @@ video_processing_service = VideoProcessingService()
     - useMockDetection: Use mock detection for testing (optional, default: false)
     - useMultiprocessing: Enable parallel processing (optional, default: from config)
     - saveClips: Generate video clips and images (optional, default: true)
+    - enableGestureDebug: Enable gesture debug features (optional, default: false)
+    - gestureSensitivity: Gesture sensitivity mode - 'strict', 'balanced', or 'sensitive' (optional, default: 'balanced')
     
     Returns:
     - Processing results with detected activities
@@ -61,7 +63,9 @@ async def process_video(
     alpCrewId: Optional[str] = Form(default=None, description="Assistant Loco Pilot crew member ID"),
     useMockDetection: Optional[bool] = Form(default=False, description="Use mock detection for testing"),
     useMultiprocessing: Optional[bool] = Form(default=None, description="Enable multiprocessing (default: from config)"),
-    saveClips: Optional[bool] = Form(default=False, description="Generate video clips and images (default: false for production)")
+    saveClips: Optional[bool] = Form(default=False, description="Generate video clips and images (default: false for production)"),
+    enableGestureDebug: Optional[bool] = Form(default=False, description="Enable gesture detection debug features (confidence scoring, logs, reports)"),
+    gestureSensitivity: Optional[str] = Form(default='balanced', description="Gesture detection sensitivity mode: 'strict', 'balanced', or 'sensitive'")
 ):
     """
     Process uploaded video and detect activities
@@ -146,7 +150,8 @@ async def process_video(
         
         logger.info(
             f"🎮 Processing configuration - "
-            f"Multiprocessing: {use_mp}, SaveClips: {saveClips}, Mock: {useMockDetection}"
+            f"Multiprocessing: {use_mp}, SaveClips: {saveClips}, Mock: {useMockDetection}, "
+            f"GestureDebug: {enableGestureDebug}, GestureSensitivity: {gestureSensitivity}"
         )
         
         # Process video (synchronous for now, can be made async)
@@ -159,7 +164,9 @@ async def process_video(
             crew_role=1,  # LP role
             use_mock_detection=useMockDetection,
             use_multiprocessing=use_mp,
-            save_clips=saveClips
+            save_clips=saveClips,
+            enable_gesture_debug=enableGestureDebug,
+            gesture_sensitivity=gestureSensitivity
         )
         
         # Schedule cleanup of uploaded video after processing (production mode)

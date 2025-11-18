@@ -222,7 +222,9 @@ class ActivityDetectionService:
         crew_role: int = 1,
         output_dir: str = "locopilot_evidence",
         sample_fps: float = 1.0,
-        run_dir: str = None
+        run_dir: str = None,
+        enable_gesture_debug: bool = False,
+        gesture_sensitivity: str = 'balanced'
     ) -> List[Dict[str, Any]]:
         """
         Single-process activity detection (original implementation)
@@ -252,7 +254,9 @@ class ActivityDetectionService:
                 frame_save_interval=self.settings.frame_save_interval,
                 sample_fps=sample_fps,
                 run_dir=run_dir,
-                create_run_dir=False  # Don't create new directory
+                create_run_dir=False,  # Don't create new directory
+                enable_gesture_debug=enable_gesture_debug,
+                gesture_sensitivity=gesture_sensitivity
             )
         else:
             # Create new run directory
@@ -261,7 +265,9 @@ class ActivityDetectionService:
                 output_dir=output_dir,
                 save_annotated_frames=self.settings.save_annotated_frames,
                 frame_save_interval=self.settings.frame_save_interval,
-                sample_fps=sample_fps
+                sample_fps=sample_fps,
+                enable_gesture_debug=enable_gesture_debug,
+                gesture_sensitivity=gesture_sensitivity
             )
         
         # Set trip and crew information
@@ -292,7 +298,9 @@ class ActivityDetectionService:
         output_dir: str = "locopilot_evidence",
         sample_fps: float = 1.0,
         run_dir: str = None,
-        save_clips: bool = True
+        save_clips: bool = True,
+        enable_gesture_debug: bool = False,
+        gesture_sensitivity: str = 'balanced'
     ) -> List[Dict[str, Any]]:
         """
         Multi-process activity detection using parallel processing
@@ -345,7 +353,9 @@ class ActivityDetectionService:
                 crew_role=crew_role,
                 sample_fps=sample_fps,
                 run_dir=run_dir,
-                save_clips=save_clips
+                save_clips=save_clips,
+                enable_gesture_debug=enable_gesture_debug,
+                gesture_sensitivity=gesture_sensitivity
             )
             
             logger.info(f"Multi-process detection found {len(activities)} activities "

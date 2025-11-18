@@ -1,6 +1,7 @@
 import cv2
 import json
 import numpy as np
+import math
 from datetime import datetime, timedelta
 from collections import deque
 import mediapipe as mp
@@ -8,12 +9,16 @@ from ultralytics import YOLO
 import os
 
 class LocopilotActivityMonitor:
-    def __init__(self, video_path, output_dir="evidence", save_annotated_frames=False, frame_save_interval=1, sample_fps=1.0, run_dir=None, create_run_dir=True):
+    def __init__(self, video_path, output_dir="evidence", save_annotated_frames=False, frame_save_interval=1, sample_fps=1.0, run_dir=None, create_run_dir=True, enable_gesture_debug=False, gesture_sensitivity='balanced'):
         self.video_path = video_path
         self.output_dir = output_dir
         
         # Frame sampling configuration
         self.sample_fps = sample_fps  # Sample frames at this rate (e.g., 0.5 = 1 frame every 2 seconds)
+        
+        # Gesture debug and monitoring configuration
+        self.enable_gesture_debug = enable_gesture_debug
+        self.gesture_sensitivity = gesture_sensitivity
         
         # Control annotated frame saving
         self.save_annotated_frames = save_annotated_frames
@@ -235,6 +240,71 @@ class LocopilotActivityMonitor:
         
         # Store all activities for final JSON array output
         self.all_activities = []
+        
+        # Gesture statistics tracking
+        self.gesture_stats = {
+            'total_frames_analyzed': 0,
+            'successful_detections': {
+                'lp': 0,
+                'alp': 0,
+                'total': 0
+            },
+            'rejections_by_reason': {
+                'control_zone': 0,
+                'insufficient_height': 0,
+                'insufficient_extension': 0,
+                'elbow_position': 0,
+                'visibility_low': 0,
+                'out_of_bounds': 0,
+                'pose_not_matched': 0,
+                'wrist_not_in_bbox': 0,
+                'elbow_not_below_wrist': 0,
+                # v3.0 NEW REJECTION REASONS
+                'arm_not_vertical': 0,
+                'hand_below_head': 0
+            },
+            'confidence_distribution': {
+                'high': 0,    # >80%
+                'medium': 0,  # 50-80%
+                'low': 0      # <50%
+            }
+        }
+        
+        # Sensitivity mode thresholds
+        self.sensitivity_thresholds = {
+            'strict': {
+                'wrist_shoulder_vertical': 120,    # High threshold
+                'wrist_elbow_distance': 60,
+                'arm_extension': 80,
+                'elbow_shoulder_margin': -30,
+                'control_zone_extension': 100,
+                'control_zone_elbow_distance': 40
+            },
+            'balanced': {
+                'wrist_shoulder_vertical': 80,     # Current v2.0 values
+                'wrist_elbow_distance': 40,
+                'arm_extension': 60,
+                'elbow_shoulder_margin': -40,
+                'control_zone_extension': 120,
+                'control_zone_elbow_distance': 50
+            },
+            'sensitive': {
+                'wrist_shoulder_vertical': 60,     # Lower threshold
+                'wrist_elbow_distance': 30,
+                'arm_extension': 50,
+                'elbow_shoulder_margin': -50,
+                'control_zone_extension': 140,
+                'control_zone_elbow_distance': 60
+            }
+        }
+        
+        # Get thresholds for selected sensitivity mode
+        self.gesture_thresholds = self.sensitivity_thresholds.get(gesture_sensitivity, self.sensitivity_thresholds['balanced'])
+        
+        # Log configuration if debug enabled
+        if self.enable_gesture_debug:
+            print(f"[GESTURE DEBUG] Enabled with sensitivity mode: {gesture_sensitivity}")
+            print(f"[GESTURE DEBUG] Thresholds: {self.gesture_thresholds}")
     
     def sample_video_frames(self, video_path, start_frame=None, end_frame=None):
         """Sample frames at fixed intervals based on sample_fps.
@@ -859,36 +929,87 @@ class LocopilotActivityMonitor:
         
         return annotated_frame
     
-    def draw_mediapipe_outputs(self, frame, pose_results, face_results, ear_value=None, eye_closure_duration=0, pose_sleep_info=None, head_pose_info=None):
-        """Draw MediaPipe pose and face mesh landmarks on frame"""
+    def draw_mediapipe_outputs(self, frame, pose_results, face_results, ear_value=None, eye_closure_duration=0, pose_sleep_info=None, head_pose_info=None, multi_person_results=None):
+        """Draw MediaPipe pose and face mesh landmarks on frame
+        
+        Args:
+            frame: Frame to draw on
+            pose_results: Single-person pose results (for fallback/legacy)
+            face_results: Single-person face results (for fallback/legacy)
+            ear_value: EAR value (for single-person mode)
+            eye_closure_duration: Eye closure duration (for single-person mode)
+            pose_sleep_info: Sleep info dict (for single-person mode)
+            head_pose_info: Head pose info dict (for single-person mode)
+            multi_person_results: Multi-person detection results from detect_per_person_activities()
+        """
         annotated_frame = frame.copy()
         
-        face_detected = face_results.multi_face_landmarks is not None and len(face_results.multi_face_landmarks) > 0
-        
-        if pose_results.pose_landmarks:
-            self.mp_drawing.draw_landmarks(
-                annotated_frame,
-                pose_results.pose_landmarks,
-                self.mp_pose.POSE_CONNECTIONS,
-                landmark_drawing_spec=self.mp_drawing_styles.get_default_pose_landmarks_style()
-            )
-        
-        if face_detected:
-            for face_landmarks in face_results.multi_face_landmarks:
+        # NEW: Draw multi-person pose landmarks if available
+        if multi_person_results:
+            for person_idx, person_result in multi_person_results.items():
+                # Draw pose landmarks for this person
+                if person_result['pose_landmarks']:
+                    self.mp_drawing.draw_landmarks(
+                        annotated_frame,
+                        person_result['pose_landmarks'],
+                        self.mp_pose.POSE_CONNECTIONS,
+                        landmark_drawing_spec=self.mp_drawing_styles.get_default_pose_landmarks_style()
+                    )
+                
+                # Draw face landmarks for this person
+                if person_result['face_landmarks']:
+                    self.mp_drawing.draw_landmarks(
+                        image=annotated_frame,
+                        landmark_list=person_result['face_landmarks'],
+                        connections=self.mp_face_mesh.FACEMESH_TESSELATION,
+                        landmark_drawing_spec=None,
+                        connection_drawing_spec=self.mp_drawing_styles.get_default_face_mesh_tesselation_style()
+                    )
+                    self.mp_drawing.draw_landmarks(
+                        image=annotated_frame,
+                        landmark_list=person_result['face_landmarks'],
+                        connections=self.mp_face_mesh.FACEMESH_CONTOURS,
+                        landmark_drawing_spec=None,
+                        connection_drawing_spec=self.mp_drawing_styles.get_default_face_mesh_contours_style()
+                    )
+            
+            # For multi-person, we'll show aggregated info or first person's info
+            # Use the first person's metrics for display (or we can enhance this later)
+            if len(multi_person_results) > 0:
+                first_person = list(multi_person_results.values())[0]
+                ear_value = first_person['metrics'].get('ear')
+                eye_closure_duration = first_person['metrics'].get('eye_closure_duration', 0)
+                pose_sleep_info = first_person['metrics'].get('pose_sleep_info')
+                head_pose_info = first_person['metrics'].get('head_pose_info')
+                face_detected = first_person['face_landmarks'] is not None
+        else:
+            # FALLBACK: Single-person mode (legacy)
+            face_detected = face_results.multi_face_landmarks is not None and len(face_results.multi_face_landmarks) > 0
+            
+            if pose_results.pose_landmarks:
                 self.mp_drawing.draw_landmarks(
-                    image=annotated_frame,
-                    landmark_list=face_landmarks,
-                    connections=self.mp_face_mesh.FACEMESH_TESSELATION,
-                    landmark_drawing_spec=None,
-                    connection_drawing_spec=self.mp_drawing_styles.get_default_face_mesh_tesselation_style()
+                    annotated_frame,
+                    pose_results.pose_landmarks,
+                    self.mp_pose.POSE_CONNECTIONS,
+                    landmark_drawing_spec=self.mp_drawing_styles.get_default_pose_landmarks_style()
                 )
-                self.mp_drawing.draw_landmarks(
-                    image=annotated_frame,
-                    landmark_list=face_landmarks,
-                    connections=self.mp_face_mesh.FACEMESH_CONTOURS,
-                    landmark_drawing_spec=None,
-                    connection_drawing_spec=self.mp_drawing_styles.get_default_face_mesh_contours_style()
-                )
+            
+            if face_detected:
+                for face_landmarks in face_results.multi_face_landmarks:
+                    self.mp_drawing.draw_landmarks(
+                        image=annotated_frame,
+                        landmark_list=face_landmarks,
+                        connections=self.mp_face_mesh.FACEMESH_TESSELATION,
+                        landmark_drawing_spec=None,
+                        connection_drawing_spec=self.mp_drawing_styles.get_default_face_mesh_tesselation_style()
+                    )
+                    self.mp_drawing.draw_landmarks(
+                        image=annotated_frame,
+                        landmark_list=face_landmarks,
+                        connections=self.mp_face_mesh.FACEMESH_CONTOURS,
+                        landmark_drawing_spec=None,
+                        connection_drawing_spec=self.mp_drawing_styles.get_default_face_mesh_contours_style()
+                    )
         
         if face_detected:
             if ear_value is not None:
@@ -1139,6 +1260,64 @@ class LocopilotActivityMonitor:
         
         return translated
     
+    def calculate_gesture_confidence(self, criteria_results, hand_side='right'):
+        """Calculate 0-100% confidence score based on which criteria passed/failed.
+        
+        Args:
+            criteria_results: Dictionary with results for each criterion
+            hand_side: 'right' or 'left'
+            
+        Returns:
+            tuple: (confidence_score, passed_criteria, failed_criteria, rejection_reasons)
+        """
+        # Weight each criterion (total should sum to 100)
+        # v3.0 ENHANCED with geometric criteria
+        weights = {
+            'wrist_in_expanded_bbox': 10,      # Person matching
+            'not_in_control_zone': 25,         # CRITICAL: Most important for false positive prevention
+            'wrist_above_shoulder': 10,        # Core gesture criteria
+            'wrist_above_elbow': 10,           # Vertical extension
+            'arm_extended': 8,                 # Lateral extension
+            'elbow_position': 7,               # Arm angle
+            'visibility': 8,                   # Landmark quality
+            'in_frame_bounds': 5,              # Basic sanity check
+            # v3.0 NEW CRITERIA
+            'vertical_arm': 12,                # IMPORTANT: Arm verticality (not angled forward)
+            'hand_at_head_level': 5            # Hand is at head level (bonus check)
+        }
+        
+        confidence = 0
+        passed_criteria = []
+        failed_criteria = []
+        rejection_reasons = []
+        
+        for criterion, passed in criteria_results.items():
+            if passed:
+                confidence += weights.get(criterion, 0)
+                passed_criteria.append(criterion)
+            else:
+                failed_criteria.append(criterion)
+                
+                # Map criteria to human-readable rejection reasons
+                reason_map = {
+                    'wrist_in_expanded_bbox': 'wrist_not_in_bbox',
+                    'not_in_control_zone': 'control_zone',
+                    'wrist_above_shoulder': 'insufficient_height',
+                    'wrist_above_elbow': 'elbow_not_below_wrist',
+                    'arm_extended': 'insufficient_extension',
+                    'elbow_position': 'elbow_position',
+                    'visibility': 'visibility_low',
+                    'in_frame_bounds': 'out_of_bounds',
+                    # v3.0 NEW REJECTION REASONS
+                    'vertical_arm': 'arm_not_vertical',
+                    'hand_at_head_level': 'hand_below_head'
+                }
+                
+                reason = reason_map.get(criterion, criterion)
+                rejection_reasons.append(reason)
+        
+        return confidence, passed_criteria, failed_criteria, rejection_reasons
+    
     def detect_hand_gesture(self, pose_landmarks, frame_shape, person_roles, yolo_person_boxes=None):
         """Detect hand gesture (raised hand) for LP/ALP hand exchange signal.
         
@@ -1316,145 +1495,502 @@ class LocopilotActivityMonitor:
         right_wrist_shoulder_vertical = right_shoulder_coords[1] - right_wrist_coords[1]  # Positive if wrist above shoulder
         left_wrist_shoulder_vertical = left_shoulder_coords[1] - left_wrist_coords[1]
         
-        # CRITICAL: Detect control panel region (assume control panel is in front of operator)
-        # In locomotive cab, control panel is typically in the upper-front area
-        # We detect if hand is reaching forward toward this region by checking if:
-        # 1. Hand is in front of body center (forward reach)
-        # 2. Hand is not significantly laterally extended
+        # ==================================================================================
+        # ROBUST CONTROL ZONE DETECTION - v3.0 ENHANCED
+        # ==================================================================================
+        # CRITICAL: Distinguish FORWARD REACH (controls) from UPWARD RAISE (signaling)
+        #
+        # FALSE POSITIVE PATTERN: Hand reaching FORWARD to overhead controls
+        # - Wrist is "above shoulder" but hand is IN FRONT of body (not ABOVE head)
+        # - Arm is angled forward, not vertical
+        # - Hand is far from face/head
+        #
+        # TRUE SIGNAL PATTERN: Hand raised UPWARD for signaling
+        # - Wrist is near or above head level
+        # - Arm is nearly vertical (>75° angle)
+        # - Hand is close to face/head (vertical plane)
+        # ==================================================================================
         
-        # For RIGHT hand:
-        # - Control panel reach: wrist X is roughly between shoulder X and far right of person bbox
-        # - Signaling gesture: wrist X is laterally away from body center (to the right for right hand)
+        # Calculate additional geometric features for robust detection
         
-        # Calculate if hand is in "control panel reach zone" (forward reach pattern)
-        # For a seated operator, control panel is typically in the frontal zone
-        # We define this as: hand in upper portion of frame AND not laterally extended
+        # 1. HAND-TO-NOSE DISTANCE (detects if hand is vertically above vs forward)
+        right_hand_to_nose_dist = abs(right_wrist_coords[0] - nose_coords[0])
+        left_hand_to_nose_dist = abs(left_wrist_coords[0] - nose_coords[0])
         
-        # Right hand: Check if it's in control operation zone
-        # This identifies forward reaches to operate controls vs upward signaling
+        # 2. HAND-TO-HEAD VERTICAL DISTANCE (true signals have hand at/above head)
+        right_wrist_to_nose_vertical = nose_coords[1] - right_wrist_coords[1]  # Positive if wrist above nose
+        left_wrist_to_nose_vertical = nose_coords[1] - left_wrist_coords[1]
+        
+        # 3. ARM ANGLE FROM VERTICAL (calculate how vertical the arm is)
+        # Vertical arm (signaling): wrist directly above elbow
+        # Forward arm (controls): wrist forward of elbow
+        right_elbow_wrist_horizontal = abs(right_wrist_coords[0] - right_elbow_coords[0])
+        left_elbow_wrist_horizontal = abs(left_wrist_coords[0] - left_elbow_coords[0])
+        
+        # Calculate "verticality score" - higher = more vertical (better for signaling)
+        # True signal: wrist mostly above elbow (small horizontal distance)
+        # Control reach: wrist significantly forward of elbow (large horizontal distance)
+        right_arm_verticality = right_wrist_elbow_distance / max(1, right_elbow_wrist_horizontal)
+        left_arm_verticality = left_wrist_elbow_distance / max(1, left_elbow_wrist_horizontal)
+        
+        # V4.0-B: Pre-calculate mandatory check results (MUST be defined early for debug logging)
+        # These will be used in gesture detection logic and debug output
+        # 
+        # OPTION B: Use SHOULDER reference instead of NOSE (robust against head tilt)
+        # Problem: When person looks down at controls, nose lowers → makes wrist_to_nose unreliable
+        # Solution: Use shoulder as reference (shoulders don't move with head tilt)
+        #
+        # Calculate hand height relative to shoulder (positive = hand above shoulder)
+        right_wrist_to_shoulder_height = right_shoulder_coords[1] - right_wrist_coords[1]
+        left_wrist_to_shoulder_height = left_shoulder_coords[1] - left_wrist_coords[1]
+        
+        # Hand must be above shoulder (20px = lenient threshold)
+        # Lowered from 30px to 20px to capture frame 10400 (per user requirement)
+        # This accepts low-to-high reaches while rejecting shoulder-level or below
+        right_hand_at_head = right_wrist_to_shoulder_height >= 20  # 20px above shoulder (was 30)
+        left_hand_at_head = left_wrist_to_shoulder_height >= 20
+        
+        # LENIENT verticality: Accept arm going up-and-forward (not just purely vertical)
+        # Threshold 1.5 = arm is at least 1.5x more vertical than horizontal
+        right_arm_is_vertical = right_arm_verticality >= 1.5  # More lenient for high reaches
+        left_arm_is_vertical = left_arm_verticality >= 1.5
+        
+        # Right hand: ENHANCED control operation zone detection
         right_in_control_zone = (
-            # Hand is NOT very high (if hand is very high above person bbox, it's signaling)
-            right_wrist_coords[1] > (my1 + (my2 - my1) * 0.3) and
+            # PRIMARY CHECK: Hand is NOT near head level (control operations are below head)
+            (right_wrist_to_nose_vertical < -30) and  # Wrist is below nose level (not at head height)
             
-            # Hand is in upper-middle portion of the person's bbox (control panel level)
-            right_wrist_coords[1] < (my1 + (my2 - my1) * 0.7) and
+            # SECONDARY CHECK: Hand is NOT vertically aligned with body (reaching forward)
+            (right_hand_to_nose_dist > 80 or right_arm_verticality < 1.2) and  # Hand far from body centerline OR arm not vertical
             
-            # Hand is not significantly laterally extended (reaching forward, not sideways)
-            right_arm_extension < 120 and
-            
-            # Elbow is not significantly below wrist (forward reach has elbow at similar or higher level)
-            right_wrist_elbow_distance < 50 and
-            
-            # Wrist is not very far above shoulder (control operations are typically at shoulder level or slightly above)
-            right_wrist_shoulder_vertical < 100
+            # ORIGINAL CHECKS: Hand in control panel region
+            (right_wrist_coords[1] > (my1 + (my2 - my1) * 0.3)) and  # Not too high
+            (right_wrist_coords[1] < (my1 + (my2 - my1) * 0.7)) and  # Not too low
+            (right_arm_extension < self.gesture_thresholds['control_zone_extension']) and  # Not laterally extended
+            (right_wrist_elbow_distance < self.gesture_thresholds['control_zone_elbow_distance']) and  # Elbow not far below wrist
+            (right_wrist_shoulder_vertical < 100)  # Not far above shoulder
         )
         
-        # Left hand: Check if it's in control operation zone
+        # Left hand: ENHANCED control operation zone detection
         left_in_control_zone = (
-            # Hand is NOT very high (if hand is very high above person bbox, it's signaling)
-            left_wrist_coords[1] > (my1 + (my2 - my1) * 0.3) and
+            # PRIMARY CHECK: Hand is NOT near head level
+            (left_wrist_to_nose_vertical < -30) and
             
-            # Hand is in upper-middle portion of the person's bbox (control panel level)
-            left_wrist_coords[1] < (my1 + (my2 - my1) * 0.7) and
+            # SECONDARY CHECK: Hand is NOT vertically aligned with body
+            (left_hand_to_nose_dist > 80 or left_arm_verticality < 1.2) and
             
-            # Hand is not significantly laterally extended (reaching forward, not sideways)
-            left_arm_extension < 120 and
-            
-            # Elbow is not significantly below wrist (forward reach has elbow at similar or higher level)
-            left_wrist_elbow_distance < 50 and
-            
-            # Wrist is not very far above shoulder (control operations are typically at shoulder level or slightly above)
-            left_wrist_shoulder_vertical < 100
+            # ORIGINAL CHECKS: Hand in control panel region
+            (left_wrist_coords[1] > (my1 + (my2 - my1) * 0.3)) and
+            (left_wrist_coords[1] < (my1 + (my2 - my1) * 0.7)) and
+            (left_arm_extension < self.gesture_thresholds['control_zone_extension']) and
+            (left_wrist_elbow_distance < self.gesture_thresholds['control_zone_elbow_distance']) and
+            (left_wrist_shoulder_vertical < 100)
         )
         
-        # Right hand gesture detection (TRUE SIGNALING GESTURE)
+        # ==================================================================================
+        # CONFIDENCE SCORING AND DEBUG TRACKING
+        # ==================================================================================
+        # Track statistics
+        self.gesture_stats['total_frames_analyzed'] += 1
+        
+        # Build criteria dictionaries for confidence calculation
+        # ENHANCED with v3.0 geometric checks
+        right_criteria = {
+            'wrist_in_expanded_bbox': right_wrist_in_expanded,
+            'not_in_control_zone': not right_in_control_zone,
+            'wrist_above_shoulder': right_wrist_shoulder_vertical > self.gesture_thresholds['wrist_shoulder_vertical'],
+            'wrist_above_elbow': right_wrist_elbow_distance > self.gesture_thresholds['wrist_elbow_distance'],
+            'arm_extended': right_arm_extension > self.gesture_thresholds['arm_extension'],
+            'elbow_position': (right_elbow_coords[1] >= right_shoulder_coords[1] + self.gesture_thresholds['elbow_shoulder_margin']),
+            'visibility': (right_wrist.visibility > 0.5 and right_elbow.visibility > 0.4 and right_shoulder.visibility > 0.5),
+            'in_frame_bounds': (0 < right_wrist_coords[0] < w and 0 < right_wrist_coords[1] < h),
+            # v3.0 ENHANCED CRITERIA
+            'vertical_arm': right_arm_verticality >= 1.2,  # Arm is vertical (not angled forward)
+            'hand_at_head_level': right_wrist_to_nose_vertical >= -30  # Hand is at or above nose level
+        }
+        
+        left_criteria = {
+            'wrist_in_expanded_bbox': left_wrist_in_expanded,
+            'not_in_control_zone': not left_in_control_zone,
+            'wrist_above_shoulder': left_wrist_shoulder_vertical > self.gesture_thresholds['wrist_shoulder_vertical'],
+            'wrist_above_elbow': left_wrist_elbow_distance > self.gesture_thresholds['wrist_elbow_distance'],
+            'arm_extended': left_arm_extension > self.gesture_thresholds['arm_extension'],
+            'elbow_position': (left_elbow_coords[1] >= left_shoulder_coords[1] + self.gesture_thresholds['elbow_shoulder_margin']),
+            'visibility': (left_wrist.visibility > 0.5 and left_elbow.visibility > 0.4 and left_shoulder.visibility > 0.5),
+            'in_frame_bounds': (0 < left_wrist_coords[0] < w and 0 < left_wrist_coords[1] < h),
+            # v3.0 ENHANCED CRITERIA
+            'vertical_arm': left_arm_verticality >= 1.2,
+            'hand_at_head_level': left_wrist_to_nose_vertical >= -30
+        }
+        
+        # Calculate confidence for both hands
+        right_confidence, right_passed, right_failed, right_rejection_reasons = self.calculate_gesture_confidence(right_criteria, 'right')
+        left_confidence, left_passed, left_failed, left_rejection_reasons = self.calculate_gesture_confidence(left_criteria, 'left')
+        
+        # Determine which hand has better confidence
+        best_hand = 'right' if right_confidence >= left_confidence else 'left'
+        best_confidence = max(right_confidence, left_confidence)
+        best_rejection_reasons = right_rejection_reasons if best_hand == 'right' else left_rejection_reasons
+        
+        # Update confidence distribution statistics
+        if best_confidence > 80:
+            self.gesture_stats['confidence_distribution']['high'] += 1
+        elif best_confidence >= 50:
+            self.gesture_stats['confidence_distribution']['medium'] += 1
+        else:
+            self.gesture_stats['confidence_distribution']['low'] += 1
+        
+        # Debug logging if enabled
+        if self.enable_gesture_debug:
+            import logging
+            logger = logging.getLogger(__name__)
+            
+            # Log hand measurements (v3.0 ENHANCED with geometric features)
+            logger.debug(f"[GESTURE] Right hand - wrist_shoulder_vert: {right_wrist_shoulder_vertical:.1f}px (req: {self.gesture_thresholds['wrist_shoulder_vertical']}), "
+                        f"wrist_elbow_dist: {right_wrist_elbow_distance:.1f}px (req: {self.gesture_thresholds['wrist_elbow_distance']}), "
+                        f"arm_ext: {right_arm_extension:.1f}px (req: {self.gesture_thresholds['arm_extension']}), "
+                        f"in_control_zone: {right_in_control_zone}, confidence: {right_confidence:.1f}%")
+            
+            logger.debug(f"[GESTURE v4.0-B SHOULDER-REF] Right hand - arm_verticality: {right_arm_verticality:.2f} (MUST BE ≥1.5), "
+                        f"wrist_above_shoulder: {right_wrist_to_shoulder_height:.1f}px (MUST BE ≥20 [LENIENT]), "
+                        f"hand_at_head: {right_hand_at_head}, arm_is_vertical: {right_arm_is_vertical}")
+            
+            logger.debug(f"[GESTURE] Left hand - wrist_shoulder_vert: {left_wrist_shoulder_vertical:.1f}px (req: {self.gesture_thresholds['wrist_shoulder_vertical']}), "
+                        f"wrist_elbow_dist: {left_wrist_elbow_distance:.1f}px (req: {self.gesture_thresholds['wrist_elbow_distance']}), "
+                        f"arm_ext: {left_arm_extension:.1f}px (req: {self.gesture_thresholds['arm_extension']}), "
+                        f"in_control_zone: {left_in_control_zone}, confidence: {left_confidence:.1f}%")
+            
+            logger.debug(f"[GESTURE v4.0-B SHOULDER-REF] Left hand - arm_verticality: {left_arm_verticality:.2f} (MUST BE ≥1.5), "
+                        f"wrist_above_shoulder: {left_wrist_to_shoulder_height:.1f}px (MUST BE ≥20 [LENIENT]), "
+                        f"hand_at_head: {left_hand_at_head}, arm_is_vertical: {left_arm_is_vertical}")
+            
+            if right_in_control_zone or left_in_control_zone:
+                logger.debug(f"[GESTURE] Hand in control zone detected - Right: {right_in_control_zone}, Left: {left_in_control_zone}")
+            
+            if best_rejection_reasons:
+                logger.debug(f"[GESTURE] Rejection reasons ({best_hand} hand): {', '.join(best_rejection_reasons)}")
+        
+        # Track rejection reasons in statistics
+        for reason in best_rejection_reasons:
+            if reason in self.gesture_stats['rejections_by_reason']:
+                self.gesture_stats['rejections_by_reason'][reason] += 1
+        
+        # ==================================================================================
+        # V4.0 CRITICAL FIX: MANDATORY POSITIVE CRITERIA (WHITELIST APPROACH)
+        # ==================================================================================
+        # PROBLEM with v3.0: Control zone was EXCLUSION logic - if it didn't trigger, 
+        #                    false positives still passed through
+        #
+        # SOLUTION: Add MANDATORY POSITIVE requirements that MUST pass for TRUE signals:
+        #   1. Hand MUST be at HEAD level (not just shoulder)
+        #   2. Arm MUST be VERTICAL (strict ratio ≥ 2.0)
+        #   3. NOT in control zone (existing check)
+        #
+        # ALL THREE must pass. If ANY fails → REJECT immediately
+        # ==================================================================================
+        
+        # V4.0 GESTURE DETECTION (WHITELIST APPROACH)
+        # Note: Mandatory check variables (right_hand_at_head, right_arm_is_vertical, etc.)
+        # are defined earlier (after geometric calculations) for use in debug logging
         right_hand_raised = (
-            # CRITICAL: Wrist must belong to the same person (within expanded bbox)
+            # CRITICAL PERSON MATCHING
             right_wrist_in_expanded and
             
-            # NOT in control panel operation zone (this filters out most false positives)
-            not right_in_control_zone and
+            # ===== V4.0 MANDATORY POSITIVE CRITERIA (ALL MUST PASS) =====
+            right_hand_at_head and              # MUST be at head level
+            right_arm_is_vertical and           # MUST be vertical arm
+            not right_in_control_zone and       # MUST NOT be in control zone
+            # ============================================================
             
-            # Core criteria: Hand raised above shoulder level (reduced threshold for better detection)
-            right_wrist_shoulder_vertical > 80 and  # At least 80px above shoulder (balanced threshold)
+            # Traditional criteria (still required)
+            right_wrist_shoulder_vertical > self.gesture_thresholds['wrist_shoulder_vertical'] and
+            right_wrist_elbow_distance > self.gesture_thresholds['wrist_elbow_distance'] and
+            right_arm_extension > self.gesture_thresholds['arm_extension'] and
+            (right_elbow_coords[1] >= right_shoulder_coords[1] + self.gesture_thresholds['elbow_shoulder_margin']) and
             
-            # Wrist must be above elbow (vertical extension, not forward reach)
-            right_wrist_elbow_distance > 40 and  # At least 40px above elbow (reduced for better detection)
-            
-            # Arm should be extended (hand away from body, not tucked)
-            right_arm_extension > 60 and  # Minimum extension (reduced for various camera angles)
-            
-            # Additional check: Elbow should be at or below shoulder (arm raised up, not forward)
-            (right_elbow_coords[1] >= right_shoulder_coords[1] - 40) and  # Elbow not too high above shoulder
-            
-            # Visibility checks
+            # Visibility
             right_wrist.visibility > 0.5 and
             right_elbow.visibility > 0.4 and
             right_shoulder.visibility > 0.5 and
             
-            # Within frame bounds
+            # Frame bounds
             0 < right_wrist_coords[0] < w and
             0 < right_wrist_coords[1] < h
         )
         
-        # Left hand gesture detection (TRUE SIGNALING GESTURE)
         left_hand_raised = (
-            # CRITICAL: Wrist must belong to the same person (within expanded bbox)
+            # CRITICAL PERSON MATCHING
             left_wrist_in_expanded and
             
-            # NOT in control panel operation zone (this filters out most false positives)
-            not left_in_control_zone and
+            # ===== V4.0 MANDATORY POSITIVE CRITERIA (ALL MUST PASS) =====
+            left_hand_at_head and               # MUST be at head level
+            left_arm_is_vertical and            # MUST be vertical arm
+            not left_in_control_zone and        # MUST NOT be in control zone
+            # ============================================================
             
-            # Core criteria: Hand raised above shoulder level (reduced threshold for better detection)
-            left_wrist_shoulder_vertical > 80 and  # At least 80px above shoulder (balanced threshold)
+            # Traditional criteria
+            left_wrist_shoulder_vertical > self.gesture_thresholds['wrist_shoulder_vertical'] and
+            left_wrist_elbow_distance > self.gesture_thresholds['wrist_elbow_distance'] and
+            left_arm_extension > self.gesture_thresholds['arm_extension'] and
+            (left_elbow_coords[1] >= left_shoulder_coords[1] + self.gesture_thresholds['elbow_shoulder_margin']) and
             
-            # Wrist must be above elbow (vertical extension, not forward reach)
-            left_wrist_elbow_distance > 40 and  # At least 40px above elbow (reduced for better detection)
-            
-            # Arm should be extended (hand away from body, not tucked)
-            left_arm_extension > 60 and  # Minimum extension (reduced for various camera angles)
-            
-            # Additional check: Elbow should be at or below shoulder (arm raised up, not forward)
-            (left_elbow_coords[1] >= left_shoulder_coords[1] - 40) and  # Elbow not too high above shoulder
-            
-            # Visibility checks
+            # Visibility
             left_wrist.visibility > 0.5 and
             left_elbow.visibility > 0.4 and
             left_shoulder.visibility > 0.5 and
             
-            # Within frame bounds
+            # Frame bounds
             0 < left_wrist_coords[0] < w and
             0 < left_wrist_coords[1] < h
         )
         
-        # Either hand raised counts as gesture
         hand_gesture_detected = right_hand_raised or left_hand_raised
         
+        # Prepare debug dictionary with confidence data
+        gesture_debug = {
+            'hand_raised': best_hand if hand_gesture_detected else None,
+            'right_confidence': right_confidence,
+            'left_confidence': left_confidence,
+            'right_rejection_reasons': right_rejection_reasons,
+            'left_rejection_reasons': left_rejection_reasons,
+            'shoulder_y': avg_shoulder_y,
+            'wrist_y': right_wrist_coords[1] if (hand_gesture_detected and best_hand == 'right') else left_wrist_coords[1],
+            'person_role': matched_role,
+            'matched_person_idx': matched_person_idx,
+            'overlap_score': best_overlap_score,
+            'detection_version': 'v4.0-B-shoulder-20px',  # Mark with version for tracking
+            'measurements': {
+                'right': {
+                    'wrist_shoulder_vertical': right_wrist_shoulder_vertical,
+                    'wrist_elbow_distance': right_wrist_elbow_distance,
+                    'arm_extension': right_arm_extension,
+                    'in_control_zone': right_in_control_zone,
+                    # v3.0 NEW MEASUREMENTS
+                    'arm_verticality': right_arm_verticality,
+                    'wrist_to_nose_vertical': right_wrist_to_nose_vertical,
+                    'hand_to_nose_distance': right_hand_to_nose_dist,
+                    # v4.0-B NEW: Shoulder-based height (robust against head tilt)
+                    'wrist_to_shoulder_height': right_wrist_to_shoulder_height
+                },
+                'left': {
+                    'wrist_shoulder_vertical': left_wrist_shoulder_vertical,
+                    'wrist_elbow_distance': left_wrist_elbow_distance,
+                    'arm_extension': left_arm_extension,
+                    'in_control_zone': left_in_control_zone,
+                    # v3.0 NEW MEASUREMENTS
+                    'arm_verticality': left_arm_verticality,
+                    'wrist_to_nose_vertical': left_wrist_to_nose_vertical,
+                    'hand_to_nose_distance': left_hand_to_nose_dist,
+                    # v4.0-B NEW: Shoulder-based height (robust against head tilt)
+                    'wrist_to_shoulder_height': left_wrist_to_shoulder_height
+                }
+            }
+        }
+        
         if not hand_gesture_detected:
-            return False, False, {}
+            # Add role-specific confidence to debug dict
+            if matched_role == 'LP':
+                gesture_debug['lp_confidence'] = best_confidence
+                gesture_debug['lp_rejection_reasons'] = best_rejection_reasons
+            elif matched_role == 'ALP':
+                gesture_debug['alp_confidence'] = best_confidence
+                gesture_debug['alp_rejection_reasons'] = best_rejection_reasons
+            
+            return False, False, gesture_debug
+        
+        # Update successful detection statistics
+        self.gesture_stats['successful_detections']['total'] += 1
         
         # Return result based on the MATCHED person's role
         if matched_role == 'LP':
-                return True, False, {
-                    'hand_raised': 'right' if right_hand_raised else 'left',
-                    'shoulder_y': avg_shoulder_y,
-                    'wrist_y': right_wrist_coords[1] if right_hand_raised else left_wrist_coords[1],
-                'person_role': 'LP',
-                'matched_person_idx': matched_person_idx,
-                'overlap_score': best_overlap_score
-                }
+            self.gesture_stats['successful_detections']['lp'] += 1
+            gesture_debug['lp_confidence'] = best_confidence
+            gesture_debug['lp_rejection_reasons'] = []  # No rejections since detected
+            
+            if self.enable_gesture_debug:
+                logger.debug(f"[GESTURE] ✓ LP hand gesture DETECTED - Confidence: {best_confidence:.1f}%, Hand: {best_hand}")
+            
+            return True, False, gesture_debug
         elif matched_role == 'ALP':
-                return False, True, {
-                    'hand_raised': 'right' if right_hand_raised else 'left',
-                    'shoulder_y': avg_shoulder_y,
-                    'wrist_y': right_wrist_coords[1] if right_hand_raised else left_wrist_coords[1],
-                'person_role': 'ALP',
-                'matched_person_idx': matched_person_idx,
-                'overlap_score': best_overlap_score
-            }
+            self.gesture_stats['successful_detections']['alp'] += 1
+            gesture_debug['alp_confidence'] = best_confidence
+            gesture_debug['alp_rejection_reasons'] = []
+            
+            if self.enable_gesture_debug:
+                logger.debug(f"[GESTURE] ✓ ALP hand gesture DETECTED - Confidence: {best_confidence:.1f}%, Hand: {best_hand}")
+            
+            return False, True, gesture_debug
         
         # Unknown role
-        return False, False, {}
+        return False, False, gesture_debug
+    
+    def draw_hand_gesture_debug(self, frame, gesture_debug, lp_detected, alp_detected):
+        """Draw confidence scores and rejection reasons on frame.
+        
+        Args:
+            frame: Video frame (numpy array)
+            gesture_debug: Debug information from detect_hand_gesture
+            lp_detected: Whether LP gesture was detected
+            alp_detected: Whether ALP gesture was detected
+            
+        Returns:
+            frame: Frame with debug overlay
+        """
+        if not self.enable_gesture_debug or not gesture_debug:
+            return frame
+        
+        h, w = frame.shape[:2]
+        y_offset = 10
+        
+        # Draw LP confidence
+        if 'lp_confidence' in gesture_debug:
+            confidence = gesture_debug['lp_confidence']
+            
+            # Color coding: green (>80%), yellow (50-80%), red (<50%)
+            if confidence > 80:
+                color = (0, 255, 0)  # Green
+            elif confidence >= 50:
+                color = (0, 255, 255)  # Yellow
+            else:
+                color = (0, 0, 255)  # Red
+            
+            status = "DETECTED" if lp_detected else "REJECTED"
+            text = f"LP Gesture: {confidence:.1f}% [{status}]"
+            cv2.putText(frame, text, (10, y_offset + 20), cv2.FONT_HERSHEY_SIMPLEX, 
+                       0.6, color, 2)
+            y_offset += 30
+            
+            # Draw rejection reasons if any
+            if 'lp_rejection_reasons' in gesture_debug and gesture_debug['lp_rejection_reasons']:
+                reasons = gesture_debug['lp_rejection_reasons'][:3]  # Limit to top 3
+                for reason in reasons:
+                    reason_text = f"  - {reason.replace('_', ' ')}"
+                    cv2.putText(frame, reason_text, (10, y_offset + 20), 
+                               cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1)
+                    y_offset += 25
+        
+        # Draw ALP confidence
+        if 'alp_confidence' in gesture_debug:
+            confidence = gesture_debug['alp_confidence']
+            
+            if confidence > 80:
+                color = (0, 255, 0)
+            elif confidence >= 50:
+                color = (0, 255, 255)
+            else:
+                color = (0, 0, 255)
+            
+            status = "DETECTED" if alp_detected else "REJECTED"
+            text = f"ALP Gesture: {confidence:.1f}% [{status}]"
+            cv2.putText(frame, text, (10, y_offset + 20), cv2.FONT_HERSHEY_SIMPLEX, 
+                       0.6, color, 2)
+            y_offset += 30
+            
+            if 'alp_rejection_reasons' in gesture_debug and gesture_debug['alp_rejection_reasons']:
+                reasons = gesture_debug['alp_rejection_reasons'][:3]
+                for reason in reasons:
+                    reason_text = f"  - {reason.replace('_', ' ')}"
+                    cv2.putText(frame, reason_text, (10, y_offset + 20), 
+                               cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1)
+                    y_offset += 25
+        
+        return frame
+    
+    def generate_gesture_report(self):
+        """Generate gesture analysis report and save to JSON.
+        
+        Creates a comprehensive statistics report including:
+        - Detection rates
+        - Rejection breakdown
+        - Frame counts
+        - Confidence distribution
+        
+        Returns:
+            dict: Report data
+        """
+        if not self.run_dir:
+            return None
+        
+        stats = self.gesture_stats
+        
+        # Calculate rates
+        total = stats['total_frames_analyzed']
+        if total == 0:
+            return None
+        
+        successful = stats['successful_detections']['total']
+        detection_rate = (successful / total * 100) if total > 0 else 0
+        
+        # Calculate rejection rate by reason
+        total_rejections = sum(stats['rejections_by_reason'].values())
+        rejection_breakdown = {}
+        for reason, count in stats['rejections_by_reason'].items():
+            percentage = (count / total_rejections * 100) if total_rejections > 0 else 0
+            rejection_breakdown[reason] = {
+                'count': count,
+                'percentage': round(percentage, 2)
+            }
+        
+        # Build report
+        report = {
+            'generated_at': datetime.now().isoformat(),
+            'sensitivity_mode': self.gesture_sensitivity,
+            'debug_enabled': self.enable_gesture_debug,
+            'summary': {
+                'total_frames_analyzed': total,
+                'successful_detections': successful,
+                'detection_rate_percent': round(detection_rate, 2),
+                'lp_detections': stats['successful_detections']['lp'],
+                'alp_detections': stats['successful_detections']['alp']
+            },
+            'rejection_analysis': {
+                'total_rejections': total_rejections,
+                'breakdown_by_reason': rejection_breakdown
+            },
+            'confidence_distribution': {
+                'high_confidence': {
+                    'count': stats['confidence_distribution']['high'],
+                    'percentage': round(stats['confidence_distribution']['high'] / total * 100, 2) if total > 0 else 0
+                },
+                'medium_confidence': {
+                    'count': stats['confidence_distribution']['medium'],
+                    'percentage': round(stats['confidence_distribution']['medium'] / total * 100, 2) if total > 0 else 0
+                },
+                'low_confidence': {
+                    'count': stats['confidence_distribution']['low'],
+                    'percentage': round(stats['confidence_distribution']['low'] / total * 100, 2) if total > 0 else 0
+                }
+            },
+            'thresholds_used': self.gesture_thresholds
+        }
+        
+        # Save to JSON
+        report_path = os.path.join(self.run_dir, 'gesture_stats_report.json')
+        try:
+            with open(report_path, 'w') as f:
+                json.dump(report, f, indent=2)
+            print(f"\n{'='*80}")
+            print(f"GESTURE ANALYSIS REPORT")
+            print(f"{'='*80}")
+            print(f"Total Frames Analyzed: {total}")
+            print(f"Successful Detections: {successful} ({detection_rate:.1f}%)")
+            print(f"  - LP Detections: {stats['successful_detections']['lp']}")
+            print(f"  - ALP Detections: {stats['successful_detections']['alp']}")
+            print(f"\nConfidence Distribution:")
+            print(f"  - High (>80%): {stats['confidence_distribution']['high']} ({stats['confidence_distribution']['high']/total*100:.1f}%)")
+            print(f"  - Medium (50-80%): {stats['confidence_distribution']['medium']} ({stats['confidence_distribution']['medium']/total*100:.1f}%)")
+            print(f"  - Low (<50%): {stats['confidence_distribution']['low']} ({stats['confidence_distribution']['low']/total*100:.1f}%)")
+            print(f"\nTop Rejection Reasons:")
+            sorted_rejections = sorted(rejection_breakdown.items(), key=lambda x: x[1]['count'], reverse=True)[:5]
+            for reason, data in sorted_rejections:
+                if data['count'] > 0:
+                    print(f"  - {reason}: {data['count']} ({data['percentage']:.1f}%)")
+            print(f"\nReport saved to: {report_path}")
+            print(f"{'='*80}\n")
+        except Exception as e:
+            print(f"Error saving gesture report: {e}")
+        
+        return report
     
     def detect_multi_person_pose_and_gestures(self, frame, person_roles):
         """Run MediaPipe Pose on each person's cropped bounding box for multi-person gesture detection.
@@ -1541,6 +2077,337 @@ class LocopilotActivityMonitor:
                 continue
         
         return results
+    
+    def detect_per_person_activities(self, frame, person_roles, timestamp_sec):
+        """
+        Comprehensive multi-person activity detection.
+        
+        Runs ALL activity detection logic on each person's cropped region:
+        - MediaPipe Pose (for hand gestures, sleep detection, head pose)
+        - MediaPipe Face Mesh (for EAR calculation, face-based sleep detection)
+        - Sleep/microsleep detection
+        - Hand gesture detection
+        - Head pose/mind diversion detection
+        
+        Args:
+            frame: The full frame image (BGR format)
+            person_roles: Dictionary of person roles from identify_person_roles()
+                         Format: {person_idx: {'bbox': [x1, y1, x2, y2], 'role': 'LP'/'ALP', ...}}
+            timestamp_sec: Current timestamp in seconds
+        
+        Returns:
+            dict: Comprehensive results for each person
+                  Format: {
+                      person_idx: {
+                          'pose_landmarks': landmarks,
+                          'face_landmarks': face_landmarks,
+                          'role': 'LP'/'ALP',
+                          'activities': {
+                              'sleep': bool,
+                              'microsleep': bool,
+                              'hand_gesture': bool,
+                              'gesture_type': 'lp'/'alp'/None,
+                              'mind_diversion': bool
+                          },
+                          'metrics': {
+                              'ear': float,
+                              'eye_closure_duration': float,
+                              'pose_sleep_info': dict,
+                              'head_pose_info': dict,
+                              'gesture_debug': dict
+                          }
+                      }
+                  }
+        """
+        if not person_roles or len(person_roles) == 0:
+            return {}
+        
+        results = {}
+        h, w = frame.shape[:2]
+        
+        for person_idx, person_data in person_roles.items():
+            if 'bbox' not in person_data:
+                continue
+            
+            bbox = person_data['bbox']  # [x1, y1, x2, y2]
+            x1, y1, x2, y2 = bbox
+            role = person_data.get('role', 'UNKNOWN')
+            
+            # Add padding to bbox for better detection (10% on each side)
+            padding_x = int((x2 - x1) * 0.1)
+            padding_y = int((y2 - y1) * 0.1)
+            
+            # Expand bbox with padding, but stay within frame bounds
+            x1_padded = max(0, x1 - padding_x)
+            y1_padded = max(0, y1 - padding_y)
+            x2_padded = min(w, x2 + padding_x)
+            y2_padded = min(h, y2 + padding_y)
+            
+            # Crop frame to this person's region
+            try:
+                cropped_frame = frame[y1_padded:y2_padded, x1_padded:x2_padded]
+                
+                if cropped_frame.size == 0:
+                    continue
+                
+                # Convert to RGB for MediaPipe
+                cropped_rgb = cv2.cvtColor(cropped_frame, cv2.COLOR_BGR2RGB)
+                
+                # Run MediaPipe Pose on this cropped region
+                pose_result = self.pose.process(cropped_rgb)
+                
+                # Run MediaPipe Face Mesh on this cropped region
+                face_result = self.face_mesh.process(cropped_rgb)
+                
+                # Initialize result structure for this person
+                person_result = {
+                    'pose_landmarks': None,
+                    'face_landmarks': None,
+                    'role': role,
+                    'activities': {
+                        'sleep': False,
+                        'microsleep': False,
+                        'hand_gesture': False,
+                        'gesture_type': None,
+                        'mind_diversion': False
+                    },
+                    'metrics': {
+                        'ear': None,
+                        'eye_closure_duration': 0,
+                        'pose_sleep_info': {},
+                        'head_pose_info': {},
+                        'gesture_debug': {}
+                    }
+                }
+                
+                # Process pose landmarks
+                if pose_result.pose_landmarks:
+                    # Translate landmarks from cropped coordinates back to full frame coordinates
+                    translated_pose_landmarks = self.translate_landmarks_to_full_frame(
+                        pose_result.pose_landmarks,
+                        x1_padded, y1_padded,
+                        x2_padded - x1_padded, y2_padded - y1_padded,
+                        w, h
+                    )
+                    person_result['pose_landmarks'] = translated_pose_landmarks
+                    
+                    # 1. Detect pose-based sleep/microsleep for this person
+                    # Note: We need per-person sleep tracking, using person_idx as key
+                    if not hasattr(self, 'per_person_sleep_tracking'):
+                        self.per_person_sleep_tracking = {}
+                    
+                    if person_idx not in self.per_person_sleep_tracking:
+                        self.per_person_sleep_tracking[person_idx] = {
+                            'pose_sleep_start': None,
+                            'pose_sleep_duration': 0,
+                            'previous_landmarks': None
+                        }
+                    
+                    # Detect pose-based sleep using cropped pose landmarks
+                    pose_sleep_detected, pose_microsleep_detected, pose_sleep_info = self.detect_pose_based_sleep_per_person(
+                        translated_pose_landmarks,
+                        timestamp_sec,
+                        person_idx
+                    )
+                    
+                    person_result['activities']['sleep'] = pose_sleep_detected
+                    person_result['activities']['microsleep'] = pose_microsleep_detected
+                    person_result['metrics']['pose_sleep_info'] = pose_sleep_info
+                    
+                    # 2. Detect hand gesture for this person
+                    single_person_roles = {person_idx: person_data}
+                    lp_gesture, alp_gesture, gesture_debug = self.detect_hand_gesture(
+                        translated_pose_landmarks,
+                        frame.shape,
+                        single_person_roles
+                    )
+                    
+                    person_result['activities']['hand_gesture'] = lp_gesture or alp_gesture
+                    person_result['activities']['gesture_type'] = 'lp' if lp_gesture else ('alp' if alp_gesture else None)
+                    person_result['metrics']['gesture_debug'] = gesture_debug
+                    
+                    # 3. Detect head pose/mind diversion for this person
+                    head_pose_info = self.calculate_head_pose_angles(
+                        translated_pose_landmarks,
+                        face_result if face_result.multi_face_landmarks else None,
+                        frame.shape
+                    )
+                    person_result['activities']['mind_diversion'] = head_pose_info.get('detected', False)
+                    person_result['metrics']['head_pose_info'] = head_pose_info
+                
+                # Process face landmarks for EAR (eye aspect ratio) calculation
+                if face_result.multi_face_landmarks:
+                    # Get the first face (should be the only one in cropped region)
+                    face_landmarks = face_result.multi_face_landmarks[0]
+                    
+                    # Translate face landmarks to full frame coordinates
+                    translated_face_landmarks = self.translate_face_landmarks_to_full_frame(
+                        face_landmarks,
+                        x1_padded, y1_padded,
+                        x2_padded - x1_padded, y2_padded - y1_padded
+                    )
+                    person_result['face_landmarks'] = translated_face_landmarks
+                    
+                    # Calculate EAR for this person
+                    ear_value = self.calculate_eye_aspect_ratio(face_landmarks.landmark)
+                    person_result['metrics']['ear'] = ear_value
+                    
+                    # Track eye closure duration per person
+                    if not hasattr(self, 'per_person_eye_tracking'):
+                        self.per_person_eye_tracking = {}
+                    
+                    if person_idx not in self.per_person_eye_tracking:
+                        self.per_person_eye_tracking[person_idx] = {
+                            'eye_closure_start': None,
+                            'eye_closure_duration': 0
+                        }
+                    
+                    # Check for eye closure (EAR < 0.2 = eyes closed)
+                    if ear_value is not None and ear_value < 0.2:
+                        tracking = self.per_person_eye_tracking[person_idx]
+                        if tracking['eye_closure_start'] is None:
+                            tracking['eye_closure_start'] = timestamp_sec
+                        
+                        tracking['eye_closure_duration'] = timestamp_sec - tracking['eye_closure_start']
+                        person_result['metrics']['eye_closure_duration'] = tracking['eye_closure_duration']
+                        
+                        # Override pose-based detection with face-based detection (more accurate)
+                        if tracking['eye_closure_duration'] >= 30:
+                            person_result['activities']['sleep'] = True
+                            person_result['activities']['microsleep'] = False
+                        elif tracking['eye_closure_duration'] >= 5:
+                            person_result['activities']['microsleep'] = True
+                    else:
+                        # Eyes open, reset tracking
+                        self.per_person_eye_tracking[person_idx]['eye_closure_start'] = None
+                        self.per_person_eye_tracking[person_idx]['eye_closure_duration'] = 0
+                
+                # Store results for this person
+                results[person_idx] = person_result
+                
+            except Exception as e:
+                print(f"Error processing person {person_idx} ({role}): {e}")
+                import traceback
+                traceback.print_exc()
+                continue
+        
+        return results
+    
+    def detect_pose_based_sleep_per_person(self, pose_landmarks, timestamp_sec, person_idx):
+        """Detect sleep based on pose analysis for a specific person.
+        
+        Similar to detect_pose_based_sleep but tracks each person separately.
+        
+        Args:
+            pose_landmarks: MediaPipe pose landmarks for this person
+            timestamp_sec: Current timestamp in seconds
+            person_idx: Index of the person being tracked
+        
+        Returns:
+            tuple: (sleep_detected, microsleep_detected, sleep_info_dict)
+        """
+        if not pose_landmarks:
+            return False, False, {}
+        
+        tracking = self.per_person_sleep_tracking[person_idx]
+        
+        landmarks = pose_landmarks.landmark
+        h, w = 480, 640  # Use normalized coordinates
+        
+        # Calculate head tilt (similar to main detect_pose_based_sleep)
+        try:
+            nose = landmarks[self.mp_pose.PoseLandmark.NOSE]
+            left_shoulder = landmarks[self.mp_pose.PoseLandmark.LEFT_SHOULDER]
+            right_shoulder = landmarks[self.mp_pose.PoseLandmark.RIGHT_SHOULDER]
+            
+            nose_y = nose.y
+            shoulder_midpoint_y = (left_shoulder.y + right_shoulder.y) / 2
+            
+            vertical_diff = nose_y - shoulder_midpoint_y
+            head_tilt = math.degrees(math.asin(max(-1, min(1, vertical_diff))))
+            
+        except:
+            head_tilt = None
+        
+        # Calculate movement (compare with previous frame)
+        movement = 0.0
+        if tracking['previous_landmarks'] is not None:
+            prev_landmarks = tracking['previous_landmarks']
+            total_diff = 0.0
+            valid_landmarks = 0
+            
+            for i in range(len(landmarks)):
+                if landmarks[i].visibility > 0.5 and prev_landmarks[i].visibility > 0.5:
+                    dx = landmarks[i].x - prev_landmarks[i].x
+                    dy = landmarks[i].y - prev_landmarks[i].y
+                    total_diff += math.sqrt(dx*dx + dy*dy)
+                    valid_landmarks += 1
+            
+            if valid_landmarks > 0:
+                movement = total_diff / valid_landmarks
+        
+        # Store current landmarks for next comparison
+        tracking['previous_landmarks'] = landmarks
+        
+        # Detect sleep indicators
+        sleep_indicators = 0
+        
+        # 1. Head tilted forward/down
+        if head_tilt is not None and head_tilt < -15:
+            sleep_indicators += 1
+        
+        # 2. Minimal movement
+        if movement < 0.02:
+            sleep_indicators += 1
+        
+        # Track sleep duration
+        if sleep_indicators >= 2:
+            if tracking['pose_sleep_start'] is None:
+                tracking['pose_sleep_start'] = timestamp_sec
+            
+            tracking['pose_sleep_duration'] = timestamp_sec - tracking['pose_sleep_start']
+        else:
+            tracking['pose_sleep_start'] = None
+            tracking['pose_sleep_duration'] = 0
+        
+        # Determine if sleep/microsleep detected
+        sleep_detected = tracking['pose_sleep_duration'] >= 30
+        microsleep_detected = tracking['pose_sleep_duration'] >= 5 and not sleep_detected
+        
+        sleep_info = {
+            'head_tilt': head_tilt,
+            'avg_movement': movement,
+            'pose_sleep_duration': tracking['pose_sleep_duration'],
+            'sleep_indicators': sleep_indicators
+        }
+        
+        return sleep_detected, microsleep_detected, sleep_info
+    
+    def translate_face_landmarks_to_full_frame(self, face_landmarks, crop_x, crop_y, crop_w, crop_h):
+        """Translate face landmarks from cropped coordinates to full frame coordinates.
+        
+        Args:
+            face_landmarks: MediaPipe face landmarks from cropped region
+            crop_x, crop_y: Top-left corner of crop in full frame
+            crop_w, crop_h: Width and height of crop region
+        
+        Returns:
+            Translated face landmarks object
+        """
+        # Create a copy of the landmarks
+        from mediapipe.framework.formats import landmark_pb2
+        
+        translated_landmarks = landmark_pb2.NormalizedLandmarkList()
+        
+        for landmark in face_landmarks.landmark:
+            new_landmark = translated_landmarks.landmark.add()
+            # Convert from cropped normalized coordinates to full frame normalized coordinates
+            new_landmark.x = (landmark.x * crop_w + crop_x) / 1.0  # Will be normalized by frame width later
+            new_landmark.y = (landmark.y * crop_h + crop_y) / 1.0  # Will be normalized by frame height later
+            new_landmark.z = landmark.z
+            new_landmark.visibility = landmark.visibility if hasattr(landmark, 'visibility') else 1.0
+        
+        return translated_landmarks
     
     def calculate_head_pose_angles(self, pose_landmarks, face_landmarks, frame_shape):
         """Calculate head pose angles (yaw and pitch) to detect mind diversion.
@@ -2492,30 +3359,58 @@ class LocopilotActivityMonitor:
                         print(f"[{timestamp}] Heuristic: Writing posture detected (hand Y={right_hand_coords[1]}, elbow Y={right_elbow_coords[1]}, hands separated={hands_separated}, book_near_hand={hand_near_book})")
                 
                 # NEW: Check for hand gesture (LP/ALP not exchanging hand gesture)
-                # Use MULTI-PERSON pose detection for simultaneous gesture detection
+                # AND ALL OTHER ACTIVITIES using COMPREHENSIVE MULTI-PERSON DETECTION
                 lp_hand_gesture_detected = False
                 alp_hand_gesture_detected = False
+                gesture_debug = {}  # Initialize gesture debug info
+                multi_person_results = None  # Store for visualization
                 
-                # Run multi-person pose detection if we have 2 people
+                # Run comprehensive multi-person detection if we have 2+ people
                 if len(person_roles) >= 2:
-                    # Multi-person scenario: Run pose detection on each person's cropped region
-                    multi_person_results = self.detect_multi_person_pose_and_gestures(frame, person_roles)
+                    # Multi-person scenario: Run COMPREHENSIVE detection on each person's cropped region
+                    # This detects ALL activities per person: gestures, sleep, mind diversion, etc.
+                    multi_person_results = self.detect_per_person_activities(frame, person_roles, timestamp_sec)
                     
-                    # Check results for each person
-                    for person_idx, result in multi_person_results.items():
-                        if result['gesture_detected']:
-                            gesture_type = result['gesture_type']
-                            role = result['role']
-                            debug_info = result['debug_info']
+                    # Process results for each person
+                    for person_idx, person_result in multi_person_results.items():
+                        role = person_result['role']
+                        activities = person_result['activities']
+                        metrics = person_result['metrics']
+                        
+                        # 1. Hand Gestures
+                        if activities['hand_gesture']:
+                            gesture_type = activities['gesture_type']
+                            debug_info = metrics['gesture_debug']
+                            gesture_debug = debug_info  # Capture debug info
                             
                             if gesture_type == 'lp':
                                 lp_hand_gesture_detected = True
                                 if self.consecutive_detections['lp_hand_gesture'] == 0:
-                                    print(f"[{timestamp}] LP hand gesture detected - {debug_info.get('hand_raised', 'unknown')} hand raised (multi-person mode)")
+                                    print(f"[{timestamp}] LP hand gesture detected (Person {person_idx}) - {debug_info.get('hand_raised', 'unknown')} hand raised (multi-person mode)")
                             elif gesture_type == 'alp':
                                 alp_hand_gesture_detected = True
                                 if self.consecutive_detections['alp_hand_gesture'] == 0:
-                                    print(f"[{timestamp}] ALP hand gesture detected - {debug_info.get('hand_raised', 'unknown')} hand raised (multi-person mode)")
+                                    print(f"[{timestamp}] ALP hand gesture detected (Person {person_idx}) - {debug_info.get('hand_raised', 'unknown')} hand raised (multi-person mode)")
+                        
+                        # 2. Sleep/Microsleep (per person)
+                        if activities['sleep']:
+                            sleep_detected = True
+                            sleep_duration = metrics['pose_sleep_info'].get('pose_sleep_duration', 0)
+                            if sleep_duration > 0:
+                                print(f"[{timestamp}] SLEEP detected for {role} (Person {person_idx}) - Duration: {sleep_duration:.1f}s")
+                        elif activities['microsleep']:
+                            microsleep_detected = True
+                            sleep_duration = metrics['pose_sleep_info'].get('pose_sleep_duration', 0)
+                            if sleep_duration > 0:
+                                print(f"[{timestamp}] MICROSLEEP detected for {role} (Person {person_idx}) - Duration: {sleep_duration:.1f}s")
+                        
+                        # 3. Mind Diversion (per person)
+                        if activities['mind_diversion']:
+                            mind_diversion_detected = True
+                            head_pose = metrics['head_pose_info']
+                            yaw = head_pose.get('yaw', 0)
+                            pitch = head_pose.get('pitch', 0)
+                            print(f"[{timestamp}] MIND DIVERSION detected for {role} (Person {person_idx}) - Yaw={yaw:.1f}°, Pitch={pitch:.1f}°")
                 
                 # Fallback to single-person pose detection if only 1 person or multi-person failed
                 elif pose_results.pose_landmarks and person_roles:
@@ -2594,7 +3489,8 @@ class LocopilotActivityMonitor:
                     ear_value,
                     self.eye_closure_duration,
                     pose_sleep_info,
-                    head_pose_info
+                    head_pose_info,
+                    multi_person_results  # Pass multi-person results for visualization
                 )
                 
                 # Save annotated frames periodically if enabled (AFTER all detections)
@@ -2604,6 +3500,14 @@ class LocopilotActivityMonitor:
                     and sample_idx % self.frame_save_interval == 0
                 ):
                     try:
+                        # Add gesture debug overlay if enabled
+                        frame_to_save = self.draw_hand_gesture_debug(
+                            annotated_frame_for_activity.copy(),
+                            gesture_debug,
+                            lp_hand_gesture_detected,
+                            alp_hand_gesture_detected
+                        )
+                        
                         # Save frame with unique filename
                         frame_filename = f"frame_{frame_idx:08d}.jpg"
                         frame_path = os.path.join(self.frames_dir, frame_filename)
@@ -2612,7 +3516,7 @@ class LocopilotActivityMonitor:
                         os.makedirs(self.frames_dir, exist_ok=True)
                         
                         # Save with high quality
-                        cv2.imwrite(frame_path, annotated_frame_for_activity, [cv2.IMWRITE_JPEG_QUALITY, 95])
+                        cv2.imwrite(frame_path, frame_to_save, [cv2.IMWRITE_JPEG_QUALITY, 95])
                             
                     except Exception as e:
                         print(f"[{timestamp}] Error saving frame {frame_idx}: {e}")
@@ -2716,6 +3620,9 @@ class LocopilotActivityMonitor:
         
         # Generate summary report
         self.generate_summary_report()
+        
+        # Generate gesture analysis report
+        self.generate_gesture_report()
     
     def process_video_range(self, start_frame: int, end_frame: int, save_clips: bool = False) -> list:
         """
@@ -2963,6 +3870,8 @@ class LocopilotActivityMonitor:
                 # NEW: Check for hand gesture (LP/ALP not exchanging hand gesture)
                 lp_hand_gesture_detected = False
                 alp_hand_gesture_detected = False
+                gesture_debug = {}  # Initialize gesture debug info
+                multi_person_results = None  # Store for visualization
                 
                 if pose_results.pose_landmarks and person_roles:
                     lp_gesture, alp_gesture, gesture_debug = self.detect_hand_gesture(
@@ -3014,7 +3923,8 @@ class LocopilotActivityMonitor:
                     ear_value,
                     self.eye_closure_duration,
                     pose_sleep_info,
-                    head_pose_info
+                    head_pose_info,
+                    multi_person_results  # Pass multi-person results for visualization
                 )
                 
                 # Save annotated frames periodically if enabled (in process_video_range for multiprocessing)
@@ -3024,6 +3934,14 @@ class LocopilotActivityMonitor:
                     and sample_idx % self.frame_save_interval == 0
                 ):
                     try:
+                        # Add gesture debug overlay if enabled
+                        frame_to_save = self.draw_hand_gesture_debug(
+                            annotated_frame_for_activity.copy(),
+                            gesture_debug,
+                            lp_hand_gesture_detected,
+                            alp_hand_gesture_detected
+                        )
+                        
                         # Save frame with unique filename
                         frame_filename = f"frame_{frame_idx:08d}.jpg"
                         frame_path = os.path.join(self.frames_dir, frame_filename)
@@ -3032,7 +3950,7 @@ class LocopilotActivityMonitor:
                         os.makedirs(self.frames_dir, exist_ok=True)
                         
                         # Save with high quality
-                        cv2.imwrite(frame_path, annotated_frame_for_activity, [cv2.IMWRITE_JPEG_QUALITY, 95])
+                        cv2.imwrite(frame_path, frame_to_save, [cv2.IMWRITE_JPEG_QUALITY, 95])
                             
                     except Exception as e:
                         print(f"[{timestamp}] Error saving frame {frame_idx}: {e}")

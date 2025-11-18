@@ -131,7 +131,9 @@ class VideoProcessingService:
         crew_role: int = 1,
         use_mock_detection: bool = False,
         use_multiprocessing: bool = False,
-        save_clips: bool = True
+        save_clips: bool = True,
+        enable_gesture_debug: bool = False,
+        gesture_sensitivity: str = 'balanced'
     ) -> Dict[str, Any]:
         """
         Process video and detect activities
@@ -146,6 +148,8 @@ class VideoProcessingService:
             use_mock_detection: Use mock detection instead of real ML models
             use_multiprocessing: Enable multiprocessing for faster processing
             save_clips: Whether to save video clips and images (default: True)
+            enable_gesture_debug: Enable gesture debug features (confidence scoring, logs, reports)
+            gesture_sensitivity: Gesture sensitivity mode ('strict', 'balanced', or 'sensitive')
             
         Returns:
             Dict[str, Any]: Processing results with activities
@@ -202,7 +206,9 @@ class VideoProcessingService:
                         output_dir=settings.output_dir,
                         sample_fps=settings.sample_fps,
                         run_dir=run_dir,  # Pass existing run_dir to avoid nested directories
-                        save_clips=save_clips
+                        save_clips=save_clips,
+                        enable_gesture_debug=enable_gesture_debug,
+                        gesture_sensitivity=gesture_sensitivity
                     )
                 else:
                     activities = self.activity_detection_service._detect_activities_single_process(
@@ -214,7 +220,9 @@ class VideoProcessingService:
                         crew_role=crew_role,
                         output_dir=settings.output_dir,
                         sample_fps=settings.sample_fps,
-                        run_dir=run_dir  # Pass existing run_dir
+                        run_dir=run_dir,  # Pass existing run_dir
+                        enable_gesture_debug=enable_gesture_debug,
+                        gesture_sensitivity=gesture_sensitivity
                     )
             
             # Save activities to JSON
@@ -223,6 +231,19 @@ class VideoProcessingService:
                 run_dir=run_dir
             )
             logger.info(f"💾 Saved {len(activities)} activities to {activities_json_path}")
+            
+            # Load gesture report if debug was enabled
+            gesture_report = None
+            if enable_gesture_debug:
+                try:
+                    import json
+                    gesture_report_path = os.path.join(run_dir, 'gesture_stats_report.json')
+                    if os.path.exists(gesture_report_path):
+                        with open(gesture_report_path, 'r') as f:
+                            gesture_report = json.load(f)
+                        logger.info(f"📊 Loaded gesture stats report from {gesture_report_path}")
+                except Exception as e:
+                    logger.warning(f"⚠️ Failed to load gesture report: {e}")
             
             # Post results to external API (non-blocking, errors don't fail the job)
             api_result = None
@@ -285,12 +306,18 @@ class VideoProcessingService:
                 "processingTime": processing_time,
                 "summary": summary,
                 "multiprocessingEnabled": use_multiprocessing,
-                "clipsGenerated": save_clips
+                "clipsGenerated": save_clips,
+                "gestureDebugEnabled": enable_gesture_debug,
+                "gestureSensitivity": gesture_sensitivity
             }
             
             # Add external API result if available
             if api_result is not None:
                 response["externalApiResult"] = api_result
+            
+            # Add gesture report if available
+            if gesture_report is not None:
+                response["gestureStatsReport"] = gesture_report
             
             return response
             
