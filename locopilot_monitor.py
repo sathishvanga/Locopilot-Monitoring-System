@@ -634,6 +634,7 @@ class LocopilotActivityMonitor:
                         detections['book'].append(xyxy)
         
         # Stage 2: Pose-guided ROI detection (if pose landmarks available)
+        # This now supports BOTH single-person and multi-person ROI detection
         if use_pose_guided and pose_landmarks is not None:
             landmarks = pose_landmarks.landmark
             h, w = frame.shape[:2]
@@ -659,7 +660,7 @@ class LocopilotActivityMonitor:
                 ('MOUTH_RIGHT', self.mp_pose.PoseLandmark.MOUTH_RIGHT, 100),
             ]
             
-            # Create ROIs and run focused detection
+            # Create ROIs and run focused detection (single-person fallback)
             for keypoint_name, keypoint_idx, roi_size in keypoints_of_interest:
                 try:
                     landmark = landmarks[keypoint_idx]
@@ -698,6 +699,138 @@ class LocopilotActivityMonitor:
                 
                 except Exception as e:
                     continue
+        
+        return detections
+    
+    def detect_objects_multi_person(self, frame, multi_person_results, use_pose_guided=True):
+        """Detect objects using multi-person pose landmarks for ROI detection.
+        
+        This is an enhanced version of detect_objects that processes all detected persons.
+        
+        Args:
+            frame: Input frame
+            multi_person_results: Dictionary of per-person pose results from detect_multi_person_pose_and_gestures
+            use_pose_guided: Whether to use pose-guided ROI detection
+            
+        Returns:
+            Same format as detect_objects but with ROIs for all persons
+        """
+        # Start with full-frame detection
+        detections = {
+            'person': [],
+            'cell_phone': [],
+            'book': [],
+            'backpack': [],
+            'roi_detections': [],
+            'roi_boxes': [],
+            'deduplicated_person': []
+        }
+        
+        # Stage 1: Full-frame YOLO detection
+        results = self.yolo_model(frame, conf=0.3, verbose=False)
+        person_boxes = []
+        
+        if results[0].boxes is not None:
+            boxes = results[0].boxes
+            for box in boxes:
+                cls = int(box.cls[0])
+                conf = float(box.conf[0])
+                xyxy = box.xyxy[0].cpu().numpy()
+                
+                class_name = self.yolo_model.names[cls]
+                if class_name == 'person' and conf > 0.5:
+                    detections['person'].append(xyxy)
+                    person_boxes.append(xyxy)
+                elif class_name == 'backpack' and conf > 0.5:
+                    detections['backpack'].append(xyxy)
+                elif class_name == 'book' and conf > 0.2:
+                    if len(person_boxes) > 0:
+                        book_near_person = False
+                        book_center_x = (xyxy[0] + xyxy[2]) / 2
+                        book_center_y = (xyxy[1] + xyxy[3]) / 2
+                        
+                        for person_box in person_boxes:
+                            person_x1, person_y1, person_x2, person_y2 = person_box
+                            margin = 200
+                            if (person_x1 - margin <= book_center_x <= person_x2 + margin and
+                                person_y1 - margin <= book_center_y <= person_y2 + margin):
+                                book_near_person = True
+                                break
+                        
+                        if book_near_person:
+                            detections['book'].append(xyxy)
+                    else:
+                        detections['book'].append(xyxy)
+        
+        # Stage 2: Multi-person pose-guided ROI detection
+        if use_pose_guided and multi_person_results:
+            h, w = frame.shape[:2]
+            
+            # Define keypoints of interest with ROI sizes
+            keypoints_of_interest = [
+                ('RIGHT_WRIST', self.mp_pose.PoseLandmark.RIGHT_WRIST, 250),
+                ('LEFT_WRIST', self.mp_pose.PoseLandmark.LEFT_WRIST, 250),
+                ('RIGHT_INDEX', self.mp_pose.PoseLandmark.RIGHT_INDEX, 200),
+                ('LEFT_INDEX', self.mp_pose.PoseLandmark.LEFT_INDEX, 200),
+                ('RIGHT_HIP', self.mp_pose.PoseLandmark.RIGHT_HIP, 280),
+                ('LEFT_HIP', self.mp_pose.PoseLandmark.LEFT_HIP, 280),
+                ('RIGHT_EAR', self.mp_pose.PoseLandmark.RIGHT_EAR, 120),
+                ('LEFT_EAR', self.mp_pose.PoseLandmark.LEFT_EAR, 120),
+                ('MOUTH_LEFT', self.mp_pose.PoseLandmark.MOUTH_LEFT, 100),
+                ('MOUTH_RIGHT', self.mp_pose.PoseLandmark.MOUTH_RIGHT, 100),
+            ]
+            
+            # Process each detected person
+            for person_idx, person_result in multi_person_results.items():
+                if 'pose_landmarks' not in person_result or not person_result['pose_landmarks']:
+                    continue
+                
+                landmarks = person_result['pose_landmarks'].landmark
+                role = person_result.get('role', 'UNKNOWN')
+                
+                # Create ROIs for this person's keypoints
+                for keypoint_name, keypoint_idx, roi_size in keypoints_of_interest:
+                    try:
+                        landmark = landmarks[keypoint_idx]
+                        
+                        # Check visibility
+                        if landmark.visibility < 0.5:
+                            continue
+                        
+                        keypoint_coords = (int(landmark.x * w), int(landmark.y * h))
+                        roi_bbox = self.get_roi_around_keypoint(keypoint_coords, frame.shape, roi_size)
+                        
+                        if roi_bbox is not None:
+                            # Add role information to ROI label
+                            roi_label = f"{role}_{keypoint_name}"
+                            detections['roi_boxes'].append((roi_label, roi_bbox))
+                            
+                            # Detect objects in ROI
+                            roi_detections = self.detect_objects_in_roi(
+                                frame, roi_bbox,
+                                target_classes=['cell phone', 'book', 'pen', 'pencil', 'paper', 'bottle', 'cup']
+                            )
+                            
+                            for det in roi_detections:
+                                class_name, conf, x1, y1, x2, y2 = det
+                                detections['roi_detections'].append({
+                                    'class': class_name,
+                                    'confidence': conf,
+                                    'bbox': [x1, y1, x2, y2],
+                                    'keypoint': roi_label,
+                                    'person_idx': person_idx,
+                                    'role': role,
+                                    'source': 'multi_person_pose_guided_roi'
+                                })
+                                
+                                # Also add to main detection lists
+                                if class_name == 'cell phone':
+                                    detections['cell_phone'].append([x1, y1, x2, y2])
+                                elif class_name == 'book':
+                                    detections['book'].append([x1, y1, x2, y2])
+                    
+                    except Exception as e:
+                        continue
         
         return detections
     
@@ -859,13 +992,86 @@ class LocopilotActivityMonitor:
         
         return annotated_frame
     
-    def draw_mediapipe_outputs(self, frame, pose_results, face_results, ear_value=None, eye_closure_duration=0, pose_sleep_info=None, head_pose_info=None):
-        """Draw MediaPipe pose and face mesh landmarks on frame"""
+    def draw_mediapipe_outputs(self, frame, pose_results, face_results, ear_value=None, eye_closure_duration=0, pose_sleep_info=None, head_pose_info=None, multi_person_results=None, person_roles=None):
+        """Draw MediaPipe pose and face mesh landmarks on frame
+        
+        Args:
+            frame: Input frame
+            pose_results: Single-person pose results (fallback)
+            face_results: Face mesh results
+            ear_value: Eye aspect ratio value
+            eye_closure_duration: Duration of eye closure
+            pose_sleep_info: Pose-based sleep detection info
+            head_pose_info: Head pose angle information
+            multi_person_results: Dictionary of per-person pose results (from detect_multi_person_pose_and_gestures)
+            person_roles: Dictionary of person roles for labeling
+        """
         annotated_frame = frame.copy()
         
         face_detected = face_results.multi_face_landmarks is not None and len(face_results.multi_face_landmarks) > 0
         
-        if pose_results.pose_landmarks:
+        # Draw pose landmarks - prioritize multi-person results if available
+        if multi_person_results and len(multi_person_results) > 0:
+            # Multi-person mode: Draw landmarks for each detected person
+            for person_idx, person_result in multi_person_results.items():
+                if 'pose_landmarks' in person_result and person_result['pose_landmarks']:
+                    landmarks = person_result['pose_landmarks']
+                    
+                    # Get role for color coding
+                    role = person_result.get('role', 'UNKNOWN')
+                    
+                    # Use different colors for LP vs ALP
+                    if role == 'LP':
+                        landmark_color = (0, 255, 255)  # Yellow for LP
+                        connection_color = (0, 200, 200)
+                    elif role == 'ALP':
+                        landmark_color = (255, 165, 0)  # Orange for ALP
+                        connection_color = (200, 130, 0)
+                    else:
+                        landmark_color = (128, 128, 128)  # Gray for unknown
+                        connection_color = (100, 100, 100)
+                    
+                    # Draw landmarks with role-specific colors
+                    self.mp_drawing.draw_landmarks(
+                        annotated_frame,
+                        landmarks,
+                        self.mp_pose.POSE_CONNECTIONS,
+                        landmark_drawing_spec=self.mp_drawing.DrawingSpec(
+                            color=landmark_color, thickness=2, circle_radius=2
+                        ),
+                        connection_drawing_spec=self.mp_drawing.DrawingSpec(
+                            color=connection_color, thickness=2
+                        )
+                    )
+                    
+                    # Add role label near the person's head
+                    if landmarks.landmark:
+                        nose = landmarks.landmark[self.mp_pose.PoseLandmark.NOSE]
+                        h, w = frame.shape[:2]
+                        label_x = int(nose.x * w)
+                        label_y = int(nose.y * h) - 30
+                        
+                        # Draw role label with background
+                        label_text = f"{role}"
+                        if person_result.get('gesture_detected', False):
+                            label_text += " (HAND RAISED)"
+                        
+                        label_size, _ = cv2.getTextSize(label_text, cv2.FONT_HERSHEY_SIMPLEX, 0.7, 2)
+                        label_w, label_h = label_size
+                        
+                        # Background rectangle
+                        cv2.rectangle(annotated_frame,
+                                    (label_x - 5, label_y - label_h - 5),
+                                    (label_x + label_w + 5, label_y + 5),
+                                    landmark_color, -1)
+                        
+                        # Text
+                        cv2.putText(annotated_frame, label_text,
+                                  (label_x, label_y),
+                                  cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 0), 2, cv2.LINE_AA)
+        
+        elif pose_results.pose_landmarks:
+            # Single-person fallback mode
             self.mp_drawing.draw_landmarks(
                 annotated_frame,
                 pose_results.pose_landmarks,
@@ -1456,6 +1662,52 @@ class LocopilotActivityMonitor:
         # Unknown role
         return False, False, {}
     
+    def translate_landmarks_to_full_frame(self, pose_landmarks, crop_x, crop_y, crop_w, crop_h, frame_w, frame_h):
+        """Translate pose landmarks from cropped coordinates to full frame coordinates.
+        
+        MediaPipe returns normalized coordinates (0-1) relative to the input image.
+        When we process a cropped region, we need to translate these back to full frame coordinates.
+        
+        Args:
+            pose_landmarks: MediaPipe pose landmarks from cropped region
+            crop_x: X offset of crop in full frame
+            crop_y: Y offset of crop in full frame
+            crop_w: Width of cropped region
+            crop_h: Height of cropped region
+            frame_w: Width of full frame
+            frame_h: Height of full frame
+            
+        Returns:
+            MediaPipe pose landmarks with coordinates translated to full frame
+        """
+        # Create a copy of the landmarks to avoid modifying original
+        from mediapipe.framework.formats import landmark_pb2
+        
+        translated_landmarks = landmark_pb2.NormalizedLandmarkList()
+        
+        for landmark in pose_landmarks.landmark:
+            # Convert normalized coordinates (0-1) in crop to pixel coordinates
+            pixel_x_in_crop = landmark.x * crop_w
+            pixel_y_in_crop = landmark.y * crop_h
+            
+            # Translate to full frame pixel coordinates
+            pixel_x_in_frame = crop_x + pixel_x_in_crop
+            pixel_y_in_frame = crop_y + pixel_y_in_crop
+            
+            # Normalize to full frame (0-1)
+            normalized_x = pixel_x_in_frame / frame_w
+            normalized_y = pixel_y_in_frame / frame_h
+            
+            # Create new landmark with translated coordinates
+            new_landmark = translated_landmarks.landmark.add()
+            new_landmark.x = normalized_x
+            new_landmark.y = normalized_y
+            new_landmark.z = landmark.z  # Z is relative, keep as is
+            new_landmark.visibility = landmark.visibility
+            new_landmark.presence = landmark.presence
+        
+        return translated_landmarks
+    
     def detect_multi_person_pose_and_gestures(self, frame, person_roles):
         """Run MediaPipe Pose on each person's cropped bounding box for multi-person gesture detection.
         
@@ -1485,15 +1737,18 @@ class LocopilotActivityMonitor:
             bbox = person_data['bbox']  # [x1, y1, x2, y2]
             x1, y1, x2, y2 = bbox
             
+            # Convert to integers (YOLO returns floats)
+            x1, y1, x2, y2 = int(x1), int(y1), int(x2), int(y2)
+            
             # Add padding to bbox for better pose detection (10% on each side)
             padding_x = int((x2 - x1) * 0.1)
             padding_y = int((y2 - y1) * 0.1)
             
             # Expand bbox with padding, but stay within frame bounds
-            x1_padded = max(0, x1 - padding_x)
-            y1_padded = max(0, y1 - padding_y)
-            x2_padded = min(w, x2 + padding_x)
-            y2_padded = min(h, y2 + padding_y)
+            x1_padded = int(max(0, x1 - padding_x))
+            y1_padded = int(max(0, y1 - padding_y))
+            x2_padded = int(min(w, x2 + padding_x))
+            y2_padded = int(min(h, y2 + padding_y))
             
             # Crop frame to this person's region
             try:
@@ -1513,7 +1768,7 @@ class LocopilotActivityMonitor:
                     translated_landmarks = self.translate_landmarks_to_full_frame(
                         pose_result.pose_landmarks,
                         x1_padded, y1_padded,
-                        x2_padded - x1_padded, y2_padded - y1_padded,
+                        int(x2_padded - x1_padded), int(y2_padded - y1_padded),
                         w, h
                     )
                     
@@ -2495,11 +2750,18 @@ class LocopilotActivityMonitor:
                 # Use MULTI-PERSON pose detection for simultaneous gesture detection
                 lp_hand_gesture_detected = False
                 alp_hand_gesture_detected = False
+                multi_person_results = None  # Initialize for visualization
                 
                 # Run multi-person pose detection if we have 2 people
                 if len(person_roles) >= 2:
                     # Multi-person scenario: Run pose detection on each person's cropped region
                     multi_person_results = self.detect_multi_person_pose_and_gestures(frame, person_roles)
+                    
+                    # Update detections with multi-person ROI boxes for better visualization
+                    multi_person_detections = self.detect_objects_multi_person(frame, multi_person_results, use_pose_guided=True)
+                    # Merge ROI boxes and ROI detections from multi-person detection
+                    detections['roi_boxes'] = multi_person_detections['roi_boxes']
+                    detections['roi_detections'] = multi_person_detections['roi_detections']
                     
                     # Check results for each person
                     for person_idx, result in multi_person_results.items():
@@ -2594,7 +2856,9 @@ class LocopilotActivityMonitor:
                     ear_value,
                     self.eye_closure_duration,
                     pose_sleep_info,
-                    head_pose_info
+                    head_pose_info,
+                    multi_person_results=multi_person_results,
+                    person_roles=person_roles
                 )
                 
                 # Save annotated frames periodically if enabled (AFTER all detections)
@@ -2961,10 +3225,34 @@ class LocopilotActivityMonitor:
                             writing_detected = True
                 
                 # NEW: Check for hand gesture (LP/ALP not exchanging hand gesture)
+                # Use MULTI-PERSON pose detection for simultaneous gesture detection
                 lp_hand_gesture_detected = False
                 alp_hand_gesture_detected = False
+                multi_person_results = None  # Initialize for visualization
                 
-                if pose_results.pose_landmarks and person_roles:
+                # Run multi-person pose detection if we have 2 people
+                if len(person_roles) >= 2:
+                    # Multi-person scenario: Run pose detection on each person's cropped region
+                    multi_person_results = self.detect_multi_person_pose_and_gestures(frame, person_roles)
+                    
+                    # Update detections with multi-person ROI boxes for better visualization
+                    multi_person_detections = self.detect_objects_multi_person(frame, multi_person_results, use_pose_guided=True)
+                    # Merge ROI boxes and ROI detections from multi-person detection
+                    detections['roi_boxes'] = multi_person_detections['roi_boxes']
+                    detections['roi_detections'] = multi_person_detections['roi_detections']
+                    
+                    # Check results for each person
+                    for person_idx, result in multi_person_results.items():
+                        if result['gesture_detected']:
+                            gesture_type = result['gesture_type']
+                            
+                            if gesture_type == 'lp':
+                                lp_hand_gesture_detected = True
+                            elif gesture_type == 'alp':
+                                alp_hand_gesture_detected = True
+                
+                # Fallback to single-person pose detection if only 1 person or multi-person failed
+                elif pose_results.pose_landmarks and person_roles:
                     lp_gesture, alp_gesture, gesture_debug = self.detect_hand_gesture(
                         pose_results.pose_landmarks, 
                         frame.shape, 
@@ -3014,7 +3302,9 @@ class LocopilotActivityMonitor:
                     ear_value,
                     self.eye_closure_duration,
                     pose_sleep_info,
-                    head_pose_info
+                    head_pose_info,
+                    multi_person_results=multi_person_results,
+                    person_roles=person_roles
                 )
                 
                 # Save annotated frames periodically if enabled (in process_video_range for multiprocessing)

@@ -1522,3 +1522,656 @@
 2025-11-16 18:28:53,541 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Shutting down application...
 2025-11-16 18:28:53,539 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Shutting down application...
 2025-11-16 18:28:53,562 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Shutting down application...
+2025-11-18 16:50:37,211 [N/A] [N/A] [N/A] [N/A] [INFO] [app.utils.logger] [N/A N/A] Logging initialized - Level: INFO, Environment: development, Log file: logs/LocopilotMonitoring.log
+2025-11-18 16:50:37,241 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] ============================================================
+2025-11-18 16:50:37,241 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Starting Locopilot Monitoring System v1.0.0
+2025-11-18 16:50:37,241 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Environment: Production
+2025-11-18 16:50:37,241 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Output directory: locopilot_evidence
+2025-11-18 16:50:37,241 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Upload directory: /tmp/locopilot_uploads
+2025-11-18 16:50:37,241 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Sample FPS: 0.5
+2025-11-18 16:50:37,242 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] YOLO weights: yolo11s.pt
+2025-11-18 16:50:37,242 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] ============================================================
+2025-11-18 16:50:37,242 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] OCR preloading enabled
+2025-11-18 16:50:37,243 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] ============================================================
+2025-11-18 16:50:37,243 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Starting Locopilot Monitoring System v1.0.0
+2025-11-18 16:50:37,243 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Environment: Production
+2025-11-18 16:50:37,244 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Output directory: locopilot_evidence
+2025-11-18 16:50:37,244 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Upload directory: /tmp/locopilot_uploads
+2025-11-18 16:50:37,244 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Sample FPS: 0.5
+2025-11-18 16:50:37,244 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] YOLO weights: yolo11s.pt
+2025-11-18 16:50:37,244 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] ============================================================
+2025-11-18 16:50:37,244 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] OCR preloading enabled
+2025-11-18 16:50:37,256 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] ============================================================
+2025-11-18 16:50:37,256 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Starting Locopilot Monitoring System v1.0.0
+2025-11-18 16:50:37,256 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Environment: Production
+2025-11-18 16:50:37,256 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Output directory: locopilot_evidence
+2025-11-18 16:50:37,256 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Upload directory: /tmp/locopilot_uploads
+2025-11-18 16:50:37,257 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Sample FPS: 0.5
+2025-11-18 16:50:37,257 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] YOLO weights: yolo11s.pt
+2025-11-18 16:50:37,257 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] ============================================================
+2025-11-18 16:50:37,257 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] OCR preloading enabled
+2025-11-18 16:50:37,288 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] ============================================================
+2025-11-18 16:50:37,288 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Starting Locopilot Monitoring System v1.0.0
+2025-11-18 16:50:37,288 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Environment: Production
+2025-11-18 16:50:37,289 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Output directory: locopilot_evidence
+2025-11-18 16:50:37,289 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Upload directory: /tmp/locopilot_uploads
+2025-11-18 16:50:37,289 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Sample FPS: 0.5
+2025-11-18 16:50:37,289 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] YOLO weights: yolo11s.pt
+2025-11-18 16:50:37,289 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] ============================================================
+2025-11-18 16:50:37,289 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] OCR preloading enabled
+2025-11-18 16:50:37,346 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] ============================================================
+2025-11-18 16:50:37,346 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Starting Locopilot Monitoring System v1.0.0
+2025-11-18 16:50:37,346 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Environment: Production
+2025-11-18 16:50:37,346 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Output directory: locopilot_evidence
+2025-11-18 16:50:37,346 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Upload directory: /tmp/locopilot_uploads
+2025-11-18 16:50:37,346 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Sample FPS: 0.5
+2025-11-18 16:50:37,347 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] YOLO weights: yolo11s.pt
+2025-11-18 16:50:37,347 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] ============================================================
+2025-11-18 16:50:37,347 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] OCR preloading enabled
+2025-11-18 16:50:48,012 [N/A] [N/A] [N/A] [225514b3-a2b0-4e0c-9377-edf1777ac00e] [INFO] [app.middleware.logging_middleware] [POST /api/jobs] 📥 Request received - Method: POST, Path: /api/jobs, Client: 127.0.0.1, User: N/A
+2025-11-18 16:50:48,271 [N/A] [N/A] [N/A] [225514b3-a2b0-4e0c-9377-edf1777ac00e] [INFO] [app.controllers.video_controller] [POST /api/jobs] 📥 Received video processing request for trip: string
+2025-11-18 16:50:48,272 [N/A] [N/A] [N/A] [225514b3-a2b0-4e0c-9377-edf1777ac00e] [INFO] [app.controllers.video_controller] [POST /api/jobs] LP Crew: string (string)
+2025-11-18 16:50:48,272 [N/A] [N/A] [N/A] [225514b3-a2b0-4e0c-9377-edf1777ac00e] [INFO] [app.controllers.video_controller] [POST /api/jobs] ALP Crew: string (string)
+2025-11-18 16:50:48,296 [N/A] [N/A] [N/A] [225514b3-a2b0-4e0c-9377-edf1777ac00e] [INFO] [app.controllers.video_controller] [POST /api/jobs] 📹 Uploaded video: all_activities.mp4 (251.91 MB)
+2025-11-18 16:50:48,358 [N/A] [N/A] [N/A] [225514b3-a2b0-4e0c-9377-edf1777ac00e] [INFO] [app.services.video_processing_service] [POST /api/jobs] Video saved to /tmp/locopilot_uploads/string_1763464848.mp4 (264148204 bytes)
+2025-11-18 16:50:48,359 [N/A] [N/A] [N/A] [225514b3-a2b0-4e0c-9377-edf1777ac00e] [INFO] [app.controllers.video_controller] [POST /api/jobs] 🎮 Processing configuration - Multiprocessing: True, SaveClips: True, Mock: False
+2025-11-18 16:50:48,359 [N/A] [N/A] [N/A] [225514b3-a2b0-4e0c-9377-edf1777ac00e] [INFO] [app.services.video_processing_service] [POST /api/jobs] 🎬 Starting video processing for trip string - Multiprocessing: enabled, Save clips: True, Mock detection: False
+2025-11-18 16:50:48,359 [N/A] [N/A] [N/A] [225514b3-a2b0-4e0c-9377-edf1777ac00e] [INFO] [app.services.video_processing_service] [POST /api/jobs] ✅ Video file validated: /tmp/locopilot_uploads/string_1763464848.mp4
+2025-11-18 16:50:48,359 [N/A] [N/A] [N/A] [225514b3-a2b0-4e0c-9377-edf1777ac00e] [INFO] [app.repositories.activity_repository] [POST /api/jobs] Created run directory: locopilot_evidence/run_20251118_165048
+2025-11-18 16:50:48,360 [N/A] [N/A] [N/A] [225514b3-a2b0-4e0c-9377-edf1777ac00e] [INFO] [app.services.video_processing_service] [POST /api/jobs] 📁 Created run directory: locopilot_evidence/run_20251118_165048
+2025-11-18 16:50:48,360 [N/A] [N/A] [N/A] [225514b3-a2b0-4e0c-9377-edf1777ac00e] [INFO] [app.services.video_processing_service] [POST /api/jobs] 🔍 Using real activity detection - Multiprocessing: enabled
+2025-11-18 16:50:49,046 [N/A] [N/A] [N/A] [225514b3-a2b0-4e0c-9377-edf1777ac00e] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Initializing process pool with 8 workers (method=spawn)
+2025-11-18 16:50:49,050 [N/A] [N/A] [N/A] [225514b3-a2b0-4e0c-9377-edf1777ac00e] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Process pool initialized successfully
+2025-11-18 16:50:49,050 [N/A] [N/A] [N/A] [225514b3-a2b0-4e0c-9377-edf1777ac00e] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Calculating frame ranges for parallel processing
+2025-11-18 16:50:49,074 [N/A] [N/A] [N/A] [225514b3-a2b0-4e0c-9377-edf1777ac00e] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Video split into 382 chunks (~6.0s each, 0.5 FPS sampling)
+2025-11-18 16:50:49,074 [N/A] [N/A] [N/A] [225514b3-a2b0-4e0c-9377-edf1777ac00e] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Submitting 382 tasks to process pool (expected 1144 sampled frames, save_clips=True)
+2025-11-18 16:50:59,678 [N/A] [N/A] [N/A] [225514b3-a2b0-4e0c-9377-edf1777ac00e] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 4 completed: 0 activities, 0.3% done
+2025-11-18 16:50:59,917 [N/A] [N/A] [N/A] [225514b3-a2b0-4e0c-9377-edf1777ac00e] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 5 completed: 0 activities, 0.5% done
+2025-11-18 16:50:59,939 [N/A] [N/A] [N/A] [225514b3-a2b0-4e0c-9377-edf1777ac00e] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 3 completed: 0 activities, 0.8% done
+2025-11-18 16:51:00,250 [N/A] [N/A] [N/A] [225514b3-a2b0-4e0c-9377-edf1777ac00e] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 6 completed: 0 activities, 1.0% done
+2025-11-18 16:51:00,251 [N/A] [N/A] [N/A] [225514b3-a2b0-4e0c-9377-edf1777ac00e] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 2 completed: 0 activities, 1.3% done
+2025-11-18 16:51:00,295 [N/A] [N/A] [N/A] [225514b3-a2b0-4e0c-9377-edf1777ac00e] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 7 completed: 0 activities, 1.6% done
+2025-11-18 16:51:01,643 [N/A] [N/A] [N/A] [225514b3-a2b0-4e0c-9377-edf1777ac00e] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 1 completed: 0 activities, 1.8% done
+2025-11-18 16:51:01,656 [N/A] [N/A] [N/A] [225514b3-a2b0-4e0c-9377-edf1777ac00e] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 0 completed: 0 activities, 2.1% done
+2025-11-18 16:51:08,319 [N/A] [N/A] [N/A] [225514b3-a2b0-4e0c-9377-edf1777ac00e] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 8 completed: 0 activities, 2.4% done
+2025-11-18 16:51:08,885 [N/A] [N/A] [N/A] [225514b3-a2b0-4e0c-9377-edf1777ac00e] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 11 completed: 0 activities, 2.6% done
+2025-11-18 16:51:08,907 [N/A] [N/A] [N/A] [225514b3-a2b0-4e0c-9377-edf1777ac00e] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 12 completed: 0 activities, 2.9% done
+2025-11-18 16:51:08,922 [N/A] [N/A] [N/A] [225514b3-a2b0-4e0c-9377-edf1777ac00e] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 13 completed: 0 activities, 3.1% done
+2025-11-18 16:51:09,050 [N/A] [N/A] [N/A] [225514b3-a2b0-4e0c-9377-edf1777ac00e] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 10 completed: 0 activities, 3.4% done
+2025-11-18 16:51:09,778 [N/A] [N/A] [N/A] [225514b3-a2b0-4e0c-9377-edf1777ac00e] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 15 completed: 0 activities, 3.7% done
+2025-11-18 16:51:10,233 [N/A] [N/A] [N/A] [225514b3-a2b0-4e0c-9377-edf1777ac00e] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 14 completed: 0 activities, 3.9% done
+2025-11-18 16:51:10,717 [N/A] [N/A] [N/A] [225514b3-a2b0-4e0c-9377-edf1777ac00e] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 9 completed: 0 activities, 4.2% done
+2025-11-18 16:51:15,646 [N/A] [N/A] [N/A] [225514b3-a2b0-4e0c-9377-edf1777ac00e] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 16 completed: 0 activities, 4.5% done
+2025-11-18 16:51:17,440 [N/A] [N/A] [N/A] [225514b3-a2b0-4e0c-9377-edf1777ac00e] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 22 completed: 0 activities, 4.7% done
+2025-11-18 16:51:17,695 [N/A] [N/A] [N/A] [225514b3-a2b0-4e0c-9377-edf1777ac00e] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 17 completed: 0 activities, 5.0% done
+2025-11-18 16:51:17,856 [N/A] [N/A] [N/A] [225514b3-a2b0-4e0c-9377-edf1777ac00e] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 18 completed: 0 activities, 5.2% done
+2025-11-18 16:51:19,373 [N/A] [N/A] [N/A] [225514b3-a2b0-4e0c-9377-edf1777ac00e] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 19 completed: 0 activities, 5.5% done
+2025-11-18 16:51:19,636 [N/A] [N/A] [N/A] [225514b3-a2b0-4e0c-9377-edf1777ac00e] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 20 completed: 0 activities, 5.8% done
+2025-11-18 16:51:19,649 [N/A] [N/A] [N/A] [225514b3-a2b0-4e0c-9377-edf1777ac00e] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 23 completed: 0 activities, 6.0% done
+2025-11-18 16:51:20,657 [N/A] [N/A] [N/A] [225514b3-a2b0-4e0c-9377-edf1777ac00e] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 21 completed: 0 activities, 6.3% done
+2025-11-18 16:51:26,551 [N/A] [N/A] [N/A] [225514b3-a2b0-4e0c-9377-edf1777ac00e] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 26 completed: 0 activities, 6.6% done
+2025-11-18 16:51:26,611 [N/A] [N/A] [N/A] [225514b3-a2b0-4e0c-9377-edf1777ac00e] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 25 completed: 0 activities, 6.8% done
+2025-11-18 16:51:26,687 [N/A] [N/A] [N/A] [225514b3-a2b0-4e0c-9377-edf1777ac00e] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 24 completed: 0 activities, 7.1% done
+2025-11-18 16:51:27,063 [N/A] [N/A] [N/A] [225514b3-a2b0-4e0c-9377-edf1777ac00e] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 27 completed: 0 activities, 7.3% done
+2025-11-18 16:51:28,368 [N/A] [N/A] [N/A] [225514b3-a2b0-4e0c-9377-edf1777ac00e] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 28 completed: 0 activities, 7.6% done
+2025-11-18 16:51:28,601 [N/A] [N/A] [N/A] [225514b3-a2b0-4e0c-9377-edf1777ac00e] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 30 completed: 0 activities, 7.9% done
+2025-11-18 16:51:28,883 [N/A] [N/A] [N/A] [225514b3-a2b0-4e0c-9377-edf1777ac00e] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 29 completed: 0 activities, 8.1% done
+2025-11-18 16:51:32,086 [N/A] [N/A] [N/A] [225514b3-a2b0-4e0c-9377-edf1777ac00e] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 31 completed: 0 activities, 8.4% done
+2025-11-18 16:51:35,322 [N/A] [N/A] [N/A] [225514b3-a2b0-4e0c-9377-edf1777ac00e] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 32 completed: 0 activities, 8.7% done
+2025-11-18 16:51:35,529 [N/A] [N/A] [N/A] [225514b3-a2b0-4e0c-9377-edf1777ac00e] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 33 completed: 0 activities, 8.9% done
+2025-11-18 16:51:35,821 [N/A] [N/A] [N/A] [225514b3-a2b0-4e0c-9377-edf1777ac00e] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 35 completed: 0 activities, 9.2% done
+2025-11-18 16:51:37,374 [N/A] [N/A] [N/A] [225514b3-a2b0-4e0c-9377-edf1777ac00e] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 34 completed: 0 activities, 9.4% done
+2025-11-18 16:51:37,646 [N/A] [N/A] [N/A] [225514b3-a2b0-4e0c-9377-edf1777ac00e] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 38 completed: 0 activities, 9.7% done
+2025-11-18 16:51:37,788 [N/A] [N/A] [N/A] [225514b3-a2b0-4e0c-9377-edf1777ac00e] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 36 completed: 0 activities, 10.0% done
+2025-11-18 16:51:37,800 [N/A] [N/A] [N/A] [225514b3-a2b0-4e0c-9377-edf1777ac00e] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 37 completed: 0 activities, 10.2% done
+2025-11-18 16:51:40,816 [N/A] [N/A] [N/A] [225514b3-a2b0-4e0c-9377-edf1777ac00e] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 39 completed: 0 activities, 10.5% done
+2025-11-18 16:51:44,199 [N/A] [N/A] [N/A] [225514b3-a2b0-4e0c-9377-edf1777ac00e] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 41 completed: 0 activities, 10.8% done
+2025-11-18 16:51:44,279 [N/A] [N/A] [N/A] [225514b3-a2b0-4e0c-9377-edf1777ac00e] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 40 completed: 0 activities, 11.0% done
+2025-11-18 16:51:45,677 [N/A] [N/A] [N/A] [225514b3-a2b0-4e0c-9377-edf1777ac00e] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 42 completed: 0 activities, 11.3% done
+2025-11-18 16:51:46,486 [N/A] [N/A] [N/A] [225514b3-a2b0-4e0c-9377-edf1777ac00e] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 43 completed: 0 activities, 11.5% done
+2025-11-18 16:51:46,758 [N/A] [N/A] [N/A] [225514b3-a2b0-4e0c-9377-edf1777ac00e] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 45 completed: 0 activities, 11.8% done
+2025-11-18 16:51:46,973 [N/A] [N/A] [N/A] [225514b3-a2b0-4e0c-9377-edf1777ac00e] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 44 completed: 0 activities, 12.1% done
+2025-11-18 16:51:47,313 [N/A] [N/A] [N/A] [225514b3-a2b0-4e0c-9377-edf1777ac00e] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 46 completed: 1 activities, 12.3% done
+2025-11-18 16:51:49,692 [N/A] [N/A] [N/A] [225514b3-a2b0-4e0c-9377-edf1777ac00e] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 47 completed: 0 activities, 12.6% done
+2025-11-18 16:51:52,821 [N/A] [N/A] [N/A] [225514b3-a2b0-4e0c-9377-edf1777ac00e] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 49 completed: 0 activities, 12.8% done
+2025-11-18 16:51:52,839 [N/A] [N/A] [N/A] [225514b3-a2b0-4e0c-9377-edf1777ac00e] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 50 completed: 0 activities, 13.1% done
+2025-11-18 16:51:54,843 [N/A] [N/A] [N/A] [225514b3-a2b0-4e0c-9377-edf1777ac00e] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 52 completed: 0 activities, 13.4% done
+2025-11-18 16:51:55,429 [N/A] [N/A] [N/A] [225514b3-a2b0-4e0c-9377-edf1777ac00e] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 48 completed: 0 activities, 13.6% done
+2025-11-18 16:51:56,534 [N/A] [N/A] [N/A] [225514b3-a2b0-4e0c-9377-edf1777ac00e] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 51 completed: 0 activities, 13.9% done
+2025-11-18 16:51:56,640 [N/A] [N/A] [N/A] [225514b3-a2b0-4e0c-9377-edf1777ac00e] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 54 completed: 0 activities, 14.2% done
+2025-11-18 16:51:56,726 [N/A] [N/A] [N/A] [225514b3-a2b0-4e0c-9377-edf1777ac00e] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 53 completed: 0 activities, 14.4% done
+2025-11-18 16:51:59,315 [N/A] [N/A] [N/A] [225514b3-a2b0-4e0c-9377-edf1777ac00e] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 55 completed: 0 activities, 14.7% done
+2025-11-18 16:52:04,190 [N/A] [N/A] [N/A] [225514b3-a2b0-4e0c-9377-edf1777ac00e] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 56 completed: 0 activities, 14.9% done
+2025-11-18 16:52:04,535 [N/A] [N/A] [N/A] [225514b3-a2b0-4e0c-9377-edf1777ac00e] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 57 completed: 0 activities, 15.2% done
+2025-11-18 16:52:06,521 [N/A] [N/A] [N/A] [225514b3-a2b0-4e0c-9377-edf1777ac00e] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 58 completed: 0 activities, 15.5% done
+2025-11-18 16:52:07,485 [N/A] [N/A] [N/A] [225514b3-a2b0-4e0c-9377-edf1777ac00e] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 59 completed: 0 activities, 15.7% done
+2025-11-18 16:52:09,225 [N/A] [N/A] [N/A] [225514b3-a2b0-4e0c-9377-edf1777ac00e] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 61 completed: 0 activities, 16.0% done
+2025-11-18 16:52:09,564 [N/A] [N/A] [N/A] [225514b3-a2b0-4e0c-9377-edf1777ac00e] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 62 completed: 0 activities, 16.3% done
+2025-11-18 16:52:11,792 [N/A] [N/A] [N/A] [225514b3-a2b0-4e0c-9377-edf1777ac00e] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 63 completed: 0 activities, 16.5% done
+2025-11-18 16:52:11,912 [N/A] [N/A] [N/A] [225514b3-a2b0-4e0c-9377-edf1777ac00e] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 60 completed: 0 activities, 16.8% done
+2025-11-18 16:52:16,080 [N/A] [N/A] [N/A] [225514b3-a2b0-4e0c-9377-edf1777ac00e] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 65 completed: 0 activities, 17.0% done
+2025-11-18 16:52:16,673 [N/A] [N/A] [N/A] [225514b3-a2b0-4e0c-9377-edf1777ac00e] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 64 completed: 0 activities, 17.3% done
+2025-11-18 16:52:19,127 [N/A] [N/A] [N/A] [225514b3-a2b0-4e0c-9377-edf1777ac00e] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 66 completed: 0 activities, 17.6% done
+2025-11-18 16:52:19,938 [N/A] [N/A] [N/A] [225514b3-a2b0-4e0c-9377-edf1777ac00e] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 67 completed: 0 activities, 17.8% done
+2025-11-18 16:52:23,927 [N/A] [N/A] [N/A] [225514b3-a2b0-4e0c-9377-edf1777ac00e] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 68 completed: 0 activities, 18.1% done
+2025-11-18 16:52:24,209 [N/A] [N/A] [N/A] [225514b3-a2b0-4e0c-9377-edf1777ac00e] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 70 completed: 0 activities, 18.4% done
+2025-11-18 16:52:24,614 [N/A] [N/A] [N/A] [225514b3-a2b0-4e0c-9377-edf1777ac00e] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 69 completed: 0 activities, 18.6% done
+2025-11-18 16:52:27,083 [N/A] [N/A] [N/A] [225514b3-a2b0-4e0c-9377-edf1777ac00e] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 71 completed: 0 activities, 18.9% done
+2025-11-18 16:52:28,250 [N/A] [N/A] [N/A] [225514b3-a2b0-4e0c-9377-edf1777ac00e] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 74 completed: 0 activities, 19.1% done
+2025-11-18 16:52:30,365 [N/A] [N/A] [N/A] [225514b3-a2b0-4e0c-9377-edf1777ac00e] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 72 completed: 0 activities, 19.4% done
+2025-11-18 16:52:30,913 [N/A] [N/A] [N/A] [225514b3-a2b0-4e0c-9377-edf1777ac00e] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 73 completed: 0 activities, 19.7% done
+2025-11-18 16:52:31,690 [N/A] [N/A] [N/A] [225514b3-a2b0-4e0c-9377-edf1777ac00e] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 75 completed: 0 activities, 19.9% done
+2025-11-18 16:52:34,726 [N/A] [N/A] [N/A] [225514b3-a2b0-4e0c-9377-edf1777ac00e] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 79 completed: 0 activities, 20.2% done
+2025-11-18 16:52:35,225 [N/A] [N/A] [N/A] [225514b3-a2b0-4e0c-9377-edf1777ac00e] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 78 completed: 0 activities, 20.5% done
+2025-11-18 16:52:35,241 [N/A] [N/A] [N/A] [225514b3-a2b0-4e0c-9377-edf1777ac00e] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 76 completed: 0 activities, 20.7% done
+2025-11-18 16:52:37,339 [N/A] [N/A] [N/A] [225514b3-a2b0-4e0c-9377-edf1777ac00e] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 77 completed: 0 activities, 21.0% done
+2025-11-18 16:52:38,597 [N/A] [N/A] [N/A] [225514b3-a2b0-4e0c-9377-edf1777ac00e] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 80 completed: 0 activities, 21.2% done
+2025-11-18 16:52:39,511 [N/A] [N/A] [N/A] [225514b3-a2b0-4e0c-9377-edf1777ac00e] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Shutting down process pool
+2025-11-18 16:52:39,640 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Shutting down application...
+2025-11-18 16:52:39,677 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Shutting down application...
+2025-11-18 16:52:39,683 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Shutting down application...
+2025-11-18 16:52:39,677 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Shutting down application...
+2025-11-18 17:01:03,951 [N/A] [N/A] [N/A] [N/A] [INFO] [app.utils.logger] [N/A N/A] Logging initialized - Level: INFO, Environment: development, Log file: logs/LocopilotMonitoring.log
+2025-11-18 17:01:03,979 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] ============================================================
+2025-11-18 17:01:03,979 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Starting Locopilot Monitoring System v1.0.0
+2025-11-18 17:01:03,979 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Environment: Production
+2025-11-18 17:01:03,979 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Output directory: locopilot_evidence
+2025-11-18 17:01:03,979 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Upload directory: /tmp/locopilot_uploads
+2025-11-18 17:01:03,979 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Sample FPS: 0.5
+2025-11-18 17:01:03,980 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] YOLO weights: yolo11s.pt
+2025-11-18 17:01:03,980 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] ============================================================
+2025-11-18 17:01:03,980 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] OCR preloading enabled
+2025-11-18 17:01:04,034 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] ============================================================
+2025-11-18 17:01:04,034 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Starting Locopilot Monitoring System v1.0.0
+2025-11-18 17:01:04,035 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Environment: Production
+2025-11-18 17:01:04,035 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Output directory: locopilot_evidence
+2025-11-18 17:01:04,035 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Upload directory: /tmp/locopilot_uploads
+2025-11-18 17:01:04,035 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Sample FPS: 0.5
+2025-11-18 17:01:04,035 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] YOLO weights: yolo11s.pt
+2025-11-18 17:01:04,035 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] ============================================================
+2025-11-18 17:01:04,035 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] OCR preloading enabled
+2025-11-18 17:01:04,135 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] ============================================================
+2025-11-18 17:01:04,136 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Starting Locopilot Monitoring System v1.0.0
+2025-11-18 17:01:04,136 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Environment: Production
+2025-11-18 17:01:04,136 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Output directory: locopilot_evidence
+2025-11-18 17:01:04,136 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Upload directory: /tmp/locopilot_uploads
+2025-11-18 17:01:04,136 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Sample FPS: 0.5
+2025-11-18 17:01:04,136 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] YOLO weights: yolo11s.pt
+2025-11-18 17:01:04,137 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] ============================================================
+2025-11-18 17:01:04,137 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] OCR preloading enabled
+2025-11-18 17:01:04,155 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] ============================================================
+2025-11-18 17:01:04,156 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Starting Locopilot Monitoring System v1.0.0
+2025-11-18 17:01:04,156 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Environment: Production
+2025-11-18 17:01:04,156 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Output directory: locopilot_evidence
+2025-11-18 17:01:04,156 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Upload directory: /tmp/locopilot_uploads
+2025-11-18 17:01:04,156 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Sample FPS: 0.5
+2025-11-18 17:01:04,156 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] YOLO weights: yolo11s.pt
+2025-11-18 17:01:04,156 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] ============================================================
+2025-11-18 17:01:04,157 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] OCR preloading enabled
+2025-11-18 17:01:04,235 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] ============================================================
+2025-11-18 17:01:04,236 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Starting Locopilot Monitoring System v1.0.0
+2025-11-18 17:01:04,236 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Environment: Production
+2025-11-18 17:01:04,236 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Output directory: locopilot_evidence
+2025-11-18 17:01:04,236 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Upload directory: /tmp/locopilot_uploads
+2025-11-18 17:01:04,236 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Sample FPS: 0.5
+2025-11-18 17:01:04,236 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] YOLO weights: yolo11s.pt
+2025-11-18 17:01:04,237 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] ============================================================
+2025-11-18 17:01:04,237 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] OCR preloading enabled
+2025-11-18 17:01:06,108 [N/A] [N/A] [N/A] [41817e70-7a54-40d5-9c61-afc79870f65d] [INFO] [app.middleware.logging_middleware] [POST /api/jobs] 📥 Request received - Method: POST, Path: /api/jobs, Client: 127.0.0.1, User: N/A
+2025-11-18 17:01:06,357 [N/A] [N/A] [N/A] [41817e70-7a54-40d5-9c61-afc79870f65d] [INFO] [app.controllers.video_controller] [POST /api/jobs] 📥 Received video processing request for trip: string
+2025-11-18 17:01:06,357 [N/A] [N/A] [N/A] [41817e70-7a54-40d5-9c61-afc79870f65d] [INFO] [app.controllers.video_controller] [POST /api/jobs] LP Crew: string (string)
+2025-11-18 17:01:06,357 [N/A] [N/A] [N/A] [41817e70-7a54-40d5-9c61-afc79870f65d] [INFO] [app.controllers.video_controller] [POST /api/jobs] ALP Crew: string (string)
+2025-11-18 17:01:06,381 [N/A] [N/A] [N/A] [41817e70-7a54-40d5-9c61-afc79870f65d] [INFO] [app.controllers.video_controller] [POST /api/jobs] 📹 Uploaded video: all_activities.mp4 (251.91 MB)
+2025-11-18 17:01:06,433 [N/A] [N/A] [N/A] [41817e70-7a54-40d5-9c61-afc79870f65d] [INFO] [app.services.video_processing_service] [POST /api/jobs] Video saved to /tmp/locopilot_uploads/string_1763465466.mp4 (264148204 bytes)
+2025-11-18 17:01:06,433 [N/A] [N/A] [N/A] [41817e70-7a54-40d5-9c61-afc79870f65d] [INFO] [app.controllers.video_controller] [POST /api/jobs] 🎮 Processing configuration - Multiprocessing: True, SaveClips: True, Mock: False
+2025-11-18 17:01:06,433 [N/A] [N/A] [N/A] [41817e70-7a54-40d5-9c61-afc79870f65d] [INFO] [app.services.video_processing_service] [POST /api/jobs] 🎬 Starting video processing for trip string - Multiprocessing: enabled, Save clips: True, Mock detection: False
+2025-11-18 17:01:06,434 [N/A] [N/A] [N/A] [41817e70-7a54-40d5-9c61-afc79870f65d] [INFO] [app.services.video_processing_service] [POST /api/jobs] ✅ Video file validated: /tmp/locopilot_uploads/string_1763465466.mp4
+2025-11-18 17:01:06,434 [N/A] [N/A] [N/A] [41817e70-7a54-40d5-9c61-afc79870f65d] [INFO] [app.repositories.activity_repository] [POST /api/jobs] Created run directory: locopilot_evidence/run_20251118_170106
+2025-11-18 17:01:06,434 [N/A] [N/A] [N/A] [41817e70-7a54-40d5-9c61-afc79870f65d] [INFO] [app.services.video_processing_service] [POST /api/jobs] 📁 Created run directory: locopilot_evidence/run_20251118_170106
+2025-11-18 17:01:06,434 [N/A] [N/A] [N/A] [41817e70-7a54-40d5-9c61-afc79870f65d] [INFO] [app.services.video_processing_service] [POST /api/jobs] 🔍 Using real activity detection - Multiprocessing: enabled
+2025-11-18 17:01:07,171 [N/A] [N/A] [N/A] [41817e70-7a54-40d5-9c61-afc79870f65d] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Initializing process pool with 8 workers (method=spawn)
+2025-11-18 17:01:07,176 [N/A] [N/A] [N/A] [41817e70-7a54-40d5-9c61-afc79870f65d] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Process pool initialized successfully
+2025-11-18 17:01:07,176 [N/A] [N/A] [N/A] [41817e70-7a54-40d5-9c61-afc79870f65d] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Calculating frame ranges for parallel processing
+2025-11-18 17:01:07,198 [N/A] [N/A] [N/A] [41817e70-7a54-40d5-9c61-afc79870f65d] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Video split into 382 chunks (~6.0s each, 0.5 FPS sampling)
+2025-11-18 17:01:07,198 [N/A] [N/A] [N/A] [41817e70-7a54-40d5-9c61-afc79870f65d] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Submitting 382 tasks to process pool (expected 1144 sampled frames, save_clips=True)
+2025-11-18 17:01:18,858 [N/A] [N/A] [N/A] [41817e70-7a54-40d5-9c61-afc79870f65d] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 4 completed: 0 activities, 0.3% done
+2025-11-18 17:01:18,861 [N/A] [N/A] [N/A] [41817e70-7a54-40d5-9c61-afc79870f65d] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 3 completed: 0 activities, 0.5% done
+2025-11-18 17:01:18,876 [N/A] [N/A] [N/A] [41817e70-7a54-40d5-9c61-afc79870f65d] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 5 completed: 0 activities, 0.8% done
+2025-11-18 17:01:18,881 [N/A] [N/A] [N/A] [41817e70-7a54-40d5-9c61-afc79870f65d] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 7 completed: 0 activities, 1.0% done
+2025-11-18 17:01:18,980 [N/A] [N/A] [N/A] [41817e70-7a54-40d5-9c61-afc79870f65d] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 6 completed: 0 activities, 1.3% done
+2025-11-18 17:01:19,166 [N/A] [N/A] [N/A] [41817e70-7a54-40d5-9c61-afc79870f65d] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 2 completed: 0 activities, 1.6% done
+2025-11-18 17:01:20,533 [N/A] [N/A] [N/A] [41817e70-7a54-40d5-9c61-afc79870f65d] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 0 completed: 0 activities, 1.8% done
+2025-11-18 17:01:20,765 [N/A] [N/A] [N/A] [41817e70-7a54-40d5-9c61-afc79870f65d] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 1 completed: 0 activities, 2.1% done
+2025-11-18 17:01:27,955 [N/A] [N/A] [N/A] [41817e70-7a54-40d5-9c61-afc79870f65d] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 8 completed: 0 activities, 2.4% done
+2025-11-18 17:01:28,182 [N/A] [N/A] [N/A] [41817e70-7a54-40d5-9c61-afc79870f65d] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 12 completed: 0 activities, 2.6% done
+2025-11-18 17:01:28,364 [N/A] [N/A] [N/A] [41817e70-7a54-40d5-9c61-afc79870f65d] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 10 completed: 0 activities, 2.9% done
+2025-11-18 17:01:28,418 [N/A] [N/A] [N/A] [41817e70-7a54-40d5-9c61-afc79870f65d] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 11 completed: 0 activities, 3.1% done
+2025-11-18 17:01:28,693 [N/A] [N/A] [N/A] [41817e70-7a54-40d5-9c61-afc79870f65d] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 13 completed: 0 activities, 3.4% done
+2025-11-18 17:01:29,632 [N/A] [N/A] [N/A] [41817e70-7a54-40d5-9c61-afc79870f65d] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 15 completed: 0 activities, 3.7% done
+2025-11-18 17:01:29,874 [N/A] [N/A] [N/A] [41817e70-7a54-40d5-9c61-afc79870f65d] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 14 completed: 0 activities, 3.9% done
+2025-11-18 17:01:30,180 [N/A] [N/A] [N/A] [41817e70-7a54-40d5-9c61-afc79870f65d] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 9 completed: 0 activities, 4.2% done
+2025-11-18 17:01:35,674 [N/A] [N/A] [N/A] [41817e70-7a54-40d5-9c61-afc79870f65d] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 16 completed: 0 activities, 4.5% done
+2025-11-18 17:01:37,651 [N/A] [N/A] [N/A] [41817e70-7a54-40d5-9c61-afc79870f65d] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 18 completed: 0 activities, 4.7% done
+2025-11-18 17:01:37,706 [N/A] [N/A] [N/A] [41817e70-7a54-40d5-9c61-afc79870f65d] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 22 completed: 0 activities, 5.0% done
+2025-11-18 17:01:37,793 [N/A] [N/A] [N/A] [41817e70-7a54-40d5-9c61-afc79870f65d] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 17 completed: 0 activities, 5.2% done
+2025-11-18 17:01:39,335 [N/A] [N/A] [N/A] [41817e70-7a54-40d5-9c61-afc79870f65d] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 23 completed: 0 activities, 5.5% done
+2025-11-18 17:01:39,345 [N/A] [N/A] [N/A] [41817e70-7a54-40d5-9c61-afc79870f65d] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 19 completed: 0 activities, 5.8% done
+2025-11-18 17:01:39,690 [N/A] [N/A] [N/A] [41817e70-7a54-40d5-9c61-afc79870f65d] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 20 completed: 0 activities, 6.0% done
+2025-11-18 17:01:40,444 [N/A] [N/A] [N/A] [41817e70-7a54-40d5-9c61-afc79870f65d] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 21 completed: 0 activities, 6.3% done
+2025-11-18 17:01:47,305 [N/A] [N/A] [N/A] [41817e70-7a54-40d5-9c61-afc79870f65d] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 24 completed: 0 activities, 6.6% done
+2025-11-18 17:01:47,337 [N/A] [N/A] [N/A] [41817e70-7a54-40d5-9c61-afc79870f65d] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 25 completed: 0 activities, 6.8% done
+2025-11-18 17:01:47,590 [N/A] [N/A] [N/A] [41817e70-7a54-40d5-9c61-afc79870f65d] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 26 completed: 0 activities, 7.1% done
+2025-11-18 17:01:47,592 [N/A] [N/A] [N/A] [41817e70-7a54-40d5-9c61-afc79870f65d] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 27 completed: 0 activities, 7.3% done
+2025-11-18 17:01:49,230 [N/A] [N/A] [N/A] [41817e70-7a54-40d5-9c61-afc79870f65d] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 28 completed: 0 activities, 7.6% done
+2025-11-18 17:01:49,327 [N/A] [N/A] [N/A] [41817e70-7a54-40d5-9c61-afc79870f65d] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 29 completed: 0 activities, 7.9% done
+2025-11-18 17:01:49,509 [N/A] [N/A] [N/A] [41817e70-7a54-40d5-9c61-afc79870f65d] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 30 completed: 0 activities, 8.1% done
+2025-11-18 17:01:51,915 [N/A] [N/A] [N/A] [41817e70-7a54-40d5-9c61-afc79870f65d] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 31 completed: 0 activities, 8.4% done
+2025-11-18 17:01:56,997 [N/A] [N/A] [N/A] [41817e70-7a54-40d5-9c61-afc79870f65d] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 32 completed: 0 activities, 8.7% done
+2025-11-18 17:01:57,228 [N/A] [N/A] [N/A] [41817e70-7a54-40d5-9c61-afc79870f65d] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 33 completed: 0 activities, 8.9% done
+2025-11-18 17:01:57,491 [N/A] [N/A] [N/A] [41817e70-7a54-40d5-9c61-afc79870f65d] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 35 completed: 0 activities, 9.2% done
+2025-11-18 17:01:59,586 [N/A] [N/A] [N/A] [41817e70-7a54-40d5-9c61-afc79870f65d] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 37 completed: 0 activities, 9.4% done
+2025-11-18 17:01:59,712 [N/A] [N/A] [N/A] [41817e70-7a54-40d5-9c61-afc79870f65d] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 34 completed: 0 activities, 9.7% done
+2025-11-18 17:01:59,731 [N/A] [N/A] [N/A] [41817e70-7a54-40d5-9c61-afc79870f65d] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 36 completed: 0 activities, 10.0% done
+2025-11-18 17:01:59,940 [N/A] [N/A] [N/A] [41817e70-7a54-40d5-9c61-afc79870f65d] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 38 completed: 0 activities, 10.2% done
+2025-11-18 17:02:00,514 [N/A] [N/A] [N/A] [41817e70-7a54-40d5-9c61-afc79870f65d] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Shutting down process pool
+2025-11-18 17:02:00,633 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Shutting down application...
+2025-11-18 17:02:00,644 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Shutting down application...
+2025-11-18 17:02:00,650 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Shutting down application...
+2025-11-18 17:02:00,690 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Shutting down application...
+2025-11-18 17:04:25,171 [N/A] [N/A] [N/A] [N/A] [INFO] [app.utils.logger] [N/A N/A] Logging initialized - Level: INFO, Environment: development, Log file: logs/LocopilotMonitoring.log
+2025-11-18 17:04:25,198 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] ============================================================
+2025-11-18 17:04:25,199 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Starting Locopilot Monitoring System v1.0.0
+2025-11-18 17:04:25,199 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Environment: Production
+2025-11-18 17:04:25,199 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Output directory: locopilot_evidence
+2025-11-18 17:04:25,199 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Upload directory: /tmp/locopilot_uploads
+2025-11-18 17:04:25,199 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Sample FPS: 0.5
+2025-11-18 17:04:25,199 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] YOLO weights: yolo11s.pt
+2025-11-18 17:04:25,199 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] ============================================================
+2025-11-18 17:04:25,200 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] OCR preloading enabled
+2025-11-18 17:04:25,235 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] ============================================================
+2025-11-18 17:04:25,235 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Starting Locopilot Monitoring System v1.0.0
+2025-11-18 17:04:25,236 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Environment: Production
+2025-11-18 17:04:25,236 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Output directory: locopilot_evidence
+2025-11-18 17:04:25,236 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Upload directory: /tmp/locopilot_uploads
+2025-11-18 17:04:25,236 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Sample FPS: 0.5
+2025-11-18 17:04:25,236 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] YOLO weights: yolo11s.pt
+2025-11-18 17:04:25,237 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] ============================================================
+2025-11-18 17:04:25,237 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] OCR preloading enabled
+2025-11-18 17:04:25,291 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] ============================================================
+2025-11-18 17:04:25,291 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Starting Locopilot Monitoring System v1.0.0
+2025-11-18 17:04:25,291 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Environment: Production
+2025-11-18 17:04:25,292 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Output directory: locopilot_evidence
+2025-11-18 17:04:25,292 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Upload directory: /tmp/locopilot_uploads
+2025-11-18 17:04:25,292 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Sample FPS: 0.5
+2025-11-18 17:04:25,292 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] YOLO weights: yolo11s.pt
+2025-11-18 17:04:25,292 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] ============================================================
+2025-11-18 17:04:25,292 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] OCR preloading enabled
+2025-11-18 17:04:25,370 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] ============================================================
+2025-11-18 17:04:25,370 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Starting Locopilot Monitoring System v1.0.0
+2025-11-18 17:04:25,370 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Environment: Production
+2025-11-18 17:04:25,370 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Output directory: locopilot_evidence
+2025-11-18 17:04:25,370 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Upload directory: /tmp/locopilot_uploads
+2025-11-18 17:04:25,371 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Sample FPS: 0.5
+2025-11-18 17:04:25,371 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] YOLO weights: yolo11s.pt
+2025-11-18 17:04:25,371 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] ============================================================
+2025-11-18 17:04:25,371 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] OCR preloading enabled
+2025-11-18 17:04:25,473 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] ============================================================
+2025-11-18 17:04:25,473 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Starting Locopilot Monitoring System v1.0.0
+2025-11-18 17:04:25,473 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Environment: Production
+2025-11-18 17:04:25,473 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Output directory: locopilot_evidence
+2025-11-18 17:04:25,473 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Upload directory: /tmp/locopilot_uploads
+2025-11-18 17:04:25,474 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Sample FPS: 0.5
+2025-11-18 17:04:25,474 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] YOLO weights: yolo11s.pt
+2025-11-18 17:04:25,474 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] ============================================================
+2025-11-18 17:04:25,474 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] OCR preloading enabled
+2025-11-18 17:04:26,883 [N/A] [N/A] [N/A] [6a27c40d-87e1-4b1b-81f2-a4c3fa9e4db4] [INFO] [app.middleware.logging_middleware] [POST /api/jobs] 📥 Request received - Method: POST, Path: /api/jobs, Client: 127.0.0.1, User: N/A
+2025-11-18 17:04:27,143 [N/A] [N/A] [N/A] [6a27c40d-87e1-4b1b-81f2-a4c3fa9e4db4] [INFO] [app.controllers.video_controller] [POST /api/jobs] 📥 Received video processing request for trip: string
+2025-11-18 17:04:27,143 [N/A] [N/A] [N/A] [6a27c40d-87e1-4b1b-81f2-a4c3fa9e4db4] [INFO] [app.controllers.video_controller] [POST /api/jobs] LP Crew: string (string)
+2025-11-18 17:04:27,143 [N/A] [N/A] [N/A] [6a27c40d-87e1-4b1b-81f2-a4c3fa9e4db4] [INFO] [app.controllers.video_controller] [POST /api/jobs] ALP Crew: string (string)
+2025-11-18 17:04:27,166 [N/A] [N/A] [N/A] [6a27c40d-87e1-4b1b-81f2-a4c3fa9e4db4] [INFO] [app.controllers.video_controller] [POST /api/jobs] 📹 Uploaded video: all_activities.mp4 (251.91 MB)
+2025-11-18 17:04:27,201 [N/A] [N/A] [N/A] [6a27c40d-87e1-4b1b-81f2-a4c3fa9e4db4] [INFO] [app.services.video_processing_service] [POST /api/jobs] Video saved to /tmp/locopilot_uploads/string_1763465667.mp4 (264148204 bytes)
+2025-11-18 17:04:27,201 [N/A] [N/A] [N/A] [6a27c40d-87e1-4b1b-81f2-a4c3fa9e4db4] [INFO] [app.controllers.video_controller] [POST /api/jobs] 🎮 Processing configuration - Multiprocessing: True, SaveClips: True, Mock: False
+2025-11-18 17:04:27,202 [N/A] [N/A] [N/A] [6a27c40d-87e1-4b1b-81f2-a4c3fa9e4db4] [INFO] [app.services.video_processing_service] [POST /api/jobs] 🎬 Starting video processing for trip string - Multiprocessing: enabled, Save clips: True, Mock detection: False
+2025-11-18 17:04:27,202 [N/A] [N/A] [N/A] [6a27c40d-87e1-4b1b-81f2-a4c3fa9e4db4] [INFO] [app.services.video_processing_service] [POST /api/jobs] ✅ Video file validated: /tmp/locopilot_uploads/string_1763465667.mp4
+2025-11-18 17:04:27,202 [N/A] [N/A] [N/A] [6a27c40d-87e1-4b1b-81f2-a4c3fa9e4db4] [INFO] [app.repositories.activity_repository] [POST /api/jobs] Created run directory: locopilot_evidence/run_20251118_170427
+2025-11-18 17:04:27,202 [N/A] [N/A] [N/A] [6a27c40d-87e1-4b1b-81f2-a4c3fa9e4db4] [INFO] [app.services.video_processing_service] [POST /api/jobs] 📁 Created run directory: locopilot_evidence/run_20251118_170427
+2025-11-18 17:04:27,203 [N/A] [N/A] [N/A] [6a27c40d-87e1-4b1b-81f2-a4c3fa9e4db4] [INFO] [app.services.video_processing_service] [POST /api/jobs] 🔍 Using real activity detection - Multiprocessing: enabled
+2025-11-18 17:04:27,907 [N/A] [N/A] [N/A] [6a27c40d-87e1-4b1b-81f2-a4c3fa9e4db4] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Initializing process pool with 8 workers (method=spawn)
+2025-11-18 17:04:27,911 [N/A] [N/A] [N/A] [6a27c40d-87e1-4b1b-81f2-a4c3fa9e4db4] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Process pool initialized successfully
+2025-11-18 17:04:27,911 [N/A] [N/A] [N/A] [6a27c40d-87e1-4b1b-81f2-a4c3fa9e4db4] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Calculating frame ranges for parallel processing
+2025-11-18 17:04:27,935 [N/A] [N/A] [N/A] [6a27c40d-87e1-4b1b-81f2-a4c3fa9e4db4] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Video split into 382 chunks (~6.0s each, 0.5 FPS sampling)
+2025-11-18 17:04:27,936 [N/A] [N/A] [N/A] [6a27c40d-87e1-4b1b-81f2-a4c3fa9e4db4] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Submitting 382 tasks to process pool (expected 1144 sampled frames, save_clips=True)
+2025-11-18 17:04:34,990 [N/A] [N/A] [N/A] [6a27c40d-87e1-4b1b-81f2-a4c3fa9e4db4] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 7 completed: 0 activities, 0.3% done
+2025-11-18 17:04:36,239 [N/A] [N/A] [N/A] [6a27c40d-87e1-4b1b-81f2-a4c3fa9e4db4] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 6 completed: 0 activities, 0.5% done
+2025-11-18 17:04:36,447 [N/A] [N/A] [N/A] [6a27c40d-87e1-4b1b-81f2-a4c3fa9e4db4] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 4 completed: 0 activities, 0.8% done
+2025-11-18 17:04:36,819 [N/A] [N/A] [N/A] [6a27c40d-87e1-4b1b-81f2-a4c3fa9e4db4] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 3 completed: 0 activities, 1.0% done
+2025-11-18 17:04:37,758 [N/A] [N/A] [N/A] [6a27c40d-87e1-4b1b-81f2-a4c3fa9e4db4] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 1 completed: 0 activities, 1.3% done
+2025-11-18 17:04:38,597 [N/A] [N/A] [N/A] [6a27c40d-87e1-4b1b-81f2-a4c3fa9e4db4] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 2 completed: 0 activities, 1.6% done
+2025-11-18 17:04:38,797 [N/A] [N/A] [N/A] [6a27c40d-87e1-4b1b-81f2-a4c3fa9e4db4] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 0 completed: 0 activities, 1.8% done
+2025-11-18 17:04:38,927 [N/A] [N/A] [N/A] [6a27c40d-87e1-4b1b-81f2-a4c3fa9e4db4] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 5 completed: 0 activities, 2.1% done
+2025-11-18 17:04:41,409 [N/A] [N/A] [N/A] [6a27c40d-87e1-4b1b-81f2-a4c3fa9e4db4] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 8 completed: 0 activities, 2.4% done
+2025-11-18 17:04:43,287 [N/A] [N/A] [N/A] [6a27c40d-87e1-4b1b-81f2-a4c3fa9e4db4] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 10 completed: 0 activities, 2.6% done
+2025-11-18 17:04:43,711 [N/A] [N/A] [N/A] [6a27c40d-87e1-4b1b-81f2-a4c3fa9e4db4] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 9 completed: 0 activities, 2.9% done
+2025-11-18 17:04:44,838 [N/A] [N/A] [N/A] [6a27c40d-87e1-4b1b-81f2-a4c3fa9e4db4] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 13 completed: 0 activities, 3.1% done
+2025-11-18 17:04:45,550 [N/A] [N/A] [N/A] [6a27c40d-87e1-4b1b-81f2-a4c3fa9e4db4] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 12 completed: 0 activities, 3.4% done
+2025-11-18 17:04:45,765 [N/A] [N/A] [N/A] [6a27c40d-87e1-4b1b-81f2-a4c3fa9e4db4] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 11 completed: 0 activities, 3.7% done
+2025-11-18 17:04:46,997 [N/A] [N/A] [N/A] [6a27c40d-87e1-4b1b-81f2-a4c3fa9e4db4] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 15 completed: 0 activities, 3.9% done
+2025-11-18 17:04:47,132 [N/A] [N/A] [N/A] [6a27c40d-87e1-4b1b-81f2-a4c3fa9e4db4] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 14 completed: 0 activities, 4.2% done
+2025-11-18 17:04:48,178 [N/A] [N/A] [N/A] [6a27c40d-87e1-4b1b-81f2-a4c3fa9e4db4] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 16 completed: 0 activities, 4.5% done
+2025-11-18 17:04:49,522 [N/A] [N/A] [N/A] [6a27c40d-87e1-4b1b-81f2-a4c3fa9e4db4] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 18 completed: 0 activities, 4.7% done
+2025-11-18 17:04:52,608 [N/A] [N/A] [N/A] [6a27c40d-87e1-4b1b-81f2-a4c3fa9e4db4] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 17 completed: 0 activities, 5.0% done
+2025-11-18 17:04:53,207 [N/A] [N/A] [N/A] [6a27c40d-87e1-4b1b-81f2-a4c3fa9e4db4] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 21 completed: 0 activities, 5.2% done
+2025-11-18 17:04:53,453 [N/A] [N/A] [N/A] [6a27c40d-87e1-4b1b-81f2-a4c3fa9e4db4] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 19 completed: 0 activities, 5.5% done
+2025-11-18 17:04:53,724 [N/A] [N/A] [N/A] [6a27c40d-87e1-4b1b-81f2-a4c3fa9e4db4] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 20 completed: 0 activities, 5.8% done
+2025-11-18 17:04:54,594 [N/A] [N/A] [N/A] [6a27c40d-87e1-4b1b-81f2-a4c3fa9e4db4] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 22 completed: 0 activities, 6.0% done
+2025-11-18 17:04:54,762 [N/A] [N/A] [N/A] [6a27c40d-87e1-4b1b-81f2-a4c3fa9e4db4] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 23 completed: 0 activities, 6.3% done
+2025-11-18 17:04:56,205 [N/A] [N/A] [N/A] [6a27c40d-87e1-4b1b-81f2-a4c3fa9e4db4] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 24 completed: 0 activities, 6.6% done
+2025-11-18 17:04:56,750 [N/A] [N/A] [N/A] [6a27c40d-87e1-4b1b-81f2-a4c3fa9e4db4] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 25 completed: 0 activities, 6.8% done
+2025-11-18 17:04:58,959 [N/A] [N/A] [N/A] [6a27c40d-87e1-4b1b-81f2-a4c3fa9e4db4] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 26 completed: 0 activities, 7.1% done
+2025-11-18 17:05:00,249 [N/A] [N/A] [N/A] [6a27c40d-87e1-4b1b-81f2-a4c3fa9e4db4] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 29 completed: 0 activities, 7.3% done
+2025-11-18 17:05:00,567 [N/A] [N/A] [N/A] [6a27c40d-87e1-4b1b-81f2-a4c3fa9e4db4] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 27 completed: 0 activities, 7.6% done
+2025-11-18 17:05:00,958 [N/A] [N/A] [N/A] [6a27c40d-87e1-4b1b-81f2-a4c3fa9e4db4] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 30 completed: 0 activities, 7.9% done
+2025-11-18 17:05:02,450 [N/A] [N/A] [N/A] [6a27c40d-87e1-4b1b-81f2-a4c3fa9e4db4] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 28 completed: 0 activities, 8.1% done
+2025-11-18 17:05:03,606 [N/A] [N/A] [N/A] [6a27c40d-87e1-4b1b-81f2-a4c3fa9e4db4] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 32 completed: 0 activities, 8.4% done
+2025-11-18 17:05:06,314 [N/A] [N/A] [N/A] [6a27c40d-87e1-4b1b-81f2-a4c3fa9e4db4] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 33 completed: 0 activities, 8.7% done
+2025-11-18 17:05:06,357 [N/A] [N/A] [N/A] [6a27c40d-87e1-4b1b-81f2-a4c3fa9e4db4] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 31 completed: 0 activities, 8.9% done
+2025-11-18 17:05:07,637 [N/A] [N/A] [N/A] [6a27c40d-87e1-4b1b-81f2-a4c3fa9e4db4] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 37 completed: 0 activities, 9.2% done
+2025-11-18 17:05:07,701 [N/A] [N/A] [N/A] [6a27c40d-87e1-4b1b-81f2-a4c3fa9e4db4] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 36 completed: 0 activities, 9.4% done
+2025-11-18 17:05:07,703 [N/A] [N/A] [N/A] [6a27c40d-87e1-4b1b-81f2-a4c3fa9e4db4] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 34 completed: 0 activities, 9.7% done
+2025-11-18 17:05:08,203 [N/A] [N/A] [N/A] [6a27c40d-87e1-4b1b-81f2-a4c3fa9e4db4] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 35 completed: 0 activities, 10.0% done
+2025-11-18 17:05:10,452 [N/A] [N/A] [N/A] [6a27c40d-87e1-4b1b-81f2-a4c3fa9e4db4] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 38 completed: 0 activities, 10.2% done
+2025-11-18 17:05:13,384 [N/A] [N/A] [N/A] [6a27c40d-87e1-4b1b-81f2-a4c3fa9e4db4] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 39 completed: 0 activities, 10.5% done
+2025-11-18 17:05:13,559 [N/A] [N/A] [N/A] [6a27c40d-87e1-4b1b-81f2-a4c3fa9e4db4] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 40 completed: 0 activities, 10.8% done
+2025-11-18 17:05:15,708 [N/A] [N/A] [N/A] [6a27c40d-87e1-4b1b-81f2-a4c3fa9e4db4] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 43 completed: 0 activities, 11.0% done
+2025-11-18 17:05:16,084 [N/A] [N/A] [N/A] [6a27c40d-87e1-4b1b-81f2-a4c3fa9e4db4] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 41 completed: 0 activities, 11.3% done
+2025-11-18 17:05:16,985 [N/A] [N/A] [N/A] [6a27c40d-87e1-4b1b-81f2-a4c3fa9e4db4] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 42 completed: 0 activities, 11.5% done
+2025-11-18 17:05:18,243 [N/A] [N/A] [N/A] [6a27c40d-87e1-4b1b-81f2-a4c3fa9e4db4] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 45 completed: 0 activities, 11.8% done
+2025-11-18 17:05:19,034 [N/A] [N/A] [N/A] [6a27c40d-87e1-4b1b-81f2-a4c3fa9e4db4] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 44 completed: 0 activities, 12.1% done
+2025-11-18 17:05:21,420 [N/A] [N/A] [N/A] [6a27c40d-87e1-4b1b-81f2-a4c3fa9e4db4] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 46 completed: 1 activities, 12.3% done
+2025-11-18 20:42:28,622 [N/A] [N/A] [N/A] [N/A] [INFO] [app.utils.logger] [N/A N/A] Logging initialized - Level: INFO, Environment: development, Log file: logs/LocopilotMonitoring.log
+2025-11-18 20:42:28,662 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] ============================================================
+2025-11-18 20:42:28,663 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Starting Locopilot Monitoring System v1.0.0
+2025-11-18 20:42:28,663 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Environment: Production
+2025-11-18 20:42:28,663 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Output directory: locopilot_evidence
+2025-11-18 20:42:28,663 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Upload directory: /tmp/locopilot_uploads
+2025-11-18 20:42:28,663 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Sample FPS: 0.5
+2025-11-18 20:42:28,663 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] YOLO weights: yolo11s.pt
+2025-11-18 20:42:28,663 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] ============================================================
+2025-11-18 20:42:28,663 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] OCR preloading enabled
+2025-11-18 20:42:28,710 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] ============================================================
+2025-11-18 20:42:28,710 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Starting Locopilot Monitoring System v1.0.0
+2025-11-18 20:42:28,710 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Environment: Production
+2025-11-18 20:42:28,710 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Output directory: locopilot_evidence
+2025-11-18 20:42:28,710 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Upload directory: /tmp/locopilot_uploads
+2025-11-18 20:42:28,711 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Sample FPS: 0.5
+2025-11-18 20:42:28,711 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] YOLO weights: yolo11s.pt
+2025-11-18 20:42:28,711 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] ============================================================
+2025-11-18 20:42:28,711 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] OCR preloading enabled
+2025-11-18 20:42:28,786 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] ============================================================
+2025-11-18 20:42:28,787 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Starting Locopilot Monitoring System v1.0.0
+2025-11-18 20:42:28,787 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Environment: Production
+2025-11-18 20:42:28,787 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Output directory: locopilot_evidence
+2025-11-18 20:42:28,787 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Upload directory: /tmp/locopilot_uploads
+2025-11-18 20:42:28,787 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Sample FPS: 0.5
+2025-11-18 20:42:28,787 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] YOLO weights: yolo11s.pt
+2025-11-18 20:42:28,788 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] ============================================================
+2025-11-18 20:42:28,788 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] OCR preloading enabled
+2025-11-18 20:42:28,821 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] ============================================================
+2025-11-18 20:42:28,822 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Starting Locopilot Monitoring System v1.0.0
+2025-11-18 20:42:28,822 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Environment: Production
+2025-11-18 20:42:28,822 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Output directory: locopilot_evidence
+2025-11-18 20:42:28,822 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Upload directory: /tmp/locopilot_uploads
+2025-11-18 20:42:28,822 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Sample FPS: 0.5
+2025-11-18 20:42:28,822 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] YOLO weights: yolo11s.pt
+2025-11-18 20:42:28,823 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] ============================================================
+2025-11-18 20:42:28,823 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] OCR preloading enabled
+2025-11-18 20:42:28,904 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] ============================================================
+2025-11-18 20:42:28,904 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Starting Locopilot Monitoring System v1.0.0
+2025-11-18 20:42:28,904 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Environment: Production
+2025-11-18 20:42:28,904 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Output directory: locopilot_evidence
+2025-11-18 20:42:28,905 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Upload directory: /tmp/locopilot_uploads
+2025-11-18 20:42:28,905 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Sample FPS: 0.5
+2025-11-18 20:42:28,905 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] YOLO weights: yolo11s.pt
+2025-11-18 20:42:28,905 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] ============================================================
+2025-11-18 20:42:28,905 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] OCR preloading enabled
+2025-11-18 20:42:44,653 [N/A] [N/A] [N/A] [a2ebb6b1-c665-470b-adfc-81101793991f] [INFO] [app.middleware.logging_middleware] [GET ] 📥 Request received - Method: GET, Path: , Client: 127.0.0.1, User: N/A
+2025-11-18 20:42:44,655 [N/A] [N/A] [N/A] [a2ebb6b1-c665-470b-adfc-81101793991f] [INFO] [app.middleware.logging_middleware] [GET ] 📤 Request completed - Status: 200, Duration: 0.0025s
+2025-11-18 20:42:44,689 [N/A] [N/A] [N/A] [74d92075-4628-4671-9e5c-85eef029463c] [INFO] [app.middleware.logging_middleware] [GET /favicon.ico] 📥 Request received - Method: GET, Path: /favicon.ico, Client: 127.0.0.1, User: N/A
+2025-11-18 20:42:44,690 [N/A] [N/A] [N/A] [74d92075-4628-4671-9e5c-85eef029463c] [WARNING] [app.main] [GET /favicon.ico] HTTP 404: Not Found
+2025-11-18 20:42:44,691 [N/A] [N/A] [N/A] [74d92075-4628-4671-9e5c-85eef029463c] [INFO] [app.middleware.logging_middleware] [GET /favicon.ico] 📤 Request completed - Status: 404, Duration: 0.0020s
+2025-11-18 20:42:47,677 [N/A] [N/A] [N/A] [1afa66eb-0043-47d7-91db-3272ad3674ff] [INFO] [app.middleware.logging_middleware] [GET /docs] 📥 Request received - Method: GET, Path: /docs, Client: 127.0.0.1, User: N/A
+2025-11-18 20:42:47,678 [N/A] [N/A] [N/A] [1afa66eb-0043-47d7-91db-3272ad3674ff] [INFO] [app.middleware.logging_middleware] [GET /docs] 📤 Request completed - Status: 200, Duration: 0.0016s
+2025-11-18 20:42:47,767 [N/A] [N/A] [N/A] [b9b4d3e0-d1c9-4e57-be45-fddbd29cf697] [INFO] [app.middleware.logging_middleware] [GET /openapi.json] 📥 Request received - Method: GET, Path: /openapi.json, Client: 127.0.0.1, User: N/A
+2025-11-18 20:42:47,790 [N/A] [N/A] [N/A] [b9b4d3e0-d1c9-4e57-be45-fddbd29cf697] [INFO] [app.middleware.logging_middleware] [GET /openapi.json] 📤 Request completed - Status: 200, Duration: 0.0231s
+2025-11-18 20:43:03,077 [N/A] [N/A] [N/A] [225a177b-ee0a-4e36-9152-c647db28ea44] [INFO] [app.middleware.logging_middleware] [POST /api/jobs] 📥 Request received - Method: POST, Path: /api/jobs, Client: 127.0.0.1, User: N/A
+2025-11-18 20:43:03,344 [N/A] [N/A] [N/A] [225a177b-ee0a-4e36-9152-c647db28ea44] [INFO] [app.controllers.video_controller] [POST /api/jobs] 📥 Received video processing request for trip: string
+2025-11-18 20:43:03,345 [N/A] [N/A] [N/A] [225a177b-ee0a-4e36-9152-c647db28ea44] [INFO] [app.controllers.video_controller] [POST /api/jobs] LP Crew: string (string)
+2025-11-18 20:43:03,345 [N/A] [N/A] [N/A] [225a177b-ee0a-4e36-9152-c647db28ea44] [INFO] [app.controllers.video_controller] [POST /api/jobs] ALP Crew: string (string)
+2025-11-18 20:43:03,374 [N/A] [N/A] [N/A] [225a177b-ee0a-4e36-9152-c647db28ea44] [INFO] [app.controllers.video_controller] [POST /api/jobs] 📹 Uploaded video: all_activities.mp4 (251.91 MB)
+2025-11-18 20:43:03,537 [N/A] [N/A] [N/A] [225a177b-ee0a-4e36-9152-c647db28ea44] [INFO] [app.services.video_processing_service] [POST /api/jobs] Video saved to /tmp/locopilot_uploads/string_1763478783.mp4 (264148204 bytes)
+2025-11-18 20:43:03,537 [N/A] [N/A] [N/A] [225a177b-ee0a-4e36-9152-c647db28ea44] [INFO] [app.controllers.video_controller] [POST /api/jobs] 🎮 Processing configuration - Multiprocessing: True, SaveClips: True, Mock: False
+2025-11-18 20:43:03,537 [N/A] [N/A] [N/A] [225a177b-ee0a-4e36-9152-c647db28ea44] [INFO] [app.services.video_processing_service] [POST /api/jobs] 🎬 Starting video processing for trip string - Multiprocessing: enabled, Save clips: True, Mock detection: False
+2025-11-18 20:43:03,538 [N/A] [N/A] [N/A] [225a177b-ee0a-4e36-9152-c647db28ea44] [INFO] [app.services.video_processing_service] [POST /api/jobs] ✅ Video file validated: /tmp/locopilot_uploads/string_1763478783.mp4
+2025-11-18 20:43:03,538 [N/A] [N/A] [N/A] [225a177b-ee0a-4e36-9152-c647db28ea44] [INFO] [app.repositories.activity_repository] [POST /api/jobs] Created run directory: locopilot_evidence/run_20251118_204303
+2025-11-18 20:43:03,538 [N/A] [N/A] [N/A] [225a177b-ee0a-4e36-9152-c647db28ea44] [INFO] [app.services.video_processing_service] [POST /api/jobs] 📁 Created run directory: locopilot_evidence/run_20251118_204303
+2025-11-18 20:43:03,538 [N/A] [N/A] [N/A] [225a177b-ee0a-4e36-9152-c647db28ea44] [INFO] [app.services.video_processing_service] [POST /api/jobs] 🔍 Using real activity detection - Multiprocessing: enabled
+2025-11-18 20:43:05,115 [N/A] [N/A] [N/A] [225a177b-ee0a-4e36-9152-c647db28ea44] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Initializing process pool with 8 workers (method=spawn)
+2025-11-18 20:43:05,121 [N/A] [N/A] [N/A] [225a177b-ee0a-4e36-9152-c647db28ea44] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Process pool initialized successfully
+2025-11-18 20:43:05,121 [N/A] [N/A] [N/A] [225a177b-ee0a-4e36-9152-c647db28ea44] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Calculating frame ranges for parallel processing
+2025-11-18 20:43:05,162 [N/A] [N/A] [N/A] [225a177b-ee0a-4e36-9152-c647db28ea44] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Video split into 382 chunks (~6.0s each, 0.5 FPS sampling)
+2025-11-18 20:43:05,162 [N/A] [N/A] [N/A] [225a177b-ee0a-4e36-9152-c647db28ea44] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Submitting 382 tasks to process pool (expected 1144 sampled frames, save_clips=True)
+2025-11-18 20:43:22,415 [N/A] [N/A] [N/A] [225a177b-ee0a-4e36-9152-c647db28ea44] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 7 completed: 0 activities, 0.3% done
+2025-11-18 20:43:25,086 [N/A] [N/A] [N/A] [225a177b-ee0a-4e36-9152-c647db28ea44] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 3 completed: 0 activities, 0.5% done
+2025-11-18 20:43:29,035 [N/A] [N/A] [N/A] [225a177b-ee0a-4e36-9152-c647db28ea44] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 4 completed: 0 activities, 0.8% done
+2025-11-18 20:43:29,197 [N/A] [N/A] [N/A] [225a177b-ee0a-4e36-9152-c647db28ea44] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 6 completed: 0 activities, 1.0% done
+2025-11-18 20:43:29,361 [N/A] [N/A] [N/A] [225a177b-ee0a-4e36-9152-c647db28ea44] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 0 completed: 0 activities, 1.3% done
+2025-11-18 20:43:31,707 [N/A] [N/A] [N/A] [225a177b-ee0a-4e36-9152-c647db28ea44] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 2 completed: 0 activities, 1.6% done
+2025-11-18 20:43:32,380 [N/A] [N/A] [N/A] [225a177b-ee0a-4e36-9152-c647db28ea44] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 5 completed: 0 activities, 1.8% done
+2025-11-18 20:43:34,683 [N/A] [N/A] [N/A] [225a177b-ee0a-4e36-9152-c647db28ea44] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 1 completed: 0 activities, 2.1% done
+2025-11-18 20:43:42,901 [N/A] [N/A] [N/A] [225a177b-ee0a-4e36-9152-c647db28ea44] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 8 completed: 0 activities, 2.4% done
+2025-11-18 20:43:47,005 [N/A] [N/A] [N/A] [225a177b-ee0a-4e36-9152-c647db28ea44] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 9 completed: 0 activities, 2.6% done
+2025-11-18 20:43:48,102 [N/A] [N/A] [N/A] [225a177b-ee0a-4e36-9152-c647db28ea44] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 10 completed: 0 activities, 2.9% done
+2025-11-18 20:43:50,451 [N/A] [N/A] [N/A] [225a177b-ee0a-4e36-9152-c647db28ea44] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 13 completed: 0 activities, 3.1% done
+2025-11-18 20:43:51,064 [N/A] [N/A] [N/A] [225a177b-ee0a-4e36-9152-c647db28ea44] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 12 completed: 0 activities, 3.4% done
+2025-11-18 20:43:52,698 [N/A] [N/A] [N/A] [225a177b-ee0a-4e36-9152-c647db28ea44] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 11 completed: 0 activities, 3.7% done
+2025-11-18 20:43:55,493 [N/A] [N/A] [N/A] [225a177b-ee0a-4e36-9152-c647db28ea44] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 14 completed: 0 activities, 3.9% done
+2025-11-18 20:43:57,601 [N/A] [N/A] [N/A] [225a177b-ee0a-4e36-9152-c647db28ea44] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 15 completed: 0 activities, 4.2% done
+2025-11-18 20:44:01,223 [N/A] [N/A] [N/A] [225a177b-ee0a-4e36-9152-c647db28ea44] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 16 completed: 0 activities, 4.5% done
+2025-11-18 20:44:07,361 [N/A] [N/A] [N/A] [225a177b-ee0a-4e36-9152-c647db28ea44] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 18 completed: 0 activities, 4.7% done
+2025-11-18 20:44:10,488 [N/A] [N/A] [N/A] [225a177b-ee0a-4e36-9152-c647db28ea44] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 17 completed: 1 activities, 5.0% done
+2025-11-18 20:44:12,825 [N/A] [N/A] [N/A] [225a177b-ee0a-4e36-9152-c647db28ea44] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 19 completed: 0 activities, 5.2% done
+2025-11-18 20:44:13,872 [N/A] [N/A] [N/A] [225a177b-ee0a-4e36-9152-c647db28ea44] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 22 completed: 0 activities, 5.5% done
+2025-11-18 20:44:15,191 [N/A] [N/A] [N/A] [225a177b-ee0a-4e36-9152-c647db28ea44] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 20 completed: 0 activities, 5.8% done
+2025-11-18 20:44:15,454 [N/A] [N/A] [N/A] [225a177b-ee0a-4e36-9152-c647db28ea44] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 23 completed: 0 activities, 6.0% done
+2025-11-18 20:44:15,694 [N/A] [N/A] [N/A] [225a177b-ee0a-4e36-9152-c647db28ea44] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 21 completed: 0 activities, 6.3% done
+2025-11-18 20:44:24,511 [N/A] [N/A] [N/A] [225a177b-ee0a-4e36-9152-c647db28ea44] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 24 completed: 0 activities, 6.6% done
+2025-11-18 20:44:26,922 [N/A] [N/A] [N/A] [225a177b-ee0a-4e36-9152-c647db28ea44] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 26 completed: 0 activities, 6.8% done
+2025-11-18 20:44:29,522 [N/A] [N/A] [N/A] [225a177b-ee0a-4e36-9152-c647db28ea44] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 25 completed: 0 activities, 7.1% done
+2025-11-18 20:44:32,771 [N/A] [N/A] [N/A] [225a177b-ee0a-4e36-9152-c647db28ea44] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 29 completed: 0 activities, 7.3% done
+2025-11-18 20:44:32,975 [N/A] [N/A] [N/A] [225a177b-ee0a-4e36-9152-c647db28ea44] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 30 completed: 0 activities, 7.6% done
+2025-11-18 20:44:33,910 [N/A] [N/A] [N/A] [225a177b-ee0a-4e36-9152-c647db28ea44] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 27 completed: 0 activities, 7.9% done
+2025-11-18 20:44:35,727 [N/A] [N/A] [N/A] [225a177b-ee0a-4e36-9152-c647db28ea44] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 28 completed: 0 activities, 8.1% done
+2025-11-18 20:44:41,773 [N/A] [N/A] [N/A] [225a177b-ee0a-4e36-9152-c647db28ea44] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 32 completed: 0 activities, 8.4% done
+2025-11-18 20:44:45,080 [N/A] [N/A] [N/A] [225a177b-ee0a-4e36-9152-c647db28ea44] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 31 completed: 0 activities, 8.7% done
+2025-11-18 20:44:48,305 [N/A] [N/A] [N/A] [225a177b-ee0a-4e36-9152-c647db28ea44] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 33 completed: 0 activities, 8.9% done
+2025-11-18 20:44:50,972 [N/A] [N/A] [N/A] [225a177b-ee0a-4e36-9152-c647db28ea44] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 34 completed: 0 activities, 9.2% done
+2025-11-18 20:44:51,730 [N/A] [N/A] [N/A] [225a177b-ee0a-4e36-9152-c647db28ea44] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 35 completed: 0 activities, 9.4% done
+2025-11-18 20:44:52,095 [N/A] [N/A] [N/A] [225a177b-ee0a-4e36-9152-c647db28ea44] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 37 completed: 0 activities, 9.7% done
+2025-11-18 20:44:54,294 [N/A] [N/A] [N/A] [225a177b-ee0a-4e36-9152-c647db28ea44] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 38 completed: 0 activities, 10.0% done
+2025-11-18 20:44:54,637 [N/A] [N/A] [N/A] [225a177b-ee0a-4e36-9152-c647db28ea44] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 36 completed: 0 activities, 10.2% done
+2025-11-18 20:45:01,707 [N/A] [N/A] [N/A] [225a177b-ee0a-4e36-9152-c647db28ea44] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 40 completed: 0 activities, 10.5% done
+2025-11-18 20:45:03,584 [N/A] [N/A] [N/A] [225a177b-ee0a-4e36-9152-c647db28ea44] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 39 completed: 0 activities, 10.8% done
+2025-11-18 20:45:07,910 [N/A] [N/A] [N/A] [225a177b-ee0a-4e36-9152-c647db28ea44] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 43 completed: 0 activities, 11.0% done
+2025-11-18 20:45:08,935 [N/A] [N/A] [N/A] [225a177b-ee0a-4e36-9152-c647db28ea44] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 41 completed: 0 activities, 11.3% done
+2025-11-18 20:45:12,498 [N/A] [N/A] [N/A] [225a177b-ee0a-4e36-9152-c647db28ea44] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 42 completed: 0 activities, 11.5% done
+2025-11-18 20:45:14,710 [N/A] [N/A] [N/A] [225a177b-ee0a-4e36-9152-c647db28ea44] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 44 completed: 0 activities, 11.8% done
+2025-11-18 20:45:14,979 [N/A] [N/A] [N/A] [225a177b-ee0a-4e36-9152-c647db28ea44] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 45 completed: 0 activities, 12.1% done
+2025-11-18 20:45:18,134 [N/A] [N/A] [N/A] [225a177b-ee0a-4e36-9152-c647db28ea44] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 46 completed: 1 activities, 12.3% done
+2025-11-18 20:45:24,675 [N/A] [N/A] [N/A] [225a177b-ee0a-4e36-9152-c647db28ea44] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 47 completed: 0 activities, 12.6% done
+2025-11-18 20:45:24,889 [N/A] [N/A] [N/A] [225a177b-ee0a-4e36-9152-c647db28ea44] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 50 completed: 0 activities, 12.8% done
+2025-11-18 20:45:26,523 [N/A] [N/A] [N/A] [225a177b-ee0a-4e36-9152-c647db28ea44] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 49 completed: 0 activities, 13.1% done
+2025-11-18 20:45:29,066 [N/A] [N/A] [N/A] [225a177b-ee0a-4e36-9152-c647db28ea44] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 48 completed: 0 activities, 13.4% done
+2025-11-18 20:45:35,174 [N/A] [N/A] [N/A] [225a177b-ee0a-4e36-9152-c647db28ea44] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 53 completed: 0 activities, 13.6% done
+2025-11-18 20:45:36,002 [N/A] [N/A] [N/A] [225a177b-ee0a-4e36-9152-c647db28ea44] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 52 completed: 0 activities, 13.9% done
+2025-11-18 20:45:36,197 [N/A] [N/A] [N/A] [225a177b-ee0a-4e36-9152-c647db28ea44] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 54 completed: 0 activities, 14.2% done
+2025-11-18 20:45:37,994 [N/A] [N/A] [N/A] [225a177b-ee0a-4e36-9152-c647db28ea44] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 51 completed: 0 activities, 14.4% done
+2025-11-18 20:45:41,824 [N/A] [N/A] [N/A] [225a177b-ee0a-4e36-9152-c647db28ea44] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 55 completed: 0 activities, 14.7% done
+2025-11-18 20:45:41,935 [N/A] [N/A] [N/A] [225a177b-ee0a-4e36-9152-c647db28ea44] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 56 completed: 0 activities, 14.9% done
+2025-11-18 20:45:44,009 [N/A] [N/A] [N/A] [225a177b-ee0a-4e36-9152-c647db28ea44] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 57 completed: 0 activities, 15.2% done
+2025-11-18 20:45:53,811 [N/A] [N/A] [N/A] [225a177b-ee0a-4e36-9152-c647db28ea44] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 62 completed: 0 activities, 15.5% done
+2025-11-18 20:45:54,554 [N/A] [N/A] [N/A] [225a177b-ee0a-4e36-9152-c647db28ea44] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 58 completed: 0 activities, 15.7% done
+2025-11-18 20:45:55,296 [N/A] [N/A] [N/A] [225a177b-ee0a-4e36-9152-c647db28ea44] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 61 completed: 0 activities, 16.0% done
+2025-11-18 20:45:58,599 [N/A] [N/A] [N/A] [225a177b-ee0a-4e36-9152-c647db28ea44] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 60 completed: 0 activities, 16.3% done
+2025-11-18 20:45:59,737 [N/A] [N/A] [N/A] [225a177b-ee0a-4e36-9152-c647db28ea44] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 59 completed: 0 activities, 16.5% done
+2025-11-18 20:46:01,588 [N/A] [N/A] [N/A] [225a177b-ee0a-4e36-9152-c647db28ea44] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 65 completed: 0 activities, 16.8% done
+2025-11-18 20:46:02,027 [N/A] [N/A] [N/A] [225a177b-ee0a-4e36-9152-c647db28ea44] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 63 completed: 0 activities, 17.0% done
+2025-11-18 20:46:03,982 [N/A] [N/A] [N/A] [225a177b-ee0a-4e36-9152-c647db28ea44] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 64 completed: 0 activities, 17.3% done
+2025-11-18 20:46:12,552 [N/A] [N/A] [N/A] [225a177b-ee0a-4e36-9152-c647db28ea44] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 66 completed: 0 activities, 17.6% done
+2025-11-18 20:46:19,752 [N/A] [N/A] [N/A] [225a177b-ee0a-4e36-9152-c647db28ea44] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 67 completed: 0 activities, 17.8% done
+2025-11-18 20:46:21,134 [N/A] [N/A] [N/A] [225a177b-ee0a-4e36-9152-c647db28ea44] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 68 completed: 0 activities, 18.1% done
+2025-11-18 20:46:21,634 [N/A] [N/A] [N/A] [225a177b-ee0a-4e36-9152-c647db28ea44] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 70 completed: 0 activities, 18.4% done
+2025-11-18 20:46:24,059 [N/A] [N/A] [N/A] [225a177b-ee0a-4e36-9152-c647db28ea44] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 69 completed: 0 activities, 18.6% done
+2025-11-18 20:46:26,997 [N/A] [N/A] [N/A] [225a177b-ee0a-4e36-9152-c647db28ea44] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 73 completed: 0 activities, 18.9% done
+2025-11-18 20:46:28,099 [N/A] [N/A] [N/A] [225a177b-ee0a-4e36-9152-c647db28ea44] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 74 completed: 0 activities, 19.1% done
+2025-11-18 20:46:28,820 [N/A] [N/A] [N/A] [225a177b-ee0a-4e36-9152-c647db28ea44] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 71 completed: 0 activities, 19.4% done
+2025-11-18 20:46:30,273 [N/A] [N/A] [N/A] [225a177b-ee0a-4e36-9152-c647db28ea44] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 72 completed: 0 activities, 19.7% done
+2025-11-18 20:46:42,454 [N/A] [N/A] [N/A] [225a177b-ee0a-4e36-9152-c647db28ea44] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 75 completed: 0 activities, 19.9% done
+2025-11-18 20:46:49,385 [N/A] [N/A] [N/A] [225a177b-ee0a-4e36-9152-c647db28ea44] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 78 completed: 0 activities, 20.2% done
+2025-11-18 20:46:50,541 [N/A] [N/A] [N/A] [225a177b-ee0a-4e36-9152-c647db28ea44] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 82 completed: 0 activities, 20.5% done
+2025-11-18 20:46:51,229 [N/A] [N/A] [N/A] [225a177b-ee0a-4e36-9152-c647db28ea44] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 76 completed: 0 activities, 20.7% done
+2025-11-18 20:46:55,690 [N/A] [N/A] [N/A] [225a177b-ee0a-4e36-9152-c647db28ea44] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 79 completed: 0 activities, 21.0% done
+2025-11-18 20:46:56,504 [N/A] [N/A] [N/A] [225a177b-ee0a-4e36-9152-c647db28ea44] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 77 completed: 0 activities, 21.2% done
+2025-11-18 20:46:58,036 [N/A] [N/A] [N/A] [225a177b-ee0a-4e36-9152-c647db28ea44] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 81 completed: 0 activities, 21.5% done
+2025-11-18 20:46:59,200 [N/A] [N/A] [N/A] [225a177b-ee0a-4e36-9152-c647db28ea44] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 80 completed: 0 activities, 21.8% done
+2025-11-18 20:47:12,174 [N/A] [N/A] [N/A] [225a177b-ee0a-4e36-9152-c647db28ea44] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 88 completed: 0 activities, 22.0% done
+2025-11-18 20:47:14,318 [N/A] [N/A] [N/A] [225a177b-ee0a-4e36-9152-c647db28ea44] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 83 completed: 0 activities, 22.3% done
+2025-11-18 20:47:15,630 [N/A] [N/A] [N/A] [225a177b-ee0a-4e36-9152-c647db28ea44] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 84 completed: 0 activities, 22.6% done
+2025-11-18 20:47:16,636 [N/A] [N/A] [N/A] [225a177b-ee0a-4e36-9152-c647db28ea44] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 85 completed: 0 activities, 22.8% done
+2025-11-18 20:47:17,488 [N/A] [N/A] [N/A] [225a177b-ee0a-4e36-9152-c647db28ea44] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 86 completed: 0 activities, 23.1% done
+2025-11-18 20:47:18,299 [N/A] [N/A] [N/A] [225a177b-ee0a-4e36-9152-c647db28ea44] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 90 completed: 0 activities, 23.3% done
+2025-11-18 20:47:20,331 [N/A] [N/A] [N/A] [225a177b-ee0a-4e36-9152-c647db28ea44] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 87 completed: 0 activities, 23.6% done
+2025-11-18 20:47:25,827 [N/A] [N/A] [N/A] [225a177b-ee0a-4e36-9152-c647db28ea44] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 89 completed: 0 activities, 23.9% done
+2025-11-18 20:47:31,789 [N/A] [N/A] [N/A] [225a177b-ee0a-4e36-9152-c647db28ea44] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 96 completed: 1 activities, 24.1% done
+2025-11-18 20:47:34,580 [N/A] [N/A] [N/A] [225a177b-ee0a-4e36-9152-c647db28ea44] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 92 completed: 0 activities, 24.4% done
+2025-11-18 20:47:34,841 [N/A] [N/A] [N/A] [225a177b-ee0a-4e36-9152-c647db28ea44] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 91 completed: 0 activities, 24.7% done
+2025-11-18 20:47:36,176 [N/A] [N/A] [N/A] [225a177b-ee0a-4e36-9152-c647db28ea44] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 98 completed: 0 activities, 24.9% done
+2025-11-18 20:47:37,188 [N/A] [N/A] [N/A] [225a177b-ee0a-4e36-9152-c647db28ea44] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 97 completed: 0 activities, 25.2% done
+2025-11-18 20:47:44,072 [N/A] [N/A] [N/A] [225a177b-ee0a-4e36-9152-c647db28ea44] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 93 completed: 0 activities, 25.4% done
+2025-11-18 20:47:45,017 [N/A] [N/A] [N/A] [225a177b-ee0a-4e36-9152-c647db28ea44] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 99 completed: 0 activities, 25.7% done
+2025-11-18 20:47:46,044 [N/A] [N/A] [N/A] [225a177b-ee0a-4e36-9152-c647db28ea44] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 95 completed: 0 activities, 26.0% done
+2025-11-18 20:47:50,823 [N/A] [N/A] [N/A] [225a177b-ee0a-4e36-9152-c647db28ea44] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 94 completed: 0 activities, 26.2% done
+2025-11-18 20:47:59,316 [N/A] [N/A] [N/A] [225a177b-ee0a-4e36-9152-c647db28ea44] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 101 completed: 0 activities, 26.5% done
+2025-11-18 20:48:05,053 [N/A] [N/A] [N/A] [225a177b-ee0a-4e36-9152-c647db28ea44] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 104 completed: 1 activities, 26.7% done
+2025-11-18 20:48:07,358 [N/A] [N/A] [N/A] [225a177b-ee0a-4e36-9152-c647db28ea44] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 100 completed: 0 activities, 27.0% done
+2025-11-18 20:48:09,166 [N/A] [N/A] [N/A] [225a177b-ee0a-4e36-9152-c647db28ea44] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 102 completed: 0 activities, 27.3% done
+2025-11-18 20:48:09,602 [N/A] [N/A] [N/A] [225a177b-ee0a-4e36-9152-c647db28ea44] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 103 completed: 0 activities, 27.5% done
+2025-11-18 20:48:11,136 [N/A] [N/A] [N/A] [225a177b-ee0a-4e36-9152-c647db28ea44] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 105 completed: 1 activities, 27.8% done
+2025-11-18 20:48:16,841 [N/A] [N/A] [N/A] [225a177b-ee0a-4e36-9152-c647db28ea44] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 106 completed: 0 activities, 28.1% done
+2025-11-18 20:48:21,205 [N/A] [N/A] [N/A] [225a177b-ee0a-4e36-9152-c647db28ea44] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 107 completed: 0 activities, 28.3% done
+2025-11-18 20:48:24,981 [N/A] [N/A] [N/A] [225a177b-ee0a-4e36-9152-c647db28ea44] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 108 completed: 0 activities, 28.6% done
+2025-11-18 20:48:25,323 [N/A] [N/A] [N/A] [225a177b-ee0a-4e36-9152-c647db28ea44] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 111 completed: 0 activities, 28.8% done
+2025-11-18 20:48:27,200 [N/A] [N/A] [N/A] [225a177b-ee0a-4e36-9152-c647db28ea44] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 113 completed: 0 activities, 29.1% done
+2025-11-18 20:48:35,539 [N/A] [N/A] [N/A] [225a177b-ee0a-4e36-9152-c647db28ea44] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 110 completed: 0 activities, 29.4% done
+2025-11-18 20:48:35,839 [N/A] [N/A] [N/A] [225a177b-ee0a-4e36-9152-c647db28ea44] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 112 completed: 0 activities, 29.6% done
+2025-11-18 20:48:37,200 [N/A] [N/A] [N/A] [225a177b-ee0a-4e36-9152-c647db28ea44] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 109 completed: 0 activities, 29.9% done
+2025-11-18 20:48:44,116 [N/A] [N/A] [N/A] [225a177b-ee0a-4e36-9152-c647db28ea44] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 114 completed: 0 activities, 30.2% done
+2025-11-18 20:48:45,409 [N/A] [N/A] [N/A] [225a177b-ee0a-4e36-9152-c647db28ea44] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 117 completed: 0 activities, 30.4% done
+2025-11-18 20:48:47,860 [N/A] [N/A] [N/A] [225a177b-ee0a-4e36-9152-c647db28ea44] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 115 completed: 0 activities, 30.7% done
+2025-11-18 20:48:48,389 [N/A] [N/A] [N/A] [225a177b-ee0a-4e36-9152-c647db28ea44] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 118 completed: 0 activities, 30.9% done
+2025-11-18 20:48:54,704 [N/A] [N/A] [N/A] [225a177b-ee0a-4e36-9152-c647db28ea44] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 119 completed: 1 activities, 31.2% done
+2025-11-18 20:48:57,774 [N/A] [N/A] [N/A] [225a177b-ee0a-4e36-9152-c647db28ea44] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 120 completed: 0 activities, 31.5% done
+2025-11-18 20:49:00,501 [N/A] [N/A] [N/A] [225a177b-ee0a-4e36-9152-c647db28ea44] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 116 completed: 0 activities, 31.7% done
+2025-11-18 20:49:08,829 [N/A] [N/A] [N/A] [225a177b-ee0a-4e36-9152-c647db28ea44] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 121 completed: 0 activities, 32.0% done
+2025-11-18 20:49:16,890 [N/A] [N/A] [N/A] [225a177b-ee0a-4e36-9152-c647db28ea44] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 122 completed: 1 activities, 32.3% done
+2025-11-18 20:49:17,779 [N/A] [N/A] [N/A] [225a177b-ee0a-4e36-9152-c647db28ea44] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 124 completed: 1 activities, 32.5% done
+2025-11-18 20:49:18,549 [N/A] [N/A] [N/A] [225a177b-ee0a-4e36-9152-c647db28ea44] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 123 completed: 0 activities, 32.8% done
+2025-11-18 20:49:20,099 [N/A] [N/A] [N/A] [225a177b-ee0a-4e36-9152-c647db28ea44] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 127 completed: 1 activities, 33.0% done
+2025-11-18 20:49:22,746 [N/A] [N/A] [N/A] [225a177b-ee0a-4e36-9152-c647db28ea44] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 125 completed: 0 activities, 33.3% done
+2025-11-18 20:49:30,542 [N/A] [N/A] [N/A] [225a177b-ee0a-4e36-9152-c647db28ea44] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 126 completed: 0 activities, 33.6% done
+2025-11-18 20:49:31,257 [N/A] [N/A] [N/A] [225a177b-ee0a-4e36-9152-c647db28ea44] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 129 completed: 0 activities, 33.8% done
+2025-11-18 20:49:34,008 [N/A] [N/A] [N/A] [225a177b-ee0a-4e36-9152-c647db28ea44] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 134 completed: 0 activities, 34.1% done
+2025-11-18 20:49:34,267 [N/A] [N/A] [N/A] [225a177b-ee0a-4e36-9152-c647db28ea44] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 128 completed: 0 activities, 34.4% done
+2025-11-18 20:49:40,074 [N/A] [N/A] [N/A] [225a177b-ee0a-4e36-9152-c647db28ea44] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 130 completed: 0 activities, 34.6% done
+2025-11-18 20:49:40,302 [N/A] [N/A] [N/A] [225a177b-ee0a-4e36-9152-c647db28ea44] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 133 completed: 0 activities, 34.9% done
+2025-11-18 20:49:47,030 [N/A] [N/A] [N/A] [225a177b-ee0a-4e36-9152-c647db28ea44] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 131 completed: 0 activities, 35.1% done
+2025-11-18 20:49:47,175 [N/A] [N/A] [N/A] [225a177b-ee0a-4e36-9152-c647db28ea44] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 132 completed: 0 activities, 35.4% done
+2025-11-18 20:49:52,137 [N/A] [N/A] [N/A] [225a177b-ee0a-4e36-9152-c647db28ea44] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 136 completed: 0 activities, 35.7% done
+2025-11-18 20:49:59,509 [N/A] [N/A] [N/A] [225a177b-ee0a-4e36-9152-c647db28ea44] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 137 completed: 0 activities, 35.9% done
+2025-11-18 20:50:00,576 [N/A] [N/A] [N/A] [225a177b-ee0a-4e36-9152-c647db28ea44] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 138 completed: 0 activities, 36.2% done
+2025-11-18 20:50:02,084 [N/A] [N/A] [N/A] [225a177b-ee0a-4e36-9152-c647db28ea44] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 135 completed: 0 activities, 36.5% done
+2025-11-18 20:50:05,904 [N/A] [N/A] [N/A] [225a177b-ee0a-4e36-9152-c647db28ea44] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 142 completed: 0 activities, 36.7% done
+2025-11-18 20:50:06,292 [N/A] [N/A] [N/A] [225a177b-ee0a-4e36-9152-c647db28ea44] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 139 completed: 1 activities, 37.0% done
+2025-11-18 20:50:10,904 [N/A] [N/A] [N/A] [225a177b-ee0a-4e36-9152-c647db28ea44] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 140 completed: 0 activities, 37.2% done
+2025-11-18 20:50:13,945 [N/A] [N/A] [N/A] [225a177b-ee0a-4e36-9152-c647db28ea44] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 141 completed: 0 activities, 37.5% done
+2025-11-18 20:50:25,584 [N/A] [N/A] [N/A] [225a177b-ee0a-4e36-9152-c647db28ea44] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 143 completed: 1 activities, 37.8% done
+2025-11-18 20:50:28,242 [N/A] [N/A] [N/A] [225a177b-ee0a-4e36-9152-c647db28ea44] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 144 completed: 0 activities, 38.0% done
+2025-11-18 20:50:32,807 [N/A] [N/A] [N/A] [225a177b-ee0a-4e36-9152-c647db28ea44] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 147 completed: 0 activities, 38.3% done
+2025-11-18 20:50:33,232 [N/A] [N/A] [N/A] [225a177b-ee0a-4e36-9152-c647db28ea44] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 149 completed: 0 activities, 38.5% done
+2025-11-18 20:50:34,172 [N/A] [N/A] [N/A] [225a177b-ee0a-4e36-9152-c647db28ea44] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 146 completed: 0 activities, 38.8% done
+2025-11-18 20:50:35,454 [N/A] [N/A] [N/A] [225a177b-ee0a-4e36-9152-c647db28ea44] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 148 completed: 0 activities, 39.1% done
+2025-11-18 20:50:36,051 [N/A] [N/A] [N/A] [225a177b-ee0a-4e36-9152-c647db28ea44] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 145 completed: 0 activities, 39.3% done
+2025-11-18 20:50:50,131 [N/A] [N/A] [N/A] [225a177b-ee0a-4e36-9152-c647db28ea44] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 150 completed: 0 activities, 39.6% done
+2025-11-18 20:50:51,734 [N/A] [N/A] [N/A] [225a177b-ee0a-4e36-9152-c647db28ea44] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 152 completed: 0 activities, 39.9% done
+2025-11-18 20:50:57,198 [N/A] [N/A] [N/A] [225a177b-ee0a-4e36-9152-c647db28ea44] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 155 completed: 0 activities, 40.1% done
+2025-11-18 20:50:57,429 [N/A] [N/A] [N/A] [225a177b-ee0a-4e36-9152-c647db28ea44] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 154 completed: 0 activities, 40.4% done
+2025-11-18 20:50:58,489 [N/A] [N/A] [N/A] [225a177b-ee0a-4e36-9152-c647db28ea44] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 151 completed: 0 activities, 40.6% done
+2025-11-18 20:51:02,095 [N/A] [N/A] [N/A] [225a177b-ee0a-4e36-9152-c647db28ea44] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 156 completed: 0 activities, 40.9% done
+2025-11-18 20:51:02,101 [N/A] [N/A] [N/A] [225a177b-ee0a-4e36-9152-c647db28ea44] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 153 completed: 0 activities, 41.2% done
+2025-11-18 20:51:03,900 [N/A] [N/A] [N/A] [225a177b-ee0a-4e36-9152-c647db28ea44] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 157 completed: 0 activities, 41.4% done
+2025-11-18 20:51:05,953 [N/A] [N/A] [N/A] [225a177b-ee0a-4e36-9152-c647db28ea44] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 158 completed: 0 activities, 41.7% done
+2025-11-18 20:51:15,441 [N/A] [N/A] [N/A] [225a177b-ee0a-4e36-9152-c647db28ea44] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 161 completed: 0 activities, 42.0% done
+2025-11-18 20:51:21,596 [N/A] [N/A] [N/A] [225a177b-ee0a-4e36-9152-c647db28ea44] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 160 completed: 0 activities, 42.2% done
+2025-11-18 20:51:23,411 [N/A] [N/A] [N/A] [225a177b-ee0a-4e36-9152-c647db28ea44] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 159 completed: 0 activities, 42.5% done
+2025-11-18 20:51:25,168 [N/A] [N/A] [N/A] [225a177b-ee0a-4e36-9152-c647db28ea44] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 164 completed: 0 activities, 42.7% done
+2025-11-18 20:51:28,448 [N/A] [N/A] [N/A] [225a177b-ee0a-4e36-9152-c647db28ea44] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 162 completed: 0 activities, 43.0% done
+2025-11-18 20:51:28,586 [N/A] [N/A] [N/A] [225a177b-ee0a-4e36-9152-c647db28ea44] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 166 completed: 0 activities, 43.3% done
+2025-11-18 20:51:29,031 [N/A] [N/A] [N/A] [225a177b-ee0a-4e36-9152-c647db28ea44] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 165 completed: 0 activities, 43.5% done
+2025-11-18 20:51:37,940 [N/A] [N/A] [N/A] [225a177b-ee0a-4e36-9152-c647db28ea44] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 163 completed: 0 activities, 43.8% done
+2025-11-18 20:51:44,022 [N/A] [N/A] [N/A] [225a177b-ee0a-4e36-9152-c647db28ea44] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 167 completed: 0 activities, 44.1% done
+2025-11-18 20:51:52,148 [N/A] [N/A] [N/A] [225a177b-ee0a-4e36-9152-c647db28ea44] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 170 completed: 0 activities, 44.3% done
+2025-11-18 20:51:53,933 [N/A] [N/A] [N/A] [225a177b-ee0a-4e36-9152-c647db28ea44] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 173 completed: 0 activities, 44.6% done
+2025-11-18 20:51:54,406 [N/A] [N/A] [N/A] [225a177b-ee0a-4e36-9152-c647db28ea44] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 171 completed: 0 activities, 44.8% done
+2025-11-18 20:51:55,415 [N/A] [N/A] [N/A] [225a177b-ee0a-4e36-9152-c647db28ea44] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 174 completed: 0 activities, 45.1% done
+2025-11-18 20:51:56,098 [N/A] [N/A] [N/A] [225a177b-ee0a-4e36-9152-c647db28ea44] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 168 completed: 0 activities, 45.4% done
+2025-11-18 20:52:01,544 [N/A] [N/A] [N/A] [225a177b-ee0a-4e36-9152-c647db28ea44] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 172 completed: 0 activities, 45.6% done
+2025-11-18 20:52:03,934 [N/A] [N/A] [N/A] [225a177b-ee0a-4e36-9152-c647db28ea44] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 169 completed: 0 activities, 45.9% done
+2025-11-18 20:52:08,562 [N/A] [N/A] [N/A] [225a177b-ee0a-4e36-9152-c647db28ea44] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 175 completed: 0 activities, 46.2% done
+2025-11-18 20:52:08,894 [N/A] [N/A] [N/A] [225a177b-ee0a-4e36-9152-c647db28ea44] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 177 completed: 1 activities, 46.4% done
+2025-11-18 20:52:09,623 [N/A] [N/A] [N/A] [225a177b-ee0a-4e36-9152-c647db28ea44] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 178 completed: 1 activities, 46.7% done
+2025-11-18 20:52:10,815 [N/A] [N/A] [N/A] [225a177b-ee0a-4e36-9152-c647db28ea44] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 179 completed: 0 activities, 46.9% done
+2025-11-18 20:52:14,811 [N/A] [N/A] [N/A] [225a177b-ee0a-4e36-9152-c647db28ea44] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 181 completed: 0 activities, 47.2% done
+2025-11-18 20:52:16,747 [N/A] [N/A] [N/A] [225a177b-ee0a-4e36-9152-c647db28ea44] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 176 completed: 0 activities, 47.5% done
+2025-11-18 20:52:20,044 [N/A] [N/A] [N/A] [225a177b-ee0a-4e36-9152-c647db28ea44] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 183 completed: 0 activities, 47.7% done
+2025-11-18 20:52:20,852 [N/A] [N/A] [N/A] [225a177b-ee0a-4e36-9152-c647db28ea44] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 180 completed: 0 activities, 48.0% done
+2025-11-18 20:52:22,187 [N/A] [N/A] [N/A] [225a177b-ee0a-4e36-9152-c647db28ea44] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 182 completed: 0 activities, 48.3% done
+2025-11-18 20:52:28,191 [N/A] [N/A] [N/A] [225a177b-ee0a-4e36-9152-c647db28ea44] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 185 completed: 0 activities, 48.5% done
+2025-11-18 20:52:29,631 [N/A] [N/A] [N/A] [89d72d6b-fcf3-4a14-9b3e-9ad3878e82f9] [INFO] [app.middleware.logging_middleware] [POST /api/jobs] 📥 Request received - Method: POST, Path: /api/jobs, Client: 127.0.0.1, User: N/A
+2025-11-18 20:52:29,669 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] ============================================================
+2025-11-18 20:52:29,670 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Starting Locopilot Monitoring System v1.0.0
+2025-11-18 20:52:29,670 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Environment: Production
+2025-11-18 20:52:29,670 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Output directory: locopilot_evidence
+2025-11-18 20:52:29,670 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Upload directory: /tmp/locopilot_uploads
+2025-11-18 20:52:29,670 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Sample FPS: 0.5
+2025-11-18 20:52:29,671 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] YOLO weights: yolo11s.pt
+2025-11-18 20:52:29,672 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] ============================================================
+2025-11-18 20:52:29,672 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] OCR preloading enabled
+2025-11-18 20:52:31,683 [N/A] [N/A] [N/A] [89d72d6b-fcf3-4a14-9b3e-9ad3878e82f9] [INFO] [app.controllers.video_controller] [POST /api/jobs] 📥 Received video processing request for trip: string
+2025-11-18 20:52:31,683 [N/A] [N/A] [N/A] [89d72d6b-fcf3-4a14-9b3e-9ad3878e82f9] [INFO] [app.controllers.video_controller] [POST /api/jobs] LP Crew: string (string)
+2025-11-18 20:52:31,684 [N/A] [N/A] [N/A] [89d72d6b-fcf3-4a14-9b3e-9ad3878e82f9] [INFO] [app.controllers.video_controller] [POST /api/jobs] ALP Crew: string (string)
+2025-11-18 20:52:31,736 [N/A] [N/A] [N/A] [89d72d6b-fcf3-4a14-9b3e-9ad3878e82f9] [INFO] [app.controllers.video_controller] [POST /api/jobs] 📹 Uploaded video: all_activities.mp4 (251.91 MB)
+2025-11-18 20:52:31,848 [N/A] [N/A] [N/A] [89d72d6b-fcf3-4a14-9b3e-9ad3878e82f9] [INFO] [app.services.video_processing_service] [POST /api/jobs] Video saved to /tmp/locopilot_uploads/string_1763479351.mp4 (264148204 bytes)
+2025-11-18 20:52:31,849 [N/A] [N/A] [N/A] [89d72d6b-fcf3-4a14-9b3e-9ad3878e82f9] [INFO] [app.controllers.video_controller] [POST /api/jobs] 🎮 Processing configuration - Multiprocessing: True, SaveClips: True, Mock: False
+2025-11-18 20:52:31,849 [N/A] [N/A] [N/A] [89d72d6b-fcf3-4a14-9b3e-9ad3878e82f9] [INFO] [app.services.video_processing_service] [POST /api/jobs] 🎬 Starting video processing for trip string - Multiprocessing: enabled, Save clips: True, Mock detection: False
+2025-11-18 20:52:31,849 [N/A] [N/A] [N/A] [89d72d6b-fcf3-4a14-9b3e-9ad3878e82f9] [INFO] [app.services.video_processing_service] [POST /api/jobs] ✅ Video file validated: /tmp/locopilot_uploads/string_1763479351.mp4
+2025-11-18 20:52:31,850 [N/A] [N/A] [N/A] [89d72d6b-fcf3-4a14-9b3e-9ad3878e82f9] [INFO] [app.repositories.activity_repository] [POST /api/jobs] Created run directory: locopilot_evidence/run_20251118_205231
+2025-11-18 20:52:31,850 [N/A] [N/A] [N/A] [89d72d6b-fcf3-4a14-9b3e-9ad3878e82f9] [INFO] [app.services.video_processing_service] [POST /api/jobs] 📁 Created run directory: locopilot_evidence/run_20251118_205231
+2025-11-18 20:52:31,850 [N/A] [N/A] [N/A] [89d72d6b-fcf3-4a14-9b3e-9ad3878e82f9] [INFO] [app.services.video_processing_service] [POST /api/jobs] 🔍 Using real activity detection - Multiprocessing: enabled
+2025-11-18 20:52:32,504 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Shutting down application...
+2025-11-18 20:52:32,535 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Shutting down application...
+2025-11-18 20:52:32,563 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Shutting down application...
+2025-11-18 20:52:32,588 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Shutting down application...
+2025-11-18 20:52:34,617 [N/A] [N/A] [N/A] [89d72d6b-fcf3-4a14-9b3e-9ad3878e82f9] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Initializing process pool with 8 workers (method=spawn)
+2025-11-18 20:52:34,626 [N/A] [N/A] [N/A] [89d72d6b-fcf3-4a14-9b3e-9ad3878e82f9] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Process pool initialized successfully
+2025-11-18 20:52:34,628 [N/A] [N/A] [N/A] [89d72d6b-fcf3-4a14-9b3e-9ad3878e82f9] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Calculating frame ranges for parallel processing
+2025-11-18 20:52:34,699 [N/A] [N/A] [N/A] [89d72d6b-fcf3-4a14-9b3e-9ad3878e82f9] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Video split into 382 chunks (~6.0s each, 0.5 FPS sampling)
+2025-11-18 20:52:34,700 [N/A] [N/A] [N/A] [89d72d6b-fcf3-4a14-9b3e-9ad3878e82f9] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Submitting 382 tasks to process pool (expected 1144 sampled frames, save_clips=True)
