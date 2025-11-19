@@ -1332,96 +1332,102 @@ class LocopilotActivityMonitor:
         
         # Right hand: Check if it's in control operation zone
         # This identifies forward reaches to operate controls vs upward signaling
+        # IMPROVED: More robust detection for overhead camera angles
         right_in_control_zone = (
-            # Hand is NOT very high (if hand is very high above person bbox, it's signaling)
-            right_wrist_coords[1] > (my1 + (my2 - my1) * 0.3) and
-            
-            # Hand is in upper-middle portion of the person's bbox (control panel level)
-            right_wrist_coords[1] < (my1 + (my2 - my1) * 0.7) and
-            
-            # Hand is not significantly laterally extended (reaching forward, not sideways)
-            right_arm_extension < 120 and
-            
-            # Elbow is not significantly below wrist (forward reach has elbow at similar or higher level)
-            right_wrist_elbow_distance < 50 and
-            
-            # Wrist is not very far above shoulder (control operations are typically at shoulder level or slightly above)
-            right_wrist_shoulder_vertical < 100
+            # Hand is in reasonable vertical range (not extremely high for signaling)
+            right_wrist_coords[1] > (my1 + (my2 - my1) * 0.2) and
+            right_wrist_coords[1] < (my1 + (my2 - my1) * 0.8) and
+
+            # CRITICAL: Wrist above shoulder but NOT too far (control panel operations: 30-120px)
+            # True hand signals are typically >120px above shoulder
+            30 < right_wrist_shoulder_vertical < 120 and
+
+            # IMPROVED: Elbow-wrist distance check
+            # Control panel: elbow NOT significantly below wrist (forward reach pattern)
+            # Hand signal: elbow MUST be significantly below wrist (vertical arm extension)
+            right_wrist_elbow_distance < 80  # Relaxed from 50 to 80 for overhead angles
         )
         
         # Left hand: Check if it's in control operation zone
+        # IMPROVED: More robust detection for overhead camera angles
         left_in_control_zone = (
-            # Hand is NOT very high (if hand is very high above person bbox, it's signaling)
-            left_wrist_coords[1] > (my1 + (my2 - my1) * 0.3) and
-            
-            # Hand is in upper-middle portion of the person's bbox (control panel level)
-            left_wrist_coords[1] < (my1 + (my2 - my1) * 0.7) and
-            
-            # Hand is not significantly laterally extended (reaching forward, not sideways)
-            left_arm_extension < 120 and
-            
-            # Elbow is not significantly below wrist (forward reach has elbow at similar or higher level)
-            left_wrist_elbow_distance < 50 and
-            
-            # Wrist is not very far above shoulder (control operations are typically at shoulder level or slightly above)
-            left_wrist_shoulder_vertical < 100
+            # Hand is in reasonable vertical range (not extremely high for signaling)
+            left_wrist_coords[1] > (my1 + (my2 - my1) * 0.2) and
+            left_wrist_coords[1] < (my1 + (my2 - my1) * 0.8) and
+
+            # CRITICAL: Wrist above shoulder but NOT too far (control panel operations: 30-120px)
+            # True hand signals are typically >120px above shoulder
+            30 < left_wrist_shoulder_vertical < 120 and
+
+            # IMPROVED: Elbow-wrist distance check
+            # Control panel: elbow NOT significantly below wrist (forward reach pattern)
+            # Hand signal: elbow MUST be significantly below wrist (vertical arm extension)
+            left_wrist_elbow_distance < 80  # Relaxed from 50 to 80 for overhead angles
         )
         
         # Right hand gesture detection (TRUE SIGNALING GESTURE)
+        # BALANCED thresholds: distinguish TRUE signals from control panel operations
         right_hand_raised = (
             # CRITICAL: Wrist must belong to the same person (within expanded bbox)
             right_wrist_in_expanded and
-            
+
             # NOT in control panel operation zone (this filters out most false positives)
             not right_in_control_zone and
-            
-            # Core criteria: Hand raised above shoulder level (reduced threshold for better detection)
-            right_wrist_shoulder_vertical > 80 and  # At least 80px above shoulder (balanced threshold)
-            
-            # Wrist must be above elbow (vertical extension, not forward reach)
-            right_wrist_elbow_distance > 40 and  # At least 40px above elbow (reduced for better detection)
-            
+
+            # CRITICAL: Hand SIGNIFICANTLY raised (>120px threshold separates signals from control ops)
+            # Control panel operations: 30-120px above shoulder
+            # True hand signals: >120px above shoulder
+            right_wrist_shoulder_vertical > 120 and  # INCREASED to avoid false positives
+
+            # Wrist must be SIGNIFICANTLY above elbow (vertical extension, not forward reach)
+            # This is the KEY differentiator between forward reach and upward signal
+            right_wrist_elbow_distance > 80 and  # INCREASED from 30 to 80px for clear vertical extension
+
             # Arm should be extended (hand away from body, not tucked)
-            right_arm_extension > 60 and  # Minimum extension (reduced for various camera angles)
-            
+            right_arm_extension > 40 and  # Keep at 40px for overhead angles
+
             # Additional check: Elbow should be at or below shoulder (arm raised up, not forward)
-            (right_elbow_coords[1] >= right_shoulder_coords[1] - 40) and  # Elbow not too high above shoulder
-            
-            # Visibility checks
-            right_wrist.visibility > 0.5 and
-            right_elbow.visibility > 0.4 and
-            right_shoulder.visibility > 0.5 and
-            
+            (right_elbow_coords[1] >= right_shoulder_coords[1] - 50) and  # Relaxed tolerance
+
+            # Visibility checks (RELAXED for partial occlusion)
+            right_wrist.visibility > 0.3 and
+            right_elbow.visibility > 0.3 and
+            right_shoulder.visibility > 0.4 and
+
             # Within frame bounds
             0 < right_wrist_coords[0] < w and
             0 < right_wrist_coords[1] < h
         )
         
         # Left hand gesture detection (TRUE SIGNALING GESTURE)
+        # BALANCED thresholds: distinguish TRUE signals from control panel operations
         left_hand_raised = (
             # CRITICAL: Wrist must belong to the same person (within expanded bbox)
             left_wrist_in_expanded and
-            
+
             # NOT in control panel operation zone (this filters out most false positives)
             not left_in_control_zone and
-            
-            # Core criteria: Hand raised above shoulder level (reduced threshold for better detection)
-            left_wrist_shoulder_vertical > 80 and  # At least 80px above shoulder (balanced threshold)
-            
-            # Wrist must be above elbow (vertical extension, not forward reach)
-            left_wrist_elbow_distance > 40 and  # At least 40px above elbow (reduced for better detection)
-            
+
+            # CRITICAL: Hand SIGNIFICANTLY raised (>120px threshold separates signals from control ops)
+            # Control panel operations: 30-120px above shoulder
+            # True hand signals: >120px above shoulder
+            left_wrist_shoulder_vertical > 120 and  # INCREASED to avoid false positives
+
+            # Wrist must be SIGNIFICANTLY above elbow (vertical extension, not forward reach)
+            # This is the KEY differentiator between forward reach and upward signal
+            left_wrist_elbow_distance > 80 and  # INCREASED from 30 to 80px for clear vertical extension
+
             # Arm should be extended (hand away from body, not tucked)
-            left_arm_extension > 60 and  # Minimum extension (reduced for various camera angles)
-            
+            left_arm_extension > 40 and  # Keep at 40px for overhead angles
+
             # Additional check: Elbow should be at or below shoulder (arm raised up, not forward)
-            (left_elbow_coords[1] >= left_shoulder_coords[1] - 40) and  # Elbow not too high above shoulder
-            
-            # Visibility checks
-            left_wrist.visibility > 0.5 and
-            left_elbow.visibility > 0.4 and
-            left_shoulder.visibility > 0.5 and
-            
+            (left_elbow_coords[1] >= left_shoulder_coords[1] - 50) and  # Relaxed tolerance
+
+            # Visibility checks (RELAXED for partial occlusion)
+            left_wrist.visibility > 0.3 and
+            left_elbow.visibility > 0.3 and
+            left_shoulder.visibility > 0.4 and
+
             # Within frame bounds
             0 < left_wrist_coords[0] < w and
             0 < left_wrist_coords[1] < h
@@ -1915,10 +1921,22 @@ class LocopilotActivityMonitor:
         
         elif len(person_scores) == 2:
             # Two people - assign LP and ALP
-            # Sort by lp_score (descending)
-            sorted_persons = sorted(person_scores, key=lambda x: x['lp_score'], reverse=True)
-            
-            # Person with higher lp_score is LP
+            # Check if scores are meaningful (not both zero)
+            scores_meaningful = any(p['lp_score'] > 0 or p['alp_score'] > 0 for p in person_scores)
+
+            if scores_meaningful:
+                # Use score-based assignment
+                sorted_persons = sorted(person_scores, key=lambda x: x['lp_score'], reverse=True)
+            else:
+                # Fallback: Use spatial position when scores are all zero
+                # In most locomotive cabs:
+                # - LP typically on the LEFT side (when viewed from behind/above)
+                # - ALP typically on the RIGHT side
+                # Sort by X position (leftmost = LP, rightmost = ALP)
+                sorted_persons = sorted(person_scores, key=lambda x: (x['bbox'][0] + x['bbox'][2]) / 2)  # Sort by center_x
+                print(f"[INFO] Using spatial heuristic for role assignment (all scores zero)")
+
+            # Person with higher lp_score (or leftmost position) is LP
             person_roles[sorted_persons[0]['person_idx']] = {
                 'role': 'LP',
                 'role_name': 'Loco Pilot',
@@ -1927,7 +1945,7 @@ class LocopilotActivityMonitor:
                 'bbox': sorted_persons[0]['bbox'],
                 'objects': sorted_persons[0]['nearby_objects']
             }
-            
+
             # Other person is ALP
             person_roles[sorted_persons[1]['person_idx']] = {
                 'role': 'ALP',
@@ -2616,7 +2634,20 @@ class LocopilotActivityMonitor:
                             
                     except Exception as e:
                         print(f"[{timestamp}] Error saving frame {frame_idx}: {e}")
-                
+
+                # CRITICAL: Hand gesture coordination check
+                # Activity Type 8 (LP not exchanging): Triggers when ALP raises hand BUT LP does NOT
+                # Activity Type 9 (ALP not exchanging): Triggers when LP raises hand BUT ALP does NOT
+                # This ensures we detect COORDINATION FAILURES, not individual gestures
+                lp_not_coordinating = alp_hand_gesture_detected and not lp_hand_gesture_detected
+                alp_not_coordinating = lp_hand_gesture_detected and not alp_hand_gesture_detected
+
+                # Debug logging for coordination check
+                if lp_not_coordinating and self.consecutive_detections['lp_hand_gesture'] == 0:
+                    print(f"[{timestamp}] COORDINATION FAILURE: ALP raised hand but LP did NOT respond")
+                if alp_not_coordinating and self.consecutive_detections['alp_hand_gesture'] == 0:
+                    print(f"[{timestamp}] COORDINATION FAILURE: LP raised hand but ALP did NOT respond")
+
                 # Update activity states with temporal filtering
                 activities_map = {
                     'microsleep': microsleep_detected and not sleep_detected,
@@ -2625,11 +2656,11 @@ class LocopilotActivityMonitor:
                     'writing': writing_detected,
                     'packing_bags': packing_detected,
                     'group_detected': group_detected_flag,
-                    'lp_hand_gesture': lp_hand_gesture_detected,
-                    'alp_hand_gesture': alp_hand_gesture_detected,
+                    'lp_hand_gesture': lp_not_coordinating,  # LP fails to respond when ALP raises hand
+                    'alp_hand_gesture': alp_not_coordinating,  # ALP fails to respond when LP raises hand
                     'mind_diversion': mind_diversion_detected
                 }
-                
+
                 for activity_name, detected in activities_map.items():
                     if detected:
                         # Activity detected - increment consecutive counter and reset grace period
@@ -3036,7 +3067,20 @@ class LocopilotActivityMonitor:
                             
                     except Exception as e:
                         print(f"[{timestamp}] Error saving frame {frame_idx}: {e}")
-                
+
+                # CRITICAL: Hand gesture coordination check
+                # Activity Type 8 (LP not exchanging): Triggers when ALP raises hand BUT LP does NOT
+                # Activity Type 9 (ALP not exchanging): Triggers when LP raises hand BUT ALP does NOT
+                # This ensures we detect COORDINATION FAILURES, not individual gestures
+                lp_not_coordinating = alp_hand_gesture_detected and not lp_hand_gesture_detected
+                alp_not_coordinating = lp_hand_gesture_detected and not alp_hand_gesture_detected
+
+                # Debug logging for coordination check
+                if lp_not_coordinating and self.consecutive_detections['lp_hand_gesture'] == 0:
+                    print(f"[{timestamp}] COORDINATION FAILURE: ALP raised hand but LP did NOT respond")
+                if alp_not_coordinating and self.consecutive_detections['alp_hand_gesture'] == 0:
+                    print(f"[{timestamp}] COORDINATION FAILURE: LP raised hand but ALP did NOT respond")
+
                 # Update activity states with temporal filtering
                 activities_map = {
                     'microsleep': microsleep_detected and not sleep_detected,
@@ -3045,11 +3089,11 @@ class LocopilotActivityMonitor:
                     'writing': writing_detected,
                     'packing_bags': packing_detected,
                     'group_detected': group_detected_flag,
-                    'lp_hand_gesture': lp_hand_gesture_detected,
-                    'alp_hand_gesture': alp_hand_gesture_detected,
+                    'lp_hand_gesture': lp_not_coordinating,  # LP fails to respond when ALP raises hand
+                    'alp_hand_gesture': alp_not_coordinating,  # ALP fails to respond when LP raises hand
                     'mind_diversion': mind_diversion_detected
                 }
-                
+
                 for activity_name, detected in activities_map.items():
                     if detected:
                         self.consecutive_detections[activity_name] += 1
