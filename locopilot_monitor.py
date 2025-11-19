@@ -84,60 +84,61 @@ class LocopilotActivityMonitor:
         }
         
         # Activity thresholds: minimum duration and required consecutive frames before recording starts
+        # OPTIMIZED FOR 0.5 FPS SAMPLING (1 frame every 2 seconds)
         self.activity_thresholds = {
             'packing_bags': {
-                'min_duration': 1.5,          # Must last 1.5 seconds minimum (reduced from 3.0)
-                'required_consecutive': 1,    # 1 sample @ 0.5fps = 2 seconds before recording (equivalent to ~50 frames at 30fps)
-                'margin': 50,                 # More lenient proximity (increased from 30)
-                'grace_frames': 5             # Allow 5 samples (~10s) gap to group nearby detections
+                'min_duration': 0.0,          # NO minimum duration - any detection creates activity
+                'required_consecutive': 1,    # 1 sample @ 0.5fps = instant detection (2 seconds)
+                'margin': 120,                # Very lenient proximity (increased from 50) for overhead camera angles
+                'grace_frames': 8             # Allow 8 samples (~16s) gap to group nearby detections
             },
             'writing': {
-                'min_duration': 2.0,          # Must last 2 seconds minimum
-                'required_consecutive': 3,    # 3 samples @ 0.5fps = 6 seconds before recording
-                'margin': 60,                 # More lenient proximity (increased from 50)
-                'grace_frames': 5             # Allow 5 samples (~10s) gap to group nearby detections
+                'min_duration': 0.0,          # NO minimum duration - any detection creates activity
+                'required_consecutive': 1,    # 1 sample @ 0.5fps = instant detection (2 seconds) - REDUCED from 3
+                'margin': 100,                # Very lenient proximity (increased from 60) for overhead angles
+                'grace_frames': 8             # Allow 8 samples (~16s) gap to group nearby detections
             },
             'cell_phone': {
                 'min_duration': 0.0,          # NO minimum duration - any detection creates activity
                 'required_consecutive': 1,    # Just 1 sample detection required
-                'margin': 80,                 # Very lenient proximity for detecting phone near hand
-                'grace_frames': 5             # Allow 5 samples (~10s) gap to group nearby detections into same activity
+                'margin': 100,                # Very lenient proximity (increased from 80) for detecting phone near hand
+                'grace_frames': 8             # Allow 8 samples (~16s) gap to group nearby detections into same activity
             },
             'microsleep': {
-                'min_duration': 5.0,          # Must last 5 seconds minimum (reduced for early detection)
-                'required_consecutive': 3,    # 3 samples @ 0.5fps = 6 seconds (reduced from 10)
+                'min_duration': 3.0,          # Must last 3 seconds minimum (reduced from 5.0 for early detection)
+                'required_consecutive': 2,    # 2 samples @ 0.5fps = 4 seconds (reduced from 3)
                 'margin': None,               # N/A for eye-based detection
                 'grace_frames': 10            # Allow 10 frames (~20s) of non-detection
             },
             'sleep': {
-                'min_duration': 30.0,         # Must last 30 seconds minimum (reduced from 180s)
-                'required_consecutive': 5,    # 5 samples @ 0.5fps = 10 seconds (reduced from 30)
+                'min_duration': 20.0,         # Must last 20 seconds minimum (reduced from 30s)
+                'required_consecutive': 4,    # 4 samples @ 0.5fps = 8 seconds (reduced from 5)
                 'margin': None,               # N/A for eye-based detection
                 'grace_frames': 10            # Allow 10 frames (~20s) of non-detection
             },
             'group_detected': {
-                'min_duration': 2.0,          # Must last 2 seconds minimum
-                'required_consecutive': 3,    # 3 samples @ 0.5fps = 6 seconds before recording
+                'min_duration': 0.0,          # NO minimum duration - any detection creates activity
+                'required_consecutive': 2,    # 2 samples @ 0.5fps = 4 seconds (reduced from 3)
                 'margin': None,               # N/A for person count detection
-                'grace_frames': 5             # Allow 5 samples (~10s) gap
+                'grace_frames': 8             # Allow 8 samples (~16s) gap
             },
             'lp_hand_gesture': {
-                'min_duration': 2.0,          # Must last 2 seconds minimum
-                'required_consecutive': 2,    # 2 samples @ 0.5fps = 4 seconds before recording
+                'min_duration': 0.0,          # NO minimum duration - any coordination failure creates activity
+                'required_consecutive': 1,    # 1 sample @ 0.5fps = instant detection (reduced from 2)
                 'margin': None,               # N/A for hand gesture detection
-                'grace_frames': 3             # Allow 3 samples (~6s) gap to handle multiple raises
+                'grace_frames': 5             # Allow 5 samples (~10s) gap to handle multiple raises
             },
             'alp_hand_gesture': {
-                'min_duration': 2.0,          # Must last 2 seconds minimum
-                'required_consecutive': 2,    # 2 samples @ 0.5fps = 4 seconds before recording
+                'min_duration': 0.0,          # NO minimum duration - any coordination failure creates activity
+                'required_consecutive': 1,    # 1 sample @ 0.5fps = instant detection (reduced from 2)
                 'margin': None,               # N/A for hand gesture detection
-                'grace_frames': 3             # Allow 3 samples (~6s) gap to handle multiple raises
+                'grace_frames': 5             # Allow 5 samples (~10s) gap to handle multiple raises
             },
             'mind_diversion': {
-                'min_duration': 5.0,          # Must last 5 seconds minimum
-                'required_consecutive': 3,    # 3 samples @ 0.5fps = 6 seconds before recording
+                'min_duration': 0.0,          # NO minimum duration - any detection creates activity
+                'required_consecutive': 2,    # 2 samples @ 0.5fps = 4 seconds (reduced from 3)
                 'margin': None,               # N/A for head pose detection
-                'grace_frames': 3             # Allow 3 samples (~6s) gap
+                'grace_frames': 5             # Allow 5 samples (~10s) gap
             }
         }
         
