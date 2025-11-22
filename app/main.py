@@ -22,6 +22,7 @@ from .controllers import video_router
 from .middleware import LoggingMiddleware
 from .utils.logger import setup_logging, get_logger
 from .utils.config import get_settings
+from .utils.video_multiprocessing import shutdown_shared_pool
 
 
 # Initialize settings and logging
@@ -56,6 +57,15 @@ async def lifespan(app: FastAPI):
     
     # Shutdown
     logger.info("Shutting down application...")
+
+    # Ensure shared multiprocessing pool is shut down cleanly
+    try:
+        shutdown_shared_pool(wait=True)
+    except Exception as e:
+        logger.warning(
+            f"Error while shutting down shared multiprocessing pool: {e}",
+            exc_info=True,
+        )
 
 
 # Create FastAPI application

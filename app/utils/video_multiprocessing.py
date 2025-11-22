@@ -31,6 +31,9 @@ settings = get_settings()
 _worker_models = None
 _worker_config = None
 
+# Shared global process pool (mimics POC_2 app.boot.get_pool)
+_shared_pool: Optional[ProcessPoolExecutor] = None
+
 
 @dataclass
 class FrameRange:
@@ -146,6 +149,50 @@ def worker_initializer(config: MultiprocessingConfig):
     except Exception as e:
         logger.error(f"Worker {os.getpid()} initialization failed: {e}", exc_info=True)
         raise
+
+
+def get_shared_pool(config: MultiprocessingConfig) -> ProcessPoolExecutor:
+    """
+    Lazily create and return a shared ProcessPoolExecutor.
+
+    Mirrors POC_2's app.boot.get_pool behavior:
+    - Uses spawn context for stability on macOS/Linux.
+    - Uses a worker initializer to set Torch/OpenCV threads and preload models.
+    """
+    global _shared_pool
+    if _shared_pool is not None:
+        return _shared_pool
+
+    num_workers = config.get_num_workers()
+    ctx = mp.get_context(config.start_method or "spawn")
+
+    _shared_pool = ProcessPoolExecutor(
+        max_workers=num_workers,
+        mp_context=ctx,
+        initializer=worker_initializer,
+        initargs=(config,),
+    )
+    logger.info(
+        f"Created shared ProcessPoolExecutor(max_workers={num_workers}, "
+        f"start_method={config.start_method})"
+    )
+    return _shared_pool
+
+
+def shutdown_shared_pool(wait: bool = True) -> None:
+    """
+    Shutdown the shared process pool (called on application shutdown).
+
+    Mirrors the atexit-based shutdown in POC_2's app.boot.
+    """
+    global _shared_pool
+    try:
+        if _shared_pool is not None:
+            logger.info("Shutting down shared ProcessPoolExecutor")
+            _shared_pool.shutdown(wait=wait, cancel_futures=True)
+            _shared_pool = None
+    except Exception as e:
+        logger.warning(f"Error while shutting down shared pool: {e}", exc_info=True)
 
 
 def calculate_frame_ranges(
@@ -337,10 +384,10 @@ def process_frame_range(
 
 class VideoMultiprocessingOrchestrator:
     """
-    Orchestrates parallel video processing with shared process pool
+    Orchestrates parallel video processing with process pool.
     
     This class manages:
-    - Shared process pool lifecycle
+    - Shared or dedicated process pool lifecycle
     - Task submission and result collection
     - Progress tracking and persistence
     - Result aggregation
@@ -349,7 +396,8 @@ class VideoMultiprocessingOrchestrator:
     def __init__(
         self,
         config: Optional[MultiprocessingConfig] = None,
-        output_dir: Optional[str] = None
+        output_dir: Optional[str] = None,
+        use_shared_pool: bool = True,
     ):
         """
         Initialize orchestrator
@@ -357,48 +405,70 @@ class VideoMultiprocessingOrchestrator:
         Args:
             config: Multiprocessing configuration (uses default if None)
             output_dir: Output directory for results and state
+            use_shared_pool: Whether to reuse a global shared pool
+                             (recommended: True for server workloads)
         """
         self.config = config or MultiprocessingConfig()
         self.output_dir = output_dir or "locopilot_evidence"
         self.pool: Optional[ProcessPoolExecutor] = None
         self.state: Optional[ProcessingState] = None
+        self.use_shared_pool = use_shared_pool
         
         # Ensure output directory exists
         os.makedirs(self.output_dir, exist_ok=True)
     
     def initialize_pool(self):
-        """Initialize shared process pool"""
+        """Initialize process pool (shared or per-orchestrator)."""
         if self.pool is not None:
             logger.warning("Process pool already initialized")
             return
         
         num_workers = self.config.get_num_workers()
         
-        logger.info(f"Initializing process pool with {num_workers} workers "
-                   f"(method={self.config.start_method})")
+        logger.info(
+            f"Initializing process pool with {num_workers} workers "
+            f"(method={self.config.start_method}, shared={self.use_shared_pool})"
+        )
         
-        # Set multiprocessing start method
+        # Ensure multiprocessing start method is set
         try:
             mp.set_start_method(self.config.start_method, force=True)
         except RuntimeError:
             # Already set, ignore
             pass
         
-        # Create process pool with initializer
-        self.pool = ProcessPoolExecutor(
-            max_workers=num_workers,
-            initializer=worker_initializer,
-            initargs=(self.config,)
-        )
+        if self.use_shared_pool:
+            # Reuse a global pool, like POC_2's get_pool()
+            self.pool = get_shared_pool(self.config)
+        else:
+            # Dedicated pool per orchestrator (legacy behavior)
+            ctx = mp.get_context(self.config.start_method or "spawn")
+            self.pool = ProcessPoolExecutor(
+                max_workers=num_workers,
+                mp_context=ctx,
+                initializer=worker_initializer,
+                initargs=(self.config,),
+            )
         
         logger.info("Process pool initialized successfully")
     
     def shutdown_pool(self, wait: bool = True):
-        """Shutdown process pool"""
-        if self.pool is not None:
-            logger.info("Shutting down process pool")
-            self.pool.shutdown(wait=wait)
-            self.pool = None
+        """
+        Shutdown process pool.
+        
+        For shared-pool mode, this is a no-op; the global pool is shut down
+        once at application shutdown via shutdown_shared_pool().
+        """
+        if self.pool is None:
+            return
+        
+        if self.use_shared_pool:
+            logger.debug("Skipping shutdown of shared process pool from orchestrator")
+            return
+        
+        logger.info("Shutting down dedicated process pool")
+        self.pool.shutdown(wait=wait)
+        self.pool = None
     
     def save_state(self, run_dir: str):
         """Save processing state to disk"""

@@ -328,10 +328,11 @@ class ActivityDetectionService:
             preload_models=True
         )
         
-        # Create orchestrator
+        # Create orchestrator (use shared global pool to mimic POC_2 behavior)
         orchestrator = VideoMultiprocessingOrchestrator(
             config=config,
-            output_dir=run_dir
+            output_dir=run_dir,
+            use_shared_pool=True,
         )
         
         try:
