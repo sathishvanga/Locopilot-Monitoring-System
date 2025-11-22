@@ -1005,6 +1005,176 @@ class LocopilotActivityMonitor:
         
         return annotated_frame
     
+    def draw_multi_person_mediapipe_outputs(self, frame, persons_data, face_results, ear_value=None, eye_closure_duration=0):
+        """Draw MediaPipe pose landmarks for ALL detected persons
+        
+        Args:
+            frame: The frame image
+            persons_data: Dictionary of person data from process_all_persons_activities()
+                         Format: {person_idx: {'pose_landmarks': landmarks, 'role': 'LP', 'activities': {...}, ...}}
+            face_results: MediaPipe face mesh results
+            ear_value: Eye aspect ratio value
+            eye_closure_duration: Duration of eye closure
+            
+        Returns:
+            Annotated frame with all persons' pose landmarks drawn
+        """
+        annotated_frame = frame.copy()
+        
+        # Draw pose landmarks for ALL persons
+        for person_idx, person_data in persons_data.items():
+            pose_landmarks = person_data.get('pose_landmarks')
+            if pose_landmarks:
+                # Draw pose connections
+                self.mp_drawing.draw_landmarks(
+                    annotated_frame,
+                    pose_landmarks,
+                    self.mp_pose.POSE_CONNECTIONS,
+                    landmark_drawing_spec=self.mp_drawing_styles.get_default_pose_landmarks_style()
+                )
+                
+                # Add person label near their head
+                h, w = annotated_frame.shape[:2]
+                try:
+                    nose = pose_landmarks.landmark[self.mp_pose.PoseLandmark.NOSE]
+                    nose_x = int(nose.x * w)
+                    nose_y = int(nose.y * h)
+                    
+                    role_name = person_data.get('role_name', 'Unknown')
+                    label = f"{role_name} ({person_idx+1})"
+                    
+                    # Draw label with background
+                    label_size, _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)
+                    label_w, label_h = label_size
+                    
+                    # Background rectangle
+                    cv2.rectangle(annotated_frame, 
+                                (nose_x - 5, nose_y - label_h - 15), 
+                                (nose_x + label_w + 5, nose_y - 5), 
+                                (0, 0, 0), -1)
+                    
+                    # Label text
+                    cv2.putText(annotated_frame, label, 
+                               (nose_x, nose_y - 10), 
+                               cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2, cv2.LINE_AA)
+                except:
+                    pass
+        
+        # Draw face mesh (same as before)
+        face_detected = face_results.multi_face_landmarks is not None and len(face_results.multi_face_landmarks) > 0
+        
+        if face_detected:
+            for face_landmarks in face_results.multi_face_landmarks:
+                self.mp_drawing.draw_landmarks(
+                    image=annotated_frame,
+                    landmark_list=face_landmarks,
+                    connections=self.mp_face_mesh.FACEMESH_TESSELATION,
+                    landmark_drawing_spec=None,
+                    connection_drawing_spec=self.mp_drawing_styles.get_default_face_mesh_tesselation_style()
+                )
+                self.mp_drawing.draw_landmarks(
+                    image=annotated_frame,
+                    landmark_list=face_landmarks,
+                    connections=self.mp_face_mesh.FACEMESH_CONTOURS,
+                    landmark_drawing_spec=None,
+                    connection_drawing_spec=self.mp_drawing_styles.get_default_face_mesh_contours_style()
+                )
+        
+        # Draw status text for face/eye detection
+        if face_detected:
+            if ear_value is not None:
+                if ear_value < 0.2:
+                    status = "EYES CLOSED"
+                    color = (0, 0, 255)
+                else:
+                    status = "EYES OPEN"
+                    color = (0, 255, 0)
+                
+                ear_text = f"EAR: {ear_value:.3f} - {status}"
+                cv2.putText(annotated_frame, ear_text, (10, 30), 
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.8, color, 2, cv2.LINE_AA)
+                
+                if eye_closure_duration > 0:
+                    duration_text = f"Closed Duration: {eye_closure_duration:.1f}s"
+                    duration_color = (0, 165, 255)
+                    
+                    if eye_closure_duration >= 30:
+                        duration_text += " - SLEEP ALERT!"
+                        duration_color = (0, 0, 255)
+                    elif eye_closure_duration >= 5:
+                        duration_text += " - MICROSLEEP!"
+                        duration_color = (0, 140, 255)
+                    
+                    cv2.putText(annotated_frame, duration_text, (10, 60), 
+                               cv2.FONT_HERSHEY_SIMPLEX, 0.7, duration_color, 2, cv2.LINE_AA)
+        else:
+            no_face_text = "FACE NOT DETECTED"
+            cv2.putText(annotated_frame, no_face_text, (10, 30), 
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 165, 255), 2, cv2.LINE_AA)
+        
+        # Draw activity warnings for each person
+        y_offset = 100
+        for person_idx, person_data in persons_data.items():
+            activities = person_data.get('activities', {})
+            role_name = person_data.get('role_name', 'Unknown')
+            debug_info = person_data.get('debug_info', {})
+            
+            # Mind diversion
+            if activities.get('mind_diversion'):
+                head_pose = debug_info.get('head_pose', {})
+                yaw = head_pose.get('yaw', 0)
+                pitch = head_pose.get('pitch', 0)
+                
+                alert_text = f"!!! {role_name}: MIND DIVERSION - ATTENTION DIVERTED!"
+                cv2.putText(annotated_frame, alert_text, (10, y_offset), 
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2, cv2.LINE_AA)
+                
+                details_text = f"    Yaw={abs(yaw):.1f}°, Pitch={abs(pitch):.1f}°"
+                cv2.putText(annotated_frame, details_text, (10, y_offset + 25), 
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1, cv2.LINE_AA)
+                y_offset += 55
+            
+            # Sleep/microsleep
+            if activities.get('sleep'):
+                alert_text = f"!!! {role_name}: SLEEP DETECTED"
+                cv2.putText(annotated_frame, alert_text, (10, y_offset), 
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2, cv2.LINE_AA)
+                y_offset += 30
+            elif activities.get('microsleep'):
+                alert_text = f"!!! {role_name}: MICROSLEEP DETECTED"
+                cv2.putText(annotated_frame, alert_text, (10, y_offset), 
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 140, 255), 2, cv2.LINE_AA)
+                y_offset += 30
+            
+            # Cell phone
+            if activities.get('cell_phone'):
+                alert_text = f"! {role_name}: CELL PHONE IN USE"
+                cv2.putText(annotated_frame, alert_text, (10, y_offset), 
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 165, 255), 2, cv2.LINE_AA)
+                y_offset += 25
+            
+            # Writing
+            if activities.get('writing'):
+                alert_text = f"! {role_name}: WRITING"
+                cv2.putText(annotated_frame, alert_text, (10, y_offset), 
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2, cv2.LINE_AA)
+                y_offset += 25
+            
+            # Hand gestures
+            if activities.get('lp_hand_gesture'):
+                alert_text = f"! {role_name}: LP HAND GESTURE"
+                cv2.putText(annotated_frame, alert_text, (10, y_offset), 
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 0), 2, cv2.LINE_AA)
+                y_offset += 25
+            
+            if activities.get('alp_hand_gesture'):
+                alert_text = f"! {role_name}: ALP HAND GESTURE"
+                cv2.putText(annotated_frame, alert_text, (10, y_offset), 
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 165, 0), 2, cv2.LINE_AA)
+                y_offset += 25
+        
+        return annotated_frame
+    
     def check_hand_object_interaction(self, hand_coords, object_bbox, margin=50):
         """Check if hand is interacting with an object
         
@@ -1497,10 +1667,10 @@ class LocopilotActivityMonitor:
             padding_y = int((y2 - y1) * 0.1)
             
             # Expand bbox with padding, but stay within frame bounds
-            x1_padded = max(0, x1 - padding_x)
-            y1_padded = max(0, y1 - padding_y)
-            x2_padded = min(w, x2 + padding_x)
-            y2_padded = min(h, y2 + padding_y)
+            x1_padded = int(max(0, x1 - padding_x))
+            y1_padded = int(max(0, y1 - padding_y))
+            x2_padded = int(min(w, x2 + padding_x))
+            y2_padded = int(min(h, y2 + padding_y))
             
             # Crop frame to this person's region
             try:
@@ -1517,7 +1687,7 @@ class LocopilotActivityMonitor:
                 
                 if pose_result.pose_landmarks:
                     # Translate landmarks from cropped coordinates back to full frame coordinates
-                    translated_landmarks = self.translate_landmarks_to_full_frame(
+                    translated_landmarks = self.translate_pose_landmarks(
                         pose_result.pose_landmarks,
                         x1_padded, y1_padded,
                         x2_padded - x1_padded, y2_padded - y1_padded,
@@ -1548,6 +1718,317 @@ class LocopilotActivityMonitor:
                 continue
         
         return results
+    
+    def process_all_persons_activities(self, frame, detections, person_roles, timestamp_sec, face_results=None):
+        """Process all detected persons for ALL activity detections (mind diversion, sleep, etc.)
+        
+        This is the MAIN multi-person processing method that:
+        1. Crops each detected person's bounding box
+        2. Runs MediaPipe Pose on each crop
+        3. Detects ALL activities for EACH person (mind diversion, sleep, cell phone, writing, etc.)
+        4. Returns aggregated results for all persons
+        
+        Args:
+            frame: The full frame image (BGR format)
+            detections: YOLO detections dictionary containing 'person', 'cell_phone', 'book', etc.
+            person_roles: Dictionary of person roles from identify_person_roles()
+            timestamp_sec: Current timestamp in seconds
+            face_results: MediaPipe face mesh results (optional, for mind diversion detection)
+            
+        Returns:
+            dict: {
+                'persons': {
+                    person_idx: {
+                        'pose_landmarks': translated landmarks,
+                        'role': 'LP'/'ALP'/etc.,
+                        'bbox': [x1, y1, x2, y2],
+                        'activities': {
+                            'mind_diversion': bool,
+                            'sleep': bool,
+                            'microsleep': bool,
+                            'cell_phone': bool,
+                            'writing': bool,
+                            'packing': bool,
+                            'lp_hand_gesture': bool,
+                            'alp_hand_gesture': bool
+                        },
+                        'debug_info': {
+                            'head_pose': {...},
+                            'sleep_info': {...},
+                            'gesture_debug': {...}
+                        }
+                    }
+                },
+                'aggregated': {
+                    'mind_diversion_detected': bool,
+                    'sleep_detected': bool,
+                    'microsleep_detected': bool,
+                    'cell_phone_detected': bool,
+                    'writing_detected': bool,
+                    'packing_detected': bool,
+                    'lp_hand_gesture_detected': bool,
+                    'alp_hand_gesture_detected': bool,
+                    'performing_person': int (person_idx who performed the activity, or -1 for aggregated)
+                }
+            }
+        """
+        if not person_roles or len(person_roles) == 0:
+            # No persons detected, return empty results
+            return {
+                'persons': {},
+                'aggregated': {
+                    'mind_diversion_detected': False,
+                    'sleep_detected': False,
+                    'microsleep_detected': False,
+                    'cell_phone_detected': False,
+                    'writing_detected': False,
+                    'packing_detected': False,
+                    'lp_hand_gesture_detected': False,
+                    'alp_hand_gesture_detected': False,
+                    'performing_person': -1
+                }
+            }
+        
+        h, w = frame.shape[:2]
+        persons_data = {}
+        
+        # Process each person individually
+        for person_idx, person_data in person_roles.items():
+            if 'bbox' not in person_data:
+                continue
+            
+            bbox = person_data['bbox']  # [x1, y1, x2, y2]
+            x1, y1, x2, y2 = bbox
+            
+            # Add padding to bbox for better pose detection (10% on each side)
+            padding_x = int((x2 - x1) * 0.1)
+            padding_y = int((y2 - y1) * 0.1)
+            
+            # Expand bbox with padding, but stay within frame bounds
+            x1_padded = int(max(0, x1 - padding_x))
+            y1_padded = int(max(0, y1 - padding_y))
+            x2_padded = int(min(w, x2 + padding_x))
+            y2_padded = int(min(h, y2 + padding_y))
+            
+            # Crop frame to this person's region
+            try:
+                cropped_frame = frame[y1_padded:y2_padded, x1_padded:x2_padded]
+                
+                if cropped_frame.size == 0:
+                    continue
+                
+                # Convert to RGB for MediaPipe
+                cropped_rgb = cv2.cvtColor(cropped_frame, cv2.COLOR_BGR2RGB)
+                
+                # Run MediaPipe Pose on this cropped region
+                pose_result = self.pose.process(cropped_rgb)
+                
+                if not pose_result.pose_landmarks:
+                    continue
+                
+                # Translate landmarks from cropped coordinates back to full frame coordinates
+                translated_landmarks = self.translate_pose_landmarks(
+                    pose_result.pose_landmarks,
+                    x1_padded, y1_padded,
+                    x2_padded - x1_padded, y2_padded - y1_padded,
+                    w, h
+                )
+                
+                # Initialize activity detection results for this person
+                person_activities = {
+                    'mind_diversion': False,
+                    'sleep': False,
+                    'microsleep': False,
+                    'cell_phone': False,
+                    'writing': False,
+                    'packing': False,
+                    'lp_hand_gesture': False,
+                    'alp_hand_gesture': False
+                }
+                
+                person_debug_info = {
+                    'head_pose': {},
+                    'sleep_info': {},
+                    'gesture_debug': {}
+                }
+                
+                # ============ ACTIVITY DETECTION FOR THIS PERSON ============
+                
+                # 1. MIND DIVERSION DETECTION
+                head_pose_info = self.calculate_head_pose_angles(
+                    translated_landmarks,
+                    face_results,
+                    frame.shape
+                )
+                person_debug_info['head_pose'] = head_pose_info
+                person_activities['mind_diversion'] = head_pose_info.get('detected', False)
+                
+                # 2. SLEEP / MICROSLEEP DETECTION (pose-based)
+                pose_sleep_detected, pose_microsleep_detected, pose_sleep_info = self.detect_pose_based_sleep(
+                    translated_landmarks, timestamp_sec
+                )
+                person_debug_info['sleep_info'] = pose_sleep_info
+                person_activities['sleep'] = pose_sleep_detected
+                person_activities['microsleep'] = pose_microsleep_detected
+                
+                # 3. HAND GESTURE DETECTION (LP/ALP)
+                single_person_roles = {person_idx: person_data}
+                lp_gesture, alp_gesture, gesture_debug = self.detect_hand_gesture(
+                    translated_landmarks,
+                    frame.shape,
+                    single_person_roles
+                )
+                person_debug_info['gesture_debug'] = gesture_debug
+                person_activities['lp_hand_gesture'] = lp_gesture
+                person_activities['alp_hand_gesture'] = alp_gesture
+                
+                # 4. CELL PHONE DETECTION (check if hand near phone in THIS person's region)
+                if len(detections['cell_phone']) > 0:
+                    landmarks = translated_landmarks.landmark
+                    right_hand = landmarks[self.mp_pose.PoseLandmark.RIGHT_WRIST]
+                    left_hand = landmarks[self.mp_pose.PoseLandmark.LEFT_WRIST]
+                    
+                    right_hand_coords = (int(right_hand.x * w), int(right_hand.y * h))
+                    left_hand_coords = (int(left_hand.x * w), int(left_hand.y * h))
+                    
+                    # Check if phone is within or near this person's bbox
+                    margin = self.activity_thresholds['cell_phone']['margin']
+                    for phone_bbox in detections['cell_phone']:
+                        # Check if phone bbox overlaps with person bbox (with margin)
+                        phone_in_person_region = self.bbox_overlap_with_margin(phone_bbox, bbox, margin)
+                        
+                        if phone_in_person_region:
+                            # Check if hand is near the phone
+                            right_hand_near = self.check_hand_object_interaction(right_hand_coords, phone_bbox, margin)
+                            left_hand_near = self.check_hand_object_interaction(left_hand_coords, phone_bbox, margin)
+                            
+                            if right_hand_near or left_hand_near:
+                                person_activities['cell_phone'] = True
+                                break
+                
+                # 5. WRITING DETECTION (check if hand near book in THIS person's region)
+                if len(detections['book']) > 0:
+                    landmarks = translated_landmarks.landmark
+                    right_hand = landmarks[self.mp_pose.PoseLandmark.RIGHT_WRIST]
+                    
+                    right_hand_coords = (int(right_hand.x * w), int(right_hand.y * h))
+                    
+                    margin = self.activity_thresholds['writing']['margin']
+                    for book_bbox in detections['book']:
+                        # Check if book is in this person's region
+                        book_in_person_region = self.bbox_overlap_with_margin(book_bbox, bbox, margin)
+                        
+                        if book_in_person_region:
+                            if self.check_hand_object_interaction(right_hand_coords, book_bbox, margin):
+                                person_activities['writing'] = True
+                                break
+                
+                # 6. PACKING DETECTION (check if hand near backpack in THIS person's region)
+                if len(detections['backpack']) > 0:
+                    landmarks = translated_landmarks.landmark
+                    right_hand = landmarks[self.mp_pose.PoseLandmark.RIGHT_WRIST]
+                    left_hand = landmarks[self.mp_pose.PoseLandmark.LEFT_WRIST]
+                    
+                    right_hand_coords = (int(right_hand.x * w), int(right_hand.y * h))
+                    left_hand_coords = (int(left_hand.x * w), int(left_hand.y * h))
+                    
+                    margin = self.activity_thresholds['packing_bags']['margin']
+                    for backpack_bbox in detections['backpack']:
+                        # Check if backpack is in this person's region
+                        backpack_in_person_region = self.bbox_overlap_with_margin(backpack_bbox, bbox, margin)
+                        
+                        if backpack_in_person_region:
+                            if (self.check_hand_object_interaction(right_hand_coords, backpack_bbox, margin) or
+                                self.check_hand_object_interaction(left_hand_coords, backpack_bbox, margin)):
+                                person_activities['packing'] = True
+                                break
+                
+                # Store this person's data
+                persons_data[person_idx] = {
+                    'pose_landmarks': translated_landmarks,
+                    'role': person_data.get('role', 'UNKNOWN'),
+                    'role_name': person_data.get('role_name', 'Unknown'),
+                    'bbox': bbox,
+                    'activities': person_activities,
+                    'debug_info': person_debug_info
+                }
+                
+            except Exception as e:
+                print(f"Error processing person {person_idx}: {e}")
+                continue
+        
+        # ============ AGGREGATE RESULTS ACROSS ALL PERSONS ============
+        aggregated = {
+            'mind_diversion_detected': False,
+            'sleep_detected': False,
+            'microsleep_detected': False,
+            'cell_phone_detected': False,
+            'writing_detected': False,
+            'packing_detected': False,
+            'lp_hand_gesture_detected': False,
+            'alp_hand_gesture_detected': False,
+            'performing_person': -1,
+            'performing_persons': []  # List of person indices who performed activities
+        }
+        
+        # Aggregate: if ANY person has an activity, mark it as detected
+        for person_idx, person_data in persons_data.items():
+            activities = person_data['activities']
+            
+            if activities['mind_diversion']:
+                aggregated['mind_diversion_detected'] = True
+                aggregated['performing_persons'].append(person_idx)
+            if activities['sleep']:
+                aggregated['sleep_detected'] = True
+            if activities['microsleep']:
+                aggregated['microsleep_detected'] = True
+            if activities['cell_phone']:
+                aggregated['cell_phone_detected'] = True
+            if activities['writing']:
+                aggregated['writing_detected'] = True
+            if activities['packing']:
+                aggregated['packing_detected'] = True
+            if activities['lp_hand_gesture']:
+                aggregated['lp_hand_gesture_detected'] = True
+            if activities['alp_hand_gesture']:
+                aggregated['alp_hand_gesture_detected'] = True
+        
+        # Set performing_person to the first detected person (for backward compatibility)
+        if aggregated['performing_persons']:
+            aggregated['performing_person'] = aggregated['performing_persons'][0]
+        
+        return {
+            'persons': persons_data,
+            'aggregated': aggregated
+        }
+    
+    def bbox_overlap_with_margin(self, obj_bbox, person_bbox, margin):
+        """Check if object bbox overlaps with person bbox (with margin)
+        
+        Args:
+            obj_bbox: [x1, y1, x2, y2] object bounding box
+            person_bbox: [x1, y1, x2, y2] person bounding box
+            margin: margin to expand person bbox
+            
+        Returns:
+            bool: True if object overlaps with person region
+        """
+        ox1, oy1, ox2, oy2 = obj_bbox
+        px1, py1, px2, py2 = person_bbox
+        
+        # Expand person bbox with margin
+        px1_expanded = px1 - margin
+        py1_expanded = py1 - margin
+        px2_expanded = px2 + margin
+        py2_expanded = py2 + margin
+        
+        # Check overlap
+        if ox2 < px1_expanded or ox1 > px2_expanded:
+            return False
+        if oy2 < py1_expanded or oy1 > py2_expanded:
+            return False
+        
+        return True
     
     def calculate_head_pose_angles(self, pose_landmarks, face_landmarks, frame_shape):
         """Calculate head pose angles (yaw and pitch) to detect mind diversion.
@@ -2260,9 +2741,8 @@ class LocopilotActivityMonitor:
                 # Add frame to buffer
                 self.frame_buffer.append(frame.copy())
                 
-                # Process pose and face
+                # STEP 1: Run MediaPipe Face Mesh on full frame (for face-based sleep/EAR detection)
                 rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                pose_results = self.pose.process(rgb_frame)
                 face_results = self.face_mesh.process(rgb_frame)
                 
                 # Calculate EAR for all detected faces (check all people)
@@ -2282,149 +2762,18 @@ class LocopilotActivityMonitor:
                         min_ear_value = min(ear_values)
                         ear_value = min_ear_value  # For display purposes
                 
-                # Run pose-based sleep detection (always, as backup or primary method)
-                pose_sleep_detected = False
-                pose_microsleep_detected = False
-                pose_sleep_info = {}
+                # STEP 2: Detect objects with YOLO (without pose-guided detection yet)
+                # We need person boxes first before we can do per-person pose detection
+                detections = self.detect_objects(frame, None, use_pose_guided=False)
                 
-                if pose_results.pose_landmarks:
-                    pose_sleep_detected, pose_microsleep_detected, pose_sleep_info = self.detect_pose_based_sleep(
-                        pose_results.pose_landmarks, timestamp_sec
-                    )
-                
-                # Detect objects with pose-guided detection
-                detections = self.detect_objects(frame, pose_results.pose_landmarks, use_pose_guided=True)
-                
-                # Count people in frame  
+                # STEP 3: Identify person roles and count people
                 people_count = len(detections['person'])
                 if people_count == 0:
                     people_count = 1  # Default to 1 if no person detected
                 
-                # Initialize detection flags AND detect new activities BEFORE frame saving
-                # This ensures all detections are available for visualization
-                microsleep_detected = False
-                sleep_detected = False
-                cell_phone_detected = False
-                writing_detected = False
-                packing_detected = False
-                
-                # Check for sleep/microsleep
-                # Priority 1: Face-based detection (most accurate when face is visible)
-                if face_results.multi_face_landmarks and ear_value is not None:
-                    if ear_value < 0.2:
-                        if self.eye_closure_start is None:
-                            self.eye_closure_start = timestamp_sec
-                        
-                        self.eye_closure_duration = timestamp_sec - self.eye_closure_start
-                        
-                        if self.eye_closure_duration >= 30:
-                            sleep_detected = True
-                        elif self.eye_closure_duration >= 5:
-                            microsleep_detected = True
-                    else:
-                        self.eye_closure_start = None
-                        self.eye_closure_duration = 0
-                
-                # Priority 2: Pose-based detection (fallback when face not detected)
-                # OR use pose detection to confirm face-based detection
-                else:
-                    # Face not detected, use pose-based detection
-                    if pose_sleep_detected:
-                        sleep_detected = True
-                    elif pose_microsleep_detected:
-                        microsleep_detected = True
-                
-                # Check for cell phone usage with stricter validation
-                if pose_results.pose_landmarks and len(detections['cell_phone']) > 0:
-                    landmarks = pose_results.pose_landmarks.landmark
-                    right_hand = landmarks[self.mp_pose.PoseLandmark.RIGHT_WRIST]
-                    left_hand = landmarks[self.mp_pose.PoseLandmark.LEFT_WRIST]
-                    right_shoulder = landmarks[self.mp_pose.PoseLandmark.RIGHT_SHOULDER]
-                    left_shoulder = landmarks[self.mp_pose.PoseLandmark.LEFT_SHOULDER]
-                    nose = landmarks[self.mp_pose.PoseLandmark.NOSE]
-                    
-                    h, w = frame.shape[:2]
-                    right_hand_coords = (int(right_hand.x * w), int(right_hand.y * h))
-                    left_hand_coords = (int(left_hand.x * w), int(left_hand.y * h))
-                    right_shoulder_y = int(right_shoulder.y * h)
-                    left_shoulder_y = int(left_shoulder.y * h)
-                    avg_shoulder_y = (right_shoulder_y + left_shoulder_y) / 2
-                    nose_y = int(nose.y * h)
-                    
-                    margin = self.activity_thresholds['cell_phone']['margin']
-                    for phone_bbox in detections['cell_phone']:
-                        # Check if hand is near phone
-                        right_hand_near = self.check_hand_object_interaction(right_hand_coords, phone_bbox, margin)
-                        left_hand_near = self.check_hand_object_interaction(left_hand_coords, phone_bbox, margin)
-                        
-                        if right_hand_near or left_hand_near:
-                            # STRICTER VALIDATION: Ensure phone is being actively used, not just in pocket
-                            # 1. Phone should be in upper body area (above hip level = top 60% of frame)
-                            phone_center_y = (phone_bbox[1] + phone_bbox[3]) / 2
-                            phone_in_upper_body = phone_center_y < (h * 0.6)
-                            
-                            # 2. At least one hand should be raised (above shoulder level or near face)
-                            right_hand_raised = right_hand_coords[1] < (avg_shoulder_y + 100)  # Within 100px below shoulder
-                            left_hand_raised = left_hand_coords[1] < (avg_shoulder_y + 100)
-                            hand_raised = right_hand_raised or left_hand_raised
-                            
-                            # 3. Hand should be in front of body (typical phone usage), not hanging at sides
-                            # Check if hand that's near phone is also elevated
-                            active_hand_raised = (right_hand_near and right_hand_raised) or (left_hand_near and left_hand_raised)
-                            
-                            if phone_in_upper_body and hand_raised and active_hand_raised:
-                                cell_phone_detected = True
-                                
-                                # Log cell phone in hand detection
-                                if self.consecutive_detections['cell_phone'] == 0:
-                                    print(f"[{timestamp}] Cell phone ACTIVELY USED in hand (frame {frame_idx}, hand raised, upper body)")
-                                
-                                break
-                            else:
-                                # Log rejection for debugging
-                                if self.consecutive_detections['cell_phone'] == 0:
-                                    reason = []
-                                    if not phone_in_upper_body: reason.append("phone too low")
-                                    if not hand_raised: reason.append("hands down")
-                                    if not active_hand_raised: reason.append("active hand not raised")
-                                    print(f"[{timestamp}] Cell phone detected but REJECTED - likely in pocket/holder ({', '.join(reason)})")
-                
-                # Check for writing
-                if pose_results.pose_landmarks and len(detections['book']) > 0:
-                    landmarks = pose_results.pose_landmarks.landmark
-                    right_hand = landmarks[self.mp_pose.PoseLandmark.RIGHT_WRIST]
-                    
-                    h, w = frame.shape[:2]
-                    right_hand_coords = (int(right_hand.x * w), int(right_hand.y * h))
-                    
-                    margin = self.activity_thresholds['writing']['margin']
-                    for book_bbox in detections['book']:
-                        if self.check_hand_object_interaction(right_hand_coords, book_bbox, margin):
-                            writing_detected = True
-                            break
-                
-                # Check for packing bags - backpacks only
-                if pose_results.pose_landmarks and len(detections['backpack']) > 0:
-                    landmarks = pose_results.pose_landmarks.landmark
-                    right_hand = landmarks[self.mp_pose.PoseLandmark.RIGHT_WRIST]
-                    left_hand = landmarks[self.mp_pose.PoseLandmark.LEFT_WRIST]
-                    
-                    h, w = frame.shape[:2]
-                    right_hand_coords = (int(right_hand.x * w), int(right_hand.y * h))
-                    left_hand_coords = (int(left_hand.x * w), int(left_hand.y * h))
-                    
-                    # Check interaction with backpacks
-                    margin = self.activity_thresholds['packing_bags']['margin']
-                    
-                    for backpack_bbox in detections['backpack']:
-                        if (self.check_hand_object_interaction(right_hand_coords, backpack_bbox, margin) or
-                            self.check_hand_object_interaction(left_hand_coords, backpack_bbox, margin)):
-                            packing_detected = True
-                            break
-                
-                # NEW: Check for group detection (more than 2 people)
+                # De-duplicate person boxes and identify roles
                 group_detected_flag = False
-                person_roles = {}  # Store person role information
+                person_roles = {}
                 
                 if len(detections['person']) > 0:
                     # De-duplicate person boxes to get accurate count
@@ -2453,145 +2802,96 @@ class LocopilotActivityMonitor:
                     detections['deduplicated_person'] = []
                     person_roles = {}
                 
-                # HEURISTIC: Detect "writing/reading posture" even if YOLO misses objects
-                holding_object_heuristic = False
-                writing_posture_heuristic = False
+                # STEP 4: *** NEW MULTI-PERSON PROCESSING ***
+                # Process ALL persons individually for ALL activities
+                multi_person_results = self.process_all_persons_activities(
+                    frame, detections, person_roles, timestamp_sec, face_results
+                )
                 
-                if pose_results.pose_landmarks:
-                    landmarks = pose_results.pose_landmarks.landmark
-                    right_hand = landmarks[self.mp_pose.PoseLandmark.RIGHT_WRIST]
-                    left_hand = landmarks[self.mp_pose.PoseLandmark.LEFT_WRIST]
-                    right_elbow = landmarks[self.mp_pose.PoseLandmark.RIGHT_ELBOW]
-                    right_shoulder = landmarks[self.mp_pose.PoseLandmark.RIGHT_SHOULDER]
+                # Extract aggregated detection flags
+                persons_data = multi_person_results['persons']
+                aggregated = multi_person_results['aggregated']
+                
+                # Initialize detection flags from aggregated results
+                microsleep_detected = aggregated['microsleep_detected']
+                sleep_detected = aggregated['sleep_detected']
+                cell_phone_detected = aggregated['cell_phone_detected']
+                writing_detected = aggregated['writing_detected']
+                packing_detected = aggregated['packing_detected']
+                lp_hand_gesture_detected = aggregated['lp_hand_gesture_detected']
+                alp_hand_gesture_detected = aggregated['alp_hand_gesture_detected']
+                mind_diversion_detected = aggregated['mind_diversion_detected']
+                
+                # Log detections for each person (only on first detection)
+                for person_idx, person_data in persons_data.items():
+                    activities = person_data['activities']
+                    role_name = person_data['role_name']
+                    debug_info = person_data['debug_info']
                     
-                    h, w = frame.shape[:2]
-                    right_hand_coords = (int(right_hand.x * w), int(right_hand.y * h))
-                    left_hand_coords = (int(left_hand.x * w), int(left_hand.y * h))
-                    right_elbow_coords = (int(right_elbow.x * w), int(right_elbow.y * h))
-                    right_shoulder_coords = (int(right_shoulder.x * w), int(right_shoulder.y * h))
+                    # Log mind diversion
+                    if activities['mind_diversion'] and self.consecutive_detections['mind_diversion'] == 0:
+                        head_pose = debug_info.get('head_pose', {})
+                        yaw = head_pose.get('yaw', 0)
+                        pitch = head_pose.get('pitch', 0)
+                        method = head_pose.get('method', 'unknown')
+                        print(f"[{timestamp}] MIND DIVERSION detected for {role_name} (Person {person_idx+1}) - Yaw={yaw:.1f}°, Pitch={pitch:.1f}° (method: {method})")
                     
-                    # HEURISTIC 1: Reading posture - hands close together (holding book/phone)
-                    hand_distance = np.sqrt((right_hand_coords[0] - left_hand_coords[0])**2 + 
-                                           (right_hand_coords[1] - left_hand_coords[1])**2)
+                    # Log sleep detection
+                    if activities['sleep'] and self.consecutive_detections['sleep'] == 0:
+                        sleep_info = debug_info.get('sleep_info', {})
+                        print(f"[{timestamp}] SLEEP detected for {role_name} (Person {person_idx+1}) - pose-based")
                     
-                    if hand_distance < 150:
-                        holding_object_heuristic = True
-                        if not writing_detected and not cell_phone_detected:
-                            print(f"[{timestamp}] Heuristic: Hands together (d={hand_distance:.0f}px) - writing posture")
+                    # Log microsleep detection
+                    if activities['microsleep'] and self.consecutive_detections['microsleep'] == 0:
+                        print(f"[{timestamp}] MICROSLEEP detected for {role_name} (Person {person_idx+1}) - pose-based")
                     
-                # HEURISTIC 2: Writing posture - right hand low and forward (writing on desk/logbook)
-                # Writing characteristics:
-                # 1. Right hand is below elbow (hand lower than elbow = writing down)
-                # 2. Right hand is in lower 60% of frame (near desk/table)
-                # 3. Elbow is bent (elbow Y between shoulder and hand)
-                # 4. Hands are NOT too close together (phone = both hands, writing = one hand)
-                # 5. Hand must be NEAR a detected book (no fallback to prevent false positives)
-                hand_below_elbow = right_hand_coords[1] > right_elbow_coords[1]  # Y increases downward
-                hand_in_lower_area = right_hand_coords[1] > (h * 0.4)  # Lower 60% of frame
-                elbow_bent = right_elbow_coords[1] > right_shoulder_coords[1] and right_elbow_coords[1] < right_hand_coords[1]
-                
-                # Prevent phone false positive - if hands are close together, it's likely phone usage
-                hands_separated = hand_distance >= 150  # Hands far apart = writing, close = phone
-                
-                # Check if hand is actually NEAR any detected book (not just if book exists anywhere)
-                hand_near_book = False
-                margin = self.activity_thresholds['writing']['margin']
-                if len(detections['book']) > 0:
-                    for book_bbox in detections['book']:
-                        if self.check_hand_object_interaction(right_hand_coords, book_bbox, margin):
-                            hand_near_book = True
-                            break
-                
-                # Only trigger writing if hand is NEAR a book (strict detection to prevent false positives)
-                # Removed hand_on_surface fallback as it caused too many false positives
-                if hand_below_elbow and hand_in_lower_area and elbow_bent and hands_separated and hand_near_book:
-                    writing_posture_heuristic = True
-                    if not writing_detected and not cell_phone_detected:  # Don't override cell phone detection
-                        writing_detected = True  # Activate writing detection via heuristic
-                        print(f"[{timestamp}] Heuristic: Writing posture detected (hand Y={right_hand_coords[1]}, elbow Y={right_elbow_coords[1]}, hands separated={hands_separated}, book_near_hand={hand_near_book})")
-                
-                # NEW: Check for hand gesture (LP/ALP not exchanging hand gesture)
-                # Use MULTI-PERSON pose detection for simultaneous gesture detection
-                lp_hand_gesture_detected = False
-                alp_hand_gesture_detected = False
-                
-                # Run multi-person pose detection if we have 2 people
-                if len(person_roles) >= 2:
-                    # Multi-person scenario: Run pose detection on each person's cropped region
-                    multi_person_results = self.detect_multi_person_pose_and_gestures(frame, person_roles)
+                    # Log hand gestures
+                    if activities['lp_hand_gesture'] and self.consecutive_detections['lp_hand_gesture'] == 0:
+                        gesture_debug = debug_info.get('gesture_debug', {})
+                        print(f"[{timestamp}] LP hand gesture detected for {role_name} (Person {person_idx+1}) - {gesture_debug.get('hand_raised', 'unknown')} hand raised")
                     
-                    # Check results for each person
-                    for person_idx, result in multi_person_results.items():
-                        if result['gesture_detected']:
-                            gesture_type = result['gesture_type']
-                            role = result['role']
-                            debug_info = result['debug_info']
-                            
-                            if gesture_type == 'lp':
-                                lp_hand_gesture_detected = True
-                                if self.consecutive_detections['lp_hand_gesture'] == 0:
-                                    print(f"[{timestamp}] LP hand gesture detected - {debug_info.get('hand_raised', 'unknown')} hand raised (multi-person mode)")
-                            elif gesture_type == 'alp':
-                                alp_hand_gesture_detected = True
-                                if self.consecutive_detections['alp_hand_gesture'] == 0:
-                                    print(f"[{timestamp}] ALP hand gesture detected - {debug_info.get('hand_raised', 'unknown')} hand raised (multi-person mode)")
-                
-                # Fallback to single-person pose detection if only 1 person or multi-person failed
-                elif pose_results.pose_landmarks and person_roles:
-                    lp_gesture, alp_gesture, gesture_debug = self.detect_hand_gesture(
-                        pose_results.pose_landmarks, 
-                        frame.shape, 
-                        person_roles
-                    )
+                    if activities['alp_hand_gesture'] and self.consecutive_detections['alp_hand_gesture'] == 0:
+                        gesture_debug = debug_info.get('gesture_debug', {})
+                        print(f"[{timestamp}] ALP hand gesture detected for {role_name} (Person {person_idx+1}) - {gesture_debug.get('hand_raised', 'unknown')} hand raised")
                     
-                    if lp_gesture:
-                        lp_hand_gesture_detected = True
-                        if self.consecutive_detections['lp_hand_gesture'] == 0:
-                            print(f"[{timestamp}] LP hand gesture detected - {gesture_debug.get('hand_raised', 'unknown')} hand raised (single-person mode)")
+                    # Log cell phone, writing, packing
+                    if activities['cell_phone'] and self.consecutive_detections['cell_phone'] == 0:
+                        print(f"[{timestamp}] Cell phone ACTIVELY USED by {role_name} (Person {person_idx+1})")
                     
-                    if alp_gesture:
-                        alp_hand_gesture_detected = True
-                        if self.consecutive_detections['alp_hand_gesture'] == 0:
-                            print(f"[{timestamp}] ALP hand gesture detected - {gesture_debug.get('hand_raised', 'unknown')} hand raised (single-person mode)")
-                
-                # NEW: Check for mind diversion (head turned to side AND looking down)
-                mind_diversion_detected = False
-                head_pose_info = {}
-                
-                if pose_results.pose_landmarks:
-                    # Calculate head pose angles (yaw and pitch)
-                    head_pose_info = self.calculate_head_pose_angles(
-                        pose_results.pose_landmarks,
-                        face_results,
-                        frame.shape
-                    )
+                    if activities['writing'] and self.consecutive_detections['writing'] == 0:
+                        print(f"[{timestamp}] WRITING detected for {role_name} (Person {person_idx+1})")
                     
-                    # Check if mind diversion is detected based on angles
-                    if head_pose_info.get('detected', False):
-                        mind_diversion_detected = True
+                    if activities['packing'] and self.consecutive_detections['packing_bags'] == 0:
+                        print(f"[{timestamp}] PACKING detected for {role_name} (Person {person_idx+1})")
+                
+                # Face-based sleep detection (still use EAR as additional signal)
+                if face_results.multi_face_landmarks and ear_value is not None:
+                    if ear_value < 0.2:
+                        if self.eye_closure_start is None:
+                            self.eye_closure_start = timestamp_sec
                         
-                        # Log detection with angle information
-                        if self.consecutive_detections['mind_diversion'] == 0:
-                            yaw = head_pose_info.get('yaw', 0)
-                            pitch = head_pose_info.get('pitch', 0)
-                            method = head_pose_info.get('method', 'unknown')
-                            print(f"[{timestamp}] MIND DIVERSION detected - Yaw={yaw:.1f}°, Pitch={pitch:.1f}° (method: {method})")
+                        self.eye_closure_duration = timestamp_sec - self.eye_closure_start
+                        
+                        # Merge with pose-based detection
+                        if self.eye_closure_duration >= 30:
+                            sleep_detected = True
+                        elif self.eye_closure_duration >= 5:
+                            microsleep_detected = True
+                    else:
+                        self.eye_closure_start = None
+                        self.eye_closure_duration = 0
+                
+                # DEPRECATED: Old single-person detection code removed
+                # The new process_all_persons_activities() method above handles all detections
                 
                 # CRITICAL: Exclude sleep detection if person is holding objects or in active posture
                 # If someone has a phone, book, or backpack in hand, they're clearly NOT sleeping
-                # Also use heuristic detection (hands together, writing posture) as fallback
-                if cell_phone_detected or writing_detected or packing_detected or holding_object_heuristic:
+                if cell_phone_detected or writing_detected or packing_detected:
                     if microsleep_detected or sleep_detected:
                         reason = []
                         if cell_phone_detected: reason.append("phone")
-                        if writing_detected: 
-                            if writing_posture_heuristic:
-                                reason.append("writing-posture-heuristic")
-                            else:
-                                reason.append("book")
+                        if writing_detected: reason.append("book")
                         if packing_detected: reason.append("backpack")
-                        if holding_object_heuristic and not (cell_phone_detected or writing_detected or packing_detected):
-                            reason.append("writing-posture-heuristic")
                         print(f"[{timestamp}] Sleep detection OVERRIDDEN - person active ({', '.join(reason)})")
                     microsleep_detected = False
                     sleep_detected = False
@@ -2606,14 +2906,13 @@ class LocopilotActivityMonitor:
                 annotated_frame_for_activity = self.draw_bounding_boxes(
                     frame, detections, show_roi_boxes=True, person_roles=person_roles
                 )
-                annotated_frame_for_activity = self.draw_mediapipe_outputs(
+                # NEW: Draw MediaPipe outputs for ALL persons (not just one)
+                annotated_frame_for_activity = self.draw_multi_person_mediapipe_outputs(
                     annotated_frame_for_activity,
-                    pose_results,
+                    persons_data,  # All persons' pose landmarks and activities
                     face_results,
                     ear_value,
-                    self.eye_closure_duration,
-                    pose_sleep_info,
-                    head_pose_info
+                    self.eye_closure_duration
                 )
                 
                 # Save annotated frames periodically if enabled (AFTER all detections)
@@ -2787,9 +3086,8 @@ class LocopilotActivityMonitor:
                 # Add frame to buffer
                 self.frame_buffer.append(frame.copy())
                 
-                # Process pose and face
+                # STEP 1: Run MediaPipe Face Mesh on full frame (for face-based sleep/EAR detection)
                 rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                pose_results = self.pose.process(rgb_frame)
                 face_results = self.face_mesh.process(rgb_frame)
                 
                 # Calculate EAR for all detected faces
@@ -2807,130 +3105,23 @@ class LocopilotActivityMonitor:
                         min_ear_value = min(ear_values)
                         ear_value = min_ear_value
                 
-                # Run pose-based sleep detection
-                pose_sleep_detected = False
-                pose_microsleep_detected = False
-                pose_sleep_info = {}
+                # STEP 2: Detect objects with YOLO (without pose-guided detection yet)
+                # We need person boxes first before we can do per-person pose detection
+                detections = self.detect_objects(frame, None, use_pose_guided=False)
                 
-                if pose_results.pose_landmarks:
-                    pose_sleep_detected, pose_microsleep_detected, pose_sleep_info = self.detect_pose_based_sleep(
-                        pose_results.pose_landmarks, timestamp_sec
-                    )
-                
-                # Detect objects with pose-guided detection
-                detections = self.detect_objects(frame, pose_results.pose_landmarks, use_pose_guided=True)
-                
-                # Count people in frame
+                # STEP 3: Identify person roles and count people
                 people_count = len(detections['person'])
                 if people_count == 0:
                     people_count = 1
                 
-                # Initialize detection flags
-                microsleep_detected = False
-                sleep_detected = False
-                cell_phone_detected = False
-                writing_detected = False
-                packing_detected = False
-                
-                # Check for sleep/microsleep (face-based)
-                if face_results.multi_face_landmarks and ear_value is not None:
-                    if ear_value < 0.2:
-                        if self.eye_closure_start is None:
-                            self.eye_closure_start = timestamp_sec
-                        
-                        self.eye_closure_duration = timestamp_sec - self.eye_closure_start
-                        
-                        if self.eye_closure_duration >= 30:
-                            sleep_detected = True
-                        elif self.eye_closure_duration >= 5:
-                            microsleep_detected = True
-                    else:
-                        self.eye_closure_start = None
-                        self.eye_closure_duration = 0
-                else:
-                    # Use pose-based detection as fallback
-                    if pose_sleep_detected:
-                        sleep_detected = True
-                    elif pose_microsleep_detected:
-                        microsleep_detected = True
-                
-                # Check for cell phone usage
-                if pose_results.pose_landmarks and len(detections['cell_phone']) > 0:
-                    landmarks = pose_results.pose_landmarks.landmark
-                    right_hand = landmarks[self.mp_pose.PoseLandmark.RIGHT_WRIST]
-                    left_hand = landmarks[self.mp_pose.PoseLandmark.LEFT_WRIST]
-                    right_shoulder = landmarks[self.mp_pose.PoseLandmark.RIGHT_SHOULDER]
-                    left_shoulder = landmarks[self.mp_pose.PoseLandmark.LEFT_SHOULDER]
-                    nose = landmarks[self.mp_pose.PoseLandmark.NOSE]
-                    
-                    h, w = frame.shape[:2]
-                    right_hand_coords = (int(right_hand.x * w), int(right_hand.y * h))
-                    left_hand_coords = (int(left_hand.x * w), int(left_hand.y * h))
-                    right_shoulder_y = int(right_shoulder.y * h)
-                    left_shoulder_y = int(left_shoulder.y * h)
-                    avg_shoulder_y = (right_shoulder_y + left_shoulder_y) / 2
-                    
-                    margin = self.activity_thresholds['cell_phone']['margin']
-                    for phone_bbox in detections['cell_phone']:
-                        right_hand_near = self.check_hand_object_interaction(right_hand_coords, phone_bbox, margin)
-                        left_hand_near = self.check_hand_object_interaction(left_hand_coords, phone_bbox, margin)
-                        
-                        if right_hand_near or left_hand_near:
-                            phone_center_y = (phone_bbox[1] + phone_bbox[3]) / 2
-                            phone_in_upper_body = phone_center_y < (h * 0.6)
-                            
-                            right_hand_raised = right_hand_coords[1] < (avg_shoulder_y + 100)
-                            left_hand_raised = left_hand_coords[1] < (avg_shoulder_y + 100)
-                            hand_raised = right_hand_raised or left_hand_raised
-                            
-                            active_hand_raised = (right_hand_near and right_hand_raised) or (left_hand_near and left_hand_raised)
-                            
-                            if phone_in_upper_body and hand_raised and active_hand_raised:
-                                cell_phone_detected = True
-                                break
-                
-                # Check for writing
-                if pose_results.pose_landmarks and len(detections['book']) > 0:
-                    landmarks = pose_results.pose_landmarks.landmark
-                    right_hand = landmarks[self.mp_pose.PoseLandmark.RIGHT_WRIST]
-                    
-                    h, w = frame.shape[:2]
-                    right_hand_coords = (int(right_hand.x * w), int(right_hand.y * h))
-                    
-                    margin = self.activity_thresholds['writing']['margin']
-                    for book_bbox in detections['book']:
-                        if self.check_hand_object_interaction(right_hand_coords, book_bbox, margin):
-                            writing_detected = True
-                            break
-                
-                # Check for packing bags
-                if pose_results.pose_landmarks and len(detections['backpack']) > 0:
-                    landmarks = pose_results.pose_landmarks.landmark
-                    right_hand = landmarks[self.mp_pose.PoseLandmark.RIGHT_WRIST]
-                    left_hand = landmarks[self.mp_pose.PoseLandmark.LEFT_WRIST]
-                    
-                    h, w = frame.shape[:2]
-                    right_hand_coords = (int(right_hand.x * w), int(right_hand.y * h))
-                    left_hand_coords = (int(left_hand.x * w), int(left_hand.y * h))
-                    
-                    margin = self.activity_thresholds['packing_bags']['margin']
-                    
-                    for backpack_bbox in detections['backpack']:
-                        if (self.check_hand_object_interaction(right_hand_coords, backpack_bbox, margin) or
-                            self.check_hand_object_interaction(left_hand_coords, backpack_bbox, margin)):
-                            packing_detected = True
-                            break
-                
-                # Check for group detection
+                # De-duplicate person boxes and identify roles
                 group_detected_flag = False
-                person_roles = {}  # Store person role information
+                person_roles = {}
                 
                 if len(detections['person']) > 0:
                     deduplicated_persons = self.deduplicate_person_boxes(detections['person'], iou_threshold=0.3)
                     deduplicated_count = len(deduplicated_persons)
                     detections['deduplicated_person'] = deduplicated_persons
-                    
-                    # Identify person roles (LP, ALP, etc.)
                     person_roles = self.identify_person_roles(frame, deduplicated_persons, detections)
                     
                     if deduplicated_count > 2:
@@ -2939,94 +3130,48 @@ class LocopilotActivityMonitor:
                     detections['deduplicated_person'] = []
                     person_roles = {}
                 
-                # Writing/reading posture heuristics
-                holding_object_heuristic = False
-                writing_posture_heuristic = False
+                # STEP 4: *** NEW MULTI-PERSON PROCESSING ***
+                # Process ALL persons individually for ALL activities
+                multi_person_results = self.process_all_persons_activities(
+                    frame, detections, person_roles, timestamp_sec, face_results
+                )
                 
-                if pose_results.pose_landmarks:
-                    landmarks = pose_results.pose_landmarks.landmark
-                    right_hand = landmarks[self.mp_pose.PoseLandmark.RIGHT_WRIST]
-                    left_hand = landmarks[self.mp_pose.PoseLandmark.LEFT_WRIST]
-                    right_elbow = landmarks[self.mp_pose.PoseLandmark.RIGHT_ELBOW]
-                    right_shoulder = landmarks[self.mp_pose.PoseLandmark.RIGHT_SHOULDER]
-                    
-                    h, w = frame.shape[:2]
-                    right_hand_coords = (int(right_hand.x * w), int(right_hand.y * h))
-                    left_hand_coords = (int(left_hand.x * w), int(left_hand.y * h))
-                    right_elbow_coords = (int(right_elbow.x * w), int(right_elbow.y * h))
-                    right_shoulder_coords = (int(right_shoulder.x * w), int(right_shoulder.y * h))
-                    
-                    hand_distance = np.sqrt((right_hand_coords[0] - left_hand_coords[0])**2 + 
-                                           (right_hand_coords[1] - left_hand_coords[1])**2)
-                    
-                    if hand_distance < 150:
-                        holding_object_heuristic = True
-                    
-                    # HEURISTIC 2: Writing posture - right hand low and forward (writing on desk/logbook)
-                    # Writing characteristics:
-                    # 1. Right hand is below elbow (hand lower than elbow = writing down)
-                    # 2. Right hand is in lower 60% of frame (near desk/table)
-                    # 3. Elbow is bent (elbow Y between shoulder and hand)
-                    # 4. Hands are NOT too close together (phone = both hands, writing = one hand)
-                    # 5. Hand must be NEAR a detected book (no fallback to prevent false positives)
-                    hand_below_elbow = right_hand_coords[1] > right_elbow_coords[1]
-                    hand_in_lower_area = right_hand_coords[1] > (h * 0.4)
-                    elbow_bent = right_elbow_coords[1] > right_shoulder_coords[1] and right_elbow_coords[1] < right_hand_coords[1]
-                    
-                    # Prevent phone false positive - if hands are close together, it's likely phone usage
-                    hands_separated = hand_distance >= 150  # Hands far apart = writing, close = phone
-                    
-                    # Check if hand is actually NEAR any detected book (not just if book exists anywhere)
-                    hand_near_book = False
-                    margin = self.activity_thresholds['writing']['margin']
-                    if len(detections['book']) > 0:
-                        for book_bbox in detections['book']:
-                            if self.check_hand_object_interaction(right_hand_coords, book_bbox, margin):
-                                hand_near_book = True
-                                break
-                    
-                    # Only trigger writing if hand is NEAR a book (strict detection to prevent false positives)
-                    # Removed hand_on_surface fallback as it caused too many false positives
-                    if hand_below_elbow and hand_in_lower_area and elbow_bent and hands_separated and hand_near_book:
-                        writing_posture_heuristic = True
-                        if not writing_detected and not cell_phone_detected:  # Don't override cell phone detection
-                            writing_detected = True
+                # Extract aggregated detection flags
+                persons_data = multi_person_results['persons']
+                aggregated = multi_person_results['aggregated']
                 
-                # NEW: Check for hand gesture (LP/ALP not exchanging hand gesture)
-                lp_hand_gesture_detected = False
-                alp_hand_gesture_detected = False
+                # Initialize detection flags from aggregated results
+                microsleep_detected = aggregated['microsleep_detected']
+                sleep_detected = aggregated['sleep_detected']
+                cell_phone_detected = aggregated['cell_phone_detected']
+                writing_detected = aggregated['writing_detected']
+                packing_detected = aggregated['packing_detected']
+                lp_hand_gesture_detected = aggregated['lp_hand_gesture_detected']
+                alp_hand_gesture_detected = aggregated['alp_hand_gesture_detected']
+                mind_diversion_detected = aggregated['mind_diversion_detected']
                 
-                if pose_results.pose_landmarks and person_roles:
-                    lp_gesture, alp_gesture, gesture_debug = self.detect_hand_gesture(
-                        pose_results.pose_landmarks, 
-                        frame.shape, 
-                        person_roles
-                    )
-                    
-                    if lp_gesture:
-                        lp_hand_gesture_detected = True
-                    
-                    if alp_gesture:
-                        alp_hand_gesture_detected = True
+                # Face-based sleep detection (still use EAR as additional signal)
+                if face_results.multi_face_landmarks and ear_value is not None:
+                    if ear_value < 0.2:
+                        if self.eye_closure_start is None:
+                            self.eye_closure_start = timestamp_sec
+                        
+                        self.eye_closure_duration = timestamp_sec - self.eye_closure_start
+                        
+                        # Merge with pose-based detection
+                        if self.eye_closure_duration >= 30:
+                            sleep_detected = True
+                        elif self.eye_closure_duration >= 5:
+                            microsleep_detected = True
+                    else:
+                        self.eye_closure_start = None
+                        self.eye_closure_duration = 0
                 
-                # NEW: Check for mind diversion (head turned to side AND looking down)
-                mind_diversion_detected = False
-                head_pose_info = {}
+                # DEPRECATED: Old single-person detection code removed
+                # The new process_all_persons_activities() method above handles all detections
                 
-                if pose_results.pose_landmarks:
-                    # Calculate head pose angles (yaw and pitch)
-                    head_pose_info = self.calculate_head_pose_angles(
-                        pose_results.pose_landmarks,
-                        face_results,
-                        frame.shape
-                    )
-                    
-                    # Check if mind diversion is detected based on angles
-                    if head_pose_info.get('detected', False):
-                        mind_diversion_detected = True
-                
-                # Override sleep detection if person is active
-                if cell_phone_detected or writing_detected or packing_detected or holding_object_heuristic:
+                # Exclude sleep detection if person is holding objects or in active posture
+                if cell_phone_detected or writing_detected or packing_detected:
                     microsleep_detected = False
                     sleep_detected = False
                     self.eye_closure_start = None
@@ -3039,14 +3184,13 @@ class LocopilotActivityMonitor:
                 annotated_frame_for_activity = self.draw_bounding_boxes(
                     frame, detections, show_roi_boxes=True, person_roles=person_roles
                 )
-                annotated_frame_for_activity = self.draw_mediapipe_outputs(
+                # NEW: Draw MediaPipe outputs for ALL persons (not just one)
+                annotated_frame_for_activity = self.draw_multi_person_mediapipe_outputs(
                     annotated_frame_for_activity,
-                    pose_results,
+                    persons_data,  # All persons' pose landmarks and activities
                     face_results,
                     ear_value,
-                    self.eye_closure_duration,
-                    pose_sleep_info,
-                    head_pose_info
+                    self.eye_closure_duration
                 )
                 
                 # Save annotated frames periodically if enabled (in process_video_range for multiprocessing)
