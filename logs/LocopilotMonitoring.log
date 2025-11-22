@@ -582,3 +582,252 @@
 2025-11-22 11:12:16,202 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Shutting down application...
 2025-11-22 11:12:16,215 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Shutting down application...
 2025-11-22 11:12:16,216 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Shutting down application...
+2025-11-22 11:13:02,872 [N/A] [N/A] [N/A] [N/A] [INFO] [app.utils.logger] [N/A N/A] Logging initialized - Level: INFO, Environment: development, Log file: logs/LocopilotMonitoring.log
+2025-11-22 11:13:02,944 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] ============================================================
+2025-11-22 11:13:02,944 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Starting Locopilot Monitoring System v1.0.0
+2025-11-22 11:13:02,944 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Environment: Production
+2025-11-22 11:13:02,944 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Output directory: locopilot_evidence
+2025-11-22 11:13:02,944 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Upload directory: /tmp/locopilot_uploads
+2025-11-22 11:13:02,944 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Sample FPS: 0.5
+2025-11-22 11:13:02,945 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] YOLO weights: yolo11s.pt
+2025-11-22 11:13:02,945 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] ============================================================
+2025-11-22 11:13:02,945 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] OCR preloading enabled
+2025-11-22 11:13:03,004 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] ============================================================
+2025-11-22 11:13:03,004 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Starting Locopilot Monitoring System v1.0.0
+2025-11-22 11:13:03,004 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Environment: Production
+2025-11-22 11:13:03,004 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Output directory: locopilot_evidence
+2025-11-22 11:13:03,004 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Upload directory: /tmp/locopilot_uploads
+2025-11-22 11:13:03,005 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Sample FPS: 0.5
+2025-11-22 11:13:03,005 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] YOLO weights: yolo11s.pt
+2025-11-22 11:13:03,005 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] ============================================================
+2025-11-22 11:13:03,005 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] OCR preloading enabled
+2025-11-22 11:13:03,020 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] ============================================================
+2025-11-22 11:13:03,020 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Starting Locopilot Monitoring System v1.0.0
+2025-11-22 11:13:03,020 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Environment: Production
+2025-11-22 11:13:03,020 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Output directory: locopilot_evidence
+2025-11-22 11:13:03,020 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Upload directory: /tmp/locopilot_uploads
+2025-11-22 11:13:03,020 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Sample FPS: 0.5
+2025-11-22 11:13:03,021 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] YOLO weights: yolo11s.pt
+2025-11-22 11:13:03,021 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] ============================================================
+2025-11-22 11:13:03,021 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] OCR preloading enabled
+2025-11-22 11:13:03,072 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] ============================================================
+2025-11-22 11:13:03,072 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Starting Locopilot Monitoring System v1.0.0
+2025-11-22 11:13:03,072 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Environment: Production
+2025-11-22 11:13:03,072 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Output directory: locopilot_evidence
+2025-11-22 11:13:03,072 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Upload directory: /tmp/locopilot_uploads
+2025-11-22 11:13:03,072 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Sample FPS: 0.5
+2025-11-22 11:13:03,072 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] YOLO weights: yolo11s.pt
+2025-11-22 11:13:03,073 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] ============================================================
+2025-11-22 11:13:03,073 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] OCR preloading enabled
+2025-11-22 11:13:03,136 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] ============================================================
+2025-11-22 11:13:03,137 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Starting Locopilot Monitoring System v1.0.0
+2025-11-22 11:13:03,137 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Environment: Production
+2025-11-22 11:13:03,137 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Output directory: locopilot_evidence
+2025-11-22 11:13:03,137 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Upload directory: /tmp/locopilot_uploads
+2025-11-22 11:13:03,137 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Sample FPS: 0.5
+2025-11-22 11:13:03,137 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] YOLO weights: yolo11s.pt
+2025-11-22 11:13:03,137 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] ============================================================
+2025-11-22 11:13:03,138 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] OCR preloading enabled
+2025-11-22 11:13:49,211 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Shutting down application...
+2025-11-22 11:13:49,216 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Shutting down application...
+2025-11-22 11:13:49,234 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Shutting down application...
+2025-11-22 11:13:49,235 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Shutting down application...
+2025-11-22 11:13:49,262 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Shutting down application...
+2025-11-22 11:27:03,866 [N/A] [N/A] [N/A] [N/A] [INFO] [app.utils.logger] [N/A N/A] Logging initialized - Level: INFO, Environment: development, Log file: logs/LocopilotMonitoring.log
+2025-11-22 11:27:03,921 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] ============================================================
+2025-11-22 11:27:03,922 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Starting Locopilot Monitoring System v1.0.0
+2025-11-22 11:27:03,922 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Environment: Production
+2025-11-22 11:27:03,923 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Output directory: locopilot_evidence
+2025-11-22 11:27:03,923 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Upload directory: /tmp/locopilot_uploads
+2025-11-22 11:27:03,923 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Sample FPS: 0.5
+2025-11-22 11:27:03,923 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] YOLO weights: yolo11s.pt
+2025-11-22 11:27:03,923 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] ============================================================
+2025-11-22 11:27:03,923 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] OCR preloading enabled
+2025-11-22 11:27:03,951 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] ============================================================
+2025-11-22 11:27:03,951 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Starting Locopilot Monitoring System v1.0.0
+2025-11-22 11:27:03,951 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Environment: Production
+2025-11-22 11:27:03,951 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Output directory: locopilot_evidence
+2025-11-22 11:27:03,951 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Upload directory: /tmp/locopilot_uploads
+2025-11-22 11:27:03,952 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Sample FPS: 0.5
+2025-11-22 11:27:03,952 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] YOLO weights: yolo11s.pt
+2025-11-22 11:27:03,952 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] ============================================================
+2025-11-22 11:27:03,952 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] OCR preloading enabled
+2025-11-22 11:27:04,021 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] ============================================================
+2025-11-22 11:27:04,021 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Starting Locopilot Monitoring System v1.0.0
+2025-11-22 11:27:04,021 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Environment: Production
+2025-11-22 11:27:04,021 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Output directory: locopilot_evidence
+2025-11-22 11:27:04,021 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Upload directory: /tmp/locopilot_uploads
+2025-11-22 11:27:04,022 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Sample FPS: 0.5
+2025-11-22 11:27:04,022 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] YOLO weights: yolo11s.pt
+2025-11-22 11:27:04,022 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] ============================================================
+2025-11-22 11:27:04,022 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] OCR preloading enabled
+2025-11-22 11:27:04,034 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] ============================================================
+2025-11-22 11:27:04,034 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Starting Locopilot Monitoring System v1.0.0
+2025-11-22 11:27:04,034 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Environment: Production
+2025-11-22 11:27:04,035 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Output directory: locopilot_evidence
+2025-11-22 11:27:04,035 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Upload directory: /tmp/locopilot_uploads
+2025-11-22 11:27:04,035 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Sample FPS: 0.5
+2025-11-22 11:27:04,035 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] YOLO weights: yolo11s.pt
+2025-11-22 11:27:04,035 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] ============================================================
+2025-11-22 11:27:04,035 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] OCR preloading enabled
+2025-11-22 11:27:04,061 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] ============================================================
+2025-11-22 11:27:04,061 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Starting Locopilot Monitoring System v1.0.0
+2025-11-22 11:27:04,061 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Environment: Production
+2025-11-22 11:27:04,062 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Output directory: locopilot_evidence
+2025-11-22 11:27:04,062 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Upload directory: /tmp/locopilot_uploads
+2025-11-22 11:27:04,062 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Sample FPS: 0.5
+2025-11-22 11:27:04,062 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] YOLO weights: yolo11s.pt
+2025-11-22 11:27:04,062 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] ============================================================
+2025-11-22 11:27:04,062 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] OCR preloading enabled
+2025-11-22 11:27:05,277 [N/A] [N/A] [N/A] [b2978dae-8a05-4147-be27-ba786a34faa6] [INFO] [app.middleware.logging_middleware] [GET /docs] 📥 Request received - Method: GET, Path: /docs, Client: 127.0.0.1, User: N/A
+2025-11-22 11:27:05,279 [N/A] [N/A] [N/A] [b2978dae-8a05-4147-be27-ba786a34faa6] [INFO] [app.middleware.logging_middleware] [GET /docs] 📤 Request completed - Status: 200, Duration: 0.0025s
+2025-11-22 11:27:05,325 [N/A] [N/A] [N/A] [cd5e584a-ac39-4fc5-823b-379503901e93] [INFO] [app.middleware.logging_middleware] [GET /openapi.json] 📥 Request received - Method: GET, Path: /openapi.json, Client: 127.0.0.1, User: N/A
+2025-11-22 11:27:05,339 [N/A] [N/A] [N/A] [cd5e584a-ac39-4fc5-823b-379503901e93] [INFO] [app.middleware.logging_middleware] [GET /openapi.json] 📤 Request completed - Status: 200, Duration: 0.0138s
+2025-11-22 11:27:18,440 [N/A] [N/A] [N/A] [78324a14-933a-493a-89c9-fab36c7ea907] [INFO] [app.middleware.logging_middleware] [POST /api/jobs] 📥 Request received - Method: POST, Path: /api/jobs, Client: 127.0.0.1, User: N/A
+2025-11-22 11:27:18,459 [N/A] [N/A] [N/A] [78324a14-933a-493a-89c9-fab36c7ea907] [INFO] [app.controllers.video_controller] [POST /api/jobs] 📥 Received video processing request for trip: string
+2025-11-22 11:27:18,459 [N/A] [N/A] [N/A] [78324a14-933a-493a-89c9-fab36c7ea907] [INFO] [app.controllers.video_controller] [POST /api/jobs] LP Crew: string (string)
+2025-11-22 11:27:18,459 [N/A] [N/A] [N/A] [78324a14-933a-493a-89c9-fab36c7ea907] [INFO] [app.controllers.video_controller] [POST /api/jobs] ALP Crew: string (string)
+2025-11-22 11:27:18,461 [N/A] [N/A] [N/A] [78324a14-933a-493a-89c9-fab36c7ea907] [INFO] [app.controllers.video_controller] [POST /api/jobs] 📹 Uploaded video: bagpack.mp4 (7.43 MB)
+2025-11-22 11:27:18,462 [N/A] [N/A] [N/A] [78324a14-933a-493a-89c9-fab36c7ea907] [INFO] [app.services.video_processing_service] [POST /api/jobs] Video saved to /tmp/locopilot_uploads/string_1763791038.mp4 (7786268 bytes)
+2025-11-22 11:27:18,463 [N/A] [N/A] [N/A] [78324a14-933a-493a-89c9-fab36c7ea907] [INFO] [app.controllers.video_controller] [POST /api/jobs] 🎮 Processing configuration - Multiprocessing: True, SaveClips: False, Mock: False
+2025-11-22 11:27:18,463 [N/A] [N/A] [N/A] [78324a14-933a-493a-89c9-fab36c7ea907] [INFO] [app.services.video_processing_service] [POST /api/jobs] 🎬 Starting video processing for trip string - Multiprocessing: enabled, Save clips: False, Mock detection: False
+2025-11-22 11:27:18,463 [N/A] [N/A] [N/A] [78324a14-933a-493a-89c9-fab36c7ea907] [INFO] [app.services.video_processing_service] [POST /api/jobs] ✅ Video file validated: /tmp/locopilot_uploads/string_1763791038.mp4
+2025-11-22 11:27:18,464 [N/A] [N/A] [N/A] [78324a14-933a-493a-89c9-fab36c7ea907] [INFO] [app.repositories.activity_repository] [POST /api/jobs] Created run directory: locopilot_evidence/run_20251122_112718
+2025-11-22 11:27:18,464 [N/A] [N/A] [N/A] [78324a14-933a-493a-89c9-fab36c7ea907] [INFO] [app.services.video_processing_service] [POST /api/jobs] 📁 Created run directory: locopilot_evidence/run_20251122_112718
+2025-11-22 11:27:18,465 [N/A] [N/A] [N/A] [78324a14-933a-493a-89c9-fab36c7ea907] [INFO] [app.services.video_processing_service] [POST /api/jobs] 🔍 Using real activity detection - Multiprocessing: enabled
+2025-11-22 11:27:18,465 [N/A] [N/A] [N/A] [78324a14-933a-493a-89c9-fab36c7ea907] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Initializing process pool with 8 workers (method=spawn, shared=True)
+2025-11-22 11:27:18,469 [N/A] [N/A] [N/A] [78324a14-933a-493a-89c9-fab36c7ea907] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Created shared ProcessPoolExecutor(max_workers=8, start_method=spawn)
+2025-11-22 11:27:18,469 [N/A] [N/A] [N/A] [78324a14-933a-493a-89c9-fab36c7ea907] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Process pool initialized successfully
+2025-11-22 11:27:18,469 [N/A] [N/A] [N/A] [78324a14-933a-493a-89c9-fab36c7ea907] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Calculating frame ranges for parallel processing
+2025-11-22 11:27:18,505 [N/A] [N/A] [N/A] [78324a14-933a-493a-89c9-fab36c7ea907] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Video split into 13 chunks (~6.0s each, 0.5 FPS sampling)
+2025-11-22 11:27:18,505 [N/A] [N/A] [N/A] [78324a14-933a-493a-89c9-fab36c7ea907] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Submitting 13 tasks to process pool (expected 39 sampled frames, save_clips=False)
+2025-11-22 11:27:22,000 [N/A] [N/A] [N/A] [78324a14-933a-493a-89c9-fab36c7ea907] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 2 completed: 0 activities, 7.7% done
+2025-11-22 11:27:22,173 [N/A] [N/A] [N/A] [78324a14-933a-493a-89c9-fab36c7ea907] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 4 completed: 0 activities, 15.4% done
+2025-11-22 11:27:22,251 [N/A] [N/A] [N/A] [78324a14-933a-493a-89c9-fab36c7ea907] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 6 completed: 0 activities, 23.1% done
+2025-11-22 11:27:22,254 [N/A] [N/A] [N/A] [78324a14-933a-493a-89c9-fab36c7ea907] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 7 completed: 0 activities, 30.8% done
+2025-11-22 11:27:22,296 [N/A] [N/A] [N/A] [78324a14-933a-493a-89c9-fab36c7ea907] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 0 completed: 0 activities, 38.5% done
+2025-11-22 11:27:22,301 [N/A] [N/A] [N/A] [78324a14-933a-493a-89c9-fab36c7ea907] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 3 completed: 1 activities, 46.2% done
+2025-11-22 11:27:22,359 [N/A] [N/A] [N/A] [78324a14-933a-493a-89c9-fab36c7ea907] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 1 completed: 0 activities, 53.8% done
+2025-11-22 11:27:22,386 [N/A] [N/A] [N/A] [78324a14-933a-493a-89c9-fab36c7ea907] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 5 completed: 2 activities, 61.5% done
+2025-11-22 11:27:23,038 [N/A] [N/A] [N/A] [78324a14-933a-493a-89c9-fab36c7ea907] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 8 completed: 0 activities, 69.2% done
+2025-11-22 11:27:23,168 [N/A] [N/A] [N/A] [78324a14-933a-493a-89c9-fab36c7ea907] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 9 completed: 0 activities, 76.9% done
+2025-11-22 11:27:23,275 [N/A] [N/A] [N/A] [78324a14-933a-493a-89c9-fab36c7ea907] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 10 completed: 0 activities, 84.6% done
+2025-11-22 11:27:23,291 [N/A] [N/A] [N/A] [78324a14-933a-493a-89c9-fab36c7ea907] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 12 completed: 0 activities, 92.3% done
+2025-11-22 11:27:23,294 [N/A] [N/A] [N/A] [78324a14-933a-493a-89c9-fab36c7ea907] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 11 completed: 0 activities, 100.0% done
+2025-11-22 11:27:23,294 [N/A] [N/A] [N/A] [78324a14-933a-493a-89c9-fab36c7ea907] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Parallel processing completed in 4.83s: 3 activities detected, 13 ranges completed, 0 ranges failed
+2025-11-22 11:27:23,294 [N/A] [N/A] [N/A] [78324a14-933a-493a-89c9-fab36c7ea907] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Saved 3 activities to locopilot_evidence/run_20251122_112718/activities.json
+2025-11-22 11:27:23,295 [N/A] [N/A] [N/A] [78324a14-933a-493a-89c9-fab36c7ea907] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Note: Clip generation was disabled (save_clips=False)
+2025-11-22 11:27:23,295 [N/A] [N/A] [N/A] [78324a14-933a-493a-89c9-fab36c7ea907] [INFO] [app.services.activity_detection_service] [POST /api/jobs] Multi-process detection found 3 activities (clips not generated)
+2025-11-22 11:27:23,295 [N/A] [N/A] [N/A] [78324a14-933a-493a-89c9-fab36c7ea907] [INFO] [app.repositories.activity_repository] [POST /api/jobs] Successfully saved 3 activities to locopilot_evidence/run_20251122_112718/activities.json
+2025-11-22 11:27:23,295 [N/A] [N/A] [N/A] [78324a14-933a-493a-89c9-fab36c7ea907] [INFO] [app.services.video_processing_service] [POST /api/jobs] 💾 Saved 3 activities to locopilot_evidence/run_20251122_112718/activities.json
+2025-11-22 11:27:23,295 [N/A] [N/A] [N/A] [78324a14-933a-493a-89c9-fab36c7ea907] [INFO] [app.services.video_processing_service] [POST /api/jobs] 🌐 Attempting to post results to external API...
+2025-11-22 11:27:23,296 [N/A] [N/A] [N/A] [78324a14-933a-493a-89c9-fab36c7ea907] [INFO] [app.services.external_api_service] [POST /api/jobs] 🔌 External API service initialized - Enabled: True, URL: https://api.mindcoinapps.com/ai_demo_api/cvvr/cvvrTripViolations/addUpdateBulk, Timeout: 30s
+2025-11-22 11:27:23,296 [N/A] [N/A] [N/A] [78324a14-933a-493a-89c9-fab36c7ea907] [INFO] [app.services.external_api_service] [POST /api/jobs] 📤 [external_api] Preparing to post results for trip_id=string, events_count=3, job_id=run_20251122_112718, host_url=https://celebxmedia.info
+2025-11-22 11:27:23,296 [N/A] [N/A] [N/A] [78324a14-933a-493a-89c9-fab36c7ea907] [INFO] [app.services.external_api_service] [POST /api/jobs] 🔄 [external_api] Transformed 3 events to violations
+2025-11-22 11:27:23,297 [N/A] [N/A] [N/A] [78324a14-933a-493a-89c9-fab36c7ea907] [INFO] [app.services.external_api_service] [POST /api/jobs] 📦 [external_api] Posting 3 unique violations (from 3 total) to https://api.mindcoinapps.com/ai_demo_api/cvvr/cvvrTripViolations/addUpdateBulk for trip_id=string
+2025-11-22 11:27:24,297 [N/A] [N/A] [N/A] [78324a14-933a-493a-89c9-fab36c7ea907] [INFO] [app.services.external_api_service] [POST /api/jobs] ✅ [external_api] Violations posted successfully: 200 - {"mssg":"Invalid Trip Id","content":[],"status":0}
+2025-11-22 11:27:24,302 [N/A] [N/A] [N/A] [78324a14-933a-493a-89c9-fab36c7ea907] [INFO] [app.services.video_processing_service] [POST /api/jobs] ✅ [external_api] Successfully posted 3 violations to external API for trip string
+2025-11-22 11:27:24,303 [N/A] [N/A] [N/A] [78324a14-933a-493a-89c9-fab36c7ea907] [INFO] [app.services.video_processing_service] [POST /api/jobs] ✅ Video processing completed in 5.84s - Found 3 activities for trip string
+2025-11-22 11:27:24,304 [N/A] [N/A] [N/A] [78324a14-933a-493a-89c9-fab36c7ea907] [INFO] [app.controllers.video_controller] [POST /api/jobs] ✅ Successfully processed video for trip string - Activities: 3, Time: 5.84s
+2025-11-22 11:27:24,307 [N/A] [N/A] [N/A] [78324a14-933a-493a-89c9-fab36c7ea907] [INFO] [app.middleware.logging_middleware] [POST /api/jobs] 📤 Request completed - Status: 200, Duration: 5.8675s
+2025-11-22 11:27:24,309 [N/A] [N/A] [N/A] [78324a14-933a-493a-89c9-fab36c7ea907] [INFO] [app.services.video_processing_service] [POST /api/jobs] 🗑️ Cleaned up uploaded video: /tmp/locopilot_uploads/string_1763791038.mp4
+2025-11-22 11:31:44,214 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Shutting down application...
+2025-11-22 11:31:44,214 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Shutting down application...
+2025-11-22 11:31:44,214 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Shutting down application...
+2025-11-22 11:31:44,229 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Shutting down application...
+2025-11-22 11:31:44,244 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Shutting down application...
+2025-11-22 11:31:44,244 [N/A] [N/A] [N/A] [N/A] [INFO] [app.utils.video_multiprocessing] [N/A N/A] Shutting down shared ProcessPoolExecutor
+2025-11-22 11:31:47,512 [N/A] [N/A] [N/A] [N/A] [INFO] [app.utils.logger] [N/A N/A] Logging initialized - Level: INFO, Environment: development, Log file: logs/LocopilotMonitoring.log
+2025-11-22 11:31:47,550 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] ============================================================
+2025-11-22 11:31:47,550 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Starting Locopilot Monitoring System v1.0.0
+2025-11-22 11:31:47,551 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Environment: Production
+2025-11-22 11:31:47,551 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Output directory: locopilot_evidence
+2025-11-22 11:31:47,551 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Upload directory: /tmp/locopilot_uploads
+2025-11-22 11:31:47,551 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Sample FPS: 0.5
+2025-11-22 11:31:47,551 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] YOLO weights: yolo11s.pt
+2025-11-22 11:31:47,551 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] ============================================================
+2025-11-22 11:31:47,551 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] OCR preloading enabled
+2025-11-22 11:31:47,565 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] ============================================================
+2025-11-22 11:31:47,565 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Starting Locopilot Monitoring System v1.0.0
+2025-11-22 11:31:47,566 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Environment: Production
+2025-11-22 11:31:47,566 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Output directory: locopilot_evidence
+2025-11-22 11:31:47,566 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Upload directory: /tmp/locopilot_uploads
+2025-11-22 11:31:47,566 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Sample FPS: 0.5
+2025-11-22 11:31:47,566 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] YOLO weights: yolo11s.pt
+2025-11-22 11:31:47,566 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] ============================================================
+2025-11-22 11:31:47,566 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] OCR preloading enabled
+2025-11-22 11:31:47,640 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] ============================================================
+2025-11-22 11:31:47,640 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Starting Locopilot Monitoring System v1.0.0
+2025-11-22 11:31:47,640 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Environment: Production
+2025-11-22 11:31:47,641 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Output directory: locopilot_evidence
+2025-11-22 11:31:47,641 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Upload directory: /tmp/locopilot_uploads
+2025-11-22 11:31:47,641 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Sample FPS: 0.5
+2025-11-22 11:31:47,641 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] YOLO weights: yolo11s.pt
+2025-11-22 11:31:47,641 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] ============================================================
+2025-11-22 11:31:47,641 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] OCR preloading enabled
+2025-11-22 11:31:47,725 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] ============================================================
+2025-11-22 11:31:47,726 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Starting Locopilot Monitoring System v1.0.0
+2025-11-22 11:31:47,726 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Environment: Production
+2025-11-22 11:31:47,727 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Output directory: locopilot_evidence
+2025-11-22 11:31:47,727 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Upload directory: /tmp/locopilot_uploads
+2025-11-22 11:31:47,727 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Sample FPS: 0.5
+2025-11-22 11:31:47,727 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] YOLO weights: yolo11s.pt
+2025-11-22 11:31:47,727 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] ============================================================
+2025-11-22 11:31:47,730 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] OCR preloading enabled
+2025-11-22 11:31:47,789 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] ============================================================
+2025-11-22 11:31:47,789 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Starting Locopilot Monitoring System v1.0.0
+2025-11-22 11:31:47,789 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Environment: Production
+2025-11-22 11:31:47,789 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Output directory: locopilot_evidence
+2025-11-22 11:31:47,790 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Upload directory: /tmp/locopilot_uploads
+2025-11-22 11:31:47,790 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Sample FPS: 0.5
+2025-11-22 11:31:47,790 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] YOLO weights: yolo11s.pt
+2025-11-22 11:31:47,790 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] ============================================================
+2025-11-22 11:31:47,790 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] OCR preloading enabled
+2025-11-22 11:31:50,668 [N/A] [N/A] [N/A] [caa80631-bf6d-43c7-8bab-a124839c7b7b] [INFO] [app.middleware.logging_middleware] [POST /api/jobs] 📥 Request received - Method: POST, Path: /api/jobs, Client: 127.0.0.1, User: N/A
+2025-11-22 11:31:50,684 [N/A] [N/A] [N/A] [caa80631-bf6d-43c7-8bab-a124839c7b7b] [INFO] [app.controllers.video_controller] [POST /api/jobs] 📥 Received video processing request for trip: string
+2025-11-22 11:31:50,685 [N/A] [N/A] [N/A] [caa80631-bf6d-43c7-8bab-a124839c7b7b] [INFO] [app.controllers.video_controller] [POST /api/jobs] LP Crew: string (string)
+2025-11-22 11:31:50,685 [N/A] [N/A] [N/A] [caa80631-bf6d-43c7-8bab-a124839c7b7b] [INFO] [app.controllers.video_controller] [POST /api/jobs] ALP Crew: string (string)
+2025-11-22 11:31:50,687 [N/A] [N/A] [N/A] [caa80631-bf6d-43c7-8bab-a124839c7b7b] [INFO] [app.controllers.video_controller] [POST /api/jobs] 📹 Uploaded video: bagpack.mp4 (7.43 MB)
+2025-11-22 11:31:50,688 [N/A] [N/A] [N/A] [caa80631-bf6d-43c7-8bab-a124839c7b7b] [INFO] [app.services.video_processing_service] [POST /api/jobs] Video saved to /tmp/locopilot_uploads/string_1763791310.mp4 (7786268 bytes)
+2025-11-22 11:31:50,688 [N/A] [N/A] [N/A] [caa80631-bf6d-43c7-8bab-a124839c7b7b] [INFO] [app.controllers.video_controller] [POST /api/jobs] 🎮 Processing configuration - Multiprocessing: True, SaveClips: False, Mock: False
+2025-11-22 11:31:50,689 [N/A] [N/A] [N/A] [caa80631-bf6d-43c7-8bab-a124839c7b7b] [INFO] [app.services.video_processing_service] [POST /api/jobs] 🎬 Starting video processing for trip string - Multiprocessing: enabled, Save clips: False, Mock detection: False
+2025-11-22 11:31:50,689 [N/A] [N/A] [N/A] [caa80631-bf6d-43c7-8bab-a124839c7b7b] [INFO] [app.services.video_processing_service] [POST /api/jobs] ✅ Video file validated: /tmp/locopilot_uploads/string_1763791310.mp4
+2025-11-22 11:31:50,689 [N/A] [N/A] [N/A] [caa80631-bf6d-43c7-8bab-a124839c7b7b] [INFO] [app.repositories.activity_repository] [POST /api/jobs] Created run directory: locopilot_evidence/run_20251122_113150
+2025-11-22 11:31:50,690 [N/A] [N/A] [N/A] [caa80631-bf6d-43c7-8bab-a124839c7b7b] [INFO] [app.services.video_processing_service] [POST /api/jobs] 📁 Created run directory: locopilot_evidence/run_20251122_113150
+2025-11-22 11:31:50,690 [N/A] [N/A] [N/A] [caa80631-bf6d-43c7-8bab-a124839c7b7b] [INFO] [app.services.video_processing_service] [POST /api/jobs] 🔍 Using real activity detection - Multiprocessing: enabled
+2025-11-22 11:31:50,690 [N/A] [N/A] [N/A] [caa80631-bf6d-43c7-8bab-a124839c7b7b] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Initializing process pool with 8 workers (method=spawn, shared=True)
+2025-11-22 11:31:50,694 [N/A] [N/A] [N/A] [caa80631-bf6d-43c7-8bab-a124839c7b7b] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Created shared ProcessPoolExecutor(max_workers=8, start_method=spawn)
+2025-11-22 11:31:50,694 [N/A] [N/A] [N/A] [caa80631-bf6d-43c7-8bab-a124839c7b7b] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Process pool initialized successfully
+2025-11-22 11:31:50,695 [N/A] [N/A] [N/A] [caa80631-bf6d-43c7-8bab-a124839c7b7b] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Calculating frame ranges for parallel processing
+2025-11-22 11:31:50,730 [N/A] [N/A] [N/A] [caa80631-bf6d-43c7-8bab-a124839c7b7b] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Video split into 13 chunks (~6.0s each, 0.5 FPS sampling)
+2025-11-22 11:31:50,730 [N/A] [N/A] [N/A] [caa80631-bf6d-43c7-8bab-a124839c7b7b] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Submitting 13 tasks to process pool (expected 39 sampled frames, save_clips=False)
+2025-11-22 11:31:54,604 [N/A] [N/A] [N/A] [caa80631-bf6d-43c7-8bab-a124839c7b7b] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 2 completed: 0 activities, 7.7% done
+2025-11-22 11:31:54,666 [N/A] [N/A] [N/A] [caa80631-bf6d-43c7-8bab-a124839c7b7b] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 4 completed: 0 activities, 15.4% done
+2025-11-22 11:31:54,686 [N/A] [N/A] [N/A] [caa80631-bf6d-43c7-8bab-a124839c7b7b] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 1 completed: 0 activities, 23.1% done
+2025-11-22 11:31:54,691 [N/A] [N/A] [N/A] [caa80631-bf6d-43c7-8bab-a124839c7b7b] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 6 completed: 0 activities, 30.8% done
+2025-11-22 11:31:54,727 [N/A] [N/A] [N/A] [caa80631-bf6d-43c7-8bab-a124839c7b7b] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 7 completed: 0 activities, 38.5% done
+2025-11-22 11:31:54,819 [N/A] [N/A] [N/A] [caa80631-bf6d-43c7-8bab-a124839c7b7b] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 3 completed: 1 activities, 46.2% done
+2025-11-22 11:31:54,872 [N/A] [N/A] [N/A] [caa80631-bf6d-43c7-8bab-a124839c7b7b] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 0 completed: 0 activities, 53.8% done
+2025-11-22 11:31:55,045 [N/A] [N/A] [N/A] [caa80631-bf6d-43c7-8bab-a124839c7b7b] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 5 completed: 2 activities, 61.5% done
+2025-11-22 11:31:55,900 [N/A] [N/A] [N/A] [caa80631-bf6d-43c7-8bab-a124839c7b7b] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 8 completed: 0 activities, 69.2% done
+2025-11-22 11:31:55,963 [N/A] [N/A] [N/A] [caa80631-bf6d-43c7-8bab-a124839c7b7b] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 9 completed: 0 activities, 76.9% done
+2025-11-22 11:31:55,970 [N/A] [N/A] [N/A] [caa80631-bf6d-43c7-8bab-a124839c7b7b] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 11 completed: 0 activities, 84.6% done
+2025-11-22 11:31:55,997 [N/A] [N/A] [N/A] [caa80631-bf6d-43c7-8bab-a124839c7b7b] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 12 completed: 0 activities, 92.3% done
+2025-11-22 11:31:56,000 [N/A] [N/A] [N/A] [caa80631-bf6d-43c7-8bab-a124839c7b7b] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Range 10 completed: 0 activities, 100.0% done
+2025-11-22 11:31:56,000 [N/A] [N/A] [N/A] [caa80631-bf6d-43c7-8bab-a124839c7b7b] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Parallel processing completed in 5.31s: 3 activities detected, 13 ranges completed, 0 ranges failed
+2025-11-22 11:31:56,000 [N/A] [N/A] [N/A] [caa80631-bf6d-43c7-8bab-a124839c7b7b] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Saved 3 activities to locopilot_evidence/run_20251122_113150/activities.json
+2025-11-22 11:31:56,000 [N/A] [N/A] [N/A] [caa80631-bf6d-43c7-8bab-a124839c7b7b] [INFO] [app.utils.video_multiprocessing] [POST /api/jobs] Note: Clip generation was disabled (save_clips=False)
+2025-11-22 11:31:56,001 [N/A] [N/A] [N/A] [caa80631-bf6d-43c7-8bab-a124839c7b7b] [INFO] [app.services.activity_detection_service] [POST /api/jobs] Multi-process detection found 3 activities (clips not generated)
+2025-11-22 11:31:56,001 [N/A] [N/A] [N/A] [caa80631-bf6d-43c7-8bab-a124839c7b7b] [INFO] [app.repositories.activity_repository] [POST /api/jobs] Successfully saved 3 activities to locopilot_evidence/run_20251122_113150/activities.json
+2025-11-22 11:31:56,001 [N/A] [N/A] [N/A] [caa80631-bf6d-43c7-8bab-a124839c7b7b] [INFO] [app.services.video_processing_service] [POST /api/jobs] 💾 Saved 3 activities to locopilot_evidence/run_20251122_113150/activities.json
+2025-11-22 11:31:56,001 [N/A] [N/A] [N/A] [caa80631-bf6d-43c7-8bab-a124839c7b7b] [INFO] [app.services.video_processing_service] [POST /api/jobs] 🌐 Attempting to post results to external API...
+2025-11-22 11:31:56,002 [N/A] [N/A] [N/A] [caa80631-bf6d-43c7-8bab-a124839c7b7b] [INFO] [app.services.external_api_service] [POST /api/jobs] 🔌 External API service initialized - Enabled: True, URL: https://api.mindcoinapps.com/ai_demo_api/cvvr/cvvrTripViolations/addUpdateBulk, Timeout: 30s
+2025-11-22 11:31:56,002 [N/A] [N/A] [N/A] [caa80631-bf6d-43c7-8bab-a124839c7b7b] [INFO] [app.services.external_api_service] [POST /api/jobs] 📤 [external_api] Preparing to post results for trip_id=string, events_count=3, job_id=run_20251122_113150, host_url=https://celebxmedia.info
+2025-11-22 11:31:56,002 [N/A] [N/A] [N/A] [caa80631-bf6d-43c7-8bab-a124839c7b7b] [INFO] [app.services.external_api_service] [POST /api/jobs] 🔄 [external_api] Transformed 3 events to violations
+2025-11-22 11:31:56,003 [N/A] [N/A] [N/A] [caa80631-bf6d-43c7-8bab-a124839c7b7b] [INFO] [app.services.external_api_service] [POST /api/jobs] 📦 [external_api] Posting 3 unique violations (from 3 total) to https://api.mindcoinapps.com/ai_demo_api/cvvr/cvvrTripViolations/addUpdateBulk for trip_id=string
+2025-11-22 11:31:56,615 [N/A] [N/A] [N/A] [caa80631-bf6d-43c7-8bab-a124839c7b7b] [INFO] [app.services.external_api_service] [POST /api/jobs] ✅ [external_api] Violations posted successfully: 200 - {"mssg":"Invalid Trip Id","content":[],"status":0}
+2025-11-22 11:31:56,616 [N/A] [N/A] [N/A] [caa80631-bf6d-43c7-8bab-a124839c7b7b] [INFO] [app.services.video_processing_service] [POST /api/jobs] ✅ [external_api] Successfully posted 3 violations to external API for trip string
+2025-11-22 11:31:56,616 [N/A] [N/A] [N/A] [caa80631-bf6d-43c7-8bab-a124839c7b7b] [INFO] [app.services.video_processing_service] [POST /api/jobs] ✅ Video processing completed in 5.93s - Found 3 activities for trip string
+2025-11-22 11:31:56,617 [N/A] [N/A] [N/A] [caa80631-bf6d-43c7-8bab-a124839c7b7b] [INFO] [app.controllers.video_controller] [POST /api/jobs] ✅ Successfully processed video for trip string - Activities: 3, Time: 5.93s
+2025-11-22 11:31:56,618 [N/A] [N/A] [N/A] [caa80631-bf6d-43c7-8bab-a124839c7b7b] [INFO] [app.middleware.logging_middleware] [POST /api/jobs] 📤 Request completed - Status: 200, Duration: 5.9514s
+2025-11-22 11:31:56,620 [N/A] [N/A] [N/A] [caa80631-bf6d-43c7-8bab-a124839c7b7b] [INFO] [app.services.video_processing_service] [POST /api/jobs] 🗑️ Cleaned up uploaded video: /tmp/locopilot_uploads/string_1763791310.mp4

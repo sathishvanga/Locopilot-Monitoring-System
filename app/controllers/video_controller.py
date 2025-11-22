@@ -43,7 +43,7 @@ video_processing_service = VideoProcessingService()
     - alpCrewId: ALP crew member ID (optional)
     - useMockDetection: Use mock detection for testing (optional, default: false)
     - useMultiprocessing: Enable parallel processing (optional, default: from config)
-    - saveClips: Generate video clips and images (optional, default: true)
+    - saveClips: Save annotated frames for debugging (optional, default: false). Clips and images are always saved for UI evidence.
     
     Returns:
     - Processing results with detected activities
@@ -61,7 +61,7 @@ async def process_video(
     alpCrewId: Optional[str] = Form(default=None, description="Assistant Loco Pilot crew member ID"),
     useMockDetection: Optional[bool] = Form(default=False, description="Use mock detection for testing"),
     useMultiprocessing: Optional[bool] = Form(default=None, description="Enable multiprocessing (default: from config)"),
-    saveClips: Optional[bool] = Form(default=False, description="Generate video clips and images (default: false for production)")
+    saveClips: Optional[bool] = Form(default=False, description="Save annotated frames for debugging (default: false). Clips/images always saved.")
 ):
     """
     Process uploaded video and detect activities

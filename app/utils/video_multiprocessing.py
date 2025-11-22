@@ -315,32 +315,26 @@ def process_frame_range(
                    f"[save_clips={save_clips}]")
         
         # Determine whether annotated frames should be persisted
-        # Frames are saved when clips are enabled AND save_annotated_frames config is True
+        # Clips and images are ALWAYS saved (for UI evidence)
+        # Frames are only saved when save_clips=True AND save_annotated_frames config is True
         save_frames = save_clips and settings.save_annotated_frames
 
-        # Create a monitor instance with or without run directory
-        if run_dir and save_clips:
+        # Always create monitor with run directory to save clips/images
+        # Clips and images are essential for UI, so we always create the directory
+        if run_dir:
             # Use provided run directory for saving clips and frames
             monitor = LocopilotActivityMonitor(
                 video_path=video_path,
                 output_dir=output_dir,
-                save_annotated_frames=save_frames,  # Enable frame saving if configured
+                save_annotated_frames=save_frames,  # Only save frames when explicitly requested
                 frame_save_interval=settings.frame_save_interval,
                 sample_fps=sample_fps,
                 run_dir=run_dir,  # Use shared run directory
                 create_run_dir=False  # Don't create new directory
             )
         else:
-            # No run directory - activities in memory only
-            monitor = LocopilotActivityMonitor(
-                video_path=video_path,
-                output_dir=output_dir,
-                save_annotated_frames=False,  # Disable frame saving
-                frame_save_interval=settings.frame_save_interval,
-                sample_fps=sample_fps,
-                run_dir=None,
-                create_run_dir=False
-            )
+            # No run directory provided - should not happen in normal operation
+            raise ValueError("run_dir must be provided to save evidence clips and images")
         
         # Set trip and crew information
         monitor.trip_id = trip_id

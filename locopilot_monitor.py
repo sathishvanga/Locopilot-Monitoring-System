@@ -2567,8 +2567,9 @@ class LocopilotActivityMonitor:
                 clip_path = clip_filename
                 image_path = image_filename
             
-            # Only save clips/images if save_clips is True and directories exist
-            if save_clips and self.evidence_clips_dir:
+            # Always save clips/images (for UI evidence), regardless of save_clips flag
+            # The save_clips flag now only controls whether frames are saved
+            if self.evidence_clips_dir:
                 # Save video clip at sample FPS for full-duration playback
                 # This creates clips with real-time duration instead of fast-motion
                 # Example: 13 frames @ 0.5 FPS = 26 seconds (not 0.43 seconds @ 30 FPS)
