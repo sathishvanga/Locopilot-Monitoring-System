@@ -15,8 +15,9 @@ class MultiprocessingConfig:
     """Configuration for multiprocessing video pipeline"""
     
     # Process pool settings
+    # ✅ MEMORY FIX: Reduced max_workers_cap from 8 to 2 for memory safety
     max_workers: Optional[int] = None  # None = auto-detect (min(CPU count, max_workers_cap))
-    max_workers_cap: int = 8  # Maximum number of worker processes
+    max_workers_cap: int = 2  # Maximum number of worker processes (reduced from 8)
     start_method: str = "spawn"  # Use 'spawn' for cross-platform stability
     
     # Work partitioning settings

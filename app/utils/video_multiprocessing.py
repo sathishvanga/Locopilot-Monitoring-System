@@ -17,6 +17,7 @@ from pathlib import Path
 from concurrent.futures import ProcessPoolExecutor, Future, as_completed
 from dataclasses import dataclass, asdict
 import multiprocessing as mp
+import gc
 
 from .multiprocessing_config import MultiprocessingConfig
 from .logger import get_logger
@@ -356,6 +357,15 @@ def process_frame_range(
         logger.info(f"Worker {worker_id} completed range {frame_range.range_id}: "
                    f"{len(activities)} activities detected")
         
+        # ✅ MEMORY FIX: Explicit cleanup of monitor resources
+        monitor.frame_buffer.clear()
+        for activity_name in monitor.activities:
+            if 'frames' in monitor.activities[activity_name]:
+                monitor.activities[activity_name]['frames'].clear()
+        
+        # ✅ MEMORY FIX: Force garbage collection
+        gc.collect()
+        
         return {
             'success': True,
             'range_id': frame_range.range_id,
@@ -374,6 +384,20 @@ def process_frame_range(
             'processed_frames': 0,
             'error': str(e)
         }
+    finally:
+        # ✅ MEMORY FIX: Always cleanup monitor resources in finally block
+        if 'monitor' in locals():
+            try:
+                monitor.frame_buffer.clear()
+                for activity_name in monitor.activities:
+                    if 'frames' in monitor.activities[activity_name]:
+                        monitor.activities[activity_name]['frames'].clear()
+                del monitor
+            except Exception as cleanup_error:
+                logger.warning(f"Error during cleanup: {cleanup_error}")
+        
+        # ✅ MEMORY FIX: Force garbage collection
+        gc.collect()
 
 
 class VideoMultiprocessingOrchestrator:
@@ -653,6 +677,9 @@ class VideoMultiprocessingOrchestrator:
             logger.info(f"Generated {clip_count} video clips and images in {clips_dir}")
         else:
             logger.info("Note: Clip generation was disabled (save_clips=False)")
+        
+        # ✅ MEMORY FIX: Force garbage collection after processing
+        gc.collect()
         
         return all_activities
 

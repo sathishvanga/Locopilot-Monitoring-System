@@ -9,10 +9,12 @@ import os
 
 
 # Worker configuration
-workers = max(1, multiprocessing.cpu_count() // 2)
+# ✅ MEMORY FIX: Reduced from cpu_count//2 to max 2 workers to prevent memory explosion
+workers = max(1, min(2, multiprocessing.cpu_count() // 4))
 threads = 1
 worker_class = "uvicorn.workers.UvicornWorker"
 print(f" [gunicorn_config.py] CPU count: {multiprocessing.cpu_count()}")
+print(f" [gunicorn_config.py] Workers: {workers} (limited to 2 max for memory management)")
 # Application preloading
 preload_app = True
 
@@ -22,8 +24,9 @@ graceful_timeout = 30
 keepalive = 5
 
 # Request limits
-max_requests = 2000
-max_requests_jitter = 200
+# ✅ MEMORY FIX: Reduced from 2000 to 100 to force worker restarts and prevent memory accumulation
+max_requests = 100
+max_requests_jitter = 10
 
 # Binding
 bind = "0.0.0.0:8000"

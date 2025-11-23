@@ -6,6 +6,7 @@ For now, it provides a placeholder/mock implementation.
 """
 
 import random
+import gc
 from typing import List, Dict, Any
 from datetime import datetime, timedelta
 
@@ -277,6 +278,15 @@ class ActivityDetectionService:
         # Process video
         monitor.process_video()
         
+        # ✅ MEMORY FIX: Clear frame buffers after processing
+        monitor.frame_buffer.clear()
+        for activity_name in monitor.activities:
+            if 'frames' in monitor.activities[activity_name]:
+                monitor.activities[activity_name]['frames'].clear()
+        
+        # ✅ MEMORY FIX: Force garbage collection
+        gc.collect()
+        
         # Return detected activities
         logger.info(f"Single-process detection found {len(monitor.all_activities)} activities")
         return monitor.all_activities
@@ -349,6 +359,9 @@ class ActivityDetectionService:
                 save_clips=save_clips
             )
             
+            # ✅ MEMORY FIX: Force garbage collection after processing
+            gc.collect()
+            
             logger.info(f"Multi-process detection found {len(activities)} activities "
                        f"(clips {'generated' if save_clips else 'not generated'})")
             return activities
@@ -356,4 +369,7 @@ class ActivityDetectionService:
         finally:
             # Cleanup: shutdown pool
             orchestrator.shutdown_pool(wait=True)
+            
+            # ✅ MEMORY FIX: Force garbage collection after shutdown
+            gc.collect()
 

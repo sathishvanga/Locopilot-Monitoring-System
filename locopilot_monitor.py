@@ -6,6 +6,53 @@ from collections import deque
 import mediapipe as mp
 from ultralytics import YOLO
 import os
+import logging
+import gc
+import contextlib
+
+# Configure logger for hand gesture detection with file handler
+# This ensures logs work in both main process and multiprocessing workers
+gesture_logger = logging.getLogger('HandGestureDetection')
+if not gesture_logger.handlers:
+    # Create logs directory if it doesn't exist
+    log_dir = 'logs'
+    os.makedirs(log_dir, exist_ok=True)
+    
+    # File handler - writes to the same log file as main application
+    file_handler = logging.FileHandler(os.path.join(log_dir, 'LocopilotMonitoring.log'))
+    file_handler.setLevel(logging.INFO)
+    
+    # Console handler - for terminal output
+    console_handler = logging.StreamHandler()
+    console_handler.setLevel(logging.INFO)
+    
+    # Formatter
+    formatter = logging.Formatter(
+        '%(asctime)s,%(msecs)03d [N/A] [N/A] [N/A] [N/A] [INFO] [%(name)s] [N/A N/A] %(message)s',
+        datefmt='%Y-%m-%d %H:%M:%S'
+    )
+    file_handler.setFormatter(formatter)
+    console_handler.setFormatter(formatter)
+    
+    # Add handlers
+    gesture_logger.addHandler(file_handler)
+    gesture_logger.addHandler(console_handler)
+    gesture_logger.setLevel(logging.INFO)
+
+
+@contextlib.contextmanager
+def video_capture_context(video_path):
+    """
+    Context manager to ensure VideoCapture is always released.
+    This prevents memory leaks from unclosed video captures.
+    """
+    cap = cv2.VideoCapture(video_path)
+    try:
+        yield cap
+    finally:
+        if cap.isOpened():
+            cap.release()
+
 
 class LocopilotActivityMonitor:
     def __init__(self, video_path, output_dir="evidence", save_annotated_frames=False, frame_save_interval=1, sample_fps=1.0, run_dir=None, create_run_dir=True):
@@ -83,6 +130,11 @@ class LocopilotActivityMonitor:
             'mind_diversion': {'active': False, 'start_time': None, 'frames': [], 'duration': 0}
         }
         
+        # TEMPORAL SUPPRESSION: Track recent activities per person for gesture suppression
+        # Format: {person_idx: {'writing': last_timestamp, 'packing': last_timestamp, 'cell_phone': last_timestamp}}
+        self.recent_person_activities = {}
+        self.temporal_suppression_window = 10.0  # Suppress hand gestures for 10 seconds after detecting work activity
+        
         # Activity thresholds: minimum duration and required consecutive frames before recording starts
         # OPTIMIZED FOR 0.5 FPS SAMPLING (1 frame every 2 seconds)
         self.activity_thresholds = {
@@ -94,8 +146,8 @@ class LocopilotActivityMonitor:
             },
             'writing': {
                 'min_duration': 0.0,          # NO minimum duration - any detection creates activity
-                'required_consecutive': 1,    # 1 sample @ 0.5fps = instant detection (2 seconds) - REDUCED from 3
-                'margin': 100,                # Very lenient proximity (increased from 60) for overhead angles
+                'required_consecutive': 2,    # 2 samples @ 0.5fps = 4 seconds - INCREASED to reduce false positives
+                'margin': 70,                 # Reduced from 100 to 70 for stricter hand-to-book proximity detection
                 'grace_frames': 8             # Allow 8 samples (~16s) gap to group nearby detections
             },
             'cell_phone': {
@@ -118,7 +170,7 @@ class LocopilotActivityMonitor:
             },
             'group_detected': {
                 'min_duration': 0.0,          # NO minimum duration - any detection creates activity
-                'required_consecutive': 2,    # 2 samples @ 0.5fps = 4 seconds (reduced from 3)
+                'required_consecutive': 3,    # 3 samples @ 0.5fps = 6 seconds - INCREASED for temporal consistency
                 'margin': None,               # N/A for person count detection
                 'grace_frames': 8             # Allow 8 samples (~16s) gap
             },
@@ -253,42 +305,41 @@ class LocopilotActivityMonitor:
             frame_bgr: BGR frame from OpenCV
             frame_idx: Original frame index in the video
         """
-        cap = cv2.VideoCapture(video_path)
-        if not cap.isOpened():
-            raise RuntimeError(f"Failed to open video: {video_path}")
-        
-        native_fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
-        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
-        
-        # Determine frame range
-        start_frame = start_frame if start_frame is not None else 0
-        end_frame = end_frame if end_frame is not None else total_frames
-        
-        # Calculate stride: how many frames to skip between samples
-        step = max(1, int(round(native_fps / max(1e-6, float(self.sample_fps)))))
-        
-        print(f"[Frame Sampling] Native FPS: {native_fps:.2f}, Sample FPS: {self.sample_fps}")
-        print(f"[Frame Sampling] Step: {step} (sampling 1 frame every {step} frames)")
-        print(f"[Frame Sampling] Frame range: {start_frame} - {end_frame}")
-        print(f"[Frame Sampling] Expected sampled frames: ~{((end_frame - start_frame) // step)}")
-        
-        sampled_idx = 0
-        # Start from the beginning of the range, aligned to step
-        first_sample_frame = start_frame + (step - (start_frame % step)) % step
-        
-        for frame_idx in range(first_sample_frame, end_frame, step):
-            cap.set(cv2.CAP_PROP_POS_FRAMES, int(frame_idx))
-            ret, frame = cap.read()
+        with video_capture_context(video_path) as cap:
+            if not cap.isOpened():
+                raise RuntimeError(f"Failed to open video: {video_path}")
             
-            if not ret:
-                break
+            native_fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
+            total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
             
-            timestamp = frame_idx / native_fps
-            yield sampled_idx, timestamp, frame, frame_idx
-            sampled_idx += 1
-        
-        cap.release()
-        print(f"[Frame Sampling] Completed sampling, total samples: {sampled_idx}")
+            # Determine frame range
+            start_frame = start_frame if start_frame is not None else 0
+            end_frame = end_frame if end_frame is not None else total_frames
+            
+            # Calculate stride: how many frames to skip between samples
+            step = max(1, int(round(native_fps / max(1e-6, float(self.sample_fps)))))
+            
+            print(f"[Frame Sampling] Native FPS: {native_fps:.2f}, Sample FPS: {self.sample_fps}")
+            print(f"[Frame Sampling] Step: {step} (sampling 1 frame every {step} frames)")
+            print(f"[Frame Sampling] Frame range: {start_frame} - {end_frame}")
+            print(f"[Frame Sampling] Expected sampled frames: ~{((end_frame - start_frame) // step)}")
+            
+            sampled_idx = 0
+            # Start from the beginning of the range, aligned to step
+            first_sample_frame = start_frame + (step - (start_frame % step)) % step
+            
+            for frame_idx in range(first_sample_frame, end_frame, step):
+                cap.set(cv2.CAP_PROP_POS_FRAMES, int(frame_idx))
+                ret, frame = cap.read()
+                
+                if not ret:
+                    break
+                
+                timestamp = frame_idx / native_fps
+                yield sampled_idx, timestamp, frame, frame_idx
+                sampled_idx += 1
+            
+            print(f"[Frame Sampling] Completed sampling, total samples: {sampled_idx}")
         
     def calculate_eye_aspect_ratio(self, landmarks):
         """Calculate Eye Aspect Ratio (EAR) for drowsiness detection"""
@@ -610,9 +661,9 @@ class LocopilotActivityMonitor:
                     person_boxes.append(xyxy)
                 elif class_name == 'backpack' and conf > 0.5:
                     detections['backpack'].append(xyxy)
-                # OPTION 3: Re-enable book detection in full frame with low confidence
+                # OPTION 3: Re-enable book detection in full frame with moderate confidence
                 # But only if book is within reasonable distance of a person
-                elif class_name == 'book' and conf > 0.2:  # Low threshold for books
+                elif class_name == 'book' and conf > 0.35:  # Increased from 0.2 to 0.35 to reduce false positives
                     # Check if book is near any detected person
                     if len(person_boxes) > 0:
                         book_near_person = False
@@ -622,7 +673,7 @@ class LocopilotActivityMonitor:
                         for person_box in person_boxes:
                             # Check if book center is within expanded person bounding box
                             person_x1, person_y1, person_x2, person_y2 = person_box
-                            margin = 200  # 200px margin around person box
+                            margin = 150  # Reduced from 200px to 150px for stricter book-to-person association
                             if (person_x1 - margin <= book_center_x <= person_x2 + margin and
                                 person_y1 - margin <= book_center_y <= person_y2 + margin):
                                 book_near_person = True
@@ -1021,20 +1072,77 @@ class LocopilotActivityMonitor:
         """
         annotated_frame = frame.copy()
         
+        # Custom drawing specs for more visible landmarks
+        landmark_drawing_spec = mp.solutions.drawing_utils.DrawingSpec(
+            color=(0, 255, 0),      # Green color for landmarks
+            thickness=3,             # Thicker circles (increased from default 2)
+            circle_radius=5          # Larger circles (increased from default 2)
+        )
+        
+        connection_drawing_spec = mp.solutions.drawing_utils.DrawingSpec(
+            color=(0, 255, 255),     # Cyan color for connections
+            thickness=3              # Thicker connections (increased from default 2)
+        )
+        
+        # Key landmarks to label
+        key_landmarks_to_label = {
+            self.mp_pose.PoseLandmark.NOSE: "Nose",
+            self.mp_pose.PoseLandmark.LEFT_SHOULDER: "L Shoulder",
+            self.mp_pose.PoseLandmark.RIGHT_SHOULDER: "R Shoulder",
+            self.mp_pose.PoseLandmark.LEFT_ELBOW: "L Elbow",
+            self.mp_pose.PoseLandmark.RIGHT_ELBOW: "R Elbow",
+            self.mp_pose.PoseLandmark.LEFT_WRIST: "L Wrist",
+            self.mp_pose.PoseLandmark.RIGHT_WRIST: "R Wrist",
+            self.mp_pose.PoseLandmark.LEFT_HIP: "L Hip",
+            self.mp_pose.PoseLandmark.RIGHT_HIP: "R Hip",
+            self.mp_pose.PoseLandmark.LEFT_KNEE: "L Knee",
+            self.mp_pose.PoseLandmark.RIGHT_KNEE: "R Knee",
+            self.mp_pose.PoseLandmark.LEFT_ANKLE: "L Ankle",
+            self.mp_pose.PoseLandmark.RIGHT_ANKLE: "R Ankle",
+        }
+        
         # Draw pose landmarks for ALL persons
         for person_idx, person_data in persons_data.items():
             pose_landmarks = person_data.get('pose_landmarks')
             if pose_landmarks:
-                # Draw pose connections
+                # Draw pose connections with custom specs
                 self.mp_drawing.draw_landmarks(
                     annotated_frame,
                     pose_landmarks,
                     self.mp_pose.POSE_CONNECTIONS,
-                    landmark_drawing_spec=self.mp_drawing_styles.get_default_pose_landmarks_style()
+                    landmark_drawing_spec=landmark_drawing_spec,
+                    connection_drawing_spec=connection_drawing_spec
                 )
                 
-                # Add person label near their head
+                # Draw labels for key landmarks
                 h, w = annotated_frame.shape[:2]
+                for landmark_id, landmark_name in key_landmarks_to_label.items():
+                    try:
+                        landmark = pose_landmarks.landmark[landmark_id]
+                        
+                        # Only draw if landmark is visible enough
+                        if landmark.visibility > 0.5:
+                            x = int(landmark.x * w)
+                            y = int(landmark.y * h)
+                            
+                            # Draw small label with background
+                            label_size, _ = cv2.getTextSize(landmark_name, cv2.FONT_HERSHEY_SIMPLEX, 0.4, 1)
+                            label_w, label_h = label_size
+                            
+                            # Background rectangle for better visibility
+                            cv2.rectangle(annotated_frame, 
+                                        (x - 2, y - label_h - 4), 
+                                        (x + label_w + 2, y + 2), 
+                                        (0, 0, 0), -1)
+                            
+                            # Label text in white
+                            cv2.putText(annotated_frame, landmark_name, 
+                                       (x, y), 
+                                       cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 255), 1, cv2.LINE_AA)
+                    except:
+                        pass
+                
+                # Add person label near their head
                 try:
                     nose = pose_landmarks.landmark[self.mp_pose.PoseLandmark.NOSE]
                     nose_x = int(nose.x * w)
@@ -1310,7 +1418,9 @@ class LocopilotActivityMonitor:
         
         return translated
     
-    def detect_hand_gesture(self, pose_landmarks, frame_shape, person_roles, yolo_person_boxes=None):
+    def detect_hand_gesture(self, pose_landmarks, frame_shape, person_roles, yolo_person_boxes=None, 
+                           person_activities=None, backpack_detections=None, 
+                           person_idx=None, current_timestamp=None, frame_number=None):
         """Detect hand gesture (raised hand) for LP/ALP hand exchange signal.
         
         CRITICAL: This function ensures pose landmarks belong to the SAME person
@@ -1322,6 +1432,9 @@ class LocopilotActivityMonitor:
         - Filters out hands reaching toward/operating control panels
         - Only detects deliberate hand-raising gestures (signaling)
         - Uses control panel proximity, forward reach detection, and arm geometry
+        - Context-aware filtering: suppresses gestures during packing bags activity
+        - Object proximity detection: checks if hand is near backpack/bag
+        - Temporal suppression: maintains recent activity history per person
         
         Args:
             pose_landmarks: MediaPipe pose landmarks (tracks 1 person)
@@ -1329,6 +1442,11 @@ class LocopilotActivityMonitor:
             person_roles: Dictionary of person roles from identify_person_roles()
                          Format: {person_idx: {'bbox': [x1, y1, x2, y2], 'role': 'LP'/'ALP', ...}}
             yolo_person_boxes: List of YOLO person bounding boxes (for validation)
+            person_activities: Dictionary of current person activities (for context-aware filtering)
+            backpack_detections: List of backpack bounding boxes (for object proximity detection)
+            person_idx: Person index for temporal history tracking
+            current_timestamp: Current timestamp in seconds for temporal suppression
+            frame_number: Frame number for logging/debugging
             
         Returns:
             tuple: (lp_gesture_detected, alp_gesture_detected, debug_info)
@@ -1454,6 +1572,113 @@ class LocopilotActivityMonitor:
                                   expanded_y1 <= left_wrist_coords[1] <= expanded_y2)
         
         # ==================================================================================
+        # TEMPORAL SUPPRESSION (FALSE POSITIVE PREVENTION #0 - HIGHEST PRIORITY)
+        # ==================================================================================
+        # Check if this person was recently engaged in work activities (writing, packing, phone)
+        # Suppress hand gestures for N seconds after last work activity detection
+        # This handles cases where work activity isn't detected in current frame but was recent
+        # ==================================================================================
+        if person_idx is not None and current_timestamp is not None:
+            if matched_person_idx in self.recent_person_activities:
+                recent_acts = self.recent_person_activities[matched_person_idx]
+                
+                # Check each work activity type
+                for activity_type in ['writing', 'packing', 'cell_phone']:
+                    if activity_type in recent_acts:
+                        time_since_activity = current_timestamp - recent_acts[activity_type]
+                        
+                        if time_since_activity < self.temporal_suppression_window:
+                            frame_info = f"[Frame {frame_number}] " if frame_number is not None else ""
+                            gesture_logger.info(f"{frame_info}TEMPORAL SUPPRESSION - Person {matched_person_idx} ({matched_role}) - {activity_type} detected {time_since_activity:.1f}s ago")
+                            return False, False, {
+                                'suppressed': True,
+                                'reason': f'Recent {activity_type} activity ({time_since_activity:.1f}s ago)',
+                                'matched_person_idx': matched_person_idx,
+                                'matched_role': matched_role,
+                                'time_since_activity': time_since_activity
+                            }
+        
+        # ==================================================================================
+        # CONTEXT-AWARE FILTERING (FALSE POSITIVE PREVENTION #1)
+        # ==================================================================================
+        # SUPPRESS hand gesture detection if person is engaged in activities where
+        # hands are naturally raised (packing bags, writing, using phone, etc.)
+        # This prevents false positives when someone raises their hand while working
+        # ==================================================================================
+        if person_activities:
+            # Check if this person is doing packing bags activity
+            if person_activities.get('packing', False):
+                frame_info = f"[Frame {frame_number}] " if frame_number is not None else ""
+                gesture_logger.info(f"{frame_info}GESTURE SUPPRESSED - Person {matched_person_idx} ({matched_role}) - packing bags activity detected")
+                return False, False, {
+                    'suppressed': True,
+                    'reason': 'Person engaged in packing bags activity',
+                    'matched_person_idx': matched_person_idx,
+                    'matched_role': matched_role
+                }
+            
+            # Also suppress for writing (may raise hand while writing in logbook)
+            if person_activities.get('writing', False):
+                frame_info = f"[Frame {frame_number}] " if frame_number is not None else ""
+                gesture_logger.info(f"{frame_info}GESTURE SUPPRESSED - Person {matched_person_idx} ({matched_role}) - writing activity detected")
+                return False, False, {
+                    'suppressed': True,
+                    'reason': 'Person engaged in writing activity',
+                    'matched_person_idx': matched_person_idx,
+                    'matched_role': matched_role
+                }
+            
+            # Suppress for cell phone use (hand raised to ear or viewing phone)
+            if person_activities.get('cell_phone', False):
+                frame_info = f"[Frame {frame_number}] " if frame_number is not None else ""
+                gesture_logger.info(f"{frame_info}GESTURE SUPPRESSED - Person {matched_person_idx} ({matched_role}) - cell phone use detected")
+                return False, False, {
+                    'suppressed': True,
+                    'reason': 'Person using cell phone',
+                    'matched_person_idx': matched_person_idx,
+                    'matched_role': matched_role
+                }
+        
+        # ==================================================================================
+        # OBJECT PROXIMITY DETECTION (FALSE POSITIVE PREVENTION #2)
+        # ==================================================================================
+        # Check if hands are near backpack/bag objects
+        # If hand is near a backpack, it's likely packing activity, NOT a signal gesture
+        # ==================================================================================
+        if backpack_detections and len(backpack_detections) > 0:
+            # Check proximity threshold (pixels) - INCREASED for better detection
+            proximity_threshold = 250  # Hand within 250px of backpack center (increased from 150px)
+            
+            frame_info = f"[Frame {frame_number}] " if frame_number is not None else ""
+            gesture_logger.debug(f"{frame_info}GESTURE DEBUG - Checking {len(backpack_detections)} backpack(s) for person {matched_person_idx} ({matched_role})")
+            
+            for backpack_bbox in backpack_detections:
+                bx1, by1, bx2, by2 = backpack_bbox[:4]
+                backpack_center_x = (bx1 + bx2) / 2
+                backpack_center_y = (by1 + by2) / 2
+                
+                # Check if either wrist is near the backpack
+                right_dist = ((right_wrist_coords[0] - backpack_center_x) ** 2 + 
+                             (right_wrist_coords[1] - backpack_center_y) ** 2) ** 0.5
+                left_dist = ((left_wrist_coords[0] - backpack_center_x) ** 2 + 
+                            (left_wrist_coords[1] - backpack_center_y) ** 2) ** 0.5
+                
+                gesture_logger.debug(f"{frame_info}GESTURE DEBUG - Backpack at ({backpack_center_x:.0f}, {backpack_center_y:.0f})")
+                gesture_logger.debug(f"{frame_info}GESTURE DEBUG - Right wrist at {right_wrist_coords}, dist: {right_dist:.0f}px")
+                gesture_logger.debug(f"{frame_info}GESTURE DEBUG - Left wrist at {left_wrist_coords}, dist: {left_dist:.0f}px")
+                
+                if right_dist < proximity_threshold or left_dist < proximity_threshold:
+                    gesture_logger.info(f"{frame_info}GESTURE SUPPRESSED - Person {matched_person_idx} ({matched_role}) - hand near backpack (right: {right_dist:.0f}px, left: {left_dist:.0f}px)")
+                    return False, False, {
+                        'suppressed': True,
+                        'reason': 'Hand near backpack object (likely packing, not signaling)',
+                        'matched_person_idx': matched_person_idx,
+                        'matched_role': matched_role,
+                        'right_dist_to_backpack': right_dist,
+                        'left_dist_to_backpack': left_dist
+                    }
+        
+        # ==================================================================================
         # ROBUST HAND GESTURE DETECTION LOGIC
         # ==================================================================================
         # Detect when LP/ALP raises their hand in a signaling gesture (extended arm with raised hand)
@@ -1537,7 +1762,7 @@ class LocopilotActivityMonitor:
         )
         
         # Right hand gesture detection (TRUE SIGNALING GESTURE)
-        # BALANCED thresholds: distinguish TRUE signals from control panel operations
+        # STRICTER thresholds (2024-11-23): Further increased to eliminate false positives from body posture
         right_hand_raised = (
             # CRITICAL: Wrist must belong to the same person (within expanded bbox)
             right_wrist_in_expanded and
@@ -1545,25 +1770,30 @@ class LocopilotActivityMonitor:
             # NOT in control panel operation zone (this filters out most false positives)
             not right_in_control_zone and
 
-            # CRITICAL: Hand SIGNIFICANTLY raised (>120px threshold separates signals from control ops)
+            # CRITICAL: Hand VERY SIGNIFICANTLY raised (>200px threshold - INCREASED from 150px)
             # Control panel operations: 30-120px above shoulder
-            # True hand signals: >120px above shoulder
-            right_wrist_shoulder_vertical > 120 and  # INCREASED to avoid false positives
+            # Body lean/posture variations: 120-200px above shoulder
+            # True hand signals: >200px above shoulder (much stricter threshold)
+            right_wrist_shoulder_vertical > 200 and  # INCREASED from 150px to 200px
 
             # Wrist must be SIGNIFICANTLY above elbow (vertical extension, not forward reach)
             # This is the KEY differentiator between forward reach and upward signal
-            right_wrist_elbow_distance > 80 and  # INCREASED from 30 to 80px for clear vertical extension
+            right_wrist_elbow_distance > 130 and  # INCREASED from 100 to 130px for clearer vertical extension
 
             # Arm should be extended (hand away from body, not tucked)
-            right_arm_extension > 40 and  # Keep at 40px for overhead angles
+            right_arm_extension > 80 and  # INCREASED from 60 to 80px for clearer lateral extension
+
+            # CRITICAL: Elbow must NOT be significantly below shoulder (prevents body lean false positives)
+            # If elbow is far below shoulder, person is leaning forward, not raising hand
+            (right_elbow_coords[1] < right_shoulder_coords[1] + 50) and  # Elbow should not be >50px below shoulder
 
             # Additional check: Elbow should be at or below shoulder (arm raised up, not forward)
             (right_elbow_coords[1] >= right_shoulder_coords[1] - 50) and  # Relaxed tolerance
 
-            # Visibility checks (RELAXED for partial occlusion)
-            right_wrist.visibility > 0.3 and
-            right_elbow.visibility > 0.3 and
-            right_shoulder.visibility > 0.4 and
+            # Visibility checks (STRICTER for reliable detection)
+            right_wrist.visibility > 0.5 and  # INCREASED from 0.4
+            right_elbow.visibility > 0.5 and  # INCREASED from 0.4
+            right_shoulder.visibility > 0.6 and  # INCREASED from 0.5
 
             # Within frame bounds
             0 < right_wrist_coords[0] < w and
@@ -1571,7 +1801,7 @@ class LocopilotActivityMonitor:
         )
         
         # Left hand gesture detection (TRUE SIGNALING GESTURE)
-        # BALANCED thresholds: distinguish TRUE signals from control panel operations
+        # STRICTER thresholds (2024-11-23): Further increased to eliminate false positives from body posture
         left_hand_raised = (
             # CRITICAL: Wrist must belong to the same person (within expanded bbox)
             left_wrist_in_expanded and
@@ -1579,25 +1809,30 @@ class LocopilotActivityMonitor:
             # NOT in control panel operation zone (this filters out most false positives)
             not left_in_control_zone and
 
-            # CRITICAL: Hand SIGNIFICANTLY raised (>120px threshold separates signals from control ops)
+            # CRITICAL: Hand VERY SIGNIFICANTLY raised (>200px threshold - INCREASED from 150px)
             # Control panel operations: 30-120px above shoulder
-            # True hand signals: >120px above shoulder
-            left_wrist_shoulder_vertical > 120 and  # INCREASED to avoid false positives
+            # Body lean/posture variations: 120-200px above shoulder
+            # True hand signals: >200px above shoulder (much stricter threshold)
+            left_wrist_shoulder_vertical > 200 and  # INCREASED from 150px to 200px
 
             # Wrist must be SIGNIFICANTLY above elbow (vertical extension, not forward reach)
             # This is the KEY differentiator between forward reach and upward signal
-            left_wrist_elbow_distance > 80 and  # INCREASED from 30 to 80px for clear vertical extension
+            left_wrist_elbow_distance > 130 and  # INCREASED from 100 to 130px for clearer vertical extension
 
             # Arm should be extended (hand away from body, not tucked)
-            left_arm_extension > 40 and  # Keep at 40px for overhead angles
+            left_arm_extension > 80 and  # INCREASED from 60 to 80px for clearer lateral extension
+
+            # CRITICAL: Elbow must NOT be significantly below shoulder (prevents body lean false positives)
+            # If elbow is far below shoulder, person is leaning forward, not raising hand
+            (left_elbow_coords[1] < left_shoulder_coords[1] + 50) and  # Elbow should not be >50px below shoulder
 
             # Additional check: Elbow should be at or below shoulder (arm raised up, not forward)
             (left_elbow_coords[1] >= left_shoulder_coords[1] - 50) and  # Relaxed tolerance
 
-            # Visibility checks (RELAXED for partial occlusion)
-            left_wrist.visibility > 0.3 and
-            left_elbow.visibility > 0.3 and
-            left_shoulder.visibility > 0.4 and
+            # Visibility checks (STRICTER for reliable detection)
+            left_wrist.visibility > 0.5 and  # INCREASED from 0.4
+            left_elbow.visibility > 0.5 and  # INCREASED from 0.4
+            left_shoulder.visibility > 0.6 and  # INCREASED from 0.5
 
             # Within frame bounds
             0 < left_wrist_coords[0] < w and
@@ -1606,6 +1841,40 @@ class LocopilotActivityMonitor:
         
         # Either hand raised counts as gesture
         hand_gesture_detected = right_hand_raised or left_hand_raised
+        
+        # COMPREHENSIVE DEBUG LOGGING for all checks
+        frame_info = f"[Frame {frame_number}]" if frame_number is not None else ""
+        gesture_logger.info(f"\n{'='*80}")
+        gesture_logger.info(f"{frame_info} HAND GESTURE DEBUG - Person {matched_person_idx} ({matched_role})")
+        gesture_logger.info(f"{'='*80}")
+        gesture_logger.info(f"RIGHT HAND ANALYSIS:")
+        gesture_logger.info(f"  - Wrist coords: {right_wrist_coords}")
+        gesture_logger.info(f"  - Shoulder coords: {right_shoulder_coords}")
+        gesture_logger.info(f"  - Elbow coords: {right_elbow_coords}")
+        gesture_logger.info(f"  - Wrist > Shoulder (vertical): {right_wrist_shoulder_vertical:.1f}px (need >200px)")
+        gesture_logger.info(f"  - Wrist > Elbow (vertical): {right_wrist_elbow_distance:.1f}px (need >130px)")
+        gesture_logger.info(f"  - Arm extension (lateral): {right_arm_extension:.1f}px (need >80px)")
+        gesture_logger.info(f"  - Elbow below shoulder: {right_elbow_coords[1] - right_shoulder_coords[1]:.1f}px (must be <50px)")
+        gesture_logger.info(f"  - In control zone: {right_in_control_zone}")
+        gesture_logger.info(f"  - Wrist in expanded bbox: {right_wrist_in_expanded}")
+        gesture_logger.info(f"  - Visibility - Wrist: {right_wrist.visibility:.2f}, Elbow: {right_elbow.visibility:.2f}, Shoulder: {right_shoulder.visibility:.2f}")
+        gesture_logger.info(f"  - RIGHT HAND RAISED: {right_hand_raised}")
+        
+        gesture_logger.info(f"\nLEFT HAND ANALYSIS:")
+        gesture_logger.info(f"  - Wrist coords: {left_wrist_coords}")
+        gesture_logger.info(f"  - Shoulder coords: {left_shoulder_coords}")
+        gesture_logger.info(f"  - Elbow coords: {left_elbow_coords}")
+        gesture_logger.info(f"  - Wrist > Shoulder (vertical): {left_wrist_shoulder_vertical:.1f}px (need >200px)")
+        gesture_logger.info(f"  - Wrist > Elbow (vertical): {left_wrist_elbow_distance:.1f}px (need >130px)")
+        gesture_logger.info(f"  - Arm extension (lateral): {left_arm_extension:.1f}px (need >80px)")
+        gesture_logger.info(f"  - Elbow below shoulder: {left_elbow_coords[1] - left_shoulder_coords[1]:.1f}px (must be <50px)")
+        gesture_logger.info(f"  - In control zone: {left_in_control_zone}")
+        gesture_logger.info(f"  - Wrist in expanded bbox: {left_wrist_in_expanded}")
+        gesture_logger.info(f"  - Visibility - Wrist: {left_wrist.visibility:.2f}, Elbow: {left_elbow.visibility:.2f}, Shoulder: {left_shoulder.visibility:.2f}")
+        gesture_logger.info(f"  - LEFT HAND RAISED: {left_hand_raised}")
+        
+        gesture_logger.info(f"\nFINAL RESULT: {'GESTURE DETECTED' if hand_gesture_detected else 'NO GESTURE'}")
+        gesture_logger.info(f"{'='*80}\n")
         
         if not hand_gesture_detected:
             return False, False, {}
@@ -1616,6 +1885,10 @@ class LocopilotActivityMonitor:
                     'hand_raised': 'right' if right_hand_raised else 'left',
                     'shoulder_y': avg_shoulder_y,
                     'wrist_y': right_wrist_coords[1] if right_hand_raised else left_wrist_coords[1],
+                    'right_wrist_shoulder_vertical': right_wrist_shoulder_vertical,
+                    'left_wrist_shoulder_vertical': left_wrist_shoulder_vertical,
+                    'right_wrist_elbow_distance': right_wrist_elbow_distance,
+                    'left_wrist_elbow_distance': left_wrist_elbow_distance,
                 'person_role': 'LP',
                 'matched_person_idx': matched_person_idx,
                 'overlap_score': best_overlap_score
@@ -1625,6 +1898,10 @@ class LocopilotActivityMonitor:
                     'hand_raised': 'right' if right_hand_raised else 'left',
                     'shoulder_y': avg_shoulder_y,
                     'wrist_y': right_wrist_coords[1] if right_hand_raised else left_wrist_coords[1],
+                    'right_wrist_shoulder_vertical': right_wrist_shoulder_vertical,
+                    'left_wrist_shoulder_vertical': left_wrist_shoulder_vertical,
+                    'right_wrist_elbow_distance': right_wrist_elbow_distance,
+                    'left_wrist_elbow_distance': left_wrist_elbow_distance,
                 'person_role': 'ALP',
                 'matched_person_idx': matched_person_idx,
                 'overlap_score': best_overlap_score
@@ -1698,10 +1975,17 @@ class LocopilotActivityMonitor:
                     single_person_roles = {person_idx: person_data}
                     
                     # Detect hand gesture for this specific person
+                    # Note: This function doesn't have activity context, so pass None
+                    # Consider using process_all_persons_activities() for full context-aware detection
                     lp_gesture, alp_gesture, gesture_debug = self.detect_hand_gesture(
                         translated_landmarks,
                         frame.shape,
-                        single_person_roles
+                        single_person_roles,
+                        yolo_person_boxes=None,
+                        person_activities=None,
+                        backpack_detections=None,
+                        person_idx=None,
+                        current_timestamp=None
                     )
                     
                     # Store results
@@ -1719,7 +2003,7 @@ class LocopilotActivityMonitor:
         
         return results
     
-    def process_all_persons_activities(self, frame, detections, person_roles, timestamp_sec, face_results=None):
+    def process_all_persons_activities(self, frame, detections, person_roles, timestamp_sec, face_results=None, frame_number=None):
         """Process all detected persons for ALL activity detections (mind diversion, sleep, etc.)
         
         This is the MAIN multi-person processing method that:
@@ -1734,6 +2018,7 @@ class LocopilotActivityMonitor:
             person_roles: Dictionary of person roles from identify_person_roles()
             timestamp_sec: Current timestamp in seconds
             face_results: MediaPipe face mesh results (optional, for mind diversion detection)
+            frame_number: Frame number for logging/debugging (optional)
             
         Returns:
             dict: {
@@ -1871,18 +2156,8 @@ class LocopilotActivityMonitor:
                 person_activities['sleep'] = pose_sleep_detected
                 person_activities['microsleep'] = pose_microsleep_detected
                 
-                # 3. HAND GESTURE DETECTION (LP/ALP)
-                single_person_roles = {person_idx: person_data}
-                lp_gesture, alp_gesture, gesture_debug = self.detect_hand_gesture(
-                    translated_landmarks,
-                    frame.shape,
-                    single_person_roles
-                )
-                person_debug_info['gesture_debug'] = gesture_debug
-                person_activities['lp_hand_gesture'] = lp_gesture
-                person_activities['alp_hand_gesture'] = alp_gesture
-                
-                # 4. CELL PHONE DETECTION (check if hand near phone in THIS person's region)
+                # 3. CELL PHONE DETECTION (check if hand near phone in THIS person's region)
+                # MOVED BEFORE HAND GESTURE: Need to detect this first for context-aware filtering
                 if len(detections['cell_phone']) > 0:
                     landmarks = translated_landmarks.landmark
                     right_hand = landmarks[self.mp_pose.PoseLandmark.RIGHT_WRIST]
@@ -1906,7 +2181,8 @@ class LocopilotActivityMonitor:
                                 person_activities['cell_phone'] = True
                                 break
                 
-                # 5. WRITING DETECTION (check if hand near book in THIS person's region)
+                # 4. WRITING DETECTION (check if hand near book in THIS person's region)
+                # MOVED BEFORE HAND GESTURE: Need to detect this first for context-aware filtering
                 if len(detections['book']) > 0:
                     landmarks = translated_landmarks.landmark
                     right_hand = landmarks[self.mp_pose.PoseLandmark.RIGHT_WRIST]
@@ -1923,7 +2199,8 @@ class LocopilotActivityMonitor:
                                 person_activities['writing'] = True
                                 break
                 
-                # 6. PACKING DETECTION (check if hand near backpack in THIS person's region)
+                # 5. PACKING DETECTION (check if hand near backpack in THIS person's region)
+                # MOVED BEFORE HAND GESTURE: Need to detect this first for context-aware filtering
                 if len(detections['backpack']) > 0:
                     landmarks = translated_landmarks.landmark
                     right_hand = landmarks[self.mp_pose.PoseLandmark.RIGHT_WRIST]
@@ -1941,7 +2218,41 @@ class LocopilotActivityMonitor:
                             if (self.check_hand_object_interaction(right_hand_coords, backpack_bbox, margin) or
                                 self.check_hand_object_interaction(left_hand_coords, backpack_bbox, margin)):
                                 person_activities['packing'] = True
+                                # UPDATE TEMPORAL HISTORY
+                                if person_idx not in self.recent_person_activities:
+                                    self.recent_person_activities[person_idx] = {}
+                                self.recent_person_activities[person_idx]['packing'] = timestamp_sec
                                 break
+                
+                # UPDATE TEMPORAL HISTORY for writing and cell phone too
+                if person_activities.get('writing', False):
+                    if person_idx not in self.recent_person_activities:
+                        self.recent_person_activities[person_idx] = {}
+                    self.recent_person_activities[person_idx]['writing'] = timestamp_sec
+                
+                if person_activities.get('cell_phone', False):
+                    if person_idx not in self.recent_person_activities:
+                        self.recent_person_activities[person_idx] = {}
+                    self.recent_person_activities[person_idx]['cell_phone'] = timestamp_sec
+                
+                # 6. HAND GESTURE DETECTION (LP/ALP)
+                # CRITICAL: This runs AFTER packing/writing/phone detection for context-aware filtering
+                # Pass person_activities, backpack detections, person_idx, and timestamp for full suppression
+                single_person_roles = {person_idx: person_data}
+                lp_gesture, alp_gesture, gesture_debug = self.detect_hand_gesture(
+                    translated_landmarks,
+                    frame.shape,
+                    single_person_roles,
+                    yolo_person_boxes=None,
+                    person_activities=person_activities,
+                    backpack_detections=detections.get('backpack', []),
+                    person_idx=person_idx,
+                    current_timestamp=timestamp_sec,
+                    frame_number=frame_number
+                )
+                person_debug_info['gesture_debug'] = gesture_debug
+                person_activities['lp_hand_gesture'] = lp_gesture
+                person_activities['alp_hand_gesture'] = alp_gesture
                 
                 # Store this person's data
                 persons_data[person_idx] = {
@@ -2778,7 +3089,8 @@ class LocopilotActivityMonitor:
                 
                 if len(detections['person']) > 0:
                     # De-duplicate person boxes to get accurate count
-                    deduplicated_persons = self.deduplicate_person_boxes(detections['person'], iou_threshold=0.3)
+                    # Increased IOU threshold from 0.3 to 0.5 to better filter duplicate detections
+                    deduplicated_persons = self.deduplicate_person_boxes(detections['person'], iou_threshold=0.5)
                     deduplicated_count = len(deduplicated_persons)
                     
                     # Store deduplicated boxes back in detections for visualization
@@ -2806,7 +3118,7 @@ class LocopilotActivityMonitor:
                 # STEP 4: *** NEW MULTI-PERSON PROCESSING ***
                 # Process ALL persons individually for ALL activities
                 multi_person_results = self.process_all_persons_activities(
-                    frame, detections, person_roles, timestamp_sec, face_results
+                    frame, detections, person_roles, timestamp_sec, face_results, frame_idx
                 )
                 
                 # Extract aggregated detection flags
@@ -3026,12 +3338,27 @@ class LocopilotActivityMonitor:
             except Exception as e:
                 print(f"\nError processing sample {sample_idx} (frame {frame_idx}): {e}")
                 continue
+            finally:
+                # ✅ MEMORY FIX: Explicitly delete frame after processing to free memory
+                del frame
+                del annotated_frame_for_activity
+                if 'rgb_frame' in locals():
+                    del rgb_frame
         
         # End any remaining active activities
         final_timestamp = str(timedelta(seconds=timestamp_sec))
         for activity_name in self.activities:
             if self.activities[activity_name]['active']:
                 self.end_activity(activity_name, final_timestamp, fps, frame_idx, 1)  # Default to 1 person for final activities
+        
+        # ✅ MEMORY FIX: Clear frame buffers and activity frames to free memory
+        self.frame_buffer.clear()
+        for activity_name in self.activities:
+            if 'frames' in self.activities[activity_name]:
+                self.activities[activity_name]['frames'].clear()
+        
+        # ✅ MEMORY FIX: Force garbage collection
+        gc.collect()
         
         print(f"\n{'=' * 60}")
         print(f"Processing complete!")
@@ -3134,7 +3461,7 @@ class LocopilotActivityMonitor:
                 # STEP 4: *** NEW MULTI-PERSON PROCESSING ***
                 # Process ALL persons individually for ALL activities
                 multi_person_results = self.process_all_persons_activities(
-                    frame, detections, person_roles, timestamp_sec, face_results
+                    frame, detections, person_roles, timestamp_sec, face_results, frame_idx
                 )
                 
                 # Extract aggregated detection flags
@@ -3277,12 +3604,29 @@ class LocopilotActivityMonitor:
             except Exception as e:
                 print(f"\nError processing sample {sample_idx} (frame {frame_idx}): {e}")
                 continue
+            finally:
+                # ✅ MEMORY FIX: Explicitly delete frame after processing to free memory
+                if 'frame' in locals():
+                    del frame
+                if 'annotated_frame_for_activity' in locals():
+                    del annotated_frame_for_activity
+                if 'rgb_frame' in locals():
+                    del rgb_frame
         
         # End any remaining active activities
         final_timestamp = str(timedelta(seconds=timestamp_sec))
         for activity_name in self.activities:
             if self.activities[activity_name]['active']:
                 self.end_activity(activity_name, final_timestamp, fps, frame_idx, 1, save_clips=save_clips)
+        
+        # ✅ MEMORY FIX: Clear frame buffers and activity frames to free memory
+        self.frame_buffer.clear()
+        for activity_name in self.activities:
+            if 'frames' in self.activities[activity_name]:
+                self.activities[activity_name]['frames'].clear()
+        
+        # ✅ MEMORY FIX: Force garbage collection
+        gc.collect()
         
         print(f"Frame range {start_frame}-{end_frame} completed: {len(self.all_activities)} activities")
         
