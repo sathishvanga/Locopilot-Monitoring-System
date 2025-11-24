@@ -5,7 +5,9 @@ Handles HTTP requests and responses for video processing operations.
 """
 
 from typing import Optional
-from fastapi import APIRouter, UploadFile, File, Form, HTTPException, BackgroundTasks
+import os
+
+from fastapi import APIRouter, UploadFile, File, Form, HTTPException, BackgroundTasks, Request, Response
 from fastapi.responses import JSONResponse
 
 from ..models.video_models import VideoProcessingResponse, VideoProcessingError
@@ -263,4 +265,77 @@ async def health_check():
             }
         }
     }
+
+
+@router.get(
+    "/jobs/{run_id}/media/{filename:path}",
+    summary="Serve generated media (clips/images) for a run",
+    description="Serve video clips and images generated for a specific run ID, "
+                "matching the media URL pattern used in the first project."
+)
+async def get_run_media(run_id: str, filename: str, request: Request) -> Response:
+    """
+    Serve media files (clips/images) for a given run.
+
+    The external API will call URLs of the form:
+        {host_url}/api/jobs/{run_id}/media/{filename}
+
+    We map that to:
+        {settings.output_dir}/{run_id}/clips/{filename}
+    """
+    # Resolve run directory and clips root
+    run_dir = os.path.join(settings.output_dir, run_id)
+    clips_root = os.path.join(run_dir, "clips")
+
+    if not os.path.isdir(clips_root):
+        raise HTTPException(status_code=404, detail="run_or_clips_not_found")
+
+    # Build absolute file path and protect against path traversal
+    file_path = os.path.abspath(os.path.join(clips_root, filename))
+    try:
+        if os.path.commonpath([clips_root, file_path]) != clips_root:
+            raise HTTPException(status_code=404, detail="file_missing")
+    except Exception:
+        raise HTTPException(status_code=404, detail="file_missing")
+
+    if not os.path.isfile(file_path):
+        raise HTTPException(status_code=404, detail="file_missing")
+
+    # Detect MIME type
+    import mimetypes as _m
+    mime, _ = _m.guess_type(file_path)
+    if file_path.lower().endswith(".mp4"):
+        mime = "video/mp4"
+
+    # Support HTTP Range for video streaming
+    range_header = request.headers.get("range") or request.headers.get("Range")
+    file_size = os.path.getsize(file_path)
+    if mime == "video/mp4" and range_header:
+        try:
+            start_str, end_str = range_header.replace("bytes=", "").split("-")
+            start = int(start_str) if start_str else 0
+            end = int(end_str) if end_str else file_size - 1
+            start = max(0, start)
+            end = min(file_size - 1, end)
+            length = end - start + 1
+            with open(file_path, "rb") as f:
+                f.seek(start)
+                data = f.read(length)
+            resp = Response(content=data, status_code=206, media_type=mime)
+            resp.headers["Content-Range"] = f"bytes {start}-{end}/{file_size}"
+            resp.headers["Accept-Ranges"] = "bytes"
+            resp.headers["Content-Length"] = str(length)
+            return resp
+        except Exception:
+            # Fallback to full-file response below
+            pass
+
+    # Full-file response
+    with open(file_path, "rb") as f:
+        data = f.read()
+    resp = Response(content=data, status_code=200, media_type=mime or "application/octet-stream")
+    if mime == "video/mp4":
+        resp.headers["Accept-Ranges"] = "bytes"
+    resp.headers["Content-Length"] = str(file_size)
+    return resp
 

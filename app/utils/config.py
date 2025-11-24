@@ -45,7 +45,11 @@ class Settings(BaseSettings):
     upload_dir: str = os.getenv("UPLOAD_DIR", "/tmp/locopilot_uploads")  # Use temp dir for production
     
     # Output settings
-    output_dir: str = "locopilot_evidence"
+    # Convert to absolute path to avoid path resolution issues
+    output_dir: str = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.dirname(__file__))), 
+        "locopilot_evidence"
+    )
     save_annotated_frames: bool = True
     frame_save_interval: int = 1
     

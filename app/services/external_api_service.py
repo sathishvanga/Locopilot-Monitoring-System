@@ -205,6 +205,16 @@ class ExternalAPIService:
         # Deduplicate violations (same tripId + type + startTime)
         unique_violations = self._deduplicate_violations(violations)
         
+        # Debug: log all fileUrls being sent to external API for this trip/job
+        try:
+            file_urls = [v.get("fileUrl") for v in unique_violations if v.get("fileUrl")]
+            logger.info(
+                f"📎 [external_api] fileUrls for trip_id={trip_id}, job_id={job_id}: "
+                f"{file_urls if file_urls else 'NO fileUrls (clips) present'}"
+            )
+        except Exception as e:
+            logger.warning(f"⚠️ [external_api] Failed to log fileUrls for trip_id={trip_id}: {e}")
+        
         logger.info(
             f"📦 [external_api] Posting {len(unique_violations)} unique violations "
             f"(from {len(violations)} total) to {url} for trip_id={trip_id}"
@@ -336,11 +346,13 @@ class ExternalAPIService:
             crew_name = event.get("crewName", "Unknown")
             activity_clip = event.get("activityClip", "")
             
-            # Build fileUrl if job_id and host_url are available
+            # Build fileUrl using the same pattern as the first project (POC_2):
+            # {host_url}/api/jobs/{job_id}/media/{clip_filename}
             file_url = ""
             if host_url and job_id and activity_clip:
-                # Construct URL: {host_url}/api/media/{job_id}/clips/{clip_filename}
-                file_url = f"{host_url}/api/media/{job_id}/clips/{activity_clip}"
+                clip_name = os.path.basename(activity_clip)
+                media_prefix = f"{host_url}/api/jobs/{job_id}/media"
+                file_url = f"{media_prefix}/{clip_name}"
             
             # Build violation payload
             payload = {
