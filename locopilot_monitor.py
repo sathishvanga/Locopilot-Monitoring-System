@@ -2750,6 +2750,91 @@ class LocopilotActivityMonitor:
         
         return keep_boxes
     
+    def validate_persons_with_pose(self, frame, person_boxes):
+        """Validate person detections by checking if MediaPipe can detect pose landmarks.
+        
+        This filters out false positives (seats, objects, etc.) that YOLO might misclassify
+        as persons. Only boxes where valid human pose is detected are kept.
+        
+        Args:
+            frame: The video frame (BGR format)
+            person_boxes: List of person bounding boxes [[x1, y1, x2, y2], ...]
+            
+        Returns:
+            List of validated person boxes (only those with successful pose detection)
+        """
+        if not person_boxes or len(person_boxes) == 0:
+            return []
+        
+        h, w = frame.shape[:2]
+        validated_boxes = []
+        
+        for bbox in person_boxes:
+            x1, y1, x2, y2 = map(int, bbox)
+            
+            # Add padding to bbox for better pose detection (10% on each side)
+            padding_x = int((x2 - x1) * 0.1)
+            padding_y = int((y2 - y1) * 0.1)
+            
+            # Expand bbox with padding, but stay within frame bounds
+            x1_padded = max(0, x1 - padding_x)
+            y1_padded = max(0, y1 - padding_y)
+            x2_padded = min(w, x2 + padding_x)
+            y2_padded = min(h, y2 + padding_y)
+            
+            try:
+                # Crop frame to this person's region
+                cropped_frame = frame[y1_padded:y2_padded, x1_padded:x2_padded]
+                
+                if cropped_frame.size == 0:
+                    continue
+                
+                # Convert to RGB for MediaPipe
+                cropped_rgb = cv2.cvtColor(cropped_frame, cv2.COLOR_BGR2RGB)
+                
+                # Run MediaPipe Pose on cropped region
+                pose_result = self.pose.process(cropped_rgb)
+                
+                # Only keep this person if pose landmarks are detected
+                if pose_result.pose_landmarks:
+                    # Strict validation: check if key landmarks are visible with higher thresholds
+                    landmarks = pose_result.pose_landmarks.landmark
+                    
+                    # Check critical landmarks (nose, shoulders, hips, wrists)
+                    nose = landmarks[self.mp_pose.PoseLandmark.NOSE]
+                    left_shoulder = landmarks[self.mp_pose.PoseLandmark.LEFT_SHOULDER]
+                    right_shoulder = landmarks[self.mp_pose.PoseLandmark.RIGHT_SHOULDER]
+                    left_hip = landmarks[self.mp_pose.PoseLandmark.LEFT_HIP]
+                    right_hip = landmarks[self.mp_pose.PoseLandmark.RIGHT_HIP]
+                    left_wrist = landmarks[self.mp_pose.PoseLandmark.LEFT_WRIST]
+                    right_wrist = landmarks[self.mp_pose.PoseLandmark.RIGHT_WRIST]
+                    
+                    # STRICT VALIDATION: Multiple checks to filter seats/objects
+                    # Check 1: Count visible upper body landmarks (higher threshold)
+                    upper_body_visible = sum([
+                        nose.visibility > 0.5,
+                        left_shoulder.visibility > 0.5,
+                        right_shoulder.visibility > 0.5
+                    ])
+                    
+                    # Check 2: At least one hip visible (seats typically don't have hip structure)
+                    hips_visible = (left_hip.visibility > 0.3 or right_hip.visibility > 0.3)
+                    
+                    # Check 3: At least one wrist visible (seats don't have arms)
+                    wrists_visible = (left_wrist.visibility > 0.3 or right_wrist.visibility > 0.3)
+                    
+                    # Accept only if:
+                    # - At least 2 upper body landmarks are clearly visible (visibility > 0.5)
+                    # - AND (hips OR wrists are visible) - ensures human body structure
+                    if upper_body_visible >= 2 and (hips_visible or wrists_visible):
+                        validated_boxes.append(bbox)
+                    
+            except Exception as e:
+                # If pose detection fails, skip this box (likely not a person)
+                continue
+        
+        return validated_boxes
+    
     def identify_person_roles(self, frame, person_boxes, detections):
         """Identify LP (Loco Pilot) and ALP (Assistant Loco Pilot) based on objects near each person.
         
@@ -3275,13 +3360,22 @@ class LocopilotActivityMonitor:
                     # De-duplicate person boxes to get accurate count
                     # Increased IOU threshold from 0.3 to 0.5 to better filter duplicate detections
                     deduplicated_persons = self.deduplicate_person_boxes(detections['person'], iou_threshold=0.5)
-                    deduplicated_count = len(deduplicated_persons)
                     
-                    # Store deduplicated boxes back in detections for visualization
-                    detections['deduplicated_person'] = deduplicated_persons
+                    # *** POSE VALIDATION: Filter out false positives (seats, objects, etc.) ***
+                    # Only keep detections where MediaPipe can detect valid human pose landmarks
+                    validated_persons = self.validate_persons_with_pose(frame, deduplicated_persons)
+                    validated_count = len(validated_persons)
+                    
+                    # Log filtering results if any boxes were removed
+                    if len(deduplicated_persons) != validated_count:
+                        print(f"[{timestamp}] Pose validation: {len(deduplicated_persons)} deduplicated → {validated_count} validated (filtered {len(deduplicated_persons) - validated_count} false positives)")
+                    
+                    # Store validated boxes back in detections for visualization
+                    detections['deduplicated_person'] = validated_persons
+                    deduplicated_count = validated_count
                     
                     # Identify person roles (LP, ALP, etc.)
-                    person_roles = self.identify_person_roles(frame, deduplicated_persons, detections)
+                    person_roles = self.identify_person_roles(frame, validated_persons, detections)
                     
                     # Log role identification (only once per detection cycle)
                     if self.consecutive_detections['group_detected'] == 0 and person_roles:
@@ -3631,10 +3725,20 @@ class LocopilotActivityMonitor:
                 person_roles = {}
                 
                 if len(detections['person']) > 0:
-                    deduplicated_persons = self.deduplicate_person_boxes(detections['person'], iou_threshold=0.3)
-                    deduplicated_count = len(deduplicated_persons)
-                    detections['deduplicated_person'] = deduplicated_persons
-                    person_roles = self.identify_person_roles(frame, deduplicated_persons, detections)
+                    deduplicated_persons = self.deduplicate_person_boxes(detections['person'], iou_threshold=0.5)
+                    
+                    # *** POSE VALIDATION: Filter out false positives (seats, objects, etc.) ***
+                    # Only keep detections where MediaPipe can detect valid human pose landmarks
+                    validated_persons = self.validate_persons_with_pose(frame, deduplicated_persons)
+                    validated_count = len(validated_persons)
+                    
+                    # Log filtering results if any boxes were removed
+                    if len(deduplicated_persons) != validated_count:
+                        print(f"[{timestamp}] Pose validation: {len(deduplicated_persons)} deduplicated → {validated_count} validated (filtered {len(deduplicated_persons) - validated_count} false positives)")
+                    
+                    deduplicated_count = validated_count
+                    detections['deduplicated_person'] = validated_persons
+                    person_roles = self.identify_person_roles(frame, validated_persons, detections)
                     
                     if deduplicated_count > 2:
                         group_detected_flag = True
