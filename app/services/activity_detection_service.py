@@ -278,18 +278,15 @@ class ActivityDetectionService:
         # Process video
         monitor.process_video()
         
-        # ✅ MEMORY FIX: Clear frame buffers after processing
-        monitor.frame_buffer.clear()
-        for activity_name in monitor.activities:
-            if 'frames' in monitor.activities[activity_name]:
-                monitor.activities[activity_name]['frames'].clear()
+        # Get activities before cleanup
+        activities = monitor.all_activities.copy()
         
-        # ✅ MEMORY FIX: Force garbage collection
-        gc.collect()
+        # ✅ MEMORY FIX: Explicit cleanup (closes MediaPipe, clears buffers, forces GC)
+        monitor.cleanup()
         
         # Return detected activities
-        logger.info(f"Single-process detection found {len(monitor.all_activities)} activities")
-        return monitor.all_activities
+        logger.info(f"Single-process detection found {len(activities)} activities")
+        return activities
     
     def _detect_activities_multiprocess(
         self,

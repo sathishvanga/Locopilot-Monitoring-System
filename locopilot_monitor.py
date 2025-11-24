@@ -2148,6 +2148,9 @@ class LocopilotActivityMonitor:
                 person_debug_info['head_pose'] = head_pose_info
                 person_activities['mind_diversion'] = head_pose_info.get('detected', False)
                 
+                # NOTE: Mind diversion book suppression moved to AFTER writing detection
+                # This allows us to check both book presence AND writing activity
+                
                 # 2. SLEEP / MICROSLEEP DETECTION (pose-based)
                 pose_sleep_detected, pose_microsleep_detected, pose_sleep_info = self.detect_pose_based_sleep(
                     translated_landmarks, timestamp_sec
@@ -2198,6 +2201,61 @@ class LocopilotActivityMonitor:
                             if self.check_hand_object_interaction(right_hand_coords, book_bbox, margin):
                                 person_activities['writing'] = True
                                 break
+                
+                # SUPPRESS MIND DIVERSION IF BOOK/WRITING DETECTED (person reading/working with documents)
+                # This runs AFTER writing detection to have complete context
+                if person_activities['mind_diversion']:
+                    suppress_reason = None
+                    
+                    # Reason 1: Writing activity detected (hand actively near book)
+                    if person_activities['writing']:
+                        suppress_reason = 'writing_detected'
+                    
+                    # Reason 2: Book/document present in person's region (even without hand interaction)
+                    elif len(detections['book']) > 0:
+                        book_in_person_region = False
+                        margin = 150  # Same margin used for book detection
+                        for book_bbox in detections['book']:
+                            if self.bbox_overlap_with_margin(book_bbox, bbox, margin):
+                                book_in_person_region = True
+                                break
+                        
+                        if book_in_person_region:
+                            suppress_reason = 'book_present'
+                    
+                    # Reason 3: Low-confidence book/paper detection for white documents YOLO might miss
+                    if suppress_reason is None:
+                        # Get person's lap/desk region (lower half of person box)
+                        x1, y1, x2, y2 = bbox
+                        lap_y1 = int(y1 + (y2 - y1) * 0.5)  # Focus on lower half where documents typically are
+                        margin = 100
+                        x1_expanded = max(0, int(x1 - margin))
+                        y1_expanded = max(0, int(lap_y1))
+                        x2_expanded = min(w, int(x2 + margin))
+                        y2_expanded = min(h, int(y2 + margin))
+                        
+                        # Run YOLO with very low confidence to catch white papers/documents
+                        lap_region = frame[y1_expanded:y2_expanded, x1_expanded:x2_expanded]
+                        if lap_region.size > 0:
+                            try:
+                                low_conf_results = self.yolo_model(lap_region, verbose=False, conf=0.03)
+                                for r in low_conf_results:
+                                    for box in r.boxes:
+                                        cls = int(box.cls[0])
+                                        class_name = self.yolo_model.names[cls]
+                                        # Check for book or paper/document-like objects
+                                        if class_name in ['book', 'notebook']:
+                                            suppress_reason = 'document_detected_low_conf'
+                                            break
+                                    if suppress_reason:
+                                        break
+                            except Exception:
+                                pass
+                    
+                    # Apply suppression if any reason found
+                    if suppress_reason:
+                        person_activities['mind_diversion'] = False
+                        person_debug_info['head_pose']['suppressed_reason'] = suppress_reason
                 
                 # 5. PACKING DETECTION (check if hand near backpack in THIS person's region)
                 # MOVED BEFORE HAND GESTURE: Need to detect this first for context-aware filtering
@@ -2893,10 +2951,10 @@ class LocopilotActivityMonitor:
                     cv2.imwrite(image_path, activity_image)
             
             # Get video duration in HH:MM:SS format
-            cap = cv2.VideoCapture(self.video_path)
-            video_total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-            video_duration_seconds = video_total_frames / fps
-            cap.release()
+            # ✅ MEMORY FIX: Use context manager to ensure video capture is released
+            with video_capture_context(self.video_path) as cap:
+                video_total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+                video_duration_seconds = video_total_frames / fps
             
             video_duration_formatted = str(timedelta(seconds=int(video_duration_seconds)))
             
@@ -3014,10 +3072,10 @@ class LocopilotActivityMonitor:
     def process_video(self):
         """Main video processing loop - SAMPLES FRAMES AT SPECIFIED RATE"""
         # Get video metadata
-        cap = cv2.VideoCapture(self.video_path)
-        fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
-        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-        cap.release()
+        # ✅ MEMORY FIX: Use context manager to ensure video capture is released
+        with video_capture_context(self.video_path) as cap:
+            fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
+            total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
         
         # Calculate expected sampled frames
         step = max(1, int(round(fps / max(1e-6, float(self.sample_fps)))))
@@ -3392,10 +3450,10 @@ class LocopilotActivityMonitor:
             List of detected activities in this range
         """
         # Get video metadata
-        cap = cv2.VideoCapture(self.video_path)
-        fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
-        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-        cap.release()
+        # ✅ MEMORY FIX: Use context manager to ensure video capture is released
+        with video_capture_context(self.video_path) as cap:
+            fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
+            total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
         
         print(f"Processing frame range {start_frame}-{end_frame} (worker {os.getpid()})")
         
@@ -3633,6 +3691,49 @@ class LocopilotActivityMonitor:
         # Return detected activities (without generating summary reports)
         return self.all_activities
 
+    def cleanup(self):
+        """
+        ✅ MEMORY FIX: Cleanup method to release MediaPipe resources
+        
+        This method mirrors POC_2's MediaPipeService.close() pattern.
+        Call this after processing to free GPU/CPU resources.
+        """
+        try:
+            # Close MediaPipe models
+            if hasattr(self, 'pose') and self.pose is not None:
+                self.pose.close()
+                self.pose = None
+            
+            if hasattr(self, 'face_mesh') and self.face_mesh is not None:
+                self.face_mesh.close()
+                self.face_mesh = None
+            
+            # Clear frame buffers
+            if hasattr(self, 'frame_buffer'):
+                self.frame_buffer.clear()
+            
+            # Clear activity frames
+            if hasattr(self, 'activities'):
+                for activity_name in self.activities:
+                    if 'frames' in self.activities[activity_name]:
+                        self.activities[activity_name]['frames'].clear()
+            
+            # Force garbage collection
+            gc.collect()
+            
+            print("✅ Cleanup completed: MediaPipe models closed, buffers cleared")
+        except Exception as e:
+            print(f"⚠️ Warning during cleanup: {e}")
+    
+    def __del__(self):
+        """
+        ✅ MEMORY FIX: Destructor to ensure cleanup on object deletion
+        """
+        try:
+            self.cleanup()
+        except Exception:
+            pass
+    
     def generate_summary_report(self):
         """Generate activities.json in the run directory"""
         # Save the activities array in the run directory

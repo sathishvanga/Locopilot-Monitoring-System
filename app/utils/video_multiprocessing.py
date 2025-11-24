@@ -357,14 +357,9 @@ def process_frame_range(
         logger.info(f"Worker {worker_id} completed range {frame_range.range_id}: "
                    f"{len(activities)} activities detected")
         
-        # ✅ MEMORY FIX: Explicit cleanup of monitor resources
-        monitor.frame_buffer.clear()
-        for activity_name in monitor.activities:
-            if 'frames' in monitor.activities[activity_name]:
-                monitor.activities[activity_name]['frames'].clear()
-        
-        # ✅ MEMORY FIX: Force garbage collection
-        gc.collect()
+        # ✅ MEMORY FIX: Explicit cleanup (closes MediaPipe, clears buffers, forces GC)
+        # This mirrors POC_2's cleanup pattern
+        monitor.cleanup()
         
         return {
             'success': True,
@@ -386,12 +381,10 @@ def process_frame_range(
         }
     finally:
         # ✅ MEMORY FIX: Always cleanup monitor resources in finally block
+        # This mirrors POC_2's cleanup pattern
         if 'monitor' in locals():
             try:
-                monitor.frame_buffer.clear()
-                for activity_name in monitor.activities:
-                    if 'frames' in monitor.activities[activity_name]:
-                        monitor.activities[activity_name]['frames'].clear()
+                monitor.cleanup()
                 del monitor
             except Exception as cleanup_error:
                 logger.warning(f"Error during cleanup: {cleanup_error}")
