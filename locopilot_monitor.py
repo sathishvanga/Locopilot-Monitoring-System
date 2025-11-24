@@ -236,6 +236,10 @@ class LocopilotActivityMonitor:
         self.movement_history = deque(maxlen=int(30 * self.sample_fps))  # 30 seconds of movement data
         self.head_tilt_history = deque(maxlen=int(10 * self.sample_fps))  # 10 seconds of head tilt data
         
+        # Wrist proximity tracking for writing detection (per person)
+        # Format: {person_idx: {'start_time': timestamp, 'duration': seconds, 'consecutive_frames': int}}
+        self.wrist_proximity_tracking = {}
+        
         # Evidence counter
         self.evidence_counter = 0
         
@@ -269,7 +273,7 @@ class LocopilotActivityMonitor:
             'cell_phone': 'phone_in_hand',
             'microsleep': 'eyes_closed_5s_or_pose_indicators',
             'sleep': 'eyes_closed_30s_or_pose_indicators',
-            'writing': 'hand_near_book',
+            'writing': 'hand_near_book_or_wrist_proximity',
             'packing_bags': 'hand_near_backpack',
             'group_detected': 'more_than_2_deduplicated_persons',
             'lp_hand_gesture': 'lp_hand_raised_gesture_detected',
@@ -538,6 +542,105 @@ class LocopilotActivityMonitor:
             self.pose_sleep_duration = 0
             
             return False, False, debug_info
+    
+    def calculate_wrist_distance(self, pose_landmarks, frame_shape):
+        """Calculate Euclidean distance between left and right wrists.
+        
+        Args:
+            pose_landmarks: MediaPipe pose landmarks
+            frame_shape: Tuple of (height, width) of the frame
+            
+        Returns:
+            float: Distance in pixels between wrists, or None if wrists not detected
+        """
+        if not pose_landmarks:
+            return None
+        
+        try:
+            landmarks = pose_landmarks.landmark
+            h, w = frame_shape[:2]
+            
+            # Get wrist landmarks
+            right_wrist = landmarks[self.mp_pose.PoseLandmark.RIGHT_WRIST]
+            left_wrist = landmarks[self.mp_pose.PoseLandmark.LEFT_WRIST]
+            
+            # Check if wrists are visible enough
+            if right_wrist.visibility < 0.5 or left_wrist.visibility < 0.5:
+                return None
+            
+            # Convert normalized coordinates to pixel coordinates
+            right_wrist_px = (right_wrist.x * w, right_wrist.y * h)
+            left_wrist_px = (left_wrist.x * w, left_wrist.y * h)
+            
+            # Calculate Euclidean distance
+            distance = np.sqrt(
+                (right_wrist_px[0] - left_wrist_px[0])**2 + 
+                (right_wrist_px[1] - left_wrist_px[1])**2
+            )
+            
+            return distance
+        except Exception as e:
+            return None
+    
+    def detect_writing_by_wrist_proximity(self, pose_landmarks, frame_shape, person_idx, timestamp_sec):
+        """Detect writing activity based on wrist proximity heuristic.
+        
+        When both wrists are close together (typical writing posture) for a sustained duration,
+        it indicates writing activity.
+        
+        Args:
+            pose_landmarks: MediaPipe pose landmarks
+            frame_shape: Tuple of (height, width) of the frame
+            person_idx: Index of the person being analyzed
+            timestamp_sec: Current timestamp in seconds
+            
+        Returns:
+            bool: True if writing detected by wrist proximity, False otherwise
+        """
+        # Calculate distance between wrists
+        wrist_distance = self.calculate_wrist_distance(pose_landmarks, frame_shape)
+        
+        if wrist_distance is None:
+            return False
+        
+        # Initialize tracking for this person if needed
+        if person_idx not in self.wrist_proximity_tracking:
+            self.wrist_proximity_tracking[person_idx] = {
+                'start_time': None,
+                'duration': 0.0,
+                'consecutive_frames': 0
+            }
+        
+        # Configurable thresholds
+        MAX_WRIST_DISTANCE = 150  # pixels - wrists must be within this distance
+        MIN_DURATION = 4.0  # seconds - minimum duration for writing detection
+        REQUIRED_CONSECUTIVE = 2  # frames - matches existing writing threshold @ 0.5fps
+        
+        person_tracking = self.wrist_proximity_tracking[person_idx]
+        
+        # Check if wrists are close enough
+        if wrist_distance <= MAX_WRIST_DISTANCE:
+            # Wrists are close - update tracking
+            if person_tracking['start_time'] is None:
+                # Start new proximity event
+                person_tracking['start_time'] = timestamp_sec
+                person_tracking['consecutive_frames'] = 1
+            else:
+                # Continue existing proximity event
+                person_tracking['duration'] = timestamp_sec - person_tracking['start_time']
+                person_tracking['consecutive_frames'] += 1
+            
+            # Check if thresholds are met
+            if (person_tracking['consecutive_frames'] >= REQUIRED_CONSECUTIVE and 
+                person_tracking['duration'] >= MIN_DURATION):
+                return True
+        else:
+            # Wrists are too far apart - reset tracking
+            person_tracking['start_time'] = None
+            person_tracking['duration'] = 0.0
+            person_tracking['consecutive_frames'] = 0
+        
+        return False
     
     def get_roi_around_keypoint(self, keypoint_coords, frame_shape, roi_size=150):
         """Create Region of Interest (ROI) box around a keypoint.
@@ -2184,8 +2287,12 @@ class LocopilotActivityMonitor:
                                 person_activities['cell_phone'] = True
                                 break
                 
-                # 4. WRITING DETECTION (check if hand near book in THIS person's region)
+                # 4. WRITING DETECTION (check if hand near book OR wrist proximity heuristic)
                 # MOVED BEFORE HAND GESTURE: Need to detect this first for context-aware filtering
+                writing_detected_by_book = False
+                writing_detected_by_wrist = False
+                
+                # Method 1: Book detection (existing method)
                 if len(detections['book']) > 0:
                     landmarks = translated_landmarks.landmark
                     right_hand = landmarks[self.mp_pose.PoseLandmark.RIGHT_WRIST]
@@ -2199,8 +2306,27 @@ class LocopilotActivityMonitor:
                         
                         if book_in_person_region:
                             if self.check_hand_object_interaction(right_hand_coords, book_bbox, margin):
-                                person_activities['writing'] = True
+                                writing_detected_by_book = True
                                 break
+                
+                # Method 2: Wrist proximity heuristic (NEW)
+                writing_detected_by_wrist = self.detect_writing_by_wrist_proximity(
+                    translated_landmarks,
+                    frame.shape,
+                    person_idx,
+                    timestamp_sec
+                )
+                
+                # Combine both detection methods
+                person_activities['writing'] = writing_detected_by_book or writing_detected_by_wrist
+                
+                # Store detection method in debug info for analysis
+                if writing_detected_by_book:
+                    person_debug_info['writing_method'] = 'book'
+                elif writing_detected_by_wrist:
+                    person_debug_info['writing_method'] = 'wrist_proximity'
+                else:
+                    person_debug_info['writing_method'] = 'none'
                 
                 # SUPPRESS MIND DIVERSION IF BOOK/WRITING DETECTED (person reading/working with documents)
                 # This runs AFTER writing detection to have complete context
