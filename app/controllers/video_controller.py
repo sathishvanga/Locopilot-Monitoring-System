@@ -39,8 +39,8 @@ video_processing_service = VideoProcessingService()
     The endpoint accepts:
     - video: Video file (multipart/form-data)
     - tripId: Unique trip identifier (required)
-    - lpCrewName: LP crew member name (required)
-    - lpCrewId: LP crew member ID (required)
+    - lpCrewName: LP crew member name (optional)
+    - lpCrewId: LP crew member ID (optional)
     - alpCrewName: ALP crew member name (optional)
     - alpCrewId: ALP crew member ID (optional)
     - useMockDetection: Use mock detection for testing (optional, default: false)
@@ -57,8 +57,8 @@ async def process_video(
     background_tasks: BackgroundTasks,
     video: UploadFile = File(..., description="Video file to process"),
     tripId: str = Form(..., description="Unique trip identifier"),
-    lpCrewName: str = Form(..., description="Loco Pilot crew member name"),
-    lpCrewId: str = Form(..., description="Loco Pilot crew member ID"),
+    lpCrewName: Optional[str] = Form(default=None, description="Loco Pilot crew member name"),
+    lpCrewId: Optional[str] = Form(default=None, description="Loco Pilot crew member ID"),
     alpCrewName: Optional[str] = Form(default=None, description="Assistant Loco Pilot crew member name"),
     alpCrewId: Optional[str] = Form(default=None, description="Assistant Loco Pilot crew member ID"),
     useMockDetection: Optional[bool] = Form(default=False, description="Use mock detection for testing"),
@@ -84,30 +84,18 @@ async def process_video(
                 detail="tripId is required and cannot be empty"
             )
         
-        # Validate LP crew (required)
-        if not lpCrewName or not lpCrewName.strip():
-            logger.warning(f"⚠️ Invalid request: lpCrewName is empty for trip {tripId}")
-            raise HTTPException(
-                status_code=400,
-                detail="lpCrewName is required and cannot be empty"
-            )
-        if not lpCrewId or not lpCrewId.strip():
-            logger.warning(f"⚠️ Invalid request: lpCrewId is empty for trip {tripId}")
-            raise HTTPException(
-                status_code=400,
-                detail="lpCrewId is required and cannot be empty"
-            )
-        
         # Build crew members dictionary
         crew_members = {}
         
-        # Add LP crew (required)
-        crew_members['LP'] = {
-            'name': lpCrewName.strip(),
-            'id': lpCrewId.strip(),
-            'role': 'LP'
-        }
-        logger.info(f"LP Crew: {lpCrewName} ({lpCrewId})")
+        # Add LP crew if provided
+        if lpCrewName and lpCrewId:
+            if lpCrewName.strip() and lpCrewId.strip():
+                crew_members['LP'] = {
+                    'name': lpCrewName.strip(),
+                    'id': lpCrewId.strip(),
+                    'role': 'LP'
+                }
+                logger.info(f"LP Crew: {lpCrewName} ({lpCrewId})")
         
         # Add ALP crew if provided
         if alpCrewName and alpCrewId:
@@ -156,8 +144,8 @@ async def process_video(
             video_path=video_path,
             trip_id=tripId,
             crew_members=crew_members,  # Pass crew members dict
-            crew_name=lpCrewName,  # Use LP as default
-            crew_id=lpCrewId,  # Use LP as default
+            crew_name=lpCrewName if lpCrewName else "Unknown",  # Default if not provided
+            crew_id=lpCrewId if lpCrewId else "N/A",  # Default if not provided
             crew_role=1,  # LP role
             use_mock_detection=useMockDetection,
             use_multiprocessing=use_mp,

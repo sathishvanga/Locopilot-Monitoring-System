@@ -12,20 +12,20 @@ class CrewMember(BaseModel):
     Model for individual crew member information
     """
     
-    name: str = Field(
-        ...,
+    name: Optional[str] = Field(
+        None,
         description="Crew member name",
         min_length=1,
         max_length=100
     )
-    id: str = Field(
-        ...,
+    id: Optional[str] = Field(
+        None,
         description="Unique crew member ID",
         min_length=1,
         max_length=50
     )
-    role: str = Field(
-        ...,
+    role: Optional[str] = Field(
+        None,
         description="Crew role (LP or ALP)",
         pattern="^(LP|ALP)$"
     )

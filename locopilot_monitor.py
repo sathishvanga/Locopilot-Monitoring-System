@@ -141,7 +141,7 @@ class LocopilotActivityMonitor:
             'packing_bags': {
                 'min_duration': 0.0,          # NO minimum duration - any detection creates activity
                 'required_consecutive': 1,    # 1 sample @ 0.5fps = instant detection (2 seconds)
-                'margin': 120,                # Very lenient proximity (increased from 50) for overhead camera angles
+                'margin': 40,                 # STRICT proximity - hand must be very close to backpack for real interaction
                 'grace_frames': 8             # Allow 8 samples (~16s) gap to group nearby detections
             },
             'writing': {
@@ -586,8 +586,8 @@ class LocopilotActivityMonitor:
         x1, y1, x2, y2 = roi_bbox
         roi_frame = frame[y1:y2, x1:x2]
         
-        # Run YOLO on ROI with lower confidence threshold
-        results = self.yolo_model(roi_frame, verbose=False, conf=0.1)
+        # Run YOLO on ROI with very low confidence threshold for better cell phone detection
+        results = self.yolo_model(roi_frame, verbose=False, conf=0.05)
         
         detections = []
         for r in results:
@@ -663,7 +663,7 @@ class LocopilotActivityMonitor:
                     detections['backpack'].append(xyxy)
                 # OPTION 3: Re-enable book detection in full frame with moderate confidence
                 # But only if book is within reasonable distance of a person
-                elif class_name == 'book' and conf > 0.35:  # Increased from 0.2 to 0.35 to reduce false positives
+                elif class_name == 'book' and conf > 0.2:  # Increased from 0.2 to 0.35 to reduce false positives
                     # Check if book is near any detected person
                     if len(person_boxes) > 0:
                         book_near_person = False
