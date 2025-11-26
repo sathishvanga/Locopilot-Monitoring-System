@@ -36,7 +36,8 @@ class ActivityDetectionService:
             'packing_bags': ActivityTypeEnum.PACKING_BAGS,
             'group_detected': ActivityTypeEnum.GROUP_DETECTED,
             'lp_hand_gesture': ActivityTypeEnum.LP_NOT_EXCHANGING_HAND_GESTURE,
-            'alp_hand_gesture': ActivityTypeEnum.ALP_NOT_EXCHANGING_HAND_GESTURE
+            'alp_hand_gesture': ActivityTypeEnum.ALP_NOT_EXCHANGING_HAND_GESTURE,
+            'no_person_detected': ActivityTypeEnum.NO_PERSON_DETECTED
         }
         
         self.activity_descriptions = {
@@ -47,7 +48,8 @@ class ActivityDetectionService:
             'packing_bags': 'Packing bags activity detected',
             'group_detected': 'More than 2 people (group) detected',
             'lp_hand_gesture': 'LP not exchanging hand gesture',
-            'alp_hand_gesture': 'ALP not exchanging hand gesture'
+            'alp_hand_gesture': 'ALP not exchanging hand gesture',
+            'no_person_detected': 'No person detected in frame'
         }
         
         self.evidence_rules = {
@@ -58,7 +60,8 @@ class ActivityDetectionService:
             'packing_bags': 'hand_near_backpack',
             'group_detected': 'more_than_2_deduplicated_persons',
             'lp_hand_gesture': 'lp_hand_raised_gesture_detected',
-            'alp_hand_gesture': 'alp_hand_raised_gesture_detected'
+            'alp_hand_gesture': 'alp_hand_raised_gesture_detected',
+            'no_person_detected': 'zero_persons_in_frame'
         }
         
         self.settings = get_settings()
