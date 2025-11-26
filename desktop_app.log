@@ -1,0 +1,89 @@
+2025-11-26 22:34:40 | INFO     | cvvr_desktop | Logging initialized - Level: INFO
+2025-11-26 22:34:40 | INFO     | cvvr_desktop.__main__ | ============================================================
+2025-11-26 22:34:40 | INFO     | cvvr_desktop.__main__ | Starting Locopilot CVVR Desktop v1.0.0
+2025-11-26 22:34:40 | INFO     | cvvr_desktop.__main__ | ============================================================
+2025-11-26 22:34:41 | INFO     | cvvr_desktop.desktop_app.utils.api_client | API client initialized - Base URL: https://api.mindcoinapps.com/ai_demo_api
+2025-11-26 22:34:41 | INFO     | cvvr_desktop.desktop_app.services.auth_service | Authentication service initialized
+2025-11-26 22:34:41 | INFO     | cvvr_desktop.desktop_app.utils.api_client | API client initialized - Base URL: https://api.mindcoinapps.com/ai_demo_api
+2025-11-26 22:34:41 | INFO     | cvvr_desktop.desktop_app.services.trip_service | Trip service initialized
+2025-11-26 22:34:41 | INFO     | cvvr_desktop.desktop_app.utils.api_client | API client initialized - Base URL: https://api.mindcoinapps.com/ai_demo_api
+2025-11-26 22:34:41 | INFO     | cvvr_desktop.desktop_app.services.upload_service | Upload service initialized
+2025-11-26 22:34:41 | INFO     | cvvr_desktop.desktop_app.utils.api_client | API client initialized - Base URL: http://localhost:8000
+2025-11-26 22:34:41 | INFO     | cvvr_desktop.desktop_app.services.local_processing_service | Local processing service initialized
+2025-11-26 22:34:42 | INFO     | cvvr_desktop.desktop_app.controllers.login_controller | Login controller initialized
+2025-11-26 22:34:42 | INFO     | cvvr_desktop.desktop_app.controllers.trips_controller | Trips controller initialized
+2025-11-26 22:34:42 | INFO     | cvvr_desktop.desktop_app.controllers.trips_controller | Loading pending trips
+2025-11-26 22:34:42 | INFO     | cvvr_desktop.__main__ | Main window initialized
+2025-11-26 22:34:42 | ERROR    | cvvr_desktop.desktop_app.services.trip_service | Cannot fetch trips - no authentication token
+2025-11-26 22:34:42 | INFO     | cvvr_desktop.__main__ | Application started successfully
+2025-11-26 22:34:42 | ERROR    | cvvr_desktop.desktop_app.controllers.trips_controller | Failed to load trips: Authentication required - please login
+2025-11-26 22:35:09 | INFO     | cvvr_desktop.desktop_app.controllers.login_controller | Initiating login for user: 9705589009
+2025-11-26 22:35:09 | INFO     | cvvr_desktop.desktop_app.controllers.login_controller | Login worker started for user: 9705589009
+2025-11-26 22:35:09 | INFO     | cvvr_desktop.desktop_app.services.auth_service | Attempting login for user: 9705589009
+2025-11-26 22:35:20 | ERROR    | cvvr_desktop.desktop_app.services.auth_service | Invalid response structure: {'mssg': 'Invalid encrypted Data', 'content': [], 'status': 0}
+2025-11-26 22:35:20 | WARNING  | cvvr_desktop.desktop_app.controllers.login_controller | Login failed: Invalid response from server
+2025-11-26 23:15:20 | INFO     | cvvr_desktop | Logging initialized - Level: INFO
+2025-11-26 23:15:20 | INFO     | cvvr_desktop.__main__ | ============================================================
+2025-11-26 23:15:20 | INFO     | cvvr_desktop.__main__ | Starting Locopilot CVVR Desktop v1.0.0
+2025-11-26 23:15:20 | INFO     | cvvr_desktop.__main__ | ============================================================
+2025-11-26 23:15:20 | INFO     | cvvr_desktop.desktop_app.utils.api_client | API client initialized - Base URL: https://api.mindcoinapps.com/ai_demo_api
+2025-11-26 23:15:20 | INFO     | cvvr_desktop.desktop_app.services.auth_service | Authentication service initialized
+2025-11-26 23:15:20 | INFO     | cvvr_desktop.desktop_app.utils.api_client | API client initialized - Base URL: https://api.mindcoinapps.com/ai_demo_api
+2025-11-26 23:15:20 | INFO     | cvvr_desktop.desktop_app.services.trip_service | Trip service initialized
+2025-11-26 23:15:20 | INFO     | cvvr_desktop.desktop_app.utils.api_client | API client initialized - Base URL: https://api.mindcoinapps.com/ai_demo_api
+2025-11-26 23:15:20 | INFO     | cvvr_desktop.desktop_app.services.upload_service | Upload service initialized
+2025-11-26 23:15:20 | INFO     | cvvr_desktop.desktop_app.utils.api_client | API client initialized - Base URL: http://localhost:8000
+2025-11-26 23:15:20 | INFO     | cvvr_desktop.desktop_app.services.local_processing_service | Local processing service initialized
+2025-11-26 23:15:20 | INFO     | cvvr_desktop.desktop_app.controllers.login_controller | Login controller initialized
+2025-11-26 23:15:20 | INFO     | cvvr_desktop.desktop_app.controllers.trips_controller | Trips controller initialized
+2025-11-26 23:15:20 | INFO     | cvvr_desktop.desktop_app.controllers.trips_controller | Loading pending trips
+2025-11-26 23:15:20 | INFO     | cvvr_desktop.__main__ | Main window initialized
+2025-11-26 23:15:20 | ERROR    | cvvr_desktop.desktop_app.services.trip_service | Cannot fetch trips - no authentication token
+2025-11-26 23:15:20 | INFO     | cvvr_desktop.__main__ | Application started successfully
+2025-11-26 23:15:20 | ERROR    | cvvr_desktop.desktop_app.controllers.trips_controller | Failed to load trips: Authentication required - please login
+2025-11-26 23:17:38 | INFO     | cvvr_desktop.desktop_app.controllers.login_controller | Initiating login for user: 9705589009
+2025-11-26 23:17:38 | INFO     | cvvr_desktop.desktop_app.controllers.login_controller | Login worker started for user: 9705589009
+2025-11-26 23:17:38 | INFO     | cvvr_desktop.desktop_app.services.auth_service | Attempting login for user: 9705589009
+2025-11-26 23:17:39 | ERROR    | cvvr_desktop.desktop_app.services.auth_service | Invalid response structure: {'mssg': 'Invalid encrypted Data', 'content': [], 'status': 0}
+2025-11-26 23:17:39 | WARNING  | cvvr_desktop.desktop_app.controllers.login_controller | Login failed: Invalid response from server
+2025-11-26 23:24:05 | INFO     | cvvr_desktop | Logging initialized - Level: INFO
+2025-11-26 23:24:05 | INFO     | cvvr_desktop.__main__ | ============================================================
+2025-11-26 23:24:05 | INFO     | cvvr_desktop.__main__ | Starting Locopilot CVVR Desktop v1.0.0
+2025-11-26 23:24:05 | INFO     | cvvr_desktop.__main__ | ============================================================
+2025-11-26 23:24:05 | INFO     | cvvr_desktop.desktop_app.utils.api_client | API client initialized - Base URL: https://api.mindcoinapps.com/ai_demo_api
+2025-11-26 23:24:05 | INFO     | cvvr_desktop.desktop_app.services.auth_service | Authentication service initialized
+2025-11-26 23:24:05 | INFO     | cvvr_desktop.desktop_app.utils.api_client | API client initialized - Base URL: https://api.mindcoinapps.com/ai_demo_api
+2025-11-26 23:24:05 | INFO     | cvvr_desktop.desktop_app.services.trip_service | Trip service initialized
+2025-11-26 23:24:05 | INFO     | cvvr_desktop.desktop_app.utils.api_client | API client initialized - Base URL: https://api.mindcoinapps.com/ai_demo_api
+2025-11-26 23:24:05 | INFO     | cvvr_desktop.desktop_app.services.upload_service | Upload service initialized
+2025-11-26 23:24:05 | INFO     | cvvr_desktop.desktop_app.utils.api_client | API client initialized - Base URL: http://localhost:8000
+2025-11-26 23:24:05 | INFO     | cvvr_desktop.desktop_app.services.local_processing_service | Local processing service initialized
+2025-11-26 23:24:05 | INFO     | cvvr_desktop.desktop_app.controllers.login_controller | Login controller initialized
+2025-11-26 23:24:05 | INFO     | cvvr_desktop.desktop_app.controllers.trips_controller | Trips controller initialized
+2025-11-26 23:24:05 | INFO     | cvvr_desktop.desktop_app.controllers.trips_controller | Loading pending trips
+2025-11-26 23:24:05 | INFO     | cvvr_desktop.__main__ | Main window initialized
+2025-11-26 23:24:05 | ERROR    | cvvr_desktop.desktop_app.services.trip_service | Cannot fetch trips - no authentication token
+2025-11-26 23:24:05 | INFO     | cvvr_desktop.__main__ | Application started successfully
+2025-11-26 23:24:05 | ERROR    | cvvr_desktop.desktop_app.controllers.trips_controller | Failed to load trips: Authentication required - please login
+2025-11-26 23:26:05 | INFO     | cvvr_desktop | Logging initialized - Level: INFO
+2025-11-26 23:26:05 | INFO     | cvvr_desktop.__main__ | ============================================================
+2025-11-26 23:26:05 | INFO     | cvvr_desktop.__main__ | Starting Locopilot CVVR Desktop v1.0.0
+2025-11-26 23:26:05 | INFO     | cvvr_desktop.__main__ | ============================================================
+2025-11-26 23:26:05 | INFO     | cvvr_desktop.desktop_app.utils.api_client | API client initialized - Base URL: https://api.mindcoinapps.com/ai_demo_api
+2025-11-26 23:26:05 | INFO     | cvvr_desktop.desktop_app.services.auth_service | Authentication service initialized
+2025-11-26 23:26:05 | INFO     | cvvr_desktop.desktop_app.utils.api_client | API client initialized - Base URL: https://api.mindcoinapps.com/ai_demo_api
+2025-11-26 23:26:05 | INFO     | cvvr_desktop.desktop_app.services.trip_service | Trip service initialized
+2025-11-26 23:26:05 | INFO     | cvvr_desktop.desktop_app.utils.api_client | API client initialized - Base URL: https://api.mindcoinapps.com/ai_demo_api
+2025-11-26 23:26:05 | INFO     | cvvr_desktop.desktop_app.services.upload_service | Upload service initialized
+2025-11-26 23:26:05 | INFO     | cvvr_desktop.desktop_app.utils.api_client | API client initialized - Base URL: http://localhost:8000
+2025-11-26 23:26:05 | INFO     | cvvr_desktop.desktop_app.services.local_processing_service | Local processing service initialized
+2025-11-26 23:26:05 | INFO     | cvvr_desktop.desktop_app.controllers.login_controller | Login controller initialized
+2025-11-26 23:26:05 | INFO     | cvvr_desktop.desktop_app.controllers.trips_controller | Trips controller initialized
+2025-11-26 23:26:05 | INFO     | cvvr_desktop.desktop_app.controllers.trips_controller | Loading pending trips
+2025-11-26 23:26:05 | INFO     | cvvr_desktop.__main__ | Main window initialized
+2025-11-26 23:26:05 | ERROR    | cvvr_desktop.desktop_app.services.trip_service | Cannot fetch trips - no authentication token
+2025-11-26 23:26:05 | INFO     | cvvr_desktop.__main__ | Application started successfully
+2025-11-26 23:26:06 | ERROR    | cvvr_desktop.desktop_app.controllers.trips_controller | Failed to load trips: Authentication required - please login
+2025-11-26 23:26:27 | INFO     | cvvr_desktop.__main__ | Application closing
+2025-11-26 23:26:27 | INFO     | cvvr_desktop.__main__ | Application exited with code: 0
+2025-11-26 23:26:27 | INFO     | cvvr_desktop.__main__ | ============================================================

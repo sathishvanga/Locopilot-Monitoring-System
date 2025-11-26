@@ -1,0 +1,19 @@
+# Desktop Application Dependencies
+# Locopilot CVVR Desktop Client
+
+# GUI Framework
+PySide6>=6.6.0
+
+# HTTP Client
+requests>=2.31.0
+
+# Data Validation
+pydantic>=2.5.0
+pydantic-settings>=2.1.0
+
+# Packaging
+PyInstaller>=6.0.0
+
+# Utilities
+python-multipart>=0.0.6
+
