@@ -3,6 +3,7 @@ Trips controller - Manages trips view and upload workflow
 """
 
 import os
+from typing import List, Optional
 from PySide6.QtWidgets import QFileDialog, QMessageBox
 from PySide6.QtCore import QObject, Signal, QThread
 
@@ -30,14 +31,27 @@ class LoadTripsWorker(QThread):
         super().__init__()
         self.trip_service = trip_service
     
-    def run(self):
+    def run(self) -> None:
         """Load trips in background"""
-        success, trips, error = self.trip_service.get_pending_trips()
-        
-        if success:
-            self.trips_loaded.emit(trips)
-        else:
-            self.load_failed.emit(error or "Failed to load trips")
+        try:
+            success, trips, error = self.trip_service.get_pending_trips()
+            
+            if success:
+                self.trips_loaded.emit(trips)
+            else:
+                self.load_failed.emit(error or "Failed to load trips")
+        except Exception as e:
+            logger.error(f"Load trips worker error: {e}", exc_info=True)
+            self.load_failed.emit(f"Unexpected error: {str(e)}")
+    
+    def __del__(self) -> None:
+        """Cleanup worker thread"""
+        try:
+            if self.isRunning():
+                self.terminate()
+                self.wait(3000)  # Wait up to 3 seconds
+        except Exception:
+            pass
 
 
 class UploadProcessWorker(QThread):
@@ -63,7 +77,7 @@ class UploadProcessWorker(QThread):
         video_path: str,
         trip_uuid: str,
         local_processing: LocalProcessingService,
-        auth_token: str = None
+        auth_token: Optional[str] = None
     ):
         super().__init__()
         self.video_path = video_path
@@ -71,7 +85,7 @@ class UploadProcessWorker(QThread):
         self.local_processing = local_processing
         self.auth_token = auth_token
     
-    def run(self):
+    def run(self) -> None:
         """Execute simplified upload workflow"""
         try:
             # Single call - backend handles everything!
@@ -102,6 +116,15 @@ class UploadProcessWorker(QThread):
         except Exception as e:
             logger.error(f"Upload workflow error: {e}", exc_info=True)
             self.upload_failed.emit(f"Unexpected error: {str(e)}")
+    
+    def __del__(self) -> None:
+        """Cleanup worker thread"""
+        try:
+            if self.isRunning():
+                self.terminate()
+                self.wait(3000)  # Wait up to 3 seconds
+        except Exception:
+            pass
 
 
 class TripsController(QObject):
@@ -158,18 +181,36 @@ class TripsController(QObject):
         # Load trips on initialization
         self._load_trips()
     
-    def _load_trips(self):
+    def _load_trips(self) -> None:
         """Load pending trips from API"""
         logger.info("Loading pending trips")
         self.view.set_loading(True)
+        
+        # Cleanup previous worker if exists
+        if self.load_worker is not None and self.load_worker.isRunning():
+            self.load_worker.terminate()
+            self.load_worker.wait(1000)
         
         # Create and start worker
         self.load_worker = LoadTripsWorker(self.trip_service)
         self.load_worker.trips_loaded.connect(self._on_trips_loaded)
         self.load_worker.load_failed.connect(self._on_load_failed)
+        self.load_worker.finished.connect(self._cleanup_load_worker)
         self.load_worker.start()
     
-    def _on_trips_loaded(self, trips):
+    def _cleanup_load_worker(self) -> None:
+        """Cleanup load worker thread after completion"""
+        if self.load_worker is not None:
+            try:
+                if self.load_worker.isRunning():
+                    self.load_worker.terminate()
+                    self.load_worker.wait(1000)
+            except Exception as e:
+                logger.warning(f"Error cleaning up load worker: {e}")
+            finally:
+                self.load_worker = None
+    
+    def _on_trips_loaded(self, trips: List[TripModel]) -> None:
         """
         Handle successful trips load
         
@@ -267,6 +308,11 @@ class TripsController(QObject):
             auth_token  # Pass token to backend
         )
         
+        # Cleanup previous worker if exists
+        if self.upload_worker is not None and self.upload_worker.isRunning():
+            self.upload_worker.terminate()
+            self.upload_worker.wait(1000)
+        
         self.upload_worker.progress_update.connect(
             lambda msg: self._on_progress_update(trip_uuid, msg)
         )
@@ -276,8 +322,21 @@ class TripsController(QObject):
         self.upload_worker.upload_failed.connect(
             lambda error: self._on_upload_failed(trip_uuid, error)
         )
+        self.upload_worker.finished.connect(self._cleanup_upload_worker)
         
         self.upload_worker.start()
+    
+    def _cleanup_upload_worker(self) -> None:
+        """Cleanup upload worker thread after completion"""
+        if self.upload_worker is not None:
+            try:
+                if self.upload_worker.isRunning():
+                    self.upload_worker.terminate()
+                    self.upload_worker.wait(1000)
+            except Exception as e:
+                logger.warning(f"Error cleaning up upload worker: {e}")
+            finally:
+                self.upload_worker = None
     
     def _on_progress_update(self, trip_uuid: str, message: str):
         """

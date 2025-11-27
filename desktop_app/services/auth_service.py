@@ -2,13 +2,14 @@
 Authentication service for remote API
 """
 
-from typing import Optional
+from typing import Optional, Tuple
 import requests
 
 from ..models.auth_models import LoginRequest, LoginResponse, LoginAPIResponse, AuthState
 from ..utils.api_client import APIClient
 from ..utils.logger import get_logger
 from ..utils.config import get_settings
+from ..utils.constants import MAX_USERNAME_LENGTH, MAX_PASSWORD_LENGTH
 
 
 logger = get_logger(__name__)
@@ -28,7 +29,7 @@ class AuthService:
         self.auth_state = AuthState()
         logger.info("Authentication service initialized")
     
-    def login(self, username: str, password: str) -> tuple[bool, Optional[LoginResponse], Optional[str]]:
+    def login(self, username: str, password: str) -> Tuple[bool, Optional[LoginResponse], Optional[str]]:
         """
         Authenticate user with remote API
         
@@ -41,17 +42,36 @@ class AuthService:
                 (success, user_info, error_message)
         """
         try:
-            # Validate inputs
-            if not username or not username.strip():
+            # Security: Validate and sanitize inputs
+            if not username or not isinstance(username, str):
                 return False, None, "Mobile number is required"
             
-            if not password or not password.strip():
+            if not password or not isinstance(password, str):
                 return False, None, "Password is required"
             
-            # Create login request
+            # Sanitize inputs - remove leading/trailing whitespace
+            username_clean = username.strip()
+            password_clean = password.strip()
+            
+            # Additional validation
+            if not username_clean:
+                return False, None, "Mobile number is required"
+            
+            if not password_clean:
+                return False, None, "Password is required"
+            
+            # Security: Validate username format (basic check - should be alphanumeric or phone number)
+            # Allow digits, +, -, spaces for phone numbers
+            if len(username_clean) > MAX_USERNAME_LENGTH:
+                return False, None, f"Mobile number is too long (max {MAX_USERNAME_LENGTH} characters)"
+            
+            if len(password_clean) > MAX_PASSWORD_LENGTH:
+                return False, None, f"Password is too long (max {MAX_PASSWORD_LENGTH} characters)"
+            
+            # Create login request with sanitized inputs
             login_request = LoginRequest(
-                username=username.strip(),
-                password=password.strip(),
+                username=username_clean,
+                password=password_clean,
                 osType=1,  # Desktop
                 captchaToken=""  # Skip captcha for desktop
             )

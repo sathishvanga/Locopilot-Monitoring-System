@@ -7,7 +7,7 @@ This service handles the main business logic for processing uploaded videos.
 import os
 import shutil
 import time
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Tuple
 from pathlib import Path
 
 from ..utils.logger import get_logger
@@ -15,6 +15,8 @@ from ..utils.config import get_settings
 from ..repositories.activity_repository import ActivityRepository
 from .activity_detection_service import ActivityDetectionService
 from .external_api_service import get_external_api_service
+from ..exceptions import VideoProcessingError, VideoValidationError, VideoNotFoundError, VideoUploadError
+from ..utils.crew_helpers import get_default_crew_name, get_default_crew_id
 
 
 logger = get_logger(__name__)
@@ -57,7 +59,7 @@ class VideoProcessingService:
             f"Output dir: {settings.output_dir}, Upload dir: {settings.upload_dir}"
         )
     
-    def validate_video_file(self, filename: str, file_size: int) -> tuple[bool, Optional[str]]:
+    def validate_video_file(self, filename: str, file_size: int) -> Tuple[bool, Optional[str]]:
         """
         Validate uploaded video file
         
@@ -66,17 +68,19 @@ class VideoProcessingService:
             file_size: Size of the file in bytes
             
         Returns:
-            tuple[bool, Optional[str]]: (is_valid, error_message)
+            Tuple[bool, Optional[str]]: (is_valid, error_message)
         """
         # Check file extension
         file_ext = os.path.splitext(filename)[1].lower()
         if file_ext not in settings.allowed_video_extensions:
-            return False, f"Invalid file extension. Allowed: {', '.join(settings.allowed_video_extensions)}"
+            error_msg = f"Invalid file extension. Allowed: {', '.join(settings.allowed_video_extensions)}"
+            return False, error_msg
         
         # Check file size
         if file_size > settings.max_upload_size:
             max_size_mb = settings.max_upload_size / (1024 * 1024)
-            return False, f"File too large. Maximum size: {max_size_mb:.0f} MB"
+            error_msg = f"File too large. Maximum size: {max_size_mb:.0f} MB"
+            return False, error_msg
         
         if file_size == 0:
             return False, "File is empty"
@@ -90,7 +94,10 @@ class VideoProcessingService:
         trip_id: str
     ) -> str:
         """
-        Save uploaded video file to disk
+        Save uploaded video file to disk asynchronously.
+        
+        Uses asyncio.to_thread to perform file I/O in a thread pool,
+        preventing blocking of the event loop.
         
         Args:
             file_content: Video file content
@@ -101,31 +108,56 @@ class VideoProcessingService:
             str: Path to saved video file
             
         Raises:
-            IOError: If file saving fails
+            VideoUploadError: If file saving fails
         """
+        import asyncio
+        
+        def _write_file() -> str:
+            """Synchronous file write function to run in thread pool."""
+            try:
+                # Create safe filename
+                file_ext = os.path.splitext(filename)[1].lower()
+                safe_filename = f"{trip_id}_{int(time.time())}{file_ext}"
+                file_path = os.path.join(settings.upload_dir, safe_filename)
+                
+                # Ensure upload directory exists
+                os.makedirs(settings.upload_dir, exist_ok=True)
+                
+                # Save file
+                with open(file_path, 'wb') as f:
+                    f.write(file_content)
+                
+                logger.info(f"Video saved to {file_path} ({len(file_content)} bytes)")
+                
+                return file_path
+                
+            except Exception as e:
+                logger.error(f"Failed to save video: {e}", exc_info=True)
+                raise VideoUploadError(
+                    message=f"Failed to save video: {str(e)}",
+                    video_path=os.path.join(settings.upload_dir, filename),
+                    trip_id=trip_id
+                ) from e
+        
         try:
-            # Create safe filename
-            file_ext = os.path.splitext(filename)[1].lower()
-            safe_filename = f"{trip_id}_{int(time.time())}{file_ext}"
-            file_path = os.path.join(settings.upload_dir, safe_filename)
-            
-            # Save file
-            with open(file_path, 'wb') as f:
-                f.write(file_content)
-            
-            logger.info(f"Video saved to {file_path} ({len(file_content)} bytes)")
-            
+            # Run file I/O in thread pool to avoid blocking event loop
+            file_path = await asyncio.to_thread(_write_file)
             return file_path
-            
+        except VideoUploadError:
+            raise
         except Exception as e:
-            logger.error(f"Failed to save video: {e}", exc_info=True)
-            raise IOError(f"Failed to save video: {str(e)}") from e
+            logger.error(f"Unexpected error saving video: {e}", exc_info=True)
+            raise VideoUploadError(
+                message=f"Unexpected error saving video: {str(e)}",
+                video_path=os.path.join(settings.upload_dir, filename),
+                trip_id=trip_id
+            ) from e
     
     def process_video(
         self,
         video_path: str,
         trip_id: str,
-        crew_members: Dict[str, Dict[str, str]] = None,
+        crew_members: Optional[Dict[str, Dict[str, str]]] = None,
         crew_name: str = "John Doe",
         crew_id: str = "C-001",
         crew_role: int = 1,
@@ -165,7 +197,11 @@ class VideoProcessingService:
             # Validate video file exists
             if not os.path.exists(video_path):
                 logger.error(f"❌ Video file not found: {video_path}")
-                raise FileNotFoundError(f"Video file not found: {video_path}")
+                raise VideoNotFoundError(
+                    message=f"Video file not found: {video_path}",
+                    video_path=video_path,
+                    trip_id=trip_id
+                )
             
             logger.info(f"✅ Video file validated: {video_path}")
             
@@ -294,13 +330,20 @@ class VideoProcessingService:
             
             return response
             
+        except (VideoProcessingError, VideoNotFoundError, VideoValidationError):
+            # Re-raise custom exceptions as-is
+            raise
         except Exception as e:
             processing_time = time.time() - start_time
             logger.error(
                 f"❌ Video processing failed after {processing_time:.2f}s for trip {trip_id}: {e}",
                 exc_info=True
             )
-            raise
+            raise VideoProcessingError(
+                message=f"Video processing failed: {str(e)}",
+                video_path=video_path,
+                trip_id=trip_id
+            ) from e
     
     def cleanup_uploaded_video(self, video_path: str) -> None:
         """
@@ -352,4 +395,180 @@ class VideoProcessingService:
                 "status": "error",
                 "message": str(e)
             }
+    
+    def process_and_upload_workflow(
+        self,
+        video_path: str,
+        trip_id: str,
+        crew_members: Optional[Dict[str, Dict[str, str]]],
+        subfolder_name: str,
+        auth_token: Optional[str],
+        use_mock_detection: bool,
+        use_multiprocessing: bool,
+        save_clips: bool,
+        s3_upload_service: Any  # S3UploadService type, avoiding circular import
+    ) -> Dict[str, Any]:
+        """
+        Complete workflow: process video and upload to S3.
+        
+        This method orchestrates:
+        1. Process video (activity detection)
+        2. Upload original video to S3
+        3. Upload evidence clips to S3
+        4. Update activities.json with S3 URLs
+        
+        Args:
+            video_path: Path to video file
+            trip_id: Trip identifier
+            crew_members: Dictionary mapping role to crew member info
+            subfolder_name: S3 subfolder name
+            auth_token: Optional authentication token for S3
+            use_mock_detection: Use mock detection
+            use_multiprocessing: Enable multiprocessing
+            save_clips: Whether to save clips
+            s3_upload_service: S3 upload service instance
+            
+        Returns:
+            Dict with processing results and S3 URLs
+            
+        Raises:
+            VideoProcessingError: If processing fails
+            S3UploadError: If S3 upload fails
+        """
+        import json
+        
+        logger.info(f"🎬 Starting process-and-upload workflow for trip: {trip_id}")
+        
+        # Step 1: Process video
+        result = self.process_video(
+            video_path=video_path,
+            trip_id=trip_id,
+            crew_members=crew_members,
+            crew_name=get_default_crew_name(crew_members) if crew_members else "Unknown",
+            crew_id=get_default_crew_id(crew_members) if crew_members else "N/A",
+            crew_role=1,
+            use_mock_detection=use_mock_detection,
+            use_multiprocessing=use_multiprocessing,
+            save_clips=save_clips
+        )
+        
+        run_dir = result.get('runDirectory', result.get('run_dir', ''))
+        clip_files = result.get('clip_files', result.get('clipFiles', []))
+        
+        # Step 2: Upload original video to S3
+        logger.info(f"☁️ Uploading original video to S3 (subfolder: {subfolder_name})")
+        video_upload_success, video_s3_url, video_error = s3_upload_service.upload_file(
+            file_path=video_path,
+            subfolder=subfolder_name,
+            auth_token=auth_token
+        )
+        
+        if not video_upload_success:
+            logger.error(f"Failed to upload video to S3: {video_error}")
+            raise VideoUploadError(
+                message=f"Video processing succeeded but S3 upload failed: {video_error}",
+                video_path=video_path,
+                trip_id=trip_id
+            )
+        
+        logger.info(f"✅ Video uploaded to S3: {video_s3_url}")
+        
+        # Step 3: Upload evidence files (clips + images) to S3
+        evidence_urls: List[str] = []
+        upload_errors: List[str] = []
+        s3_file_mapping: Dict[str, str] = {}
+        
+        if clip_files:
+            logger.info(f"☁️ Uploading {len(clip_files)} evidence files (clips + images) to S3")
+            
+            # Collect all files to upload (clips + their corresponding images)
+            all_files_to_upload: List[str] = []
+            for clip_file in clip_files:
+                all_files_to_upload.append(clip_file)
+                
+                # Find corresponding image file
+                image_file = clip_file.replace('_clip.mp4', '_activity.jpg')
+                if os.path.exists(image_file):
+                    all_files_to_upload.append(image_file)
+            
+            logger.info(f"☁️ Total files to upload: {len(all_files_to_upload)} (clips + images)")
+            
+            # Upload all files
+            clips_success, file_urls, clip_errors = s3_upload_service.upload_multiple_files(
+                file_paths=all_files_to_upload,
+                subfolder=subfolder_name,
+                auth_token=auth_token
+            )
+            
+            # Create mapping from local path to S3 URL
+            for local_path, s3_url in zip(all_files_to_upload, file_urls):
+                s3_file_mapping[local_path] = s3_url
+            
+            evidence_urls = [url for url in file_urls if '_clip.mp4' in url]
+            upload_errors = clip_errors
+            
+            if not clips_success:
+                logger.warning(f"Some files failed to upload: {clip_errors}")
+            
+            logger.info(f"✅ Uploaded {len(file_urls)}/{len(all_files_to_upload)} files to S3")
+        
+        # Step 4: Update activities.json with S3 URLs
+        logger.info("📝 Updating activities.json with S3 URLs")
+        
+        activities_json_path = os.path.join(run_dir, 'activities.json')
+        updated_activities: List[Dict[str, Any]] = []
+        
+        if os.path.exists(activities_json_path):
+            # Read existing activities
+            with open(activities_json_path, 'r', encoding='utf-8') as f:
+                activities = json.load(f)
+            
+            # Update each activity with S3 URLs
+            for activity in activities:
+                # Update activityClip with S3 URL
+                if 'activityClip' in activity and activity['activityClip']:
+                    local_clip_path = activity['activityClip']
+                    if local_clip_path in s3_file_mapping:
+                        activity['activityClip'] = s3_file_mapping[local_clip_path]
+                        logger.debug(f"Updated clip URL: {local_clip_path} -> {s3_file_mapping[local_clip_path]}")
+                
+                # Update activityImage with S3 URL
+                if 'activityImage' in activity and activity['activityImage']:
+                    local_image_path = activity['activityImage']
+                    if local_image_path in s3_file_mapping:
+                        activity['activityImage'] = s3_file_mapping[local_image_path]
+                        logger.debug(f"Updated image URL: {local_image_path} -> {s3_file_mapping[local_image_path]}")
+                
+                updated_activities.append(activity)
+            
+            # Save updated activities.json with S3 URLs
+            with open(activities_json_path, 'w', encoding='utf-8') as f:
+                json.dump(updated_activities, f, indent=2, ensure_ascii=False)
+            
+            logger.info(f"✅ Updated {len(updated_activities)} activities with S3 URLs")
+            activities = updated_activities
+        else:
+            activities = result.get('activities', [])
+        
+        # Prepare response
+        response_data = {
+            "status": "success",
+            "message": "Video processed and uploaded successfully",
+            "data": {
+                "tripId": trip_id,
+                "run_id": os.path.basename(run_dir) if run_dir else "",
+                "run_dir": run_dir,
+                "activities_count": len(activities),
+                "processing_time_seconds": result.get('processingTime', result.get('processing_time', 0)),
+                "video_url": video_s3_url,
+                "evidence_clips": evidence_urls,
+                "clips_uploaded": len(evidence_urls),
+                "total_clips": len(clip_files),
+                "upload_errors": upload_errors if upload_errors else None,
+                "activities": activities
+            }
+        }
+        
+        logger.info(f"✅ Complete workflow finished for trip: {trip_id}")
+        return response_data
 

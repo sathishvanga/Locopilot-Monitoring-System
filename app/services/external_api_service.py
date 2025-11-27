@@ -12,6 +12,7 @@ from datetime import datetime
 
 from ..utils.logger import get_logger
 from ..utils.config import get_settings
+from ..exceptions import ExternalAPIError
 
 
 logger = get_logger(__name__)

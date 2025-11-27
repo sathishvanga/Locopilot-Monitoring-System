@@ -2,9 +2,9 @@
 Configuration management using Pydantic Settings
 """
 
-from typing import Optional
+from typing import Optional, List
 from pydantic_settings import BaseSettings, SettingsConfigDict
-from pydantic import Field
+from pydantic import Field, field_validator
 
 
 class Settings(BaseSettings):
@@ -46,10 +46,38 @@ class Settings(BaseSettings):
     max_file_size: int = Field(default=2 * 1024 * 1024 * 1024, description="Max file size (2GB)")
     
     # Video file extensions
-    allowed_video_extensions: list[str] = Field(
+    allowed_video_extensions: List[str] = Field(
         default=[".mp4", ".avi", ".mov", ".mkv", ".flv", ".wmv"],
         description="Allowed video file extensions"
     )
+    
+    @field_validator('local_backend_port')
+    @classmethod
+    def validate_port(cls, v: int) -> int:
+        """Validate port number"""
+        if not (1 <= v <= 65535):
+            raise ValueError("local_backend_port must be between 1 and 65535")
+        return v
+    
+    @field_validator('max_file_size')
+    @classmethod
+    def validate_max_file_size(cls, v: int) -> int:
+        """Validate max file size is reasonable"""
+        if v <= 0:
+            raise ValueError("max_file_size must be positive")
+        if v > 10 * 1024 * 1024 * 1024:  # 10 GB
+            raise ValueError("max_file_size cannot exceed 10 GB")
+        return v
+    
+    @field_validator('request_timeout', 'upload_timeout', 'processing_timeout')
+    @classmethod
+    def validate_timeout(cls, v: int) -> int:
+        """Validate timeout values"""
+        if v <= 0:
+            raise ValueError("Timeout must be positive")
+        if v > 86400:  # 24 hours
+            raise ValueError("Timeout cannot exceed 24 hours")
+        return v
     
     # Logging
     log_level: str = Field(default="INFO", description="Logging level")
@@ -64,7 +92,7 @@ class Settings(BaseSettings):
     
     # Backend management
     auto_start_backend: bool = Field(default=True, description="Automatically start local backend on app launch")
-    backend_startup_timeout: int = Field(default=10, description="Seconds to wait for backend startup")
+    backend_startup_timeout: int = Field(default=30, description="Seconds to wait for backend startup (increased for ML model loading)")
     
     model_config = SettingsConfigDict(
         env_prefix="CVVR_",

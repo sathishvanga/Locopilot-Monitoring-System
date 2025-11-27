@@ -39,22 +39,31 @@ class MainWindow(QMainWindow):
     
     def __init__(self):
         """Initialize main window"""
-        super().__init__()
-        
-        # Initialize backend manager (but don't start yet to avoid blocking)
-        self.backend_manager = BackendManager()
-        
-        # Initialize services
-        self.auth_service = AuthService()
-        self.trip_service = TripService()
-        self.upload_service = UploadService()
-        self.local_processing_service = LocalProcessingService()
-        
-        # Setup UI
-        self._setup_ui()
-        self._setup_controllers()
-        
-        logger.info("Main window initialized")
+        try:
+            super().__init__()
+            
+            # Initialize backend manager
+            self.backend_manager = BackendManager()
+            
+            # Initialize services
+            self.auth_service = AuthService()
+            self.trip_service = TripService()
+            self.upload_service = UploadService()
+            self.local_processing_service = LocalProcessingService()
+            
+            # Setup UI
+            self._setup_ui()
+            self._setup_controllers()
+            
+            # Start backend immediately if auto-start is enabled
+            # Use QTimer to avoid blocking UI initialization
+            if settings.auto_start_backend:
+                QTimer.singleShot(100, self._start_backend_async)
+            
+            logger.info("Main window initialized")
+        except Exception as e:
+            logger.critical(f"Failed to initialize main window: {e}", exc_info=True)
+            raise  # Re-raise to be caught by main()
     
     def _setup_ui(self):
         """Setup main window UI"""
@@ -90,23 +99,13 @@ class MainWindow(QMainWindow):
             }
         """)
     
-    def showEvent(self, event):
-        """
-        Handle show event - start backend after window is visible
-        
-        Args:
-            event: Show event
-        """
-        super().showEvent(event)
-        
-        # Start backend after window is shown to avoid blocking UI
-        if settings.auto_start_backend and not hasattr(self, '_backend_started'):
-            self._backend_started = True
-            # Use QTimer to start backend in the next event loop iteration
-            QTimer.singleShot(100, self._start_backend_async)
-    
     def _start_backend_async(self):
-        """Start backend asynchronously after UI is shown"""
+        """Start backend asynchronously to avoid blocking UI"""
+        # Prevent multiple startup attempts
+        if hasattr(self, '_backend_started'):
+            return
+        
+        self._backend_started = True
         logger.info("Auto-starting local backend...")
         backend_started = self.backend_manager.start_backend()
         if backend_started:
@@ -146,15 +145,23 @@ class MainWindow(QMainWindow):
         # Switch to trips view
         self.stacked_widget.setCurrentWidget(self.trips_view)
         
-        # Reload trips controller to refresh data
-        self.trips_controller = TripsController(
-            self.trips_view,
-            self.auth_service,
-            self.trip_service,
-            self.upload_service,
-            self.local_processing_service
-        )
-        self.trips_controller.logout_requested.connect(self._on_logout_requested)
+        # Reuse existing controller instead of recreating - just refresh data
+        if hasattr(self, 'trips_controller') and self.trips_controller is not None:
+            # Update auth tokens in existing controller
+            if token:
+                self.trip_service.set_auth_token(token)
+            # Trigger data refresh
+            self.trips_controller._load_trips()
+        else:
+            # Create controller only if it doesn't exist
+            self.trips_controller = TripsController(
+                self.trips_view,
+                self.auth_service,
+                self.trip_service,
+                self.upload_service,
+                self.local_processing_service
+            )
+            self.trips_controller.logout_requested.connect(self._on_logout_requested)
     
     def _on_logout_requested(self):
         """Handle logout - navigate to login view"""
@@ -187,35 +194,50 @@ def main():
     """
     Main entry point for the application
     """
-    logger.info("=" * 60)
-    logger.info(f"Starting {settings.app_name} v{settings.app_version}")
-    logger.info("=" * 60)
-    
-    # Create application
-    app = QApplication(sys.argv)
-    
-    # Set application properties
-    app.setApplicationName(settings.app_name)
-    app.setApplicationVersion(settings.app_version)
-    app.setOrganizationName("MINDCOIN Services")
-    
-    # Enable high DPI scaling
-    app.setAttribute(Qt.AA_EnableHighDpiScaling, True)
-    app.setAttribute(Qt.AA_UseHighDpiPixmaps, True)
-    
-    # Create and show main window
-    window = MainWindow()
-    window.show()
-    
-    logger.info("Application started successfully")
-    
-    # Start event loop
-    exit_code = app.exec()
-    
-    logger.info(f"Application exited with code: {exit_code}")
-    logger.info("=" * 60)
-    
-    return exit_code
+    try:
+        logger.info("=" * 60)
+        logger.info(f"Starting {settings.app_name} v{settings.app_version}")
+        logger.info("=" * 60)
+        
+        # Create application
+        app = QApplication(sys.argv)
+        
+        # Set application properties
+        app.setApplicationName(settings.app_name)
+        app.setApplicationVersion(settings.app_version)
+        app.setOrganizationName("MINDCOIN Services")
+        
+        # Enable high DPI scaling
+        app.setAttribute(Qt.AA_EnableHighDpiScaling, True)
+        app.setAttribute(Qt.AA_UseHighDpiPixmaps, True)
+        
+        # Create and show main window
+        window = MainWindow()
+        window.show()
+        
+        logger.info("Application started successfully")
+        
+        # Start event loop
+        exit_code = app.exec()
+        
+        logger.info(f"Application exited with code: {exit_code}")
+        logger.info("=" * 60)
+        
+        return exit_code
+    except Exception as e:
+        logger.critical(f"Fatal error during application startup: {e}", exc_info=True)
+        # Show error to user if possible
+        try:
+            from PySide6.QtWidgets import QMessageBox
+            msg = QMessageBox()
+            msg.setIcon(QMessageBox.Critical)
+            msg.setWindowTitle("Application Error")
+            msg.setText(f"Application failed to start:\n{str(e)}")
+            msg.setDetailedText(str(e))
+            msg.exec()
+        except:
+            pass
+        return 1
 
 
 if __name__ == "__main__":

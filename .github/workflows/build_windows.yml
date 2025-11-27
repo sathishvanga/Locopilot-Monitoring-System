@@ -3,7 +3,7 @@ name: Build Windows Desktop App
 on:
   push:
     branches:
-      - main
+      - refactored_code
     paths:
       - 'desktop_app/**'
       - '.github/workflows/build_windows.yml'

@@ -11,12 +11,21 @@ import time
 import socket
 import subprocess
 import signal
-from typing import Optional
+import shlex
+import shutil
+from typing import Optional, Dict, Any
 from pathlib import Path
 import requests
 
 from ..utils.logger import get_logger
 from ..utils.config import get_settings
+from ..utils.backend_health import check_backend_health
+from ..utils.path_utils import is_packaged, get_backend_path, get_gunicorn_config_path, validate_path
+from ..utils.constants import (
+    DEFAULT_WORKER_COUNT,
+    DEFAULT_WORKER_TIMEOUT,
+    DEFAULT_BACKEND_PORT
+)
 
 
 logger = get_logger(__name__)
@@ -45,7 +54,7 @@ class BackendManager:
         Returns:
             bool: True if running from packaged app, False if running from source
         """
-        return getattr(sys, 'frozen', False) and hasattr(sys, '_MEIPASS')
+        return is_packaged()
     
     def _get_backend_path(self) -> Path:
         """
@@ -53,29 +62,11 @@ class BackendManager:
         
         Returns:
             Path: Path to the 'app' directory containing backend code
+            
+        Raises:
+            FileNotFoundError: If backend path cannot be determined
         """
-        if self._is_packaged():
-            # In packaged macOS app, backend is in Contents/Resources/app
-            # sys._MEIPASS can point to Contents/Frameworks, so we need to adjust
-            meipass = Path(sys._MEIPASS)
-            logger.info(f"sys._MEIPASS: {meipass}")
-            
-            # Check if we're in Frameworks directory and adjust to Resources
-            if meipass.name == 'Frameworks':
-                # Navigate to Contents/Resources instead
-                backend_path = meipass.parent / 'Resources' / 'app'
-            else:
-                # Standard path
-                backend_path = meipass / 'app'
-            
-            logger.info(f"Using packaged backend at: {backend_path}")
-        else:
-            # In development, backend is in project root
-            desktop_app_dir = Path(__file__).parent.parent
-            backend_path = desktop_app_dir.parent / 'app'
-            logger.info(f"Using development backend at: {backend_path}")
-        
-        return backend_path
+        return get_backend_path()
     
     def is_backend_running(self) -> bool:
         """
@@ -84,36 +75,30 @@ class BackendManager:
         Returns:
             bool: True if backend is running and healthy, False otherwise
         """
-        try:
-            # Try to connect to the port
-            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            sock.settimeout(2)
-            result = sock.connect_ex(('localhost', settings.local_backend_port))
-            sock.close()
+        return check_backend_health(
+            backend_url=settings.local_backend_url,
+            backend_port=settings.local_backend_port,
+            timeout=5
+        )
+    
+    def _get_gunicorn_config_path(self, project_root: Path) -> Optional[Path]:
+        """
+        Get path to gunicorn_config.py (packaged or development)
+        
+        Args:
+            project_root: Project root directory
             
-            if result == 0:
-                # Port is open, check if it's our API with health endpoint
-                try:
-                    response = requests.get(
-                        f"{settings.local_backend_url}/health",
-                        timeout=5
-                    )
-                    return response.status_code == 200
-                except:
-                    return False
-            
-            return False
-            
-        except Exception as e:
-            logger.debug(f"Backend check error: {e}")
-            return False
+        Returns:
+            Path: Path to gunicorn_config.py, or None if not found
+        """
+        return get_gunicorn_config_path(project_root)
     
     def start_backend(self) -> bool:
         """
-        Start the FastAPI backend process
+        Start the FastAPI backend process using Gunicorn
         
         If backend is already running, reuses existing instance.
-        Otherwise, spawns a new uvicorn subprocess.
+        Otherwise, spawns a new gunicorn subprocess with gunicorn_config.py.
         
         Returns:
             bool: True if backend is running (new or existing), False if failed to start
@@ -128,7 +113,12 @@ class BackendManager:
             logger.info("Starting FastAPI backend...")
             
             # Get backend path (works in both packaged and development mode)
-            backend_path = self._get_backend_path()
+            try:
+                backend_path = self._get_backend_path()
+            except FileNotFoundError as e:
+                logger.error(f"Backend path not found: {e}")
+                return False
+            
             app_main_path = backend_path / "main.py"
             
             # Verify the app.main module exists
@@ -141,7 +131,14 @@ class BackendManager:
             project_root = backend_path.parent
             logger.info(f"Backend project root: {project_root}")
             
-            # Build uvicorn command
+            # Security: Validate project root path
+            try:
+                project_root = validate_path(project_root, must_exist=True)
+            except (ValueError, FileNotFoundError) as e:
+                logger.error(f"Invalid project root: {e}")
+                return False
+            
+            # Build gunicorn command
             # In packaged mode, sys.executable may not support spawning processes
             # Try to find system Python as fallback
             python_exe = sys.executable
@@ -150,23 +147,86 @@ class BackendManager:
                 # Try to use system Python instead of the packaged executable
                 import shutil
                 system_python = shutil.which('python3') or shutil.which('python')
+                
+                # Security: Validate system Python path
+                if system_python:
+                    system_python_real = os.path.realpath(system_python)
+                    if not os.path.exists(system_python_real) or not os.access(system_python_real, os.X_OK):
+                        logger.error(f"System Python path is invalid or not executable: {system_python_real}")
+                        system_python = None
                 if system_python:
                     logger.info(f"Using system Python: {system_python}")
                     python_exe = system_python
+                    
+                    # Check if system Python has required packages
+                    try:
+                        import subprocess as sp
+                        check_cmd = [python_exe, "-c", "import gunicorn, uvicorn, fastapi, torch; print('OK')"]
+                        result = sp.run(check_cmd, capture_output=True, timeout=5)
+                        if result.returncode != 0:
+                            logger.error(
+                                f"System Python at {python_exe} is missing required packages.\n"
+                                f"Please install: pip install gunicorn uvicorn fastapi torch ultralytics\n"
+                                f"Error: {result.stderr.decode('utf-8', errors='ignore')}"
+                            )
+                            return False
+                    except Exception as e:
+                        logger.warning(f"Could not verify system Python packages: {e}")
                 else:
                     logger.warning("No system Python found, using packaged executable (may fail)")
             
-            cmd = [
-                python_exe,
-                "-m", "uvicorn",
-                "app.main:app",
-                "--host", "127.0.0.1",
-                "--port", str(settings.local_backend_port),
-                "--log-level", "warning"
-            ]
+            # Find gunicorn_config.py path
+            gunicorn_config_path = self._get_gunicorn_config_path(project_root)
+            
+            # Validate and sanitize paths before building command
+            # Security: Validate python_exe path
+            if not os.path.exists(python_exe) and not shutil.which(python_exe):
+                logger.error(f"Python executable not found or invalid: {python_exe}")
+                return False
+            
+            # Security: Validate project_root path
+            project_root_real = os.path.realpath(str(project_root))
+            if not os.path.isdir(project_root_real):
+                logger.error(f"Invalid project root directory: {project_root_real}")
+                return False
+            
+            # Build gunicorn command with sanitized paths
+            if gunicorn_config_path and gunicorn_config_path.exists():
+                # Security: Validate config path is within project root
+                config_path_real = os.path.realpath(str(gunicorn_config_path))
+                if not config_path_real.startswith(project_root_real + os.sep):
+                    logger.error(f"Config path outside project root: {config_path_real}")
+                    return False
+                
+                logger.info(f"Using gunicorn config: {gunicorn_config_path}")
+                # Use gunicorn with config file - paths are validated
+                cmd = [
+                    python_exe,
+                    "-m", "gunicorn",
+                    "app.main:app",
+                    "-c", config_path_real,  # Use realpath
+                    "--bind", f"127.0.0.1:{settings.local_backend_port}"
+                ]
+            else:
+                # Fallback: Use gunicorn without config file (with inline settings)
+                logger.warning(f"gunicorn_config.py not found, using gunicorn with inline settings")
+                logger.warning(f"Searched in: {project_root}")
+                cmd = [
+                    python_exe,
+                    "-m", "gunicorn",
+                    "app.main:app",
+                    "--bind", f"127.0.0.1:{settings.local_backend_port}",
+                    "--workers", str(DEFAULT_WORKER_COUNT),  # Single worker for desktop app
+                    "--worker-class", "uvicorn.workers.UvicornWorker",
+                    "--timeout", str(DEFAULT_WORKER_TIMEOUT),  # 10 minutes for video processing
+                    "--log-level", "warning"
+                ]
             
             # Prepare environment variables
             env = os.environ.copy()
+            
+            # Set GUNICORN_BIND to localhost for desktop app security
+            env['GUNICORN_BIND'] = f"127.0.0.1:{settings.local_backend_port}"
             
             # In packaged mode, ensure Python can find the backend modules
             if self._is_packaged():
@@ -177,10 +237,18 @@ class BackendManager:
                     env['PYTHONPATH'] = str(project_root)
                 logger.info(f"Set PYTHONPATH to: {env['PYTHONPATH']}")
             
+            # Security: Validate all command arguments are safe
+            # All paths have been validated above, but double-check
+            for arg in cmd:
+                if isinstance(arg, str) and ('..' in arg or arg.startswith('/') and not arg.startswith(project_root_real)):
+                    logger.error(f"Unsafe command argument detected: {arg}")
+                    return False
+            
             # Start backend process with proper working directory and environment
+            # Security: Use validated realpath for working directory
             self.backend_process = subprocess.Popen(
                 cmd,
-                cwd=str(project_root),
+                cwd=project_root_real,  # Use validated realpath
                 env=env,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
@@ -190,6 +258,7 @@ class BackendManager:
             )
             
             logger.info(f"Backend process started with PID: {self.backend_process.pid}")
+            logger.info(f"Command: {' '.join(cmd)}")
             self.backend_started_by_us = True
             
             # Wait for backend to become available
@@ -197,13 +266,41 @@ class BackendManager:
                 logger.info("Backend started successfully")
                 return True
             else:
+                # Check if process crashed
+                if self.backend_process.poll() is not None:
+                    # Process terminated - read error output
+                    try:
+                        stderr_output = self.backend_process.stderr.read().decode('utf-8', errors='ignore')
+                        stdout_output = self.backend_process.stdout.read().decode('utf-8', errors='ignore')
+                        logger.error(f"Backend process crashed with exit code: {self.backend_process.returncode}")
+                        if stderr_output:
+                            # Log full stderr (not truncated) - it's important for debugging
+                            logger.error(f"Backend stderr:\n{stderr_output}")
+                        if stdout_output:
+                            logger.error(f"Backend stdout:\n{stdout_output}")
+                    except Exception as e:
+                        logger.error(f"Could not read backend error output: {e}")
+                else:
+                    logger.warning("Backend process is still running but not responding to health checks")
+                    # Try to read any available output
+                    try:
+                        # Use non-blocking read
+                        import select
+                        if os.name != 'nt':  # select doesn't work on Windows
+                            if select.select([self.backend_process.stderr], [], [], 0)[0]:
+                                stderr_output = self.backend_process.stderr.read(500).decode('utf-8', errors='ignore')
+                                if stderr_output:
+                                    logger.warning(f"Backend stderr (partial): {stderr_output}")
+                    except:
+                        pass
+                
                 logger.warning("Backend failed to start within timeout")
                 self._force_stop_backend()
                 return False
             
         except FileNotFoundError as e:
-            logger.error(f"Failed to start backend - uvicorn not found: {e}")
-            logger.error("Please ensure uvicorn is installed: pip install uvicorn")
+            logger.error(f"Failed to start backend - gunicorn not found: {e}")
+            logger.error("Please ensure gunicorn is installed: pip install gunicorn")
             return False
             
         except Exception as e:
@@ -220,15 +317,33 @@ class BackendManager:
         Returns:
             bool: True if backend became available, False if timeout
         """
-        logger.debug(f"Waiting for backend startup (timeout: {timeout}s)")
+        logger.info(f"Waiting for backend startup (timeout: {timeout}s)")
         
         start_time = time.time()
-        while time.time() - start_time < timeout:
-            if self.is_backend_running():
-                logger.debug("Backend is ready")
-                return True
-            time.sleep(0.5)
+        check_interval = 0.5
+        last_log_time = start_time
         
+        while time.time() - start_time < timeout:
+            # Check if process crashed
+            if self.backend_process and self.backend_process.poll() is not None:
+                logger.error(f"Backend process terminated unexpectedly with exit code: {self.backend_process.returncode}")
+                return False
+            
+            # Check if backend is responding
+            if self.is_backend_running():
+                elapsed = time.time() - start_time
+                logger.info(f"Backend is ready (started in {elapsed:.1f}s)")
+                return True
+            
+            # Log progress every 2 seconds
+            if time.time() - last_log_time >= 2:
+                elapsed = time.time() - start_time
+                logger.debug(f"Still waiting for backend... ({elapsed:.1f}s / {timeout}s)")
+                last_log_time = time.time()
+            
+            time.sleep(check_interval)
+        
+        logger.warning(f"Backend did not become available within {timeout}s")
         return False
     
     def stop_backend(self) -> None:
@@ -294,7 +409,7 @@ class BackendManager:
         except Exception as e:
             logger.error(f"Error force killing backend: {e}")
     
-    def get_backend_status(self) -> dict:
+    def get_backend_status(self) -> Dict[str, Any]:
         """
         Get backend status information
         

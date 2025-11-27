@@ -2,7 +2,7 @@
 Trip service for fetching and managing CVVR trips
 """
 
-from typing import List, Optional
+from typing import List, Optional, Tuple
 import requests
 
 from ..models.trip_models import TripModel, TripsAPIResponse
@@ -43,7 +43,7 @@ class TripService:
         self.auth_token = token
         logger.debug("Authentication token updated")
     
-    def get_pending_trips(self) -> tuple[bool, List[TripModel], Optional[str]]:
+    def get_pending_trips(self) -> Tuple[bool, List[TripModel], Optional[str]]:
         """
         Fetch all pending trips from API
         
@@ -135,7 +135,7 @@ class TripService:
             logger.error(f"Unexpected error fetching trips: {e}", exc_info=True)
             return False, [], f"Failed to fetch trips: {str(e)}"
     
-    def refresh_trips(self) -> tuple[bool, List[TripModel], Optional[str]]:
+    def refresh_trips(self) -> Tuple[bool, List[TripModel], Optional[str]]:
         """
         Refresh trips list (alias for get_pending_trips)
         

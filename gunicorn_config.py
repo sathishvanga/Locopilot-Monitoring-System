@@ -29,7 +29,10 @@ max_requests = 100
 max_requests_jitter = 10
 
 # Binding
-bind = "0.0.0.0:8000"
+# For desktop app, use localhost (127.0.0.1) for security
+# For server deployment, use 0.0.0.0 to accept external connections
+# Can be overridden via GUNICORN_BIND environment variable
+bind = os.getenv("GUNICORN_BIND", "0.0.0.0:8000")
 
 # Logging
 accesslog = "-"  # Log to stdout

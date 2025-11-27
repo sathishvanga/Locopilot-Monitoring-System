@@ -7,7 +7,7 @@ For now, it provides a placeholder/mock implementation.
 
 import random
 import gc
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 from datetime import datetime, timedelta
 
 from ..utils.logger import get_logger
@@ -71,7 +71,7 @@ class ActivityDetectionService:
         self,
         video_path: str,
         trip_id: str,
-        crew_members: Dict[str, Dict[str, str]] = None,
+        crew_members: Optional[Dict[str, Dict[str, str]]] = None,
         crew_name: str = "John Doe",
         crew_id: str = "C-001",
         crew_role: int = 1
@@ -220,13 +220,13 @@ class ActivityDetectionService:
         self,
         video_path: str,
         trip_id: str,
-        crew_members: Dict[str, Dict[str, str]] = None,
+        crew_members: Optional[Dict[str, Dict[str, str]]] = None,
         crew_name: str = "John Doe",
         crew_id: str = "C-001",
         crew_role: int = 1,
         output_dir: str = "locopilot_evidence",
         sample_fps: float = 1.0,
-        run_dir: str = None
+        run_dir: Optional[str] = None
     ) -> List[Dict[str, Any]]:
         """
         Single-process activity detection (original implementation)
@@ -295,13 +295,13 @@ class ActivityDetectionService:
         self,
         video_path: str,
         trip_id: str,
-        crew_members: Dict[str, Dict[str, str]] = None,
+        crew_members: Optional[Dict[str, Dict[str, str]]] = None,
         crew_name: str = "John Doe",
         crew_id: str = "C-001",
         crew_role: int = 1,
         output_dir: str = "locopilot_evidence",
         sample_fps: float = 1.0,
-        run_dir: str = None,
+        run_dir: Optional[str] = None,
         save_clips: bool = True
     ) -> List[Dict[str, Any]]:
         """

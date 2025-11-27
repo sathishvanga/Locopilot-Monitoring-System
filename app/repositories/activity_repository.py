@@ -59,8 +59,13 @@ class ActivityRepository:
             activities_json_path = os.path.join(run_dir, "activities.json")
             
             # Write activities to JSON file with proper formatting
-            with open(activities_json_path, 'w', encoding='utf-8') as f:
-                json.dump(activities, f, indent=2, ensure_ascii=False)
+            # Use context manager for safe file operations
+            try:
+                with open(activities_json_path, 'w', encoding='utf-8') as f:
+                    json.dump(activities, f, indent=2, ensure_ascii=False)
+            except (IOError, OSError) as e:
+                logger.error(f"File I/O error while saving activities: {e}", exc_info=True)
+                raise IOError(f"Failed to write activities.json: {str(e)}") from e
             
             logger.info(
                 f"Successfully saved {len(activities)} activities to {activities_json_path}"
@@ -90,8 +95,13 @@ class ActivityRepository:
             if not os.path.exists(activities_json_path):
                 raise FileNotFoundError(f"Activities file not found: {activities_json_path}")
             
-            with open(activities_json_path, 'r', encoding='utf-8') as f:
-                activities = json.load(f)
+            # Use context manager for safe file operations
+            try:
+                with open(activities_json_path, 'r', encoding='utf-8') as f:
+                    activities = json.load(f)
+            except (IOError, OSError) as e:
+                logger.error(f"File I/O error while loading activities: {e}", exc_info=True)
+                raise IOError(f"Failed to read activities.json: {str(e)}") from e
             
             logger.info(f"Successfully loaded {len(activities)} activities from {activities_json_path}")
             

@@ -14,6 +14,7 @@ from ..models.trip_models import ProcessingResult
 from ..utils.api_client import APIClient
 from ..utils.logger import get_logger
 from ..utils.config import get_settings
+from ..utils.backend_health import check_backend_health
 
 
 logger = get_logger(__name__)
@@ -41,29 +42,11 @@ class LocalProcessingService:
         Returns:
             bool: True if backend is running, False otherwise
         """
-        try:
-            # Try to connect to the port
-            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            sock.settimeout(2)
-            result = sock.connect_ex(('localhost', settings.local_backend_port))
-            sock.close()
-            
-            if result == 0:
-                # Port is open, check if it's our API
-                try:
-                    response = requests.get(
-                        f"{settings.local_backend_url}/health",
-                        timeout=5
-                    )
-                    return response.status_code == 200
-                except:
-                    return False
-            
-            return False
-            
-        except Exception as e:
-            logger.debug(f"Backend check error: {e}")
-            return False
+        return check_backend_health(
+            backend_url=settings.local_backend_url,
+            backend_port=settings.local_backend_port,
+            timeout=5
+        )
     
     def wait_for_backend(self, timeout: int = 30) -> bool:
         """

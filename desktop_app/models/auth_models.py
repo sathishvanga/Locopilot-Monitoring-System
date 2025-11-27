@@ -2,7 +2,11 @@
 Authentication models for API communication
 """
 
-from typing import Optional, List
+from typing import Optional, List, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    pass
+
 from pydantic import BaseModel, Field
 
 
@@ -54,46 +58,90 @@ class LoginAPIResponse(BaseModel):
 
 class AuthState:
     """
-    Singleton class to manage authentication state
-    """
-    _instance = None
-    _token: Optional[str] = None
-    _user_info: Optional[LoginResponse] = None
+    Thread-safe singleton class to manage authentication state.
     
-    def __new__(cls):
+    Uses a lock to ensure thread safety in multi-threaded environments.
+    """
+    _instance: Optional['AuthState'] = None
+    _lock = None  # Will be initialized on first use
+    
+    def __init__(self):
+        """Initialize authentication state"""
+        import threading
+        if not hasattr(self, '_token'):  # Only initialize once
+            if AuthState._lock is None:
+                AuthState._lock = threading.Lock()
+            self._token: Optional[str] = None
+            self._user_info: Optional[LoginResponse] = None
+    
+    def __new__(cls) -> 'AuthState':
+        """Create singleton instance with thread safety"""
+        import threading
         if cls._instance is None:
-            cls._instance = super(AuthState, cls).__new__(cls)
+            # Use class-level lock for instance creation
+            if not hasattr(cls, '_creation_lock'):
+                cls._creation_lock = threading.Lock()
+            with cls._creation_lock:
+                # Double-check locking pattern
+                if cls._instance is None:
+                    cls._instance = super(AuthState, cls).__new__(cls)
         return cls._instance
     
     @classmethod
-    def set_auth(cls, token: str, user_info: LoginResponse):
-        """Store authentication token and user info"""
+    def set_auth(cls, token: str, user_info: LoginResponse) -> None:
+        """
+        Store authentication token and user info (thread-safe).
+        
+        Args:
+            token: Authentication token
+            user_info: User information
+        """
         instance = cls()
-        instance._token = token
-        instance._user_info = user_info
+        with instance._lock:
+            instance._token = token
+            instance._user_info = user_info
     
     @classmethod
     def get_token(cls) -> Optional[str]:
-        """Get stored authentication token"""
+        """
+        Get stored authentication token (thread-safe).
+        
+        Returns:
+            Optional[str]: Authentication token or None
+        """
         instance = cls()
-        return instance._token
+        with instance._lock:
+            return instance._token
     
     @classmethod
     def get_user_info(cls) -> Optional[LoginResponse]:
-        """Get stored user information"""
+        """
+        Get stored user information (thread-safe).
+        
+        Returns:
+            Optional[LoginResponse]: User info or None
+        """
         instance = cls()
-        return instance._user_info
+        with instance._lock:
+            return instance._user_info
     
     @classmethod
-    def clear(cls):
-        """Clear authentication state"""
+    def clear(cls) -> None:
+        """Clear authentication state (thread-safe)"""
         instance = cls()
-        instance._token = None
-        instance._user_info = None
+        with instance._lock:
+            instance._token = None
+            instance._user_info = None
     
     @classmethod
     def is_authenticated(cls) -> bool:
-        """Check if user is authenticated"""
+        """
+        Check if user is authenticated (thread-safe).
+        
+        Returns:
+            bool: True if authenticated, False otherwise
+        """
         instance = cls()
-        return instance._token is not None
+        with instance._lock:
+            return instance._token is not None
 

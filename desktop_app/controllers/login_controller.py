@@ -2,11 +2,13 @@
 Login controller - Connects login view with authentication service
 """
 
+from typing import Optional
 from PySide6.QtWidgets import QMessageBox
 from PySide6.QtCore import QObject, Signal, QThread
 
 from ..views.login_view import LoginView
 from ..services.auth_service import AuthService
+from ..models.auth_models import LoginResponse
 from ..utils.logger import get_logger
 
 
@@ -38,19 +40,32 @@ class LoginWorker(QThread):
         self.username = username
         self.password = password
     
-    def run(self):
+    def run(self) -> None:
         """Execute login in background thread"""
         logger.info(f"Login worker started for user: {self.username}")
         
-        success, user_info, error = self.auth_service.login(
-            self.username,
-            self.password
-        )
-        
-        if success and user_info:
-            self.login_success.emit(user_info)
-        else:
-            self.login_failed.emit(error or "Login failed")
+        try:
+            success, user_info, error = self.auth_service.login(
+                self.username,
+                self.password
+            )
+            
+            if success and user_info:
+                self.login_success.emit(user_info)
+            else:
+                self.login_failed.emit(error or "Login failed")
+        except Exception as e:
+            logger.error(f"Login worker error: {e}", exc_info=True)
+            self.login_failed.emit(f"Unexpected error: {str(e)}")
+    
+    def __del__(self) -> None:
+        """Cleanup worker thread"""
+        try:
+            if self.isRunning():
+                self.terminate()
+                self.wait(3000)  # Wait up to 3 seconds
+        except Exception:
+            pass
 
 
 class LoginController(QObject):
@@ -102,14 +117,32 @@ class LoginController(QObject):
         self.view.set_loading(True)
         logger.info(f"Initiating login for user: {username}")
         
+        # Cleanup previous worker if exists
+        if self.login_worker is not None and self.login_worker.isRunning():
+            self.login_worker.terminate()
+            self.login_worker.wait(1000)
+        
         # Create and start login worker
         self.login_worker = LoginWorker(self.auth_service, username, password)
         self.login_worker.login_success.connect(self._on_login_success)
         self.login_worker.login_failed.connect(self._on_login_failed)
         self.login_worker.finished.connect(lambda: self.view.set_loading(False))
+        self.login_worker.finished.connect(self._cleanup_worker)
         self.login_worker.start()
     
-    def _on_login_success(self, user_info):
+    def _cleanup_worker(self) -> None:
+        """Cleanup worker thread after completion"""
+        if self.login_worker is not None:
+            try:
+                if self.login_worker.isRunning():
+                    self.login_worker.terminate()
+                    self.login_worker.wait(1000)
+            except Exception as e:
+                logger.warning(f"Error cleaning up login worker: {e}")
+            finally:
+                self.login_worker = None
+    
+    def _on_login_success(self, user_info: LoginResponse) -> None:
         """
         Handle successful login
         

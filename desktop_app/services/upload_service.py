@@ -3,7 +3,7 @@ S3 upload service for video and evidence files
 """
 
 import os
-from typing import Optional, Callable, List
+from typing import Optional, Callable, List, Tuple
 from pathlib import Path
 import requests
 
@@ -11,6 +11,7 @@ from ..models.trip_models import S3UploadResponse
 from ..utils.api_client import APIClient
 from ..utils.logger import get_logger
 from ..utils.config import get_settings
+from ..utils.constants import MAX_FILE_SIZE_GB
 
 
 logger = get_logger(__name__)
@@ -50,7 +51,7 @@ class UploadService:
         file_path: str,
         subfolder: str = "cvvr",
         progress_callback: Optional[Callable[[int, int], None]] = None
-    ) -> tuple[bool, Optional[str], Optional[str]]:
+    ) -> Tuple[bool, Optional[str], Optional[str]]:
         """
         Upload a file to S3
         
@@ -64,23 +65,43 @@ class UploadService:
                 (success, s3_url, error_message)
         """
         try:
-            # Validate file exists
-            if not os.path.exists(file_path):
-                logger.error(f"File not found: {file_path}")
-                return False, None, f"File not found: {file_path}"
+            # Security: Validate and sanitize file path to prevent path traversal
+            if not file_path or not isinstance(file_path, str):
+                logger.error("Invalid file path provided")
+                return False, None, "Invalid file path"
+            
+            # Resolve real path to prevent path traversal attacks
+            try:
+                file_path_real = os.path.realpath(file_path)
+            except (OSError, ValueError) as e:
+                logger.error(f"Invalid file path: {file_path} - {e}")
+                return False, None, f"Invalid file path: {str(e)}"
+            
+            # Validate file exists and is a file (not directory)
+            if not os.path.exists(file_path_real):
+                logger.error(f"File not found: {file_path_real}")
+                return False, None, f"File not found: {file_path_real}"
+            
+            if not os.path.isfile(file_path_real):
+                logger.error(f"Path is not a file: {file_path_real}")
+                return False, None, "Path is not a file"
+            
+            # Use realpath for all operations
+            file_path = file_path_real
             
             # Get file info
             file_size = os.path.getsize(file_path)
             file_name = os.path.basename(file_path)
             
             # Check file size
-            if file_size > settings.max_file_size:
-                max_size_gb = settings.max_file_size / (1024 ** 3)
-                return False, None, f"File too large. Maximum: {max_size_gb:.1f} GB"
+        if file_size > settings.max_file_size:
+            return False, None, f"File too large. Maximum: {MAX_FILE_SIZE_GB} GB"
             
             logger.info(f"Uploading {file_name} ({file_size / (1024**2):.1f} MB) to S3 subfolder '{subfolder}'")
             
-            # Prepare multipart form data
+            # Prepare multipart form data with context manager
+            # Note: File operations are synchronous but run in worker thread
+            # For true async, would need aiofiles, but Qt workers handle this well
             with open(file_path, 'rb') as f:
                 files = {
                     'file': (file_name, f, 'application/octet-stream')
@@ -144,7 +165,7 @@ class UploadService:
         file_paths: List[str],
         subfolder: str = "cvvr",
         progress_callback: Optional[Callable[[int, int, str], None]] = None
-    ) -> tuple[bool, List[str], List[str]]:
+    ) -> Tuple[bool, List[str], List[str]]:
         """
         Upload multiple files to S3
         
@@ -186,7 +207,7 @@ class UploadService:
         
         return all_success, successful_urls, error_messages
     
-    def validate_file(self, file_path: str) -> tuple[bool, Optional[str]]:
+    def validate_file(self, file_path: str) -> Tuple[bool, Optional[str]]:
         """
         Validate file before upload
         
@@ -196,9 +217,25 @@ class UploadService:
         Returns:
             tuple[bool, Optional[str]]: (is_valid, error_message)
         """
-        # Check file exists
-        if not os.path.exists(file_path):
+        # Security: Validate and sanitize file path
+        if not file_path or not isinstance(file_path, str):
+            return False, "Invalid file path"
+        
+        # Resolve real path to prevent path traversal
+        try:
+            file_path_real = os.path.realpath(file_path)
+        except (OSError, ValueError) as e:
+            return False, f"Invalid file path: {str(e)}"
+        
+        # Check file exists and is a file
+        if not os.path.exists(file_path_real):
             return False, "File does not exist"
+        
+        if not os.path.isfile(file_path_real):
+            return False, "Path is not a file"
+        
+        # Use realpath for validation
+        file_path = file_path_real
         
         # Check file size
         file_size = os.path.getsize(file_path)
@@ -206,8 +243,7 @@ class UploadService:
             return False, "File is empty"
         
         if file_size > settings.max_file_size:
-            max_size_gb = settings.max_file_size / (1024 ** 3)
-            return False, f"File too large. Maximum: {max_size_gb:.1f} GB"
+            return False, f"File too large. Maximum: {MAX_FILE_SIZE_GB} GB"
         
         # Check file extension for videos
         file_ext = os.path.splitext(file_path)[1].lower()

@@ -7,23 +7,44 @@ Handles HTTP requests and responses for video processing operations.
 from typing import Optional
 import os
 
-from fastapi import APIRouter, UploadFile, File, Form, HTTPException, BackgroundTasks, Request, Response
+from fastapi import APIRouter, UploadFile, File, Form, HTTPException, BackgroundTasks, Request, Response, Depends
 from fastapi.responses import JSONResponse
 
 from ..models.video_models import VideoProcessingResponse, VideoProcessingError
 from ..services.video_processing_service import VideoProcessingService
-from ..services.s3_upload_service import get_s3_upload_service
+from ..services.s3_upload_service import get_s3_upload_service, S3UploadService
 from ..utils.logger import get_logger
 from ..utils.config import get_settings
+from ..utils.crew_helpers import (
+    build_crew_members_dict,
+    get_default_crew_name,
+    get_default_crew_id
+)
 
 
 logger = get_logger(__name__)
 settings = get_settings()
 router = APIRouter(prefix="/api", tags=["video"])
 
-# Initialize services (singleton pattern)
-video_processing_service = VideoProcessingService()
-s3_upload_service = get_s3_upload_service()
+
+def get_video_processing_service() -> VideoProcessingService:
+    """
+    Dependency injection for VideoProcessingService.
+    
+    Returns:
+        VideoProcessingService: Service instance
+    """
+    return VideoProcessingService()
+
+
+def get_s3_service() -> S3UploadService:
+    """
+    Dependency injection for S3UploadService.
+    
+    Returns:
+        S3UploadService: Service instance
+    """
+    return get_s3_upload_service()
 
 
 @router.post(
@@ -65,7 +86,8 @@ async def process_video(
     alpCrewId: Optional[str] = Form(default=None, description="Assistant Loco Pilot crew member ID"),
     useMockDetection: Optional[bool] = Form(default=False, description="Use mock detection for testing"),
     useMultiprocessing: Optional[bool] = Form(default=None, description="Enable multiprocessing (default: from config)"),
-    saveClips: Optional[bool] = Form(default=False, description="Save annotated frames for debugging (default: false). Clips/images always saved.")
+    saveClips: Optional[bool] = Form(default=False, description="Save annotated frames for debugging (default: false). Clips/images always saved."),
+    video_processing_service: VideoProcessingService = Depends(get_video_processing_service)
 ):
     """
     Process uploaded video and detect activities
@@ -86,28 +108,19 @@ async def process_video(
                 detail="tripId is required and cannot be empty"
             )
         
-        # Build crew members dictionary
-        crew_members = {}
+        # Build crew members dictionary using helper function
+        crew_members = build_crew_members_dict(
+            lp_crew_name=lpCrewName,
+            lp_crew_id=lpCrewId,
+            alp_crew_name=alpCrewName,
+            alp_crew_id=alpCrewId
+        )
         
-        # Add LP crew if provided
-        if lpCrewName and lpCrewId:
-            if lpCrewName.strip() and lpCrewId.strip():
-                crew_members['LP'] = {
-                    'name': lpCrewName.strip(),
-                    'id': lpCrewId.strip(),
-                    'role': 'LP'
-                }
-                logger.info(f"LP Crew: {lpCrewName} ({lpCrewId})")
-        
-        # Add ALP crew if provided
-        if alpCrewName and alpCrewId:
-            if alpCrewName.strip() and alpCrewId.strip():
-                crew_members['ALP'] = {
-                    'name': alpCrewName.strip(),
-                    'id': alpCrewId.strip(),
-                    'role': 'ALP'
-                }
-                logger.info(f"ALP Crew: {alpCrewName} ({alpCrewId})")
+        # Log crew members if provided
+        if 'LP' in crew_members:
+            logger.info(f"LP Crew: {crew_members['LP']['name']} ({crew_members['LP']['id']})")
+        if 'ALP' in crew_members:
+            logger.info(f"ALP Crew: {crew_members['ALP']['name']} ({crew_members['ALP']['id']})")
         
         # Read video content
         video_content = await video.read()
@@ -146,8 +159,8 @@ async def process_video(
             video_path=video_path,
             trip_id=tripId,
             crew_members=crew_members,  # Pass crew members dict
-            crew_name=lpCrewName if lpCrewName else "Unknown",  # Default if not provided
-            crew_id=lpCrewId if lpCrewId else "N/A",  # Default if not provided
+            crew_name=get_default_crew_name(crew_members),  # Use helper function
+            crew_id=get_default_crew_id(crew_members),  # Use helper function
             crew_role=1,  # LP role
             use_mock_detection=useMockDetection,
             use_multiprocessing=use_mp,
@@ -191,7 +204,10 @@ async def process_video(
     summary="Get processing status",
     description="Get the processing status for a specific run ID"
 )
-async def get_processing_status(run_id: str):
+async def get_processing_status(
+    run_id: str,
+    video_processing_service: VideoProcessingService = Depends(get_video_processing_service)
+):
     """
     Get processing status for a run
     
@@ -281,11 +297,31 @@ async def get_run_media(run_id: str, filename: str, request: Request) -> Respons
         raise HTTPException(status_code=404, detail="run_or_clips_not_found")
 
     # Build absolute file path and protect against path traversal
-    file_path = os.path.abspath(os.path.join(clips_root, filename))
+    # Use realpath to resolve symlinks and normalize path
+    clips_root_real = os.path.realpath(clips_root)
+    file_path = os.path.realpath(os.path.join(clips_root, filename))
+    
+    # Validate path is within clips_root directory
     try:
-        if os.path.commonpath([clips_root, file_path]) != clips_root:
+        # Check that the resolved path is within the clips_root
+        if not file_path.startswith(clips_root_real + os.sep) and file_path != clips_root_real:
+            logger.warning(
+                f"Path traversal attempt detected: run_id={run_id}, filename={filename}, "
+                f"resolved_path={file_path}, clips_root={clips_root_real}"
+            )
             raise HTTPException(status_code=404, detail="file_missing")
-    except Exception:
+        
+        # Additional check using commonpath for extra safety
+        if os.path.commonpath([clips_root_real, file_path]) != clips_root_real:
+            logger.warning(
+                f"Path traversal attempt detected (commonpath check): run_id={run_id}, "
+                f"filename={filename}"
+            )
+            raise HTTPException(status_code=404, detail="file_missing")
+    except (ValueError, OSError) as e:
+        # ValueError occurs when paths are on different drives (Windows)
+        # OSError occurs for invalid paths
+        logger.warning(f"Path validation error: {e}")
         raise HTTPException(status_code=404, detail="file_missing")
 
     if not os.path.isfile(file_path):
@@ -308,6 +344,7 @@ async def get_run_media(run_id: str, filename: str, request: Request) -> Respons
             start = max(0, start)
             end = min(file_size - 1, end)
             length = end - start + 1
+            # Use context manager for safe file operations
             with open(file_path, "rb") as f:
                 f.seek(start)
                 data = f.read(length)
@@ -316,18 +353,22 @@ async def get_run_media(run_id: str, filename: str, request: Request) -> Respons
             resp.headers["Accept-Ranges"] = "bytes"
             resp.headers["Content-Length"] = str(length)
             return resp
-        except Exception:
+        except (ValueError, IOError, OSError) as e:
             # Fallback to full-file response below
-            pass
+            logger.warning(f"Range request failed, falling back to full file: {e}")
 
-    # Full-file response
-    with open(file_path, "rb") as f:
-        data = f.read()
-    resp = Response(content=data, status_code=200, media_type=mime or "application/octet-stream")
-    if mime == "video/mp4":
-        resp.headers["Accept-Ranges"] = "bytes"
-    resp.headers["Content-Length"] = str(file_size)
-    return resp
+    # Full-file response with context manager
+    try:
+        with open(file_path, "rb") as f:
+            data = f.read()
+        resp = Response(content=data, status_code=200, media_type=mime or "application/octet-stream")
+        if mime == "video/mp4":
+            resp.headers["Accept-Ranges"] = "bytes"
+        resp.headers["Content-Length"] = str(file_size)
+        return resp
+    except (IOError, OSError) as e:
+        logger.error(f"Failed to read file for media response: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to read media file")
 
 
 @router.post(
@@ -356,7 +397,9 @@ async def process_and_upload_video(
     alpCrewId: Optional[str] = Form(default=None, description="Assistant Loco Pilot crew member ID"),
     useMultiprocessing: Optional[bool] = Form(default=None, description="Enable multiprocessing (default: from config)"),
     useMockDetection: Optional[bool] = Form(default=False, description="Use mock detection for testing"),
-    saveClips: Optional[bool] = Form(default=False, description="Save annotated frames for debugging")
+    saveClips: Optional[bool] = Form(default=False, description="Save annotated frames for debugging"),
+    video_processing_service: VideoProcessingService = Depends(get_video_processing_service),
+    s3_upload_service: S3UploadService = Depends(get_s3_service)
 ):
     """
     Process video and upload everything to S3
@@ -376,24 +419,13 @@ async def process_and_upload_video(
                 detail="tripId is required and cannot be empty"
             )
         
-        # Build crew members dictionary
-        crew_members = {}
-        
-        if lpCrewName and lpCrewId:
-            if lpCrewName.strip() and lpCrewId.strip():
-                crew_members['LP'] = {
-                    'name': lpCrewName.strip(),
-                    'id': lpCrewId.strip(),
-                    'role': 'LP'
-                }
-        
-        if alpCrewName and alpCrewId:
-            if alpCrewName.strip() and alpCrewId.strip():
-                crew_members['ALP'] = {
-                    'name': alpCrewName.strip(),
-                    'id': alpCrewId.strip(),
-                    'role': 'ALP'
-                }
+        # Build crew members dictionary using helper function
+        crew_members = build_crew_members_dict(
+            lp_crew_name=lpCrewName,
+            lp_crew_id=lpCrewId,
+            alp_crew_name=alpCrewName,
+            alp_crew_id=alpCrewId
+        )
         
         # Validate video file
         filename = video_file.filename
@@ -423,151 +455,28 @@ async def process_and_upload_video(
         # Determine multiprocessing setting
         use_mp = useMultiprocessing if useMultiprocessing is not None else settings.enable_multiprocessing
         
-        # Process video (activity detection)
-        logger.info(
-            f"🎬 Starting video processing for trip: {tripId} - "
-            f"Multiprocessing: {use_mp}, Mock: {useMockDetection}, SaveClips: {saveClips}"
-        )
-        
-        result = video_processing_service.process_video(
-            video_path=video_path,
-            trip_id=tripId,
-            crew_members=crew_members,
-            crew_name=list(crew_members.values())[0]['name'] if crew_members else "Unknown",
-            crew_id=list(crew_members.values())[0]['id'] if crew_members else "N/A",
-            crew_role=1,  # LP role
-            use_mock_detection=useMockDetection,
-            use_multiprocessing=use_mp,  # ✅ Now using multiprocessing!
-            save_clips=saveClips
-        )
-        
-        logger.info(
-            f"✅ Processing complete - "
-            f"Run: {result.get('runId', result.get('run_id', 'N/A'))}, "
-            f"Activities: {result.get('activitiesCount', result.get('activities_count', 0))}, "
-            f"Clips: {len(result.get('clipFiles', result.get('clip_files', [])))}"
-        )
-        
-        # Step 3: Upload original video to S3
-        logger.info(f"☁️ Uploading original video to S3 (subfolder: {subFolderName})")
-        
-        video_upload_success, video_s3_url, video_error = s3_upload_service.upload_file(
-            file_path=video_path,
-            subfolder=subFolderName,
-            auth_token=authToken
-        )
-        
-        if not video_upload_success:
-            logger.error(f"Failed to upload video to S3: {video_error}")
+        # Use service method for complete workflow
+        try:
+            response_data = video_processing_service.process_and_upload_workflow(
+                video_path=video_path,
+                trip_id=tripId,
+                crew_members=crew_members,
+                subfolder_name=subFolderName,
+                auth_token=authToken,
+                use_mock_detection=useMockDetection,
+                use_multiprocessing=use_mp,
+                save_clips=saveClips,
+                s3_upload_service=s3_upload_service
+            )
+            
+            return JSONResponse(content=response_data)
+            
+        except Exception as e:
+            logger.error(f"Process and upload workflow failed: {e}", exc_info=True)
             raise HTTPException(
                 status_code=500,
-                detail=f"Video processing succeeded but S3 upload failed: {video_error}"
+                detail=f"Processing failed: {str(e)}"
             )
-        
-        logger.info(f"✅ Video uploaded to S3: {video_s3_url}")
-        
-        # Step 4: Upload evidence files (clips + images) to S3
-        clip_files = result.get('clip_files', [])
-        evidence_urls = []
-        upload_errors = []
-        s3_file_mapping = {}  # Map local paths to S3 URLs
-        
-        if clip_files:
-            logger.info(f"☁️ Uploading {len(clip_files)} evidence files (clips + images) to S3")
-            
-            # Collect all files to upload (clips + their corresponding images)
-            all_files_to_upload = []
-            for clip_file in clip_files:
-                all_files_to_upload.append(clip_file)
-                
-                # Find corresponding image file
-                image_file = clip_file.replace('_clip.mp4', '_activity.jpg')
-                if os.path.exists(image_file):
-                    all_files_to_upload.append(image_file)
-            
-            logger.info(f"☁️ Total files to upload: {len(all_files_to_upload)} (clips + images)")
-            
-            # Upload all files
-            clips_success, file_urls, clip_errors = s3_upload_service.upload_multiple_files(
-                file_paths=all_files_to_upload,
-                subfolder=subFolderName,
-                auth_token=authToken
-            )
-            
-            # Create mapping from local path to S3 URL
-            for local_path, s3_url in zip(all_files_to_upload, file_urls):
-                s3_file_mapping[local_path] = s3_url
-            
-            evidence_urls = [url for url in file_urls if '_clip.mp4' in url]
-            upload_errors = clip_errors
-            
-            if not clips_success:
-                logger.warning(f"Some files failed to upload: {clip_errors}")
-            
-            logger.info(f"✅ Uploaded {len(file_urls)}/{len(all_files_to_upload)} files to S3")
-        
-        # Step 5: Update activities.json with S3 URLs
-        logger.info("📝 Updating activities.json with S3 URLs")
-        
-        activities_json_path = os.path.join(result['run_dir'], 'activities.json')
-        updated_activities = []
-        
-        if os.path.exists(activities_json_path):
-            import json
-            
-            # Read existing activities
-            with open(activities_json_path, 'r', encoding='utf-8') as f:
-                activities = json.load(f)
-            
-            # Update each activity with S3 URLs
-            for activity in activities:
-                # Update activityClip with S3 URL
-                if 'activityClip' in activity and activity['activityClip']:
-                    local_clip_path = activity['activityClip']
-                    if local_clip_path in s3_file_mapping:
-                        activity['activityClip'] = s3_file_mapping[local_clip_path]
-                        logger.debug(f"Updated clip URL: {local_clip_path} -> {s3_file_mapping[local_clip_path]}")
-                
-                # Update activityImage with S3 URL
-                if 'activityImage' in activity and activity['activityImage']:
-                    local_image_path = activity['activityImage']
-                    if local_image_path in s3_file_mapping:
-                        activity['activityImage'] = s3_file_mapping[local_image_path]
-                        logger.debug(f"Updated image URL: {local_image_path} -> {s3_file_mapping[local_image_path]}")
-                
-                updated_activities.append(activity)
-            
-            # Save updated activities.json with S3 URLs
-            with open(activities_json_path, 'w', encoding='utf-8') as f:
-                    json.dump(updated_activities, f, indent=2, ensure_ascii=False)
-                
-                # Update activities for response
-                activities = updated_activities
-                
-                logger.info(f"✅ Updated {len(updated_activities)} activities with S3 URLs")
-        
-        # Prepare response
-        response_data = {
-            "status": "success",
-            "message": "Video processed and uploaded successfully",
-            "data": {
-                "tripId": tripId,
-                "run_id": run_id,
-                "run_dir": run_dir,
-                "activities_count": activities_count,
-                "processing_time_seconds": result.get('processingTime', result.get('processing_time', 0)),
-                "video_url": video_s3_url,
-                "evidence_clips": evidence_urls,
-                "clips_uploaded": len(evidence_urls),
-                "total_clips": len(clip_files),
-                "upload_errors": upload_errors if upload_errors else None,
-                "activities": activities  # ← Include updated activities with S3 URLs
-            }
-        }
-        
-        logger.info(f"✅ Complete workflow finished for trip: {tripId}")
-        
-        return JSONResponse(content=response_data)
         
     except HTTPException:
         raise

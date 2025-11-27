@@ -7,6 +7,7 @@ from typing import Optional, Dict, Any, Callable
 import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
+from requests import Response
 
 from .logger import get_logger
 from .config import get_settings
@@ -86,7 +87,7 @@ class APIClient:
         params: Optional[Dict[str, Any]] = None,
         token: Optional[str] = None,
         timeout: Optional[int] = None
-    ) -> requests.Response:
+    ) -> Response:
         """
         Make GET request
         
@@ -132,7 +133,7 @@ class APIClient:
         token: Optional[str] = None,
         timeout: Optional[int] = None,
         progress_callback: Optional[Callable[[int, int], None]] = None
-    ) -> requests.Response:
+    ) -> Response:
         """
         Make POST request
         
@@ -189,7 +190,7 @@ class APIClient:
         json: Optional[Dict[str, Any]] = None,
         token: Optional[str] = None,
         timeout: Optional[int] = None
-    ) -> requests.Response:
+    ) -> Response:
         """
         Make PUT request
         
@@ -233,7 +234,7 @@ class APIClient:
         endpoint: str,
         token: Optional[str] = None,
         timeout: Optional[int] = None
-    ) -> requests.Response:
+    ) -> Response:
         """
         Make DELETE request
         

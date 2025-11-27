@@ -11,6 +11,7 @@ import requests
 
 from ..utils.logger import get_logger
 from ..utils.config import get_settings
+from ..exceptions import S3UploadError
 
 
 logger = get_logger(__name__)
@@ -102,7 +103,8 @@ class S3UploadService:
             
         except requests.HTTPError as e:
             logger.error(f"S3 upload HTTP error for {file_path}: {e}")
-            error_msg = f"Upload failed (HTTP {e.response.status_code})"
+            status_code = e.response.status_code if e.response else None
+            error_msg = f"Upload failed (HTTP {status_code})"
             return False, None, error_msg
             
         except requests.Timeout:
