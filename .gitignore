@@ -7,3 +7,8 @@ locopilot_evidence_1/
 venv/
 uploads/
 output/
+
+# Desktop app build artifacts
+desktop_app/build_config/build/
+desktop_app/build_config/dist/
+*.spec
