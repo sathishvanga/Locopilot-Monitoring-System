@@ -11,23 +11,30 @@ project_root = Path('.').resolve().parent
 
 block_cipher = None
 
+# Build the datas list conditionally
+datas_list = [
+    ('../resources/logo.png', 'desktop_app/resources'),
+    ('../__init__.py', 'desktop_app'),
+    ('../main.py', 'desktop_app'),
+    ('../models', 'desktop_app/models'),
+    ('../views', 'desktop_app/views'),
+    ('../controllers', 'desktop_app/controllers'),
+    ('../services', 'desktop_app/services'),
+    ('../utils', 'desktop_app/utils'),
+    ('../../app', 'app'),  # Include FastAPI backend code
+    ('../../requirements.txt', '.'),  # Backend requirements reference
+]
+
+# Conditionally add YOLO model if it exists
+yolo_model_path = Path('../../yolo11s.pt')
+if yolo_model_path.exists():
+    datas_list.append(('../../yolo11s.pt', '.'))
+
 a = Analysis(
     ['../launcher.py'],
     pathex=[str(project_root)],
     binaries=[],
-    datas=[
-        ('../resources/logo.png', 'desktop_app/resources'),
-        ('../__init__.py', 'desktop_app'),
-        ('../main.py', 'desktop_app'),
-        ('../models', 'desktop_app/models'),
-        ('../views', 'desktop_app/views'),
-        ('../controllers', 'desktop_app/controllers'),
-        ('../services', 'desktop_app/services'),
-        ('../utils', 'desktop_app/utils'),
-        ('../../app', 'app'),  # Include FastAPI backend code
-        ('../../yolo11s.pt', '.'),  # Include YOLO model (if exists)
-        ('../../requirements.txt', '.'),  # Backend requirements reference
-    ],
+    datas=datas_list,
     hiddenimports=[
         # Desktop app imports
         'PySide6.QtCore',
