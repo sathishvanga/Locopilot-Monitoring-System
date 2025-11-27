@@ -19,6 +19,7 @@ from .services.auth_service import AuthService
 from .services.trip_service import TripService
 from .services.upload_service import UploadService
 from .services.local_processing_service import LocalProcessingService
+from .services.backend_manager import BackendManager
 from .utils.logger import setup_logging, get_logger
 from .utils.config import get_settings
 
@@ -39,6 +40,16 @@ class MainWindow(QMainWindow):
     def __init__(self):
         """Initialize main window"""
         super().__init__()
+        
+        # Initialize backend manager and start backend
+        self.backend_manager = BackendManager()
+        if settings.auto_start_backend:
+            logger.info("Auto-starting local backend...")
+            backend_started = self.backend_manager.start_backend()
+            if backend_started:
+                logger.info("Backend is ready")
+            else:
+                logger.warning("Backend failed to start - video processing will not be available")
         
         # Initialize services
         self.auth_service = AuthService()
@@ -146,6 +157,12 @@ class MainWindow(QMainWindow):
             event: Close event
         """
         logger.info("Application closing")
+        
+        # Stop backend if it was started by us
+        if hasattr(self, 'backend_manager'):
+            logger.info("Stopping backend...")
+            self.backend_manager.stop_backend()
+        
         event.accept()
 
 

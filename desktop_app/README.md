@@ -2,6 +2,17 @@
 
 A cross-platform desktop application for managing CVVR trips and video uploads.
 
+## About This Application
+
+**Self-Contained Package**: This desktop app includes everything needed:
+- Desktop GUI for trip management  
+- FastAPI backend for video processing (embedded)
+- Machine Learning models (YOLO, PyTorch)
+- Automatic backend startup system
+
+**Package Size**: ~500MB - 1GB (includes ML libraries)
+**No Python Required**: Fully self-contained for end users!
+
 ## Features
 
 - **User Authentication**: Secure login with remote API
@@ -45,12 +56,15 @@ python -m desktop_app.main
 ### For macOS
 
 ```bash
-# Install dependencies
+# Install all dependencies (including backend ML libraries)
 pip install -r requirements_desktop.txt
 
-# Build with PyInstaller
-cd build_config
-pyinstaller build_macos.spec
+# Build the all-in-one package
+./build_macos.sh
+
+# Or manually with PyInstaller:
+# cd build_config
+# pyinstaller build_macos.spec
 
 # Output will be in dist/LocopilotCVVR.app
 ```
@@ -150,7 +164,7 @@ desktop_app/
 ### Remote API
 
 - **Base URL**: https://api.mindcoinapps.com/ai_demo_api
-- **Login**: POST /auth/user/loginByMobilePasswordReCaptchaEncrypt
+- **Login**: POST /auth/user/loginByMobilePassword
 - **Get Trips**: GET /cvvr/cvvrTrips/getAllPendingTrips
 - **Upload**: POST /amazonUpload/uploadWithFolder
 
@@ -162,19 +176,32 @@ desktop_app/
 
 ## Troubleshooting
 
-### Backend Not Running
+### Backend Connection Issues
 
-If you see "Backend Not Running" error:
+The backend starts automatically, but if you see connection errors:
 
-1. Start the local FastAPI backend:
+1. **Restart the Application**: Close and reopen the desktop app to restart the backend
+
+2. **Check Port 8000**: Ensure no other application is using port 8000
    ```bash
-   cd /path/to/project
-   uvicorn app.main:app --reload
+   # macOS/Linux
+   lsof -i :8000
+   
+   # Windows
+   netstat -ano | findstr :8000
    ```
 
-2. Verify it's running:
+3. **Verify Backend Health**:
    ```bash
    curl http://localhost:8000/health
+   ```
+
+4. **Disable Auto-Start** (if needed):
+   ```bash
+   export CVVR_AUTO_START_BACKEND=false
+   # Then start manually
+   cd /path/to/project
+   uvicorn app.main:app --reload
    ```
 
 ### Login Issues

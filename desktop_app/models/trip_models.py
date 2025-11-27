@@ -2,7 +2,7 @@
 Trip models for CVVR system
 """
 
-from typing import Optional, Any, Dict
+from typing import Optional, Any, Dict, List
 from pydantic import BaseModel, Field
 from datetime import datetime
 
@@ -21,7 +21,7 @@ class TripModel(BaseModel):
     trainNo: Optional[str] = Field(None, description="Train number")
     locoNo: Optional[str] = Field(None, description="Locomotive number")
     createdBy: Optional[str] = Field(None, description="Created by user")
-    analysisType: Optional[str] = Field(None, description="Type of analysis")
+    analysisType: Optional[int] = Field(None, description="Type of analysis (0=default, etc.)")
     status: Optional[int] = Field(None, description="Trip status")
     
     # Additional fields that might be in the API response
@@ -34,6 +34,17 @@ class TripModel(BaseModel):
     class Config:
         # Allow extra fields from API
         extra = "allow"
+
+
+class TripsAPIResponse(BaseModel):
+    """
+    Wrapper for the trips API response structure
+    
+    The API returns trips wrapped in a content array with metadata
+    """
+    mssg: str = Field(..., description="Response message")
+    content: List[TripModel] = Field(..., description="List of trip data")
+    status: int = Field(..., description="Response status code")
 
 
 class UploadStatus(BaseModel):

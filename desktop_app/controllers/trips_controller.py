@@ -202,13 +202,15 @@ class TripsController(QObject):
         
         # Check if backend is running
         if not self.local_processing.is_backend_running():
-            response = QMessageBox.question(
+            response = QMessageBox.critical(
                 self.view,
-                "Backend Not Running",
-                "Local processing backend is not running.\n\n"
-                "Please start the FastAPI backend before uploading videos.\n\n"
+                "Backend Connection Lost",
+                "The local processing backend is not available.\n\n"
+                "The backend may have crashed or stopped unexpectedly.\n\n"
+                "Please restart the application to reconnect.\n\n"
                 "Do you want to continue anyway?",
-                QMessageBox.Yes | QMessageBox.No
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No
             )
             
             if response == QMessageBox.No:

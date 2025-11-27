@@ -62,6 +62,10 @@ class Settings(BaseSettings):
     # Development mode
     debug: bool = Field(default=False, description="Enable debug mode")
     
+    # Backend management
+    auto_start_backend: bool = Field(default=True, description="Automatically start local backend on app launch")
+    backend_startup_timeout: int = Field(default=10, description="Seconds to wait for backend startup")
+    
     model_config = SettingsConfigDict(
         env_prefix="CVVR_",
         env_file=".env",

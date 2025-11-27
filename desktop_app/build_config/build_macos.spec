@@ -12,19 +12,70 @@ project_root = Path('.').resolve().parent
 block_cipher = None
 
 a = Analysis(
-    ['../main.py'],
-    pathex=[str(project_root / 'desktop_app')],
+    ['../launcher.py'],
+    pathex=[str(project_root)],
     binaries=[],
     datas=[
-        ('../resources/logo.png', 'resources'),
+        ('../resources/logo.png', 'desktop_app/resources'),
+        ('../__init__.py', 'desktop_app'),
+        ('../main.py', 'desktop_app'),
+        ('../models', 'desktop_app/models'),
+        ('../views', 'desktop_app/views'),
+        ('../controllers', 'desktop_app/controllers'),
+        ('../services', 'desktop_app/services'),
+        ('../utils', 'desktop_app/utils'),
+        ('../../app', 'app'),  # Include FastAPI backend code
+        ('../../yolo11s.pt', '.'),  # Include YOLO model (if exists)
+        ('../../requirements.txt', '.'),  # Backend requirements reference
     ],
     hiddenimports=[
+        # Desktop app imports
         'PySide6.QtCore',
         'PySide6.QtGui',
         'PySide6.QtWidgets',
         'pydantic',
         'pydantic_settings',
         'requests',
+        
+        # Backend - Uvicorn/ASGI imports
+        'uvicorn',
+        'uvicorn.logging',
+        'uvicorn.loops',
+        'uvicorn.loops.auto',
+        'uvicorn.protocols',
+        'uvicorn.protocols.http',
+        'uvicorn.protocols.http.auto',
+        'uvicorn.protocols.http.h11_impl',
+        'uvicorn.protocols.websockets',
+        'uvicorn.protocols.websockets.auto',
+        'uvicorn.lifespan',
+        'uvicorn.lifespan.on',
+        
+        # Backend - FastAPI/Starlette imports
+        'fastapi',
+        'fastapi.routing',
+        'fastapi.responses',
+        'starlette',
+        'starlette.routing',
+        'starlette.middleware',
+        'starlette.middleware.cors',
+        'starlette.applications',
+        
+        # Backend - ML/CV imports
+        'ultralytics',
+        'ultralytics.models',
+        'ultralytics.models.yolo',
+        'torch',
+        'torchvision',
+        'cv2',
+        'numpy',
+        'PIL',
+        'PIL.Image',
+        
+        # Backend - Multiprocessing
+        'multiprocessing',
+        'multiprocessing.pool',
+        'concurrent.futures',
     ],
     hookspath=[],
     hooksconfig={},
@@ -32,13 +83,10 @@ a = Analysis(
     excludes=[
         'tkinter',
         'matplotlib',
-        'numpy',
         'scipy',
         'pandas',
-        'PIL',
-        'cv2',
         'mediapipe',
-        'ultralytics',
+        # Note: numpy, PIL, cv2, ultralytics are now INCLUDED for backend
     ],
     win_no_prefer_redirects=False,
     win_private_assemblies=False,

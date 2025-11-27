@@ -87,3 +87,193 @@
 2025-11-26 23:26:27 | INFO     | cvvr_desktop.__main__ | Application closing
 2025-11-26 23:26:27 | INFO     | cvvr_desktop.__main__ | Application exited with code: 0
 2025-11-26 23:26:27 | INFO     | cvvr_desktop.__main__ | ============================================================
+2025-11-27 07:59:23 | INFO     | cvvr_desktop | Logging initialized - Level: INFO
+2025-11-27 07:59:23 | INFO     | cvvr_desktop.__main__ | ============================================================
+2025-11-27 07:59:23 | INFO     | cvvr_desktop.__main__ | Starting Locopilot CVVR Desktop v1.0.0
+2025-11-27 07:59:23 | INFO     | cvvr_desktop.__main__ | ============================================================
+2025-11-27 07:59:23 | INFO     | cvvr_desktop.desktop_app.utils.api_client | API client initialized - Base URL: https://api.mindcoinapps.com/ai_demo_api
+2025-11-27 07:59:23 | INFO     | cvvr_desktop.desktop_app.services.auth_service | Authentication service initialized
+2025-11-27 07:59:23 | INFO     | cvvr_desktop.desktop_app.utils.api_client | API client initialized - Base URL: https://api.mindcoinapps.com/ai_demo_api
+2025-11-27 07:59:23 | INFO     | cvvr_desktop.desktop_app.services.trip_service | Trip service initialized
+2025-11-27 07:59:23 | INFO     | cvvr_desktop.desktop_app.utils.api_client | API client initialized - Base URL: https://api.mindcoinapps.com/ai_demo_api
+2025-11-27 07:59:23 | INFO     | cvvr_desktop.desktop_app.services.upload_service | Upload service initialized
+2025-11-27 07:59:23 | INFO     | cvvr_desktop.desktop_app.utils.api_client | API client initialized - Base URL: http://localhost:8000
+2025-11-27 07:59:23 | INFO     | cvvr_desktop.desktop_app.services.local_processing_service | Local processing service initialized
+2025-11-27 07:59:23 | INFO     | cvvr_desktop.desktop_app.controllers.login_controller | Login controller initialized
+2025-11-27 07:59:23 | INFO     | cvvr_desktop.desktop_app.controllers.trips_controller | Trips controller initialized
+2025-11-27 07:59:23 | INFO     | cvvr_desktop.desktop_app.controllers.trips_controller | Loading pending trips
+2025-11-27 07:59:23 | INFO     | cvvr_desktop.__main__ | Main window initialized
+2025-11-27 07:59:23 | ERROR    | cvvr_desktop.desktop_app.services.trip_service | Cannot fetch trips - no authentication token
+2025-11-27 07:59:23 | INFO     | cvvr_desktop.__main__ | Application started successfully
+2025-11-27 07:59:24 | ERROR    | cvvr_desktop.desktop_app.controllers.trips_controller | Failed to load trips: Authentication required - please login
+2025-11-27 07:59:43 | INFO     | cvvr_desktop.desktop_app.controllers.login_controller | Initiating login for user: 9705589009
+2025-11-27 07:59:43 | INFO     | cvvr_desktop.desktop_app.controllers.login_controller | Login worker started for user: 9705589009
+2025-11-27 07:59:43 | INFO     | cvvr_desktop.desktop_app.services.auth_service | Attempting login for user: 9705589009
+2025-11-27 07:59:44 | ERROR    | cvvr_desktop.desktop_app.services.auth_service | Invalid response structure: {'mssg': 'Success', 'content': [{'uuid': '645000b6-45ea-49c0-b772-b0439946de96', 'name': 'Venky', 'actionId': 1, 'depot': None, 'pfNo': None, 'divId': '2c9793a1-cf8c-47d5-b55e-73023097ba3f', 'refId': None, 'crisId': None, 'address': 'Hyderabad', 'mobileNumber': '9705589009', 'companyId': None, 'divName': 'DEMO', 'token': 'ucc5ypdi3P402b95ZtIlz/tqV/5OR61g2OduiZao__rv057M2hzhLsIJDz2KPFmqMkakXVov8k3ZIxFc4d4F4=__amyxaDqEwuApatQQYZOORzixh2c4HtJSj5ieeVfqLX9jlxiQ4qivzls3WyABl47KXIr9bqgIubO1Z9PgUeBipw==__eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiI2NDUwMDBiNi00NWVhLTQ5YzAtYjc3Mi1iMDQzOTk0NmRlOTYiLCJpYXQiOjE3NjQyMTA1ODQsImV4cCI6MTc2NDgxNTM4NH0.8SXVqdsrHdIqyN-58ictHNZBZeftyRcjSusnQQn9flw', 'email': None, 'password': 'Jyc7omGyK8b/dImEmG0uv2A9fjWF3H1ASbeesPXqbR3R4kUbkg==', 'designation': 'admin', 'roleId': 7, 'status': 1, 'deActiveComments': None, 'mobileId': None, 'createdDate': '2025-07-31 11:29:13', 'createdBy': '645000b6-45ea-49c0-b772-b0439946de96'}], 'status': 1}
+2025-11-27 07:59:44 | WARNING  | cvvr_desktop.desktop_app.controllers.login_controller | Login failed: Invalid response from server
+2025-11-27 07:59:50 | INFO     | cvvr_desktop.desktop_app.controllers.login_controller | Initiating login for user: 9705589009
+2025-11-27 07:59:50 | INFO     | cvvr_desktop.desktop_app.controllers.login_controller | Login worker started for user: 9705589009
+2025-11-27 07:59:50 | INFO     | cvvr_desktop.desktop_app.services.auth_service | Attempting login for user: 9705589009
+2025-11-27 07:59:51 | ERROR    | cvvr_desktop.desktop_app.services.auth_service | Invalid response structure: {'mssg': 'Success', 'content': [{'uuid': '645000b6-45ea-49c0-b772-b0439946de96', 'name': 'Venky', 'actionId': 1, 'depot': None, 'pfNo': None, 'divId': '2c9793a1-cf8c-47d5-b55e-73023097ba3f', 'refId': None, 'crisId': None, 'address': 'Hyderabad', 'mobileNumber': '9705589009', 'companyId': None, 'divName': 'DEMO', 'token': 'LTsygfICpxGM5ddRSDFBkK4R4c+LrDL5PbntP/mx__3OaTlWBov3Pg5wtFloY6ma5uNW42loOn9zpo+lEuX8k=__gYzhNQfz7NYgH6I1mrOLQjA/7F0B80oUAj+WW5JV2QIaXhXkIIyYs6Tfm2+43y3feVUZ876yXO3HYdm8/J+E5w==__eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiI2NDUwMDBiNi00NWVhLTQ5YzAtYjc3Mi1iMDQzOTk0NmRlOTYiLCJpYXQiOjE3NjQyMTA1OTEsImV4cCI6MTc2NDgxNTM5MX0.VaCxYwn6JvKtqhX2B_FC6I4ykqUUlGyrxFhFE9RYKE4', 'email': None, 'password': 'Jyc7omGyK8b/dImEmG0uv2A9fjWF3H1ASbeesPXqbR3R4kUbkg==', 'designation': 'admin', 'roleId': 7, 'status': 1, 'deActiveComments': None, 'mobileId': None, 'createdDate': '2025-07-31 11:29:13', 'createdBy': '645000b6-45ea-49c0-b772-b0439946de96'}], 'status': 1}
+2025-11-27 07:59:51 | WARNING  | cvvr_desktop.desktop_app.controllers.login_controller | Login failed: Invalid response from server
+2025-11-27 08:02:00 | INFO     | cvvr_desktop | Logging initialized - Level: INFO
+2025-11-27 08:02:00 | INFO     | cvvr_desktop.__main__ | ============================================================
+2025-11-27 08:02:00 | INFO     | cvvr_desktop.__main__ | Starting Locopilot CVVR Desktop v1.0.0
+2025-11-27 08:02:00 | INFO     | cvvr_desktop.__main__ | ============================================================
+2025-11-27 08:02:00 | INFO     | cvvr_desktop.desktop_app.utils.api_client | API client initialized - Base URL: https://api.mindcoinapps.com/ai_demo_api
+2025-11-27 08:02:00 | INFO     | cvvr_desktop.desktop_app.services.auth_service | Authentication service initialized
+2025-11-27 08:02:00 | INFO     | cvvr_desktop.desktop_app.utils.api_client | API client initialized - Base URL: https://api.mindcoinapps.com/ai_demo_api
+2025-11-27 08:02:00 | INFO     | cvvr_desktop.desktop_app.services.trip_service | Trip service initialized
+2025-11-27 08:02:00 | INFO     | cvvr_desktop.desktop_app.utils.api_client | API client initialized - Base URL: https://api.mindcoinapps.com/ai_demo_api
+2025-11-27 08:02:00 | INFO     | cvvr_desktop.desktop_app.services.upload_service | Upload service initialized
+2025-11-27 08:02:00 | INFO     | cvvr_desktop.desktop_app.utils.api_client | API client initialized - Base URL: http://localhost:8000
+2025-11-27 08:02:00 | INFO     | cvvr_desktop.desktop_app.services.local_processing_service | Local processing service initialized
+2025-11-27 08:02:00 | INFO     | cvvr_desktop.desktop_app.controllers.login_controller | Login controller initialized
+2025-11-27 08:02:00 | INFO     | cvvr_desktop.desktop_app.controllers.trips_controller | Trips controller initialized
+2025-11-27 08:02:00 | INFO     | cvvr_desktop.desktop_app.controllers.trips_controller | Loading pending trips
+2025-11-27 08:02:00 | INFO     | cvvr_desktop.__main__ | Main window initialized
+2025-11-27 08:02:00 | ERROR    | cvvr_desktop.desktop_app.services.trip_service | Cannot fetch trips - no authentication token
+2025-11-27 08:02:00 | INFO     | cvvr_desktop.__main__ | Application started successfully
+2025-11-27 08:02:00 | ERROR    | cvvr_desktop.desktop_app.controllers.trips_controller | Failed to load trips: Authentication required - please login
+2025-11-27 08:02:22 | INFO     | cvvr_desktop.desktop_app.controllers.login_controller | Initiating login for user: 9705589009
+2025-11-27 08:02:22 | INFO     | cvvr_desktop.desktop_app.controllers.login_controller | Login worker started for user: 9705589009
+2025-11-27 08:02:22 | INFO     | cvvr_desktop.desktop_app.services.auth_service | Attempting login for user: 9705589009
+2025-11-27 08:02:23 | INFO     | cvvr_desktop.desktop_app.services.auth_service | Login successful for user: Venky (9705589009)
+2025-11-27 08:02:23 | INFO     | cvvr_desktop.desktop_app.controllers.login_controller | Login successful: Venky (9705589009)
+2025-11-27 08:02:23 | INFO     | cvvr_desktop.__main__ | Navigating to trips view
+2025-11-27 08:02:23 | INFO     | cvvr_desktop.desktop_app.controllers.trips_controller | Trips controller initialized
+2025-11-27 08:02:23 | INFO     | cvvr_desktop.desktop_app.controllers.trips_controller | Loading pending trips
+2025-11-27 08:02:23 | INFO     | cvvr_desktop.desktop_app.services.trip_service | Fetching pending trips from API
+2025-11-27 08:02:23 | WARNING  | cvvr_desktop.desktop_app.services.trip_service | Unexpected response structure: {'mssg': 'Success', 'content': [{'uuid': '1b43dc19-d9c2-424c-8702-4d70cc16a99c', 'dateTime': '2025-10-31', 'fromDateTime': None, 'toDateTime': None, 'cliId': None, 'jobId': None, 'fromStationId': 'f0f14dad-a870-4eed-babe-ade1f493dbb4', 'toStationId': '26bc4329-8d8c-4e33-a782-ee8e4868d6ed', 'sectionId': '9ec21648-547c-44ce-bb59-b942482be739', 'trainNo': '4343434', 'trainLength': 0, 'locoNo': '1344567', 'locoType': None, 'locoBase': None, 'attackingSpeed': 0, 'tripType': 1, 'directionType': 0, 'remarks': None, 'fileType': 0, 'createdDate': '2025-10-31 18:28:44', 'createdBy': '645000b6-45ea-49c0-b772-b0439946de96', 'dataAdded': 0, 'analysisType': 0, 'status': 1, 'fromStationName': None, 'toStationName': None, 'sectionName': None, 'locoTypeName': None, 'fromLocation': None, 'toLocation': None, 'cliName': None, 'cliPfNo': None, 'cliCrisId': None, 'createdCliName': None, 'cvvrTripCrews': None}, {'uuid': '3b6c7fb2-fd78-4e51-a2c1-0d09b3722b43', 'dateTime': '2025-11-07', 'fromDateTime': None, 'toDateTime': None, 'cliId': '0d7e3e26-3be6-4f43-bc70-61a8c0b312a0', 'jobId': None, 'fromStationId': '601d219e-e642-4e8b-bf07-3b634ed684a5', 'toStationId': '0ec7d5f6-964f-4104-857d-25f0a36605c9', 'sectionId': '72f1b69b-a138-491c-972e-b4de4350c668', 'trainNo': '8888', 'trainLength': 0, 'locoNo': 'test', 'locoType': None, 'locoBase': None, 'attackingSpeed': 0, 'tripType': 1, 'directionType': 0, 'remarks': None, 'fileType': 0, 'createdDate': '2025-11-07 16:15:10', 'createdBy': '0d7e3e26-3be6-4f43-bc70-61a8c0b312a0', 'dataAdded': 0, 'analysisType': 0, 'status': 1, 'fromStationName': None, 'toStationName': None, 'sectionName': None, 'locoTypeName': None, 'fromLocation': None, 'toLocation': None, 'cliName': None, 'cliPfNo': None, 'cliCrisId': None, 'createdCliName': None, 'cvvrTripCrews': None}, {'uuid': 'f2fa5625-8f59-4ea0-8402-eaae1f71e4b1', 'dateTime': '2025-11-07', 'fromDateTime': None, 'toDateTime': None, 'cliId': None, 'jobId': None, 'fromStationId': '3cdfe23c-db34-45d9-b8ae-b6e39bf90dbc', 'toStationId': '3cdfe23c-db34-45d9-b8ae-b6e39bf90dbc', 'sectionId': '06adef68-8b72-478d-a7fb-b0e914438e55', 'trainNo': '12345', 'trainLength': 0, 'locoNo': '23456', 'locoType': None, 'locoBase': None, 'attackingSpeed': 0, 'tripType': 2, 'directionType': 0, 'remarks': 'gh', 'fileType': 0, 'createdDate': '2025-11-07 16:21:38', 'createdBy': '645000b6-45ea-49c0-b772-b0439946de96', 'dataAdded': 0, 'analysisType': 0, 'status': 1, 'fromStationName': None, 'toStationName': None, 'sectionName': None, 'locoTypeName': None, 'fromLocation': None, 'toLocation': None, 'cliName': None, 'cliPfNo': None, 'cliCrisId': None, 'createdCliName': None, 'cvvrTripCrews': None}], 'status': 1}
+2025-11-27 08:02:23 | INFO     | cvvr_desktop.desktop_app.services.trip_service | Successfully fetched 0 pending trips
+2025-11-27 08:02:23 | INFO     | cvvr_desktop.desktop_app.controllers.trips_controller | Loaded 0 trips
+2025-11-27 08:02:25 | INFO     | cvvr_desktop.desktop_app.controllers.trips_controller | Loading pending trips
+2025-11-27 08:02:25 | INFO     | cvvr_desktop.desktop_app.services.trip_service | Fetching pending trips from API
+2025-11-27 08:02:25 | WARNING  | cvvr_desktop.desktop_app.services.trip_service | Unexpected response structure: {'mssg': 'Success', 'content': [{'uuid': '1b43dc19-d9c2-424c-8702-4d70cc16a99c', 'dateTime': '2025-10-31', 'fromDateTime': None, 'toDateTime': None, 'cliId': None, 'jobId': None, 'fromStationId': 'f0f14dad-a870-4eed-babe-ade1f493dbb4', 'toStationId': '26bc4329-8d8c-4e33-a782-ee8e4868d6ed', 'sectionId': '9ec21648-547c-44ce-bb59-b942482be739', 'trainNo': '4343434', 'trainLength': 0, 'locoNo': '1344567', 'locoType': None, 'locoBase': None, 'attackingSpeed': 0, 'tripType': 1, 'directionType': 0, 'remarks': None, 'fileType': 0, 'createdDate': '2025-10-31 18:28:44', 'createdBy': '645000b6-45ea-49c0-b772-b0439946de96', 'dataAdded': 0, 'analysisType': 0, 'status': 1, 'fromStationName': None, 'toStationName': None, 'sectionName': None, 'locoTypeName': None, 'fromLocation': None, 'toLocation': None, 'cliName': None, 'cliPfNo': None, 'cliCrisId': None, 'createdCliName': None, 'cvvrTripCrews': None}, {'uuid': '3b6c7fb2-fd78-4e51-a2c1-0d09b3722b43', 'dateTime': '2025-11-07', 'fromDateTime': None, 'toDateTime': None, 'cliId': '0d7e3e26-3be6-4f43-bc70-61a8c0b312a0', 'jobId': None, 'fromStationId': '601d219e-e642-4e8b-bf07-3b634ed684a5', 'toStationId': '0ec7d5f6-964f-4104-857d-25f0a36605c9', 'sectionId': '72f1b69b-a138-491c-972e-b4de4350c668', 'trainNo': '8888', 'trainLength': 0, 'locoNo': 'test', 'locoType': None, 'locoBase': None, 'attackingSpeed': 0, 'tripType': 1, 'directionType': 0, 'remarks': None, 'fileType': 0, 'createdDate': '2025-11-07 16:15:10', 'createdBy': '0d7e3e26-3be6-4f43-bc70-61a8c0b312a0', 'dataAdded': 0, 'analysisType': 0, 'status': 1, 'fromStationName': None, 'toStationName': None, 'sectionName': None, 'locoTypeName': None, 'fromLocation': None, 'toLocation': None, 'cliName': None, 'cliPfNo': None, 'cliCrisId': None, 'createdCliName': None, 'cvvrTripCrews': None}, {'uuid': 'f2fa5625-8f59-4ea0-8402-eaae1f71e4b1', 'dateTime': '2025-11-07', 'fromDateTime': None, 'toDateTime': None, 'cliId': None, 'jobId': None, 'fromStationId': '3cdfe23c-db34-45d9-b8ae-b6e39bf90dbc', 'toStationId': '3cdfe23c-db34-45d9-b8ae-b6e39bf90dbc', 'sectionId': '06adef68-8b72-478d-a7fb-b0e914438e55', 'trainNo': '12345', 'trainLength': 0, 'locoNo': '23456', 'locoType': None, 'locoBase': None, 'attackingSpeed': 0, 'tripType': 2, 'directionType': 0, 'remarks': 'gh', 'fileType': 0, 'createdDate': '2025-11-07 16:21:38', 'createdBy': '645000b6-45ea-49c0-b772-b0439946de96', 'dataAdded': 0, 'analysisType': 0, 'status': 1, 'fromStationName': None, 'toStationName': None, 'sectionName': None, 'locoTypeName': None, 'fromLocation': None, 'toLocation': None, 'cliName': None, 'cliPfNo': None, 'cliCrisId': None, 'createdCliName': None, 'cvvrTripCrews': None}], 'status': 1}
+2025-11-27 08:02:25 | INFO     | cvvr_desktop.desktop_app.services.trip_service | Successfully fetched 0 pending trips
+2025-11-27 08:02:25 | INFO     | cvvr_desktop.desktop_app.controllers.trips_controller | Loaded 0 trips
+2025-11-27 08:03:28 | INFO     | cvvr_desktop.desktop_app.controllers.trips_controller | Loading pending trips
+2025-11-27 08:03:28 | INFO     | cvvr_desktop.desktop_app.services.trip_service | Fetching pending trips from API
+2025-11-27 08:03:28 | WARNING  | cvvr_desktop.desktop_app.services.trip_service | Unexpected response structure: {'mssg': 'Success', 'content': [{'uuid': '1b43dc19-d9c2-424c-8702-4d70cc16a99c', 'dateTime': '2025-10-31', 'fromDateTime': None, 'toDateTime': None, 'cliId': None, 'jobId': None, 'fromStationId': 'f0f14dad-a870-4eed-babe-ade1f493dbb4', 'toStationId': '26bc4329-8d8c-4e33-a782-ee8e4868d6ed', 'sectionId': '9ec21648-547c-44ce-bb59-b942482be739', 'trainNo': '4343434', 'trainLength': 0, 'locoNo': '1344567', 'locoType': None, 'locoBase': None, 'attackingSpeed': 0, 'tripType': 1, 'directionType': 0, 'remarks': None, 'fileType': 0, 'createdDate': '2025-10-31 18:28:44', 'createdBy': '645000b6-45ea-49c0-b772-b0439946de96', 'dataAdded': 0, 'analysisType': 0, 'status': 1, 'fromStationName': None, 'toStationName': None, 'sectionName': None, 'locoTypeName': None, 'fromLocation': None, 'toLocation': None, 'cliName': None, 'cliPfNo': None, 'cliCrisId': None, 'createdCliName': None, 'cvvrTripCrews': None}, {'uuid': '3b6c7fb2-fd78-4e51-a2c1-0d09b3722b43', 'dateTime': '2025-11-07', 'fromDateTime': None, 'toDateTime': None, 'cliId': '0d7e3e26-3be6-4f43-bc70-61a8c0b312a0', 'jobId': None, 'fromStationId': '601d219e-e642-4e8b-bf07-3b634ed684a5', 'toStationId': '0ec7d5f6-964f-4104-857d-25f0a36605c9', 'sectionId': '72f1b69b-a138-491c-972e-b4de4350c668', 'trainNo': '8888', 'trainLength': 0, 'locoNo': 'test', 'locoType': None, 'locoBase': None, 'attackingSpeed': 0, 'tripType': 1, 'directionType': 0, 'remarks': None, 'fileType': 0, 'createdDate': '2025-11-07 16:15:10', 'createdBy': '0d7e3e26-3be6-4f43-bc70-61a8c0b312a0', 'dataAdded': 0, 'analysisType': 0, 'status': 1, 'fromStationName': None, 'toStationName': None, 'sectionName': None, 'locoTypeName': None, 'fromLocation': None, 'toLocation': None, 'cliName': None, 'cliPfNo': None, 'cliCrisId': None, 'createdCliName': None, 'cvvrTripCrews': None}, {'uuid': '6e598415-208f-4df5-ab05-e44c50686582', 'dateTime': '2025-11-27', 'fromDateTime': None, 'toDateTime': None, 'cliId': None, 'jobId': None, 'fromStationId': 'e01d3895-622a-45ae-a613-b399046c4568', 'toStationId': 'e01d3895-622a-45ae-a613-b399046c4568', 'sectionId': '91943490-29a5-43b6-a7b9-e839ca14d504', 'trainNo': '12344', 'trainLength': 0, 'locoNo': '1232', 'locoType': None, 'locoBase': None, 'attackingSpeed': 0, 'tripType': 1, 'directionType': 0, 'remarks': None, 'fileType': 0, 'createdDate': '2025-11-27 08:03:17', 'createdBy': '645000b6-45ea-49c0-b772-b0439946de96', 'dataAdded': 0, 'analysisType': 0, 'status': 1, 'fromStationName': None, 'toStationName': None, 'sectionName': None, 'locoTypeName': None, 'fromLocation': None, 'toLocation': None, 'cliName': None, 'cliPfNo': None, 'cliCrisId': None, 'createdCliName': None, 'cvvrTripCrews': None}, {'uuid': 'f2fa5625-8f59-4ea0-8402-eaae1f71e4b1', 'dateTime': '2025-11-07', 'fromDateTime': None, 'toDateTime': None, 'cliId': None, 'jobId': None, 'fromStationId': '3cdfe23c-db34-45d9-b8ae-b6e39bf90dbc', 'toStationId': '3cdfe23c-db34-45d9-b8ae-b6e39bf90dbc', 'sectionId': '06adef68-8b72-478d-a7fb-b0e914438e55', 'trainNo': '12345', 'trainLength': 0, 'locoNo': '23456', 'locoType': None, 'locoBase': None, 'attackingSpeed': 0, 'tripType': 2, 'directionType': 0, 'remarks': 'gh', 'fileType': 0, 'createdDate': '2025-11-07 16:21:38', 'createdBy': '645000b6-45ea-49c0-b772-b0439946de96', 'dataAdded': 0, 'analysisType': 0, 'status': 1, 'fromStationName': None, 'toStationName': None, 'sectionName': None, 'locoTypeName': None, 'fromLocation': None, 'toLocation': None, 'cliName': None, 'cliPfNo': None, 'cliCrisId': None, 'createdCliName': None, 'cvvrTripCrews': None}], 'status': 1}
+2025-11-27 08:03:28 | INFO     | cvvr_desktop.desktop_app.services.trip_service | Successfully fetched 0 pending trips
+2025-11-27 08:03:28 | INFO     | cvvr_desktop.desktop_app.controllers.trips_controller | Loaded 0 trips
+2025-11-27 08:03:29 | INFO     | cvvr_desktop.desktop_app.controllers.trips_controller | Loading pending trips
+2025-11-27 08:03:29 | INFO     | cvvr_desktop.desktop_app.services.trip_service | Fetching pending trips from API
+2025-11-27 08:03:29 | WARNING  | cvvr_desktop.desktop_app.services.trip_service | Unexpected response structure: {'mssg': 'Success', 'content': [{'uuid': '1b43dc19-d9c2-424c-8702-4d70cc16a99c', 'dateTime': '2025-10-31', 'fromDateTime': None, 'toDateTime': None, 'cliId': None, 'jobId': None, 'fromStationId': 'f0f14dad-a870-4eed-babe-ade1f493dbb4', 'toStationId': '26bc4329-8d8c-4e33-a782-ee8e4868d6ed', 'sectionId': '9ec21648-547c-44ce-bb59-b942482be739', 'trainNo': '4343434', 'trainLength': 0, 'locoNo': '1344567', 'locoType': None, 'locoBase': None, 'attackingSpeed': 0, 'tripType': 1, 'directionType': 0, 'remarks': None, 'fileType': 0, 'createdDate': '2025-10-31 18:28:44', 'createdBy': '645000b6-45ea-49c0-b772-b0439946de96', 'dataAdded': 0, 'analysisType': 0, 'status': 1, 'fromStationName': None, 'toStationName': None, 'sectionName': None, 'locoTypeName': None, 'fromLocation': None, 'toLocation': None, 'cliName': None, 'cliPfNo': None, 'cliCrisId': None, 'createdCliName': None, 'cvvrTripCrews': None}, {'uuid': '3b6c7fb2-fd78-4e51-a2c1-0d09b3722b43', 'dateTime': '2025-11-07', 'fromDateTime': None, 'toDateTime': None, 'cliId': '0d7e3e26-3be6-4f43-bc70-61a8c0b312a0', 'jobId': None, 'fromStationId': '601d219e-e642-4e8b-bf07-3b634ed684a5', 'toStationId': '0ec7d5f6-964f-4104-857d-25f0a36605c9', 'sectionId': '72f1b69b-a138-491c-972e-b4de4350c668', 'trainNo': '8888', 'trainLength': 0, 'locoNo': 'test', 'locoType': None, 'locoBase': None, 'attackingSpeed': 0, 'tripType': 1, 'directionType': 0, 'remarks': None, 'fileType': 0, 'createdDate': '2025-11-07 16:15:10', 'createdBy': '0d7e3e26-3be6-4f43-bc70-61a8c0b312a0', 'dataAdded': 0, 'analysisType': 0, 'status': 1, 'fromStationName': None, 'toStationName': None, 'sectionName': None, 'locoTypeName': None, 'fromLocation': None, 'toLocation': None, 'cliName': None, 'cliPfNo': None, 'cliCrisId': None, 'createdCliName': None, 'cvvrTripCrews': None}, {'uuid': '6e598415-208f-4df5-ab05-e44c50686582', 'dateTime': '2025-11-27', 'fromDateTime': None, 'toDateTime': None, 'cliId': None, 'jobId': None, 'fromStationId': 'e01d3895-622a-45ae-a613-b399046c4568', 'toStationId': 'e01d3895-622a-45ae-a613-b399046c4568', 'sectionId': '91943490-29a5-43b6-a7b9-e839ca14d504', 'trainNo': '12344', 'trainLength': 0, 'locoNo': '1232', 'locoType': None, 'locoBase': None, 'attackingSpeed': 0, 'tripType': 1, 'directionType': 0, 'remarks': None, 'fileType': 0, 'createdDate': '2025-11-27 08:03:17', 'createdBy': '645000b6-45ea-49c0-b772-b0439946de96', 'dataAdded': 0, 'analysisType': 0, 'status': 1, 'fromStationName': None, 'toStationName': None, 'sectionName': None, 'locoTypeName': None, 'fromLocation': None, 'toLocation': None, 'cliName': None, 'cliPfNo': None, 'cliCrisId': None, 'createdCliName': None, 'cvvrTripCrews': None}, {'uuid': 'f2fa5625-8f59-4ea0-8402-eaae1f71e4b1', 'dateTime': '2025-11-07', 'fromDateTime': None, 'toDateTime': None, 'cliId': None, 'jobId': None, 'fromStationId': '3cdfe23c-db34-45d9-b8ae-b6e39bf90dbc', 'toStationId': '3cdfe23c-db34-45d9-b8ae-b6e39bf90dbc', 'sectionId': '06adef68-8b72-478d-a7fb-b0e914438e55', 'trainNo': '12345', 'trainLength': 0, 'locoNo': '23456', 'locoType': None, 'locoBase': None, 'attackingSpeed': 0, 'tripType': 2, 'directionType': 0, 'remarks': 'gh', 'fileType': 0, 'createdDate': '2025-11-07 16:21:38', 'createdBy': '645000b6-45ea-49c0-b772-b0439946de96', 'dataAdded': 0, 'analysisType': 0, 'status': 1, 'fromStationName': None, 'toStationName': None, 'sectionName': None, 'locoTypeName': None, 'fromLocation': None, 'toLocation': None, 'cliName': None, 'cliPfNo': None, 'cliCrisId': None, 'createdCliName': None, 'cvvrTripCrews': None}], 'status': 1}
+2025-11-27 08:03:29 | INFO     | cvvr_desktop.desktop_app.services.trip_service | Successfully fetched 0 pending trips
+2025-11-27 08:03:29 | INFO     | cvvr_desktop.desktop_app.controllers.trips_controller | Loaded 0 trips
+2025-11-27 08:06:55 | INFO     | cvvr_desktop | Logging initialized - Level: INFO
+2025-11-27 08:06:55 | INFO     | cvvr_desktop.__main__ | ============================================================
+2025-11-27 08:06:55 | INFO     | cvvr_desktop.__main__ | Starting Locopilot CVVR Desktop v1.0.0
+2025-11-27 08:06:55 | INFO     | cvvr_desktop.__main__ | ============================================================
+2025-11-27 08:06:55 | INFO     | cvvr_desktop.desktop_app.utils.api_client | API client initialized - Base URL: https://api.mindcoinapps.com/ai_demo_api
+2025-11-27 08:06:55 | INFO     | cvvr_desktop.desktop_app.services.auth_service | Authentication service initialized
+2025-11-27 08:06:55 | INFO     | cvvr_desktop.desktop_app.utils.api_client | API client initialized - Base URL: https://api.mindcoinapps.com/ai_demo_api
+2025-11-27 08:06:55 | INFO     | cvvr_desktop.desktop_app.services.trip_service | Trip service initialized
+2025-11-27 08:06:55 | INFO     | cvvr_desktop.desktop_app.utils.api_client | API client initialized - Base URL: https://api.mindcoinapps.com/ai_demo_api
+2025-11-27 08:06:55 | INFO     | cvvr_desktop.desktop_app.services.upload_service | Upload service initialized
+2025-11-27 08:06:55 | INFO     | cvvr_desktop.desktop_app.utils.api_client | API client initialized - Base URL: http://localhost:8000
+2025-11-27 08:06:55 | INFO     | cvvr_desktop.desktop_app.services.local_processing_service | Local processing service initialized
+2025-11-27 08:06:55 | INFO     | cvvr_desktop.desktop_app.controllers.login_controller | Login controller initialized
+2025-11-27 08:06:55 | INFO     | cvvr_desktop.desktop_app.controllers.trips_controller | Trips controller initialized
+2025-11-27 08:06:55 | INFO     | cvvr_desktop.desktop_app.controllers.trips_controller | Loading pending trips
+2025-11-27 08:06:55 | INFO     | cvvr_desktop.__main__ | Main window initialized
+2025-11-27 08:06:55 | ERROR    | cvvr_desktop.desktop_app.services.trip_service | Cannot fetch trips - no authentication token
+2025-11-27 08:06:56 | INFO     | cvvr_desktop.__main__ | Application started successfully
+2025-11-27 08:06:56 | ERROR    | cvvr_desktop.desktop_app.controllers.trips_controller | Failed to load trips: Authentication required - please login
+2025-11-27 08:07:18 | INFO     | cvvr_desktop.desktop_app.controllers.login_controller | Initiating login for user: 9705589009
+2025-11-27 08:07:18 | INFO     | cvvr_desktop.desktop_app.controllers.login_controller | Login worker started for user: 9705589009
+2025-11-27 08:07:18 | INFO     | cvvr_desktop.desktop_app.services.auth_service | Attempting login for user: 9705589009
+2025-11-27 08:07:18 | INFO     | cvvr_desktop.desktop_app.services.auth_service | Login successful for user: Venky (9705589009)
+2025-11-27 08:07:19 | INFO     | cvvr_desktop.desktop_app.controllers.login_controller | Login successful: Venky (9705589009)
+2025-11-27 08:07:19 | INFO     | cvvr_desktop.__main__ | Navigating to trips view
+2025-11-27 08:07:19 | INFO     | cvvr_desktop.desktop_app.controllers.trips_controller | Trips controller initialized
+2025-11-27 08:07:19 | INFO     | cvvr_desktop.desktop_app.controllers.trips_controller | Loading pending trips
+2025-11-27 08:07:19 | INFO     | cvvr_desktop.desktop_app.services.trip_service | Fetching pending trips from API
+2025-11-27 08:07:19 | ERROR    | cvvr_desktop.desktop_app.services.trip_service | Failed to parse wrapped API response: 4 validation errors for TripsAPIResponse
+content.0.analysisType
+  Input should be a valid string [type=string_type, input_value=0, input_type=int]
+    For further information visit https://errors.pydantic.dev/2.12/v/string_type
+content.1.analysisType
+  Input should be a valid string [type=string_type, input_value=0, input_type=int]
+    For further information visit https://errors.pydantic.dev/2.12/v/string_type
+content.2.analysisType
+  Input should be a valid string [type=string_type, input_value=0, input_type=int]
+    For further information visit https://errors.pydantic.dev/2.12/v/string_type
+content.3.analysisType
+  Input should be a valid string [type=string_type, input_value=0, input_type=int]
+    For further information visit https://errors.pydantic.dev/2.12/v/string_type
+2025-11-27 08:07:19 | ERROR    | cvvr_desktop.desktop_app.controllers.trips_controller | Failed to load trips: Invalid response format: 4 validation errors for TripsAPIResponse
+content.0.analysisType
+  Input should be a valid string [type=string_type, input_value=0, input_type=int]
+    For further information visit https://errors.pydantic.dev/2.12/v/string_type
+content.1.analysisType
+  Input should be a valid string [type=string_type, input_value=0, input_type=int]
+    For further information visit https://errors.pydantic.dev/2.12/v/string_type
+content.2.analysisType
+  Input should be a valid string [type=string_type, input_value=0, input_type=int]
+    For further information visit https://errors.pydantic.dev/2.12/v/string_type
+content.3.analysisType
+  Input should be a valid string [type=string_type, input_value=0, input_type=int]
+    For further information visit https://errors.pydantic.dev/2.12/v/string_type
+2025-11-27 08:08:34 | INFO     | cvvr_desktop.desktop_app.controllers.trips_controller | Loading pending trips
+2025-11-27 08:08:34 | INFO     | cvvr_desktop.desktop_app.services.trip_service | Fetching pending trips from API
+2025-11-27 08:08:34 | ERROR    | cvvr_desktop.desktop_app.services.trip_service | Failed to parse wrapped API response: 4 validation errors for TripsAPIResponse
+content.0.analysisType
+  Input should be a valid string [type=string_type, input_value=0, input_type=int]
+    For further information visit https://errors.pydantic.dev/2.12/v/string_type
+content.1.analysisType
+  Input should be a valid string [type=string_type, input_value=0, input_type=int]
+    For further information visit https://errors.pydantic.dev/2.12/v/string_type
+content.2.analysisType
+  Input should be a valid string [type=string_type, input_value=0, input_type=int]
+    For further information visit https://errors.pydantic.dev/2.12/v/string_type
+content.3.analysisType
+  Input should be a valid string [type=string_type, input_value=0, input_type=int]
+    For further information visit https://errors.pydantic.dev/2.12/v/string_type
+2025-11-27 08:08:34 | ERROR    | cvvr_desktop.desktop_app.controllers.trips_controller | Failed to load trips: Invalid response format: 4 validation errors for TripsAPIResponse
+content.0.analysisType
+  Input should be a valid string [type=string_type, input_value=0, input_type=int]
+    For further information visit https://errors.pydantic.dev/2.12/v/string_type
+content.1.analysisType
+  Input should be a valid string [type=string_type, input_value=0, input_type=int]
+    For further information visit https://errors.pydantic.dev/2.12/v/string_type
+content.2.analysisType
+  Input should be a valid string [type=string_type, input_value=0, input_type=int]
+    For further information visit https://errors.pydantic.dev/2.12/v/string_type
+content.3.analysisType
+  Input should be a valid string [type=string_type, input_value=0, input_type=int]
+    For further information visit https://errors.pydantic.dev/2.12/v/string_type
+2025-11-27 08:08:43 | INFO     | cvvr_desktop | Logging initialized - Level: INFO
+2025-11-27 08:08:43 | INFO     | cvvr_desktop.__main__ | ============================================================
+2025-11-27 08:08:43 | INFO     | cvvr_desktop.__main__ | Starting Locopilot CVVR Desktop v1.0.0
+2025-11-27 08:08:43 | INFO     | cvvr_desktop.__main__ | ============================================================
+2025-11-27 08:08:43 | INFO     | cvvr_desktop.desktop_app.utils.api_client | API client initialized - Base URL: https://api.mindcoinapps.com/ai_demo_api
+2025-11-27 08:08:43 | INFO     | cvvr_desktop.desktop_app.services.auth_service | Authentication service initialized
+2025-11-27 08:08:43 | INFO     | cvvr_desktop.desktop_app.utils.api_client | API client initialized - Base URL: https://api.mindcoinapps.com/ai_demo_api
+2025-11-27 08:08:43 | INFO     | cvvr_desktop.desktop_app.services.trip_service | Trip service initialized
+2025-11-27 08:08:43 | INFO     | cvvr_desktop.desktop_app.utils.api_client | API client initialized - Base URL: https://api.mindcoinapps.com/ai_demo_api
+2025-11-27 08:08:43 | INFO     | cvvr_desktop.desktop_app.services.upload_service | Upload service initialized
+2025-11-27 08:08:43 | INFO     | cvvr_desktop.desktop_app.utils.api_client | API client initialized - Base URL: http://localhost:8000
+2025-11-27 08:08:43 | INFO     | cvvr_desktop.desktop_app.services.local_processing_service | Local processing service initialized
+2025-11-27 08:08:43 | INFO     | cvvr_desktop.desktop_app.controllers.login_controller | Login controller initialized
+2025-11-27 08:08:43 | INFO     | cvvr_desktop.desktop_app.controllers.trips_controller | Trips controller initialized
+2025-11-27 08:08:43 | INFO     | cvvr_desktop.desktop_app.controllers.trips_controller | Loading pending trips
+2025-11-27 08:08:43 | INFO     | cvvr_desktop.__main__ | Main window initialized
+2025-11-27 08:08:43 | ERROR    | cvvr_desktop.desktop_app.services.trip_service | Cannot fetch trips - no authentication token
+2025-11-27 08:08:43 | INFO     | cvvr_desktop.__main__ | Application started successfully
+2025-11-27 08:08:43 | ERROR    | cvvr_desktop.desktop_app.controllers.trips_controller | Failed to load trips: Authentication required - please login
+2025-11-27 08:09:07 | INFO     | cvvr_desktop.desktop_app.controllers.login_controller | Initiating login for user: 9705589009
+2025-11-27 08:09:07 | INFO     | cvvr_desktop.desktop_app.controllers.login_controller | Login worker started for user: 9705589009
+2025-11-27 08:09:07 | INFO     | cvvr_desktop.desktop_app.services.auth_service | Attempting login for user: 9705589009
+2025-11-27 08:09:07 | INFO     | cvvr_desktop.desktop_app.services.auth_service | Login successful for user: Venky (9705589009)
+2025-11-27 08:09:07 | INFO     | cvvr_desktop.desktop_app.controllers.login_controller | Login successful: Venky (9705589009)
+2025-11-27 08:09:07 | INFO     | cvvr_desktop.__main__ | Navigating to trips view
+2025-11-27 08:09:07 | INFO     | cvvr_desktop.desktop_app.controllers.trips_controller | Trips controller initialized
+2025-11-27 08:09:07 | INFO     | cvvr_desktop.desktop_app.controllers.trips_controller | Loading pending trips
+2025-11-27 08:09:07 | INFO     | cvvr_desktop.desktop_app.services.trip_service | Fetching pending trips from API
+2025-11-27 08:09:08 | INFO     | cvvr_desktop.desktop_app.services.trip_service | Successfully fetched 4 pending trips
+2025-11-27 08:09:08 | INFO     | cvvr_desktop.desktop_app.controllers.trips_controller | Loaded 4 trips
+2025-11-27 08:09:13 | INFO     | cvvr_desktop.desktop_app.controllers.trips_controller | Upload clicked for trip: 1b43dc19-d9c2-424c-8702-4d70cc16a99c
+2025-11-27 08:09:22 | INFO     | cvvr_desktop.desktop_app.controllers.trips_controller | Video selection cancelled
+2025-11-27 08:09:23 | INFO     | cvvr_desktop.desktop_app.controllers.trips_controller | Upload clicked for trip: 1b43dc19-d9c2-424c-8702-4d70cc16a99c

@@ -109,8 +109,20 @@ Edit `.env` to customize:
 
 ### Local Backend Setup
 
-The desktop app requires the local FastAPI backend for video processing:
+The desktop app **automatically starts** the local FastAPI backend for video processing.
 
+**Automatic Startup** (Default):
+- Backend starts when you launch the desktop app
+- No manual setup required
+- Shuts down when you close the app
+
+**Manual Startup** (Optional):
+If you prefer manual control, disable auto-start:
+```bash
+export CVVR_AUTO_START_BACKEND=false
+```
+
+Then start the backend manually:
 1. Navigate to project root
 2. Install backend dependencies:
    ```bash
@@ -156,9 +168,10 @@ Add exception for LocopilotCVVR.exe in your antivirus software
 
 **Backend connection error:**
 
-1. Ensure local FastAPI backend is running on port 8000
-2. Check firewall settings
-3. Verify `CVVR_LOCAL_BACKEND_URL` in configuration
+1. Run the desktop app (backend starts automatically)
+2. Login with test credentials
+3. Verify you can see pending trips
+4. Check firewall settings if connection issues occur
 
 **Login failure:**
 

@@ -2,7 +2,7 @@
 Authentication models for API communication
 """
 
-from typing import Optional
+from typing import Optional, List
 from pydantic import BaseModel, Field
 
 
@@ -39,6 +39,17 @@ class LoginResponse(BaseModel):
     roleId: int = Field(..., description="Role ID")
     status: int = Field(..., description="User status")
     createdDate: str = Field(..., description="Account creation date")
+
+
+class LoginAPIResponse(BaseModel):
+    """
+    Wrapper for the new API response structure
+    
+    The API returns user data wrapped in a content array with metadata
+    """
+    mssg: str = Field(..., description="Response message")
+    content: List[LoginResponse] = Field(..., description="List of user data (always contains 1 item)")
+    status: int = Field(..., description="Response status code")
 
 
 class AuthState:

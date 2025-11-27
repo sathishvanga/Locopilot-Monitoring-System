@@ -4,26 +4,22 @@ Get started with Locopilot CVVR Desktop in 5 minutes!
 
 ## Prerequisites
 
+### For Running Packaged App (End Users)
+✅ macOS 10.13+ or Windows 10+
+✅ 4GB RAM (8GB recommended)
+✅ 2GB free disk space
+✅ Internet connection (for login and uploads)
+
+**Note**: No Python installation required! Everything is bundled in the app.
+
+### For Development Mode
 ✅ Python 3.11+ installed  
 ✅ Internet connection  
-✅ Local FastAPI backend running (for video processing)
+✅ Dependencies installed
 
-## Step 1: Start the Local Backend
+**Note**: The local FastAPI backend starts **automatically** - no manual setup required!
 
-```bash
-# Navigate to project root
-cd "/Users/satishvanga/Desktop/Locopilot Monitoring System"
-
-# Install backend dependencies (first time only)
-pip install -r requirements.txt
-
-# Start the backend
-uvicorn app.main:app --reload
-```
-
-Leave this terminal running. The backend runs on http://localhost:8000
-
-## Step 2: Run the Desktop App
+## Step 1: Run the Desktop App
 
 ### Option A: Development Mode (Recommended for testing)
 
@@ -53,7 +49,7 @@ cd "/Users/satishvanga/Desktop/Locopilot Monitoring System/desktop_app"
 open build_config/dist/LocopilotCVVR.app
 ```
 
-## Step 3: Login
+## Step 2: Login
 
 1. The app will open with the login screen
 2. Enter credentials:
@@ -76,22 +72,28 @@ open build_config/dist/LocopilotCVVR.app
 
 ## Troubleshooting
 
-### "Backend Not Running" Error
+### Backend Connection Issues
 
-**Problem**: Local backend is not started
+**Problem**: Backend connection lost or failed to start
 
 **Solution**:
-```bash
-# In a separate terminal
-cd "/Users/satishvanga/Desktop/Locopilot Monitoring System"
-uvicorn app.main:app --reload
-```
-
-Verify it's running:
-```bash
-curl http://localhost:8000/health
-# Should return: {"status":"healthy",...}
-```
+1. **Restart the app** - The backend starts automatically
+2. **Check port 8000** isn't being used by another application:
+   ```bash
+   lsof -i :8000
+   ```
+3. **Verify backend health**:
+   ```bash
+   curl http://localhost:8000/health
+   # Should return: {"status":"healthy",...}
+   ```
+4. **Disable auto-start** (if needed):
+   ```bash
+   export CVVR_AUTO_START_BACKEND=false
+   # Then start manually
+   cd "/Users/satishvanga/Desktop/Locopilot Monitoring System"
+   uvicorn app.main:app --reload
+   ```
 
 ### Login Failed
 
@@ -190,23 +192,21 @@ Max file size: **2GB**
 ## Expected Workflow
 
 ```
-1. Start Backend (Terminal 1)
+1. Start Desktop App (Backend starts automatically)
    ↓
-2. Start Desktop App (Terminal 2)
+2. Login
    ↓
-3. Login
+3. View Pending Trips
    ↓
-4. View Pending Trips
+4. Click "Upload Video"
    ↓
-5. Click "Upload Video"
+5. Select Video File
    ↓
-6. Select Video File
+6. Processing (20-60 seconds)
    ↓
-7. Processing (20-60 seconds)
+7. Uploading (30-120 seconds)
    ↓
-8. Uploading (30-120 seconds)
-   ↓
-9. Completed ✓
+8. Completed ✓
 ```
 
 ## Next Steps
@@ -224,5 +224,5 @@ Max file size: **2GB**
 
 **Ready to go!** 🚀
 
-Start the backend, run the app, and upload your first video!
+Just run the app - the backend starts automatically!
 

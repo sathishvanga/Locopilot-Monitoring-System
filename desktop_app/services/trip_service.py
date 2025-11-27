@@ -5,7 +5,7 @@ Trip service for fetching and managing CVVR trips
 from typing import List, Optional
 import requests
 
-from ..models.trip_models import TripModel
+from ..models.trip_models import TripModel, TripsAPIResponse
 from ..utils.api_client import APIClient
 from ..utils.logger import get_logger
 from ..utils.config import get_settings
@@ -67,8 +67,28 @@ class TripService:
             # Parse response
             response_data = response.json()
             
-            # Handle different response structures
-            if isinstance(response_data, list):
+            # Handle new wrapped response structure
+            if isinstance(response_data, dict) and "content" in response_data and "status" in response_data:
+                # New API format with wrapped response
+                try:
+                    api_response = TripsAPIResponse(**response_data)
+                    
+                    # Check if request was successful
+                    if api_response.status != 1:
+                        error_msg = api_response.mssg or "Failed to fetch trips"
+                        logger.error(f"API returned error: {error_msg}")
+                        return False, [], error_msg
+                    
+                    trips = api_response.content
+                    logger.info(f"Successfully fetched {len(trips)} pending trips")
+                    return True, trips, None
+                    
+                except Exception as e:
+                    logger.error(f"Failed to parse wrapped API response: {e}")
+                    return False, [], f"Invalid response format: {str(e)}"
+            
+            # Handle legacy response structures (for backward compatibility)
+            elif isinstance(response_data, list):
                 trips_data = response_data
             elif isinstance(response_data, dict) and "data" in response_data:
                 trips_data = response_data["data"]
@@ -76,9 +96,9 @@ class TripService:
                 trips_data = response_data["trips"]
             else:
                 logger.warning(f"Unexpected response structure: {response_data}")
-                trips_data = []
+                return False, [], "Unexpected response format from server"
             
-            # Parse into TripModel objects
+            # Parse legacy format into TripModel objects
             trips = []
             for trip_dict in trips_data:
                 try:
@@ -89,7 +109,6 @@ class TripService:
                     continue
             
             logger.info(f"Successfully fetched {len(trips)} pending trips")
-            
             return True, trips, None
             
         except requests.HTTPError as e:

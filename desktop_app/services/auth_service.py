@@ -5,7 +5,7 @@ Authentication service for remote API
 from typing import Optional
 import requests
 
-from ..models.auth_models import LoginRequest, LoginResponse, AuthState
+from ..models.auth_models import LoginRequest, LoginResponse, LoginAPIResponse, AuthState
 from ..utils.api_client import APIClient
 from ..utils.logger import get_logger
 from ..utils.config import get_settings
@@ -60,20 +60,33 @@ class AuthService:
             
             # Make API request
             response = self.api_client.post(
-                endpoint="/auth/user/loginByMobilePasswordReCaptchaEncrypt",
+                endpoint="/auth/user/loginByMobilePassword",
                 json=login_request.model_dump()
             )
             
             # Parse response
             response_data = response.json()
             
-            # Validate response structure
-            if "token" not in response_data:
+            # Validate response structure - new API returns wrapped response
+            if "content" not in response_data or "status" not in response_data:
                 logger.error(f"Invalid response structure: {response_data}")
                 return False, None, "Invalid response from server"
             
-            # Parse into LoginResponse model
-            user_info = LoginResponse(**response_data)
+            # Parse the wrapped API response
+            api_response = LoginAPIResponse(**response_data)
+            
+            # Check if login was successful
+            if api_response.status != 1:
+                error_msg = api_response.mssg or "Login failed"
+                logger.error(f"Login failed: {error_msg}")
+                return False, None, error_msg
+            
+            # Extract user info from content array (should have exactly 1 item)
+            if not api_response.content or len(api_response.content) == 0:
+                logger.error("No user data in response")
+                return False, None, "No user data received from server"
+            
+            user_info = api_response.content[0]
             
             # Store authentication state
             self.auth_state.set_auth(user_info.token, user_info)
