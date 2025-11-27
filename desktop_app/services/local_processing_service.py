@@ -31,6 +31,7 @@ class LocalProcessingService:
     def __init__(self):
         """Initialize local processing service"""
         self.local_api = APIClient(base_url=settings.local_backend_url)
+        self.backend_warning_shown = False  # Track if backend warning was shown (persists across controller recreations)
         logger.info("Local processing service initialized")
     
     def is_backend_running(self) -> bool:

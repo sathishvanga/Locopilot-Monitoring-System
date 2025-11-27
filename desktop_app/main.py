@@ -8,7 +8,7 @@ import sys
 from pathlib import Path
 
 from PySide6.QtWidgets import QApplication, QStackedWidget, QMainWindow
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QIcon
 
 from .views.login_view import LoginView
@@ -41,15 +41,8 @@ class MainWindow(QMainWindow):
         """Initialize main window"""
         super().__init__()
         
-        # Initialize backend manager and start backend
+        # Initialize backend manager (but don't start yet to avoid blocking)
         self.backend_manager = BackendManager()
-        if settings.auto_start_backend:
-            logger.info("Auto-starting local backend...")
-            backend_started = self.backend_manager.start_backend()
-            if backend_started:
-                logger.info("Backend is ready")
-            else:
-                logger.warning("Backend failed to start - video processing will not be available")
         
         # Initialize services
         self.auth_service = AuthService()
@@ -96,6 +89,30 @@ class MainWindow(QMainWindow):
                 background-color: #f5f5f5;
             }
         """)
+    
+    def showEvent(self, event):
+        """
+        Handle show event - start backend after window is visible
+        
+        Args:
+            event: Show event
+        """
+        super().showEvent(event)
+        
+        # Start backend after window is shown to avoid blocking UI
+        if settings.auto_start_backend and not hasattr(self, '_backend_started'):
+            self._backend_started = True
+            # Use QTimer to start backend in the next event loop iteration
+            QTimer.singleShot(100, self._start_backend_async)
+    
+    def _start_backend_async(self):
+        """Start backend asynchronously after UI is shown"""
+        logger.info("Auto-starting local backend...")
+        backend_started = self.backend_manager.start_backend()
+        if backend_started:
+            logger.info("Backend is ready")
+        else:
+            logger.warning("Backend failed to start - video processing will not be available")
     
     def _setup_controllers(self):
         """Setup controllers and connect signals"""

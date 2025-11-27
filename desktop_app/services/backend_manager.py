@@ -55,8 +55,19 @@ class BackendManager:
             Path: Path to the 'app' directory containing backend code
         """
         if self._is_packaged():
-            # In packaged app, backend is in _MEIPASS/app
-            backend_path = Path(sys._MEIPASS) / 'app'
+            # In packaged macOS app, backend is in Contents/Resources/app
+            # sys._MEIPASS can point to Contents/Frameworks, so we need to adjust
+            meipass = Path(sys._MEIPASS)
+            logger.info(f"sys._MEIPASS: {meipass}")
+            
+            # Check if we're in Frameworks directory and adjust to Resources
+            if meipass.name == 'Frameworks':
+                # Navigate to Contents/Resources instead
+                backend_path = meipass.parent / 'Resources' / 'app'
+            else:
+                # Standard path
+                backend_path = meipass / 'app'
+            
             logger.info(f"Using packaged backend at: {backend_path}")
         else:
             # In development, backend is in project root
@@ -131,8 +142,22 @@ class BackendManager:
             logger.info(f"Backend project root: {project_root}")
             
             # Build uvicorn command
+            # In packaged mode, sys.executable may not support spawning processes
+            # Try to find system Python as fallback
+            python_exe = sys.executable
+            
+            if self._is_packaged():
+                # Try to use system Python instead of the packaged executable
+                import shutil
+                system_python = shutil.which('python3') or shutil.which('python')
+                if system_python:
+                    logger.info(f"Using system Python: {system_python}")
+                    python_exe = system_python
+                else:
+                    logger.warning("No system Python found, using packaged executable (may fail)")
+            
             cmd = [
-                sys.executable,
+                python_exe,
                 "-m", "uvicorn",
                 "app.main:app",
                 "--host", "127.0.0.1",

@@ -200,17 +200,19 @@ class TripsController(QObject):
         """
         logger.info(f"Upload clicked for trip: {trip_uuid}")
         
-        # Check if backend is running
-        if not self.local_processing.is_backend_running():
-            response = QMessageBox.critical(
+        # Check if backend is running (only show warning once per session)
+        # Flag is stored in service to persist across controller recreations
+        if not self.local_processing.is_backend_running() and not self.local_processing.backend_warning_shown:
+            self.local_processing.backend_warning_shown = True
+            response = QMessageBox.warning(
                 self.view,
-                "Backend Connection Lost",
-                "The local processing backend is not available.\n\n"
-                "The backend may have crashed or stopped unexpectedly.\n\n"
-                "Please restart the application to reconnect.\n\n"
-                "Do you want to continue anyway?",
+                "Local Processing Unavailable",
+                "The local video processing backend is not running.\n\n"
+                "You can still upload videos directly to the server.\n\n"
+                "Note: Without local processing, videos will be uploaded as-is without analysis.\n\n"
+                "Continue with upload?",
                 QMessageBox.Yes | QMessageBox.No,
-                QMessageBox.No
+                QMessageBox.Yes  # Default to Yes
             )
             
             if response == QMessageBox.No:

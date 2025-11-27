@@ -5,6 +5,7 @@ PyInstaller spec file for macOS build
 
 import sys
 from pathlib import Path
+from PyInstaller.utils.hooks import collect_data_files
 
 # Get the project root directory
 project_root = Path('.').resolve().parent
@@ -24,6 +25,9 @@ datas_list = [
     ('../../app', 'app'),  # Include FastAPI backend code
     ('../../requirements.txt', '.'),  # Backend requirements reference
 ]
+
+# Add certifi data files for SSL certificate handling
+datas_list += collect_data_files('certifi')
 
 # Conditionally add YOLO model if it exists
 yolo_model_path = Path('../../yolo11s.pt')

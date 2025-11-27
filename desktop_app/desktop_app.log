@@ -28,3 +28,169 @@
 2025-11-27 08:47:40 | ERROR    | cvvr_desktop.desktop_app.services.trip_service | Cannot fetch trips - no authentication token
 2025-11-27 08:47:40 | INFO     | cvvr_desktop.desktop_app.main | Application started successfully
 2025-11-27 08:47:40 | ERROR    | cvvr_desktop.desktop_app.controllers.trips_controller | Failed to load trips: Authentication required - please login
+2025-11-27 20:45:16 | INFO     | cvvr_desktop | Logging initialized - Level: INFO
+2025-11-27 20:45:16 | INFO     | cvvr_desktop.desktop_app.main | ============================================================
+2025-11-27 20:45:16 | INFO     | cvvr_desktop.desktop_app.main | Starting Locopilot CVVR Desktop v1.0.0
+2025-11-27 20:45:16 | INFO     | cvvr_desktop.desktop_app.main | ============================================================
+2025-11-27 20:45:16 | INFO     | cvvr_desktop.desktop_app.services.backend_manager | Backend manager initialized
+2025-11-27 20:45:16 | INFO     | cvvr_desktop.desktop_app.services.backend_manager | Running in packaged mode: True
+2025-11-27 20:45:16 | INFO     | cvvr_desktop.desktop_app.main | Auto-starting local backend...
+2025-11-27 20:45:16 | INFO     | cvvr_desktop.desktop_app.services.backend_manager | Starting FastAPI backend...
+2025-11-27 20:45:16 | INFO     | cvvr_desktop.desktop_app.services.backend_manager | Using packaged backend at: /Users/satishvanga/Desktop/Locopilot Monitoring System/desktop_app/build_config/dist/LocopilotCVVR.app/Contents/Frameworks/app
+2025-11-27 20:45:16 | INFO     | cvvr_desktop.desktop_app.services.backend_manager | Backend project root: /Users/satishvanga/Desktop/Locopilot Monitoring System/desktop_app/build_config/dist/LocopilotCVVR.app/Contents/Frameworks
+2025-11-27 20:45:16 | INFO     | cvvr_desktop.desktop_app.services.backend_manager | Set PYTHONPATH to: /Users/satishvanga/Desktop/Locopilot Monitoring System/desktop_app/build_config/dist/LocopilotCVVR.app/Contents/Frameworks
+2025-11-27 20:45:16 | INFO     | cvvr_desktop.desktop_app.services.backend_manager | Backend process started with PID: 4649
+2025-11-27 20:45:26 | WARNING  | cvvr_desktop.desktop_app.services.backend_manager | Backend failed to start within timeout
+2025-11-27 20:45:26 | INFO     | cvvr_desktop.desktop_app.services.backend_manager | Backend process force killed
+2025-11-27 20:45:26 | WARNING  | cvvr_desktop.desktop_app.main | Backend failed to start - video processing will not be available
+2025-11-27 20:45:26 | INFO     | cvvr_desktop.desktop_app.utils.api_client | API client initialized - Base URL: https://api.mindcoinapps.com/ai_demo_api
+2025-11-27 20:45:26 | INFO     | cvvr_desktop.desktop_app.services.auth_service | Authentication service initialized
+2025-11-27 20:45:26 | INFO     | cvvr_desktop.desktop_app.utils.api_client | API client initialized - Base URL: https://api.mindcoinapps.com/ai_demo_api
+2025-11-27 20:45:26 | INFO     | cvvr_desktop.desktop_app.services.trip_service | Trip service initialized
+2025-11-27 20:45:26 | INFO     | cvvr_desktop.desktop_app.utils.api_client | API client initialized - Base URL: https://api.mindcoinapps.com/ai_demo_api
+2025-11-27 20:45:26 | INFO     | cvvr_desktop.desktop_app.services.upload_service | Upload service initialized
+2025-11-27 20:45:26 | INFO     | cvvr_desktop.desktop_app.utils.api_client | API client initialized - Base URL: http://localhost:8000
+2025-11-27 20:45:26 | INFO     | cvvr_desktop.desktop_app.services.local_processing_service | Local processing service initialized
+2025-11-27 20:45:26 | INFO     | cvvr_desktop.desktop_app.controllers.login_controller | Login controller initialized
+2025-11-27 20:45:26 | INFO     | cvvr_desktop.desktop_app.controllers.trips_controller | Trips controller initialized
+2025-11-27 20:45:26 | INFO     | cvvr_desktop.desktop_app.controllers.trips_controller | Loading pending trips
+2025-11-27 20:45:26 | INFO     | cvvr_desktop.desktop_app.main | Main window initialized
+2025-11-27 20:45:26 | ERROR    | cvvr_desktop.desktop_app.services.trip_service | Cannot fetch trips - no authentication token
+2025-11-27 20:45:26 | INFO     | cvvr_desktop.desktop_app.main | Application started successfully
+2025-11-27 20:45:27 | ERROR    | cvvr_desktop.desktop_app.controllers.trips_controller | Failed to load trips: Authentication required - please login
+2025-11-27 20:47:57 | INFO     | cvvr_desktop | Logging initialized - Level: INFO
+2025-11-27 20:47:57 | INFO     | cvvr_desktop.desktop_app.main | ============================================================
+2025-11-27 20:47:57 | INFO     | cvvr_desktop.desktop_app.main | Starting Locopilot CVVR Desktop v1.0.0
+2025-11-27 20:47:57 | INFO     | cvvr_desktop.desktop_app.main | ============================================================
+2025-11-27 20:47:57 | INFO     | cvvr_desktop.desktop_app.services.backend_manager | Backend manager initialized
+2025-11-27 20:47:57 | INFO     | cvvr_desktop.desktop_app.services.backend_manager | Running in packaged mode: True
+2025-11-27 20:47:57 | INFO     | cvvr_desktop.desktop_app.main | Auto-starting local backend...
+2025-11-27 20:47:57 | INFO     | cvvr_desktop.desktop_app.services.backend_manager | Starting FastAPI backend...
+2025-11-27 20:47:57 | INFO     | cvvr_desktop.desktop_app.services.backend_manager | Using packaged backend at: /Users/satishvanga/Desktop/Locopilot Monitoring System/desktop_app/build_config/dist/LocopilotCVVR.app/Contents/Frameworks/app
+2025-11-27 20:47:57 | INFO     | cvvr_desktop.desktop_app.services.backend_manager | Backend project root: /Users/satishvanga/Desktop/Locopilot Monitoring System/desktop_app/build_config/dist/LocopilotCVVR.app/Contents/Frameworks
+2025-11-27 20:47:57 | INFO     | cvvr_desktop.desktop_app.services.backend_manager | Set PYTHONPATH to: /Users/satishvanga/Desktop/Locopilot Monitoring System/desktop_app/build_config/dist/LocopilotCVVR.app/Contents/Frameworks
+2025-11-27 20:47:57 | INFO     | cvvr_desktop.desktop_app.services.backend_manager | Backend process started with PID: 6031
+2025-11-27 20:48:07 | WARNING  | cvvr_desktop.desktop_app.services.backend_manager | Backend failed to start within timeout
+2025-11-27 20:48:07 | INFO     | cvvr_desktop.desktop_app.services.backend_manager | Backend process force killed
+2025-11-27 20:48:07 | WARNING  | cvvr_desktop.desktop_app.main | Backend failed to start - video processing will not be available
+2025-11-27 20:48:07 | INFO     | cvvr_desktop.desktop_app.utils.api_client | API client initialized - Base URL: https://api.mindcoinapps.com/ai_demo_api
+2025-11-27 20:48:07 | INFO     | cvvr_desktop.desktop_app.services.auth_service | Authentication service initialized
+2025-11-27 20:48:07 | INFO     | cvvr_desktop.desktop_app.utils.api_client | API client initialized - Base URL: https://api.mindcoinapps.com/ai_demo_api
+2025-11-27 20:48:07 | INFO     | cvvr_desktop.desktop_app.services.trip_service | Trip service initialized
+2025-11-27 20:48:07 | INFO     | cvvr_desktop.desktop_app.utils.api_client | API client initialized - Base URL: https://api.mindcoinapps.com/ai_demo_api
+2025-11-27 20:48:07 | INFO     | cvvr_desktop.desktop_app.services.upload_service | Upload service initialized
+2025-11-27 20:48:07 | INFO     | cvvr_desktop.desktop_app.utils.api_client | API client initialized - Base URL: http://localhost:8000
+2025-11-27 20:48:07 | INFO     | cvvr_desktop.desktop_app.services.local_processing_service | Local processing service initialized
+2025-11-27 20:48:07 | INFO     | cvvr_desktop.desktop_app.controllers.login_controller | Login controller initialized
+2025-11-27 20:48:07 | INFO     | cvvr_desktop.desktop_app.controllers.trips_controller | Trips controller initialized
+2025-11-27 20:48:07 | INFO     | cvvr_desktop.desktop_app.controllers.trips_controller | Loading pending trips
+2025-11-27 20:48:07 | INFO     | cvvr_desktop.desktop_app.main | Main window initialized
+2025-11-27 20:48:07 | ERROR    | cvvr_desktop.desktop_app.services.trip_service | Cannot fetch trips - no authentication token
+2025-11-27 20:48:07 | INFO     | cvvr_desktop.desktop_app.main | Application started successfully
+2025-11-27 20:48:07 | ERROR    | cvvr_desktop.desktop_app.controllers.trips_controller | Failed to load trips: Authentication required - please login
+2025-11-27 20:51:01 | INFO     | cvvr_desktop | Logging initialized - Level: INFO
+2025-11-27 20:51:01 | INFO     | cvvr_desktop.desktop_app.main | ============================================================
+2025-11-27 20:51:01 | INFO     | cvvr_desktop.desktop_app.main | Starting Locopilot CVVR Desktop v1.0.0
+2025-11-27 20:51:01 | INFO     | cvvr_desktop.desktop_app.main | ============================================================
+2025-11-27 20:51:01 | INFO     | cvvr_desktop.desktop_app.services.backend_manager | Backend manager initialized
+2025-11-27 20:51:01 | INFO     | cvvr_desktop.desktop_app.services.backend_manager | Running in packaged mode: True
+2025-11-27 20:51:01 | INFO     | cvvr_desktop.desktop_app.main | Auto-starting local backend...
+2025-11-27 20:51:01 | INFO     | cvvr_desktop.desktop_app.services.backend_manager | Starting FastAPI backend...
+2025-11-27 20:51:01 | INFO     | cvvr_desktop.desktop_app.services.backend_manager | Using packaged backend at: /Users/satishvanga/Desktop/Locopilot Monitoring System/desktop_app/build_config/dist/LocopilotCVVR.app/Contents/Frameworks/app
+2025-11-27 20:51:01 | INFO     | cvvr_desktop.desktop_app.services.backend_manager | sys._MEIPASS: /Users/satishvanga/Desktop/Locopilot Monitoring System/desktop_app/build_config/dist/LocopilotCVVR.app/Contents/Frameworks
+2025-11-27 20:51:01 | INFO     | cvvr_desktop.desktop_app.services.backend_manager | Backend project root: /Users/satishvanga/Desktop/Locopilot Monitoring System/desktop_app/build_config/dist/LocopilotCVVR.app/Contents/Frameworks
+2025-11-27 20:51:01 | INFO     | cvvr_desktop.desktop_app.services.backend_manager | Set PYTHONPATH to: /Users/satishvanga/Desktop/Locopilot Monitoring System/desktop_app/build_config/dist/LocopilotCVVR.app/Contents/Frameworks
+2025-11-27 20:51:01 | INFO     | cvvr_desktop.desktop_app.services.backend_manager | Backend process started with PID: 7870
+2025-11-27 20:51:11 | WARNING  | cvvr_desktop.desktop_app.services.backend_manager | Backend failed to start within timeout
+2025-11-27 20:51:11 | INFO     | cvvr_desktop.desktop_app.services.backend_manager | Backend process force killed
+2025-11-27 20:51:11 | WARNING  | cvvr_desktop.desktop_app.main | Backend failed to start - video processing will not be available
+2025-11-27 20:51:11 | INFO     | cvvr_desktop.desktop_app.utils.api_client | API client initialized - Base URL: https://api.mindcoinapps.com/ai_demo_api
+2025-11-27 20:51:11 | INFO     | cvvr_desktop.desktop_app.services.auth_service | Authentication service initialized
+2025-11-27 20:51:11 | INFO     | cvvr_desktop.desktop_app.utils.api_client | API client initialized - Base URL: https://api.mindcoinapps.com/ai_demo_api
+2025-11-27 20:51:11 | INFO     | cvvr_desktop.desktop_app.services.trip_service | Trip service initialized
+2025-11-27 20:51:11 | INFO     | cvvr_desktop.desktop_app.utils.api_client | API client initialized - Base URL: https://api.mindcoinapps.com/ai_demo_api
+2025-11-27 20:51:11 | INFO     | cvvr_desktop.desktop_app.services.upload_service | Upload service initialized
+2025-11-27 20:51:11 | INFO     | cvvr_desktop.desktop_app.utils.api_client | API client initialized - Base URL: http://localhost:8000
+2025-11-27 20:51:11 | INFO     | cvvr_desktop.desktop_app.services.local_processing_service | Local processing service initialized
+2025-11-27 20:51:11 | INFO     | cvvr_desktop.desktop_app.controllers.login_controller | Login controller initialized
+2025-11-27 20:51:11 | INFO     | cvvr_desktop.desktop_app.controllers.trips_controller | Trips controller initialized
+2025-11-27 20:51:11 | INFO     | cvvr_desktop.desktop_app.controllers.trips_controller | Loading pending trips
+2025-11-27 20:51:11 | INFO     | cvvr_desktop.desktop_app.main | Main window initialized
+2025-11-27 20:51:11 | ERROR    | cvvr_desktop.desktop_app.services.trip_service | Cannot fetch trips - no authentication token
+2025-11-27 20:51:11 | INFO     | cvvr_desktop.desktop_app.main | Application started successfully
+2025-11-27 20:51:11 | ERROR    | cvvr_desktop.desktop_app.controllers.trips_controller | Failed to load trips: Authentication required - please login
+2025-11-27 20:57:25 | INFO     | cvvr_desktop | Logging initialized - Level: INFO
+2025-11-27 20:57:25 | INFO     | cvvr_desktop.desktop_app.main | ============================================================
+2025-11-27 20:57:25 | INFO     | cvvr_desktop.desktop_app.main | Starting Locopilot CVVR Desktop v1.0.0
+2025-11-27 20:57:25 | INFO     | cvvr_desktop.desktop_app.main | ============================================================
+2025-11-27 20:57:25 | INFO     | cvvr_desktop.desktop_app.services.backend_manager | Backend manager initialized
+2025-11-27 20:57:25 | INFO     | cvvr_desktop.desktop_app.services.backend_manager | Running in packaged mode: True
+2025-11-27 20:57:25 | INFO     | cvvr_desktop.desktop_app.main | Auto-starting local backend...
+2025-11-27 20:57:25 | INFO     | cvvr_desktop.desktop_app.services.backend_manager | Starting FastAPI backend...
+2025-11-27 20:57:25 | INFO     | cvvr_desktop.desktop_app.services.backend_manager | sys._MEIPASS: /Users/satishvanga/Desktop/Locopilot Monitoring System/desktop_app/build_config/dist/LocopilotCVVR.app/Contents/Frameworks
+2025-11-27 20:57:25 | INFO     | cvvr_desktop.desktop_app.services.backend_manager | Using packaged backend at: /Users/satishvanga/Desktop/Locopilot Monitoring System/desktop_app/build_config/dist/LocopilotCVVR.app/Contents/Resources/app
+2025-11-27 20:57:25 | INFO     | cvvr_desktop.desktop_app.services.backend_manager | Backend project root: /Users/satishvanga/Desktop/Locopilot Monitoring System/desktop_app/build_config/dist/LocopilotCVVR.app/Contents/Resources
+2025-11-27 20:57:25 | INFO     | cvvr_desktop.desktop_app.services.backend_manager | Set PYTHONPATH to: /Users/satishvanga/Desktop/Locopilot Monitoring System/desktop_app/build_config/dist/LocopilotCVVR.app/Contents/Resources
+2025-11-27 20:57:25 | INFO     | cvvr_desktop.desktop_app.services.backend_manager | Backend process started with PID: 11870
+2025-11-27 20:57:35 | WARNING  | cvvr_desktop.desktop_app.services.backend_manager | Backend failed to start within timeout
+2025-11-27 20:57:35 | INFO     | cvvr_desktop.desktop_app.services.backend_manager | Backend process force killed
+2025-11-27 20:57:35 | WARNING  | cvvr_desktop.desktop_app.main | Backend failed to start - video processing will not be available
+2025-11-27 20:57:35 | INFO     | cvvr_desktop.desktop_app.utils.api_client | API client initialized - Base URL: https://api.mindcoinapps.com/ai_demo_api
+2025-11-27 20:57:35 | INFO     | cvvr_desktop.desktop_app.services.auth_service | Authentication service initialized
+2025-11-27 20:57:35 | INFO     | cvvr_desktop.desktop_app.utils.api_client | API client initialized - Base URL: https://api.mindcoinapps.com/ai_demo_api
+2025-11-27 20:57:35 | INFO     | cvvr_desktop.desktop_app.services.trip_service | Trip service initialized
+2025-11-27 20:57:35 | INFO     | cvvr_desktop.desktop_app.utils.api_client | API client initialized - Base URL: https://api.mindcoinapps.com/ai_demo_api
+2025-11-27 20:57:35 | INFO     | cvvr_desktop.desktop_app.services.upload_service | Upload service initialized
+2025-11-27 20:57:35 | INFO     | cvvr_desktop.desktop_app.utils.api_client | API client initialized - Base URL: http://localhost:8000
+2025-11-27 20:57:35 | INFO     | cvvr_desktop.desktop_app.services.local_processing_service | Local processing service initialized
+2025-11-27 20:57:35 | INFO     | cvvr_desktop.desktop_app.controllers.login_controller | Login controller initialized
+2025-11-27 20:57:35 | INFO     | cvvr_desktop.desktop_app.controllers.trips_controller | Trips controller initialized
+2025-11-27 20:57:35 | INFO     | cvvr_desktop.desktop_app.controllers.trips_controller | Loading pending trips
+2025-11-27 20:57:35 | INFO     | cvvr_desktop.desktop_app.main | Main window initialized
+2025-11-27 20:57:35 | ERROR    | cvvr_desktop.desktop_app.services.trip_service | Cannot fetch trips - no authentication token
+2025-11-27 20:57:35 | INFO     | cvvr_desktop.desktop_app.main | Application started successfully
+2025-11-27 20:57:35 | ERROR    | cvvr_desktop.desktop_app.controllers.trips_controller | Failed to load trips: Authentication required - please login
+2025-11-27 21:00:25 | INFO     | cvvr_desktop | Logging initialized - Level: INFO
+2025-11-27 21:00:25 | INFO     | cvvr_desktop.desktop_app.main | ============================================================
+2025-11-27 21:00:25 | INFO     | cvvr_desktop.desktop_app.main | Starting Locopilot CVVR Desktop v1.0.0
+2025-11-27 21:00:25 | INFO     | cvvr_desktop.desktop_app.main | ============================================================
+2025-11-27 21:00:25 | INFO     | cvvr_desktop.desktop_app.services.backend_manager | Backend manager initialized
+2025-11-27 21:00:25 | INFO     | cvvr_desktop.desktop_app.services.backend_manager | Running in packaged mode: True
+2025-11-27 21:00:25 | INFO     | cvvr_desktop.desktop_app.main | Auto-starting local backend...
+2025-11-27 21:00:25 | INFO     | cvvr_desktop.desktop_app.services.backend_manager | Starting FastAPI backend...
+2025-11-27 21:00:25 | INFO     | cvvr_desktop.desktop_app.services.backend_manager | sys._MEIPASS: /Users/satishvanga/Desktop/Locopilot Monitoring System/desktop_app/build_config/dist/LocopilotCVVR.app/Contents/Frameworks
+2025-11-27 21:00:25 | INFO     | cvvr_desktop.desktop_app.services.backend_manager | Using packaged backend at: /Users/satishvanga/Desktop/Locopilot Monitoring System/desktop_app/build_config/dist/LocopilotCVVR.app/Contents/Resources/app
+2025-11-27 21:00:25 | INFO     | cvvr_desktop.desktop_app.services.backend_manager | Backend project root: /Users/satishvanga/Desktop/Locopilot Monitoring System/desktop_app/build_config/dist/LocopilotCVVR.app/Contents/Resources
+2025-11-27 21:00:25 | INFO     | cvvr_desktop.desktop_app.services.backend_manager | Using system Python: /opt/homebrew/bin/python3
+2025-11-27 21:00:25 | INFO     | cvvr_desktop.desktop_app.services.backend_manager | Set PYTHONPATH to: /Users/satishvanga/Desktop/Locopilot Monitoring System/desktop_app/build_config/dist/LocopilotCVVR.app/Contents/Resources
+2025-11-27 21:00:25 | INFO     | cvvr_desktop.desktop_app.services.backend_manager | Backend process started with PID: 13693
+2025-11-27 21:00:35 | WARNING  | cvvr_desktop.desktop_app.services.backend_manager | Backend failed to start within timeout
+2025-11-27 21:00:35 | ERROR    | cvvr_desktop.desktop_app.services.backend_manager | Error force killing backend: [Errno 3] No such process
+2025-11-27 21:00:35 | WARNING  | cvvr_desktop.desktop_app.main | Backend failed to start - video processing will not be available
+2025-11-27 21:00:35 | INFO     | cvvr_desktop.desktop_app.utils.api_client | API client initialized - Base URL: https://api.mindcoinapps.com/ai_demo_api
+2025-11-27 21:00:35 | INFO     | cvvr_desktop.desktop_app.services.auth_service | Authentication service initialized
+2025-11-27 21:00:35 | INFO     | cvvr_desktop.desktop_app.utils.api_client | API client initialized - Base URL: https://api.mindcoinapps.com/ai_demo_api
+2025-11-27 21:00:35 | INFO     | cvvr_desktop.desktop_app.services.trip_service | Trip service initialized
+2025-11-27 21:00:35 | INFO     | cvvr_desktop.desktop_app.utils.api_client | API client initialized - Base URL: https://api.mindcoinapps.com/ai_demo_api
+2025-11-27 21:00:35 | INFO     | cvvr_desktop.desktop_app.services.upload_service | Upload service initialized
+2025-11-27 21:00:35 | INFO     | cvvr_desktop.desktop_app.utils.api_client | API client initialized - Base URL: http://localhost:8000
+2025-11-27 21:00:35 | INFO     | cvvr_desktop.desktop_app.services.local_processing_service | Local processing service initialized
+2025-11-27 21:00:35 | INFO     | cvvr_desktop.desktop_app.controllers.login_controller | Login controller initialized
+2025-11-27 21:00:35 | INFO     | cvvr_desktop.desktop_app.controllers.trips_controller | Trips controller initialized
+2025-11-27 21:00:35 | INFO     | cvvr_desktop.desktop_app.controllers.trips_controller | Loading pending trips
+2025-11-27 21:00:35 | INFO     | cvvr_desktop.desktop_app.main | Main window initialized
+2025-11-27 21:00:35 | ERROR    | cvvr_desktop.desktop_app.services.trip_service | Cannot fetch trips - no authentication token
+2025-11-27 21:00:35 | INFO     | cvvr_desktop.desktop_app.main | Application started successfully
+2025-11-27 21:00:35 | ERROR    | cvvr_desktop.desktop_app.controllers.trips_controller | Failed to load trips: Authentication required - please login
+2025-11-27 21:01:08 | INFO     | cvvr_desktop.desktop_app.controllers.login_controller | Initiating login for user: 9705589009
+2025-11-27 21:01:08 | INFO     | cvvr_desktop.desktop_app.controllers.login_controller | Login worker started for user: 9705589009
+2025-11-27 21:01:08 | INFO     | cvvr_desktop.desktop_app.services.auth_service | Attempting login for user: 9705589009
+2025-11-27 21:01:09 | INFO     | cvvr_desktop.desktop_app.services.auth_service | Login successful for user: Venky (9705589009)
+2025-11-27 21:01:09 | INFO     | cvvr_desktop.desktop_app.controllers.login_controller | Login successful: Venky (9705589009)
+2025-11-27 21:01:09 | INFO     | cvvr_desktop.desktop_app.main | Navigating to trips view
+2025-11-27 21:01:09 | INFO     | cvvr_desktop.desktop_app.controllers.trips_controller | Trips controller initialized
+2025-11-27 21:01:09 | INFO     | cvvr_desktop.desktop_app.controllers.trips_controller | Loading pending trips
+2025-11-27 21:01:09 | INFO     | cvvr_desktop.desktop_app.services.trip_service | Fetching pending trips from API
+2025-11-27 21:01:10 | INFO     | cvvr_desktop.desktop_app.services.trip_service | Successfully fetched 4 pending trips
+2025-11-27 21:01:10 | INFO     | cvvr_desktop.desktop_app.controllers.trips_controller | Loaded 4 trips
+2025-11-27 21:01:16 | INFO     | cvvr_desktop.desktop_app.controllers.trips_controller | Upload clicked for trip: 1b43dc19-d9c2-424c-8702-4d70cc16a99c
