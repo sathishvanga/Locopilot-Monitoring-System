@@ -269,12 +269,16 @@ class BackendManager:
         This function runs uvicorn in a daemon thread, completely hidden from the user.
         The user never sees Python, uvicorn, or any technical details - it just works.
         
+        Note: Uses a single async worker because multiprocessing workers require signal
+        handlers which only work in the main thread. The async worker can still handle
+        multiple concurrent requests efficiently.
+        
         Args:
             project_root: Path to the project root (where app module is located)
             port: Port number to run the server on
             host: Host address to bind to
             original_cwd: Original working directory to restore if needed
-            workers: Number of worker processes (for optimal CPU utilization)
+            workers: Number of worker processes (parameter kept for compatibility, but not used in thread mode)
         """
         try:
             # Set up the environment
@@ -304,6 +308,7 @@ class BackendManager:
             
             # Import uvicorn
             import uvicorn
+            import asyncio
             
             logger.debug(f"Starting uvicorn server on {host}:{port}")
             
@@ -339,18 +344,48 @@ class BackendManager:
                 },
             }
             
-            # Run uvicorn - this will block the thread until server stops
-            # Use workers parameter for optimal CPU utilization (similar to gunicorn)
-            uvicorn.run(
-                "app.main:app",
+            # Import the FastAPI app
+            from app.main import app
+            
+            # Create and configure uvicorn Server
+            # Using Server class instead of uvicorn.run() to avoid signal handler issues in threads
+            # Note: We use a single worker because multiprocessing requires signal handlers
+            # which only work in the main thread. The async worker can still handle concurrent requests.
+            config = uvicorn.Config(
+                app=app,
                 host=host,
                 port=port,
-                workers=workers,  # ✅ CPU OPTIMIZATION: Use multiple workers for better CPU utilization
                 log_level="warning",
-                access_log=False,  # Don't log access requests to keep it quiet
-                use_colors=False,  # Disable colors (avoids TTY checks)
-                log_config=log_config  # Use custom log config that avoids DefaultFormatter
+                access_log=False,
+                use_colors=False,
+                log_config=log_config
             )
+            
+            server = uvicorn.Server(config)
+            
+            # Create a new event loop for this thread
+            # asyncio.run() doesn't work well in threads, so we create and manage the loop explicitly
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            
+            try:
+                # Run the server in the event loop
+                # This works in threads and doesn't require signal handlers
+                loop.run_until_complete(server.serve())
+            finally:
+                # Clean up the event loop
+                try:
+                    # Cancel all pending tasks
+                    pending = asyncio.all_tasks(loop)
+                    for task in pending:
+                        task.cancel()
+                    # Wait for tasks to complete cancellation
+                    if pending:
+                        loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
+                except Exception:
+                    pass
+                finally:
+                    loop.close()
         except Exception as e:
             # Log error but don't expose technical details to user
             import traceback
