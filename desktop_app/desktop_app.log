@@ -446,3 +446,337 @@ ImportError: ERROR: recursion is detected during loading of "cv2" binary extensi
 2025-11-27 22:35:46 | INFO     | cvvr_desktop.desktop_app.main | Stopping backend...
 2025-11-27 22:35:46 | INFO     | cvvr_desktop.desktop_app.main | Application exited with code: 0
 2025-11-27 22:35:46 | INFO     | cvvr_desktop.desktop_app.main | ============================================================
+2025-11-28 09:03:54 | INFO     | cvvr_desktop | Logging initialized - Level: INFO
+2025-11-28 09:03:54 | INFO     | cvvr_desktop.desktop_app.main | ============================================================
+2025-11-28 09:03:54 | INFO     | cvvr_desktop.desktop_app.main | Starting Locopilot CVVR Desktop v1.0.0
+2025-11-28 09:03:54 | INFO     | cvvr_desktop.desktop_app.main | ============================================================
+2025-11-28 09:03:54 | INFO     | cvvr_desktop.desktop_app.services.backend_manager | Backend manager initialized
+2025-11-28 09:03:54 | INFO     | cvvr_desktop.desktop_app.services.backend_manager | Running in packaged mode: True
+2025-11-28 09:03:54 | INFO     | cvvr_desktop.desktop_app.utils.api_client | API client initialized - Base URL: https://api.mindcoinapps.com/ai_demo_api
+2025-11-28 09:03:54 | INFO     | cvvr_desktop.desktop_app.services.auth_service | Authentication service initialized
+2025-11-28 09:03:54 | INFO     | cvvr_desktop.desktop_app.utils.api_client | API client initialized - Base URL: https://api.mindcoinapps.com/ai_demo_api
+2025-11-28 09:03:54 | INFO     | cvvr_desktop.desktop_app.services.trip_service | Trip service initialized
+2025-11-28 09:03:54 | INFO     | cvvr_desktop.desktop_app.utils.api_client | API client initialized - Base URL: https://api.mindcoinapps.com/ai_demo_api
+2025-11-28 09:03:54 | INFO     | cvvr_desktop.desktop_app.services.upload_service | Upload service initialized
+2025-11-28 09:03:54 | INFO     | cvvr_desktop.desktop_app.utils.api_client | API client initialized - Base URL: http://localhost:8000
+2025-11-28 09:03:54 | INFO     | cvvr_desktop.desktop_app.services.local_processing_service | Local processing service initialized
+2025-11-28 09:03:54 | INFO     | cvvr_desktop.desktop_app.controllers.login_controller | Login controller initialized
+2025-11-28 09:03:54 | INFO     | cvvr_desktop.desktop_app.controllers.trips_controller | Trips controller initialized
+2025-11-28 09:03:54 | INFO     | cvvr_desktop.desktop_app.controllers.trips_controller | Loading pending trips
+2025-11-28 09:03:54 | INFO     | cvvr_desktop.desktop_app.main | Main window initialized
+2025-11-28 09:03:54 | ERROR    | cvvr_desktop.desktop_app.services.trip_service | Cannot fetch trips - no authentication token
+2025-11-28 09:03:54 | INFO     | cvvr_desktop.desktop_app.main | Application started successfully
+2025-11-28 09:03:54 | ERROR    | cvvr_desktop.desktop_app.controllers.trips_controller | Failed to load trips: Authentication required - please login
+2025-11-28 09:03:54 | INFO     | cvvr_desktop.desktop_app.main | Auto-starting local backend...
+2025-11-28 09:03:54 | INFO     | cvvr_desktop.desktop_app.services.backend_manager | Starting FastAPI backend...
+2025-11-28 09:03:54 | INFO     | cvvr_desktop.desktop_app.utils.path_utils | sys._MEIPASS: /Users/satishvanga/Desktop/Locopilot Monitoring System/desktop_app/build_config/dist/LocopilotCVVR.app/Contents/Frameworks
+2025-11-28 09:03:54 | INFO     | cvvr_desktop.desktop_app.utils.path_utils | Using packaged backend at: /Users/satishvanga/Desktop/Locopilot Monitoring System/desktop_app/build_config/dist/LocopilotCVVR.app/Contents/Frameworks/app
+2025-11-28 09:03:54 | INFO     | cvvr_desktop.desktop_app.services.backend_manager | Backend project root: /Users/satishvanga/Desktop/Locopilot Monitoring System/desktop_app/build_config/dist/LocopilotCVVR.app/Contents/Frameworks
+2025-11-28 09:03:54 | INFO     | cvvr_desktop.desktop_app.services.backend_manager | Using system Python: /opt/homebrew/bin/python3
+2025-11-28 09:03:54 | ERROR    | cvvr_desktop.desktop_app.services.backend_manager | System Python at /opt/homebrew/bin/python3 is missing required packages.
+Please install: pip install gunicorn uvicorn fastapi torch ultralytics
+Error: Traceback (most recent call last):
+  File "<string>", line 1, in <module>
+    import gunicorn, uvicorn, fastapi, torch; print('OK')
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+ModuleNotFoundError: No module named 'gunicorn'
+
+2025-11-28 09:03:54 | WARNING  | cvvr_desktop.desktop_app.main | Backend failed to start - video processing will not be available
+2025-11-28 09:04:12 | INFO     | cvvr_desktop.desktop_app.controllers.login_controller | Initiating login for user: 9705589009
+2025-11-28 09:04:12 | INFO     | cvvr_desktop.desktop_app.controllers.login_controller | Login worker started for user: 9705589009
+2025-11-28 09:04:12 | INFO     | cvvr_desktop.desktop_app.services.auth_service | Attempting login for user: 9705589009
+2025-11-28 09:04:12 | INFO     | cvvr_desktop.desktop_app.services.auth_service | Login successful for user: Venky (9705589009)
+2025-11-28 09:04:12 | INFO     | cvvr_desktop.desktop_app.controllers.login_controller | Login successful: Venky (9705589009)
+2025-11-28 09:04:12 | INFO     | cvvr_desktop.desktop_app.main | Navigating to trips view
+2025-11-28 09:04:12 | INFO     | cvvr_desktop.desktop_app.controllers.trips_controller | Loading pending trips
+2025-11-28 09:04:12 | INFO     | cvvr_desktop.desktop_app.services.trip_service | Fetching pending trips from API
+2025-11-28 09:04:13 | INFO     | cvvr_desktop.desktop_app.services.trip_service | Successfully fetched 4 pending trips
+2025-11-28 09:04:13 | INFO     | cvvr_desktop.desktop_app.controllers.trips_controller | Loaded 4 trips
+2025-11-28 09:04:14 | INFO     | cvvr_desktop.desktop_app.controllers.trips_controller | Upload clicked for trip: 1b43dc19-d9c2-424c-8702-4d70cc16a99c
+2025-11-28 09:11:45 | INFO     | cvvr_desktop | Logging initialized - Level: INFO
+2025-11-28 09:11:45 | INFO     | cvvr_desktop.desktop_app.main | ============================================================
+2025-11-28 09:11:45 | INFO     | cvvr_desktop.desktop_app.main | Starting Locopilot CVVR Desktop v1.0.0
+2025-11-28 09:11:45 | INFO     | cvvr_desktop.desktop_app.main | ============================================================
+2025-11-28 09:11:45 | INFO     | cvvr_desktop.desktop_app.services.backend_manager | Backend manager initialized
+2025-11-28 09:11:45 | INFO     | cvvr_desktop.desktop_app.services.backend_manager | Running in packaged mode: True
+2025-11-28 09:11:45 | INFO     | cvvr_desktop.desktop_app.utils.api_client | API client initialized - Base URL: https://api.mindcoinapps.com/ai_demo_api
+2025-11-28 09:11:45 | INFO     | cvvr_desktop.desktop_app.services.auth_service | Authentication service initialized
+2025-11-28 09:11:45 | INFO     | cvvr_desktop.desktop_app.utils.api_client | API client initialized - Base URL: https://api.mindcoinapps.com/ai_demo_api
+2025-11-28 09:11:45 | INFO     | cvvr_desktop.desktop_app.services.trip_service | Trip service initialized
+2025-11-28 09:11:45 | INFO     | cvvr_desktop.desktop_app.utils.api_client | API client initialized - Base URL: https://api.mindcoinapps.com/ai_demo_api
+2025-11-28 09:11:45 | INFO     | cvvr_desktop.desktop_app.services.upload_service | Upload service initialized
+2025-11-28 09:11:45 | INFO     | cvvr_desktop.desktop_app.utils.api_client | API client initialized - Base URL: http://localhost:8000
+2025-11-28 09:11:45 | INFO     | cvvr_desktop.desktop_app.services.local_processing_service | Local processing service initialized
+2025-11-28 09:11:45 | INFO     | cvvr_desktop.desktop_app.controllers.login_controller | Login controller initialized
+2025-11-28 09:11:45 | INFO     | cvvr_desktop.desktop_app.controllers.trips_controller | Trips controller initialized
+2025-11-28 09:11:45 | INFO     | cvvr_desktop.desktop_app.controllers.trips_controller | Loading pending trips
+2025-11-28 09:11:45 | INFO     | cvvr_desktop.desktop_app.main | Main window initialized
+2025-11-28 09:11:45 | ERROR    | cvvr_desktop.desktop_app.services.trip_service | Cannot fetch trips - no authentication token
+2025-11-28 09:11:45 | INFO     | cvvr_desktop.desktop_app.main | Application started successfully
+2025-11-28 09:11:45 | ERROR    | cvvr_desktop.desktop_app.controllers.trips_controller | Failed to load trips: Authentication required - please login
+2025-11-28 09:11:45 | INFO     | cvvr_desktop.desktop_app.main | Auto-starting local backend...
+2025-11-28 09:11:45 | INFO     | cvvr_desktop.desktop_app.services.backend_manager | Starting FastAPI backend...
+2025-11-28 09:11:45 | INFO     | cvvr_desktop.desktop_app.utils.path_utils | sys._MEIPASS: /Users/satishvanga/Desktop/Locopilot Monitoring System/desktop_app/build_config/dist/LocopilotCVVR.app/Contents/Frameworks
+2025-11-28 09:11:45 | INFO     | cvvr_desktop.desktop_app.utils.path_utils | Using packaged backend at: /Users/satishvanga/Desktop/Locopilot Monitoring System/desktop_app/build_config/dist/LocopilotCVVR.app/Contents/Frameworks/app
+2025-11-28 09:11:45 | INFO     | cvvr_desktop.desktop_app.services.backend_manager | Backend project root: /Users/satishvanga/Desktop/Locopilot Monitoring System/desktop_app/build_config/dist/LocopilotCVVR.app/Contents/Frameworks
+2025-11-28 09:11:45 | INFO     | cvvr_desktop.desktop_app.services.backend_manager | Checking system Python: /opt/homebrew/bin/python3
+2025-11-28 09:11:46 | INFO     | cvvr_desktop.desktop_app.services.backend_manager | System Python has required packages - using: /opt/homebrew/bin/python3
+2025-11-28 09:11:46 | WARNING  | cvvr_desktop.desktop_app.services.backend_manager | gunicorn_config.py not found, using gunicorn with inline settings
+2025-11-28 09:11:46 | WARNING  | cvvr_desktop.desktop_app.services.backend_manager | Searched in: /Users/satishvanga/Desktop/Locopilot Monitoring System/desktop_app/build_config/dist/LocopilotCVVR.app/Contents/Frameworks
+2025-11-28 09:11:46 | INFO     | cvvr_desktop.desktop_app.services.backend_manager | Set PYTHONPATH to: /Users/satishvanga/Desktop/Locopilot Monitoring System/desktop_app/build_config/dist/LocopilotCVVR.app/Contents/Frameworks
+2025-11-28 09:11:46 | ERROR    | cvvr_desktop.desktop_app.services.backend_manager | Unsafe command argument detected: /opt/homebrew/bin/python3
+2025-11-28 09:11:46 | WARNING  | cvvr_desktop.desktop_app.main | Backend failed to start - video processing will not be available
+2025-11-28 09:19:54 | INFO     | cvvr_desktop.desktop_app.controllers.login_controller | Initiating login for user: 9705589009
+2025-11-28 09:19:54 | INFO     | cvvr_desktop.desktop_app.controllers.login_controller | Login worker started for user: 9705589009
+2025-11-28 09:19:54 | INFO     | cvvr_desktop.desktop_app.services.auth_service | Attempting login for user: 9705589009
+2025-11-28 09:19:57 | INFO     | cvvr_desktop.desktop_app.services.auth_service | Login successful for user: Venky (9705589009)
+2025-11-28 09:19:57 | INFO     | cvvr_desktop.desktop_app.controllers.login_controller | Login successful: Venky (9705589009)
+2025-11-28 09:19:57 | INFO     | cvvr_desktop.desktop_app.main | Navigating to trips view
+2025-11-28 09:19:57 | INFO     | cvvr_desktop.desktop_app.controllers.trips_controller | Loading pending trips
+2025-11-28 09:19:57 | INFO     | cvvr_desktop.desktop_app.services.trip_service | Fetching pending trips from API
+2025-11-28 09:19:57 | INFO     | cvvr_desktop.desktop_app.services.trip_service | Successfully fetched 4 pending trips
+2025-11-28 09:19:57 | INFO     | cvvr_desktop.desktop_app.controllers.trips_controller | Loaded 4 trips
+2025-11-28 09:19:59 | INFO     | cvvr_desktop.desktop_app.controllers.trips_controller | Upload clicked for trip: 1b43dc19-d9c2-424c-8702-4d70cc16a99c
+2025-11-28 09:20:31 | INFO     | cvvr_desktop.desktop_app.main | Application closing
+2025-11-28 09:20:31 | INFO     | cvvr_desktop.desktop_app.main | Stopping backend...
+2025-11-28 09:20:31 | INFO     | cvvr_desktop.desktop_app.services.backend_manager | Backend was not started by us - leaving it running
+2025-11-28 09:20:31 | INFO     | cvvr_desktop.desktop_app.main | Application exited with code: 0
+2025-11-28 09:20:31 | INFO     | cvvr_desktop.desktop_app.main | ============================================================
+2025-11-28 09:22:39 | INFO     | cvvr_desktop | Logging initialized - Level: INFO
+2025-11-28 09:22:39 | INFO     | cvvr_desktop.desktop_app.main | ============================================================
+2025-11-28 09:22:39 | INFO     | cvvr_desktop.desktop_app.main | Starting Locopilot CVVR Desktop v1.0.0
+2025-11-28 09:22:39 | INFO     | cvvr_desktop.desktop_app.main | ============================================================
+2025-11-28 09:22:39 | INFO     | cvvr_desktop.desktop_app.services.backend_manager | Backend manager initialized
+2025-11-28 09:22:39 | INFO     | cvvr_desktop.desktop_app.services.backend_manager | Running in packaged mode: True
+2025-11-28 09:22:39 | INFO     | cvvr_desktop.desktop_app.utils.api_client | API client initialized - Base URL: https://api.mindcoinapps.com/ai_demo_api
+2025-11-28 09:22:39 | INFO     | cvvr_desktop.desktop_app.services.auth_service | Authentication service initialized
+2025-11-28 09:22:39 | INFO     | cvvr_desktop.desktop_app.utils.api_client | API client initialized - Base URL: https://api.mindcoinapps.com/ai_demo_api
+2025-11-28 09:22:39 | INFO     | cvvr_desktop.desktop_app.services.trip_service | Trip service initialized
+2025-11-28 09:22:39 | INFO     | cvvr_desktop.desktop_app.utils.api_client | API client initialized - Base URL: https://api.mindcoinapps.com/ai_demo_api
+2025-11-28 09:22:39 | INFO     | cvvr_desktop.desktop_app.services.upload_service | Upload service initialized
+2025-11-28 09:22:39 | INFO     | cvvr_desktop.desktop_app.utils.api_client | API client initialized - Base URL: http://localhost:8000
+2025-11-28 09:22:39 | INFO     | cvvr_desktop.desktop_app.services.local_processing_service | Local processing service initialized
+2025-11-28 09:22:39 | INFO     | cvvr_desktop.desktop_app.controllers.login_controller | Login controller initialized
+2025-11-28 09:22:39 | INFO     | cvvr_desktop.desktop_app.controllers.trips_controller | Trips controller initialized
+2025-11-28 09:22:39 | INFO     | cvvr_desktop.desktop_app.controllers.trips_controller | Loading pending trips
+2025-11-28 09:22:39 | INFO     | cvvr_desktop.desktop_app.main | Main window initialized
+2025-11-28 09:22:39 | ERROR    | cvvr_desktop.desktop_app.services.trip_service | Cannot fetch trips - no authentication token
+2025-11-28 09:22:39 | INFO     | cvvr_desktop.desktop_app.main | Application started successfully
+2025-11-28 09:22:39 | ERROR    | cvvr_desktop.desktop_app.controllers.trips_controller | Failed to load trips: Authentication required - please login
+2025-11-28 09:22:40 | INFO     | cvvr_desktop.desktop_app.main | Auto-starting local backend...
+2025-11-28 09:22:40 | INFO     | cvvr_desktop.desktop_app.services.backend_manager | Starting FastAPI backend...
+2025-11-28 09:22:40 | INFO     | cvvr_desktop.desktop_app.utils.path_utils | sys._MEIPASS: /Users/satishvanga/Desktop/Locopilot Monitoring System/desktop_app/build_config/dist/LocopilotCVVR.app/Contents/Frameworks
+2025-11-28 09:22:40 | INFO     | cvvr_desktop.desktop_app.utils.path_utils | Using packaged backend at: /Users/satishvanga/Desktop/Locopilot Monitoring System/desktop_app/build_config/dist/LocopilotCVVR.app/Contents/Frameworks/app
+2025-11-28 09:22:40 | INFO     | cvvr_desktop.desktop_app.services.backend_manager | Backend project root: /Users/satishvanga/Desktop/Locopilot Monitoring System/desktop_app/build_config/dist/LocopilotCVVR.app/Contents/Frameworks
+2025-11-28 09:22:40 | INFO     | cvvr_desktop.desktop_app.services.backend_manager | Checking system Python: /opt/homebrew/bin/python3
+2025-11-28 09:22:41 | INFO     | cvvr_desktop.desktop_app.services.backend_manager | System Python has required packages - using: /opt/homebrew/bin/python3
+2025-11-28 09:22:41 | WARNING  | cvvr_desktop.desktop_app.services.backend_manager | gunicorn_config.py not found, using gunicorn with inline settings
+2025-11-28 09:22:41 | WARNING  | cvvr_desktop.desktop_app.services.backend_manager | Searched in: /Users/satishvanga/Desktop/Locopilot Monitoring System/desktop_app/build_config/dist/LocopilotCVVR.app/Contents/Frameworks
+2025-11-28 09:22:41 | INFO     | cvvr_desktop.desktop_app.services.backend_manager | Set PYTHONPATH to: /Users/satishvanga/Desktop/Locopilot Monitoring System/desktop_app/build_config/dist/LocopilotCVVR.app/Contents/Frameworks
+2025-11-28 09:22:41 | INFO     | cvvr_desktop.desktop_app.services.backend_manager | Backend process started with PID: 59925
+2025-11-28 09:22:41 | INFO     | cvvr_desktop.desktop_app.services.backend_manager | Command: /opt/homebrew/bin/python3 -m gunicorn app.main:app --bind 127.0.0.1:8000 --workers 1 --worker-class uvicorn.workers.UvicornWorker --timeout 600 --log-level warning
+2025-11-28 09:22:41 | INFO     | cvvr_desktop.desktop_app.services.backend_manager | Waiting for backend startup (timeout: 30s)
+2025-11-28 09:22:41 | ERROR    | cvvr_desktop.desktop_app.services.backend_manager | Backend process terminated unexpectedly with exit code: 3
+2025-11-28 09:22:41 | ERROR    | cvvr_desktop.desktop_app.services.backend_manager | Backend process crashed with exit code: 3
+2025-11-28 09:22:41 | ERROR    | cvvr_desktop.desktop_app.services.backend_manager | Backend stderr:
+[2025-11-28 09:22:41 +0530] [59926] [ERROR] Exception in worker process
+Traceback (most recent call last):
+  File "/opt/homebrew/lib/python3.13/site-packages/gunicorn/arbiter.py", line 608, in spawn_worker
+    worker.init_process()
+    ~~~~~~~~~~~~~~~~~~~^^
+  File "/opt/homebrew/lib/python3.13/site-packages/gunicorn/workers/base.py", line 135, in init_process
+    self.load_wsgi()
+    ~~~~~~~~~~~~~~^^
+  File "/opt/homebrew/lib/python3.13/site-packages/gunicorn/workers/base.py", line 147, in load_wsgi
+    self.wsgi = self.app.wsgi()
+                ~~~~~~~~~~~~~^^
+  File "/opt/homebrew/lib/python3.13/site-packages/gunicorn/app/base.py", line 66, in wsgi
+    self.callable = self.load()
+                    ~~~~~~~~~^^
+  File "/opt/homebrew/lib/python3.13/site-packages/gunicorn/app/wsgiapp.py", line 57, in load
+    return self.load_wsgiapp()
+           ~~~~~~~~~~~~~~~~~^^
+  File "/opt/homebrew/lib/python3.13/site-packages/gunicorn/app/wsgiapp.py", line 47, in load_wsgiapp
+    return util.import_app(self.app_uri)
+           ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^
+  File "/opt/homebrew/lib/python3.13/site-packages/gunicorn/util.py", line 370, in import_app
+    mod = importlib.import_module(module)
+  File "/opt/homebrew/Cellar/python@3.13/3.13.4/Frameworks/Python.framework/Versions/3.13/lib/python3.13/importlib/__init__.py", line 88, in import_module
+    return _bootstrap._gcd_import(name[level:], package, level)
+           ~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<frozen importlib._bootstrap>", line 1387, in _gcd_import
+  File "<frozen importlib._bootstrap>", line 1360, in _find_and_load
+  File "<frozen importlib._bootstrap>", line 1331, in _find_and_load_unlocked
+  File "<frozen importlib._bootstrap>", line 935, in _load_unlocked
+  File "<frozen importlib._bootstrap_external>", line 1026, in exec_module
+  File "<frozen importlib._bootstrap>", line 488, in _call_with_frames_removed
+  File "/Users/satishvanga/Desktop/Locopilot Monitoring System/desktop_app/build_config/dist/LocopilotCVVR.app/Contents/Frameworks/app/main.py", line 25, in <module>
+    from .utils.video_multiprocessing import shutdown_shared_pool
+  File "/Users/satishvanga/Desktop/Locopilot Monitoring System/desktop_app/build_config/dist/LocopilotCVVR.app/Contents/Frameworks/app/utils/video_multiprocessing.py", line 10, in <module>
+    import cv2
+  File "/Users/satishvanga/Desktop/Locopilot Monitoring System/desktop_app/build_config/dist/LocopilotCVVR.app/Contents/Frameworks/cv2/__init__.py", line 181, in <module>
+    bootstrap()
+    ~~~~~~~~~^^
+  File "/Users/satishvanga/Desktop/Locopilot Monitoring System/desktop_app/build_config/dist/LocopilotCVVR.app/Contents/Frameworks/cv2/__init__.py", line 153, in bootstrap
+    native_module = importlib.import_module("cv2")
+  File "/opt/homebrew/Cellar/python@3.13/3.13.4/Frameworks/Python.framework/Versions/3.13/lib/python3.13/importlib/__init__.py", line 88, in import_module
+    return _bootstrap._gcd_import(name[level:], package, level)
+           ~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/satishvanga/Desktop/Locopilot Monitoring System/desktop_app/build_config/dist/LocopilotCVVR.app/Contents/Frameworks/cv2/__init__.py", line 181, in <module>
+    bootstrap()
+    ~~~~~~~~~^^
+  File "/Users/satishvanga/Desktop/Locopilot Monitoring System/desktop_app/build_config/dist/LocopilotCVVR.app/Contents/Frameworks/cv2/__init__.py", line 76, in bootstrap
+    raise ImportError('ERROR: recursion is detected during loading of "cv2" binary extensions. Check OpenCV installation.')
+ImportError: ERROR: recursion is detected during loading of "cv2" binary extensions. Check OpenCV installation.
+[2025-11-28 09:22:41 +0530] [59925] [ERROR] Worker (pid:59926) exited with code 3
+[2025-11-28 09:22:41 +0530] [59925] [ERROR] Shutting down: Master
+[2025-11-28 09:22:41 +0530] [59925] [ERROR] Reason: Worker failed to boot.
+
+2025-11-28 09:22:41 | ERROR    | cvvr_desktop.desktop_app.services.backend_manager | Backend stdout:
+['/Users/satishvanga/Desktop/Locopilot Monitoring System/desktop_app/build_config/dist/LocopilotCVVR.app/Contents/Frameworks', '/Users/satishvanga/Desktop/Locopilot Monitoring System/desktop_app/build_config/dist/LocopilotCVVR.app/Contents/Resources/cv2', '/Users/satishvanga/Desktop/Locopilot Monitoring System/desktop_app/build_config/dist/LocopilotCVVR.app/Contents/Frameworks', '/opt/homebrew/Cellar/python@3.13/3.13.4/Frameworks/Python.framework/Versions/3.13/lib/python313.zip', '/opt/homebrew/Cellar/python@3.13/3.13.4/Frameworks/Python.framework/Versions/3.13/lib/python3.13', '/opt/homebrew/Cellar/python@3.13/3.13.4/Frameworks/Python.framework/Versions/3.13/lib/python3.13/lib-dynload', '/opt/homebrew/lib/python3.13/site-packages']
+
+2025-11-28 09:22:41 | WARNING  | cvvr_desktop.desktop_app.services.backend_manager | Backend failed to start within timeout
+2025-11-28 09:22:41 | ERROR    | cvvr_desktop.desktop_app.services.backend_manager | Error force killing backend: [Errno 3] No such process
+2025-11-28 09:22:41 | WARNING  | cvvr_desktop.desktop_app.main | Backend failed to start - video processing will not be available
+2025-11-28 09:22:53 | INFO     | cvvr_desktop.desktop_app.controllers.login_controller | Initiating login for user: 9705589009
+2025-11-28 09:22:53 | INFO     | cvvr_desktop.desktop_app.controllers.login_controller | Login worker started for user: 9705589009
+2025-11-28 09:22:53 | INFO     | cvvr_desktop.desktop_app.services.auth_service | Attempting login for user: 9705589009
+2025-11-28 09:22:54 | INFO     | cvvr_desktop.desktop_app.services.auth_service | Login successful for user: Venky (9705589009)
+2025-11-28 09:22:54 | INFO     | cvvr_desktop.desktop_app.controllers.login_controller | Login successful: Venky (9705589009)
+2025-11-28 09:22:54 | INFO     | cvvr_desktop.desktop_app.main | Navigating to trips view
+2025-11-28 09:22:54 | INFO     | cvvr_desktop.desktop_app.controllers.trips_controller | Loading pending trips
+2025-11-28 09:22:54 | INFO     | cvvr_desktop.desktop_app.services.trip_service | Fetching pending trips from API
+2025-11-28 09:22:55 | INFO     | cvvr_desktop.desktop_app.services.trip_service | Successfully fetched 4 pending trips
+2025-11-28 09:22:55 | INFO     | cvvr_desktop.desktop_app.controllers.trips_controller | Loaded 4 trips
+2025-11-28 09:22:56 | INFO     | cvvr_desktop.desktop_app.controllers.trips_controller | Upload clicked for trip: 1b43dc19-d9c2-424c-8702-4d70cc16a99c
+2025-11-28 09:23:12 | INFO     | cvvr_desktop.desktop_app.main | Application closing
+2025-11-28 09:23:12 | INFO     | cvvr_desktop.desktop_app.main | Stopping backend...
+2025-11-28 09:23:12 | INFO     | cvvr_desktop.desktop_app.main | Application exited with code: 0
+2025-11-28 09:23:12 | INFO     | cvvr_desktop.desktop_app.main | ============================================================
+2025-11-28 09:25:24 | INFO     | cvvr_desktop | Logging initialized - Level: INFO
+2025-11-28 09:25:24 | INFO     | cvvr_desktop.desktop_app.main | ============================================================
+2025-11-28 09:25:24 | INFO     | cvvr_desktop.desktop_app.main | Starting Locopilot CVVR Desktop v1.0.0
+2025-11-28 09:25:24 | INFO     | cvvr_desktop.desktop_app.main | ============================================================
+2025-11-28 09:25:24 | INFO     | cvvr_desktop.desktop_app.services.backend_manager | Backend manager initialized
+2025-11-28 09:25:24 | INFO     | cvvr_desktop.desktop_app.services.backend_manager | Running in packaged mode: True
+2025-11-28 09:25:24 | INFO     | cvvr_desktop.desktop_app.utils.api_client | API client initialized - Base URL: https://api.mindcoinapps.com/ai_demo_api
+2025-11-28 09:25:24 | INFO     | cvvr_desktop.desktop_app.services.auth_service | Authentication service initialized
+2025-11-28 09:25:24 | INFO     | cvvr_desktop.desktop_app.utils.api_client | API client initialized - Base URL: https://api.mindcoinapps.com/ai_demo_api
+2025-11-28 09:25:24 | INFO     | cvvr_desktop.desktop_app.services.trip_service | Trip service initialized
+2025-11-28 09:25:24 | INFO     | cvvr_desktop.desktop_app.utils.api_client | API client initialized - Base URL: https://api.mindcoinapps.com/ai_demo_api
+2025-11-28 09:25:24 | INFO     | cvvr_desktop.desktop_app.services.upload_service | Upload service initialized
+2025-11-28 09:25:24 | INFO     | cvvr_desktop.desktop_app.utils.api_client | API client initialized - Base URL: http://localhost:8000
+2025-11-28 09:25:24 | INFO     | cvvr_desktop.desktop_app.services.local_processing_service | Local processing service initialized
+2025-11-28 09:25:24 | INFO     | cvvr_desktop.desktop_app.controllers.login_controller | Login controller initialized
+2025-11-28 09:25:24 | INFO     | cvvr_desktop.desktop_app.controllers.trips_controller | Trips controller initialized
+2025-11-28 09:25:24 | INFO     | cvvr_desktop.desktop_app.controllers.trips_controller | Loading pending trips
+2025-11-28 09:25:24 | INFO     | cvvr_desktop.desktop_app.main | Main window initialized
+2025-11-28 09:25:24 | ERROR    | cvvr_desktop.desktop_app.services.trip_service | Cannot fetch trips - no authentication token
+2025-11-28 09:25:24 | INFO     | cvvr_desktop.desktop_app.main | Application started successfully
+2025-11-28 09:25:24 | ERROR    | cvvr_desktop.desktop_app.controllers.trips_controller | Failed to load trips: Authentication required - please login
+2025-11-28 09:25:24 | INFO     | cvvr_desktop.desktop_app.main | Auto-starting local backend...
+2025-11-28 09:25:24 | INFO     | cvvr_desktop.desktop_app.services.backend_manager | Starting FastAPI backend...
+2025-11-28 09:25:24 | INFO     | cvvr_desktop.desktop_app.utils.path_utils | sys._MEIPASS: /Users/satishvanga/Desktop/Locopilot Monitoring System/desktop_app/build_config/dist/LocopilotCVVR.app/Contents/Frameworks
+2025-11-28 09:25:24 | INFO     | cvvr_desktop.desktop_app.utils.path_utils | Using packaged backend at: /Users/satishvanga/Desktop/Locopilot Monitoring System/desktop_app/build_config/dist/LocopilotCVVR.app/Contents/Frameworks/app
+2025-11-28 09:25:24 | INFO     | cvvr_desktop.desktop_app.services.backend_manager | Backend project root: /Users/satishvanga/Desktop/Locopilot Monitoring System/desktop_app/build_config/dist/LocopilotCVVR.app/Contents/Frameworks
+2025-11-28 09:25:24 | INFO     | cvvr_desktop.desktop_app.services.backend_manager | Checking system Python: /opt/homebrew/bin/python3
+2025-11-28 09:25:25 | INFO     | cvvr_desktop.desktop_app.services.backend_manager | System Python has required packages - using: /opt/homebrew/bin/python3
+2025-11-28 09:25:25 | WARNING  | cvvr_desktop.desktop_app.services.backend_manager | gunicorn_config.py not found, using gunicorn with inline settings
+2025-11-28 09:25:25 | WARNING  | cvvr_desktop.desktop_app.services.backend_manager | Searched in: /Users/satishvanga/Desktop/Locopilot Monitoring System/desktop_app/build_config/dist/LocopilotCVVR.app/Contents/Frameworks
+2025-11-28 09:25:25 | INFO     | cvvr_desktop.desktop_app.services.backend_manager | Set PYTHONPATH to: /Users/satishvanga/Desktop/Locopilot Monitoring System/desktop_app/build_config/dist/LocopilotCVVR.app/Contents/Frameworks
+2025-11-28 09:25:25 | INFO     | cvvr_desktop.desktop_app.services.backend_manager | Backend process started with PID: 61997
+2025-11-28 09:25:25 | INFO     | cvvr_desktop.desktop_app.services.backend_manager | Command: /opt/homebrew/bin/python3 -m gunicorn app.main:app --bind 127.0.0.1:8000 --workers 1 --worker-class uvicorn.workers.UvicornWorker --timeout 600 --log-level warning
+2025-11-28 09:25:25 | INFO     | cvvr_desktop.desktop_app.services.backend_manager | Waiting for backend startup (timeout: 30s)
+2025-11-28 09:25:26 | ERROR    | cvvr_desktop.desktop_app.services.backend_manager | Backend process terminated unexpectedly with exit code: 3
+2025-11-28 09:25:26 | ERROR    | cvvr_desktop.desktop_app.services.backend_manager | Backend process crashed with exit code: 3
+2025-11-28 09:25:26 | ERROR    | cvvr_desktop.desktop_app.services.backend_manager | Backend stderr:
+[2025-11-28 09:25:25 +0530] [61998] [ERROR] Exception in worker process
+Traceback (most recent call last):
+  File "/opt/homebrew/lib/python3.13/site-packages/gunicorn/arbiter.py", line 608, in spawn_worker
+    worker.init_process()
+    ~~~~~~~~~~~~~~~~~~~^^
+  File "/opt/homebrew/lib/python3.13/site-packages/gunicorn/workers/base.py", line 135, in init_process
+    self.load_wsgi()
+    ~~~~~~~~~~~~~~^^
+  File "/opt/homebrew/lib/python3.13/site-packages/gunicorn/workers/base.py", line 147, in load_wsgi
+    self.wsgi = self.app.wsgi()
+                ~~~~~~~~~~~~~^^
+  File "/opt/homebrew/lib/python3.13/site-packages/gunicorn/app/base.py", line 66, in wsgi
+    self.callable = self.load()
+                    ~~~~~~~~~^^
+  File "/opt/homebrew/lib/python3.13/site-packages/gunicorn/app/wsgiapp.py", line 57, in load
+    return self.load_wsgiapp()
+           ~~~~~~~~~~~~~~~~~^^
+  File "/opt/homebrew/lib/python3.13/site-packages/gunicorn/app/wsgiapp.py", line 47, in load_wsgiapp
+    return util.import_app(self.app_uri)
+           ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^
+  File "/opt/homebrew/lib/python3.13/site-packages/gunicorn/util.py", line 370, in import_app
+    mod = importlib.import_module(module)
+  File "/opt/homebrew/Cellar/python@3.13/3.13.4/Frameworks/Python.framework/Versions/3.13/lib/python3.13/importlib/__init__.py", line 88, in import_module
+    return _bootstrap._gcd_import(name[level:], package, level)
+           ~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<frozen importlib._bootstrap>", line 1387, in _gcd_import
+  File "<frozen importlib._bootstrap>", line 1360, in _find_and_load
+  File "<frozen importlib._bootstrap>", line 1331, in _find_and_load_unlocked
+  File "<frozen importlib._bootstrap>", line 935, in _load_unlocked
+  File "<frozen importlib._bootstrap_external>", line 1026, in exec_module
+  File "<frozen importlib._bootstrap>", line 488, in _call_with_frames_removed
+  File "/Users/satishvanga/Desktop/Locopilot Monitoring System/desktop_app/build_config/dist/LocopilotCVVR.app/Contents/Frameworks/app/main.py", line 25, in <module>
+    from .utils.video_multiprocessing import shutdown_shared_pool
+  File "/Users/satishvanga/Desktop/Locopilot Monitoring System/desktop_app/build_config/dist/LocopilotCVVR.app/Contents/Frameworks/app/utils/video_multiprocessing.py", line 10, in <module>
+    import cv2
+  File "/Users/satishvanga/Desktop/Locopilot Monitoring System/desktop_app/build_config/dist/LocopilotCVVR.app/Contents/Frameworks/cv2/__init__.py", line 181, in <module>
+    bootstrap()
+    ~~~~~~~~~^^
+  File "/Users/satishvanga/Desktop/Locopilot Monitoring System/desktop_app/build_config/dist/LocopilotCVVR.app/Contents/Frameworks/cv2/__init__.py", line 153, in bootstrap
+    native_module = importlib.import_module("cv2")
+  File "/opt/homebrew/Cellar/python@3.13/3.13.4/Frameworks/Python.framework/Versions/3.13/lib/python3.13/importlib/__init__.py", line 88, in import_module
+    return _bootstrap._gcd_import(name[level:], package, level)
+           ~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/satishvanga/Desktop/Locopilot Monitoring System/desktop_app/build_config/dist/LocopilotCVVR.app/Contents/Frameworks/cv2/__init__.py", line 181, in <module>
+    bootstrap()
+    ~~~~~~~~~^^
+  File "/Users/satishvanga/Desktop/Locopilot Monitoring System/desktop_app/build_config/dist/LocopilotCVVR.app/Contents/Frameworks/cv2/__init__.py", line 76, in bootstrap
+    raise ImportError('ERROR: recursion is detected during loading of "cv2" binary extensions. Check OpenCV installation.')
+ImportError: ERROR: recursion is detected during loading of "cv2" binary extensions. Check OpenCV installation.
+[2025-11-28 09:25:25 +0530] [61997] [ERROR] Worker (pid:61998) exited with code 3
+[2025-11-28 09:25:25 +0530] [61997] [ERROR] Shutting down: Master
+[2025-11-28 09:25:25 +0530] [61997] [ERROR] Reason: Worker failed to boot.
+
+2025-11-28 09:25:26 | ERROR    | cvvr_desktop.desktop_app.services.backend_manager | Backend stdout:
+['/Users/satishvanga/Desktop/Locopilot Monitoring System/desktop_app/build_config/dist/LocopilotCVVR.app/Contents/Frameworks', '/Users/satishvanga/Desktop/Locopilot Monitoring System/desktop_app/build_config/dist/LocopilotCVVR.app/Contents/Resources/cv2', '/Users/satishvanga/Desktop/Locopilot Monitoring System/desktop_app/build_config/dist/LocopilotCVVR.app/Contents/Frameworks', '/opt/homebrew/Cellar/python@3.13/3.13.4/Frameworks/Python.framework/Versions/3.13/lib/python313.zip', '/opt/homebrew/Cellar/python@3.13/3.13.4/Frameworks/Python.framework/Versions/3.13/lib/python3.13', '/opt/homebrew/Cellar/python@3.13/3.13.4/Frameworks/Python.framework/Versions/3.13/lib/python3.13/lib-dynload', '/opt/homebrew/lib/python3.13/site-packages']
+
+2025-11-28 09:25:26 | WARNING  | cvvr_desktop.desktop_app.services.backend_manager | Backend failed to start within timeout
+2025-11-28 09:25:26 | ERROR    | cvvr_desktop.desktop_app.services.backend_manager | Error force killing backend: [Errno 3] No such process
+2025-11-28 09:25:26 | WARNING  | cvvr_desktop.desktop_app.main | Backend failed to start - video processing will not be available
+2025-11-28 09:25:37 | INFO     | cvvr_desktop.desktop_app.controllers.login_controller | Initiating login for user: 9705589009
+2025-11-28 09:25:37 | INFO     | cvvr_desktop.desktop_app.controllers.login_controller | Login worker started for user: 9705589009
+2025-11-28 09:25:37 | INFO     | cvvr_desktop.desktop_app.services.auth_service | Attempting login for user: 9705589009
+2025-11-28 09:25:38 | INFO     | cvvr_desktop.desktop_app.services.auth_service | Login successful for user: Venky (9705589009)
+2025-11-28 09:25:38 | INFO     | cvvr_desktop.desktop_app.controllers.login_controller | Login successful: Venky (9705589009)
+2025-11-28 09:25:38 | INFO     | cvvr_desktop.desktop_app.main | Navigating to trips view
+2025-11-28 09:25:38 | INFO     | cvvr_desktop.desktop_app.controllers.trips_controller | Loading pending trips
+2025-11-28 09:25:38 | INFO     | cvvr_desktop.desktop_app.services.trip_service | Fetching pending trips from API
+2025-11-28 09:25:39 | INFO     | cvvr_desktop.desktop_app.services.trip_service | Successfully fetched 4 pending trips
+2025-11-28 09:25:39 | INFO     | cvvr_desktop.desktop_app.controllers.trips_controller | Loaded 4 trips
+2025-11-28 09:25:41 | INFO     | cvvr_desktop.desktop_app.controllers.trips_controller | Upload clicked for trip: 1b43dc19-d9c2-424c-8702-4d70cc16a99c
+2025-11-28 09:26:03 | INFO     | cvvr_desktop.desktop_app.controllers.trips_controller | Upload clicked for trip: 1b43dc19-d9c2-424c-8702-4d70cc16a99c
+2025-11-28 09:26:05 | INFO     | cvvr_desktop.desktop_app.controllers.trips_controller | Video selection cancelled
+2025-11-28 09:26:06 | INFO     | cvvr_desktop.desktop_app.controllers.trips_controller | Upload clicked for trip: 1b43dc19-d9c2-424c-8702-4d70cc16a99c
+2025-11-28 09:26:13 | INFO     | cvvr_desktop.desktop_app.controllers.trips_controller | Selected video: /Users/satishvanga/Documents/cvvr/bagpack.mp4
+2025-11-28 09:26:13 | INFO     | cvvr_desktop.desktop_app.controllers.trips_controller | Starting simplified workflow - Trip: 1b43dc19-d9c2-424c-8702-4d70cc16a99c, Video: /Users/satishvanga/Documents/cvvr/bagpack.mp4
+2025-11-28 09:26:13 | INFO     | cvvr_desktop.desktop_app.controllers.trips_controller | Starting process and upload for trip 1b43dc19-d9c2-424c-8702-4d70cc16a99c
+2025-11-28 09:26:13 | ERROR    | cvvr_desktop.desktop_app.services.local_processing_service | Local backend is not running
+2025-11-28 09:26:13 | INFO     | cvvr_desktop.desktop_app.controllers.trips_controller | Progress [1b43dc19-d9c2-424c-8702-4d70cc16a99c]: Processing and uploading to S3...
+2025-11-28 09:26:13 | ERROR    | cvvr_desktop.desktop_app.controllers.trips_controller | Upload workflow failed for trip 1b43dc19-d9c2-424c-8702-4d70cc16a99c: Local processing backend is not running. Please start the backend service.
+2025-11-28 09:30:29 | INFO     | cvvr_desktop.desktop_app.controllers.trips_controller | Upload clicked for trip: 1b43dc19-d9c2-424c-8702-4d70cc16a99c
+2025-11-28 09:30:32 | INFO     | cvvr_desktop.desktop_app.controllers.trips_controller | Selected video: /Users/satishvanga/Documents/cvvr/bagpack.mp4
+2025-11-28 09:30:32 | INFO     | cvvr_desktop.desktop_app.controllers.trips_controller | Starting simplified workflow - Trip: 1b43dc19-d9c2-424c-8702-4d70cc16a99c, Video: /Users/satishvanga/Documents/cvvr/bagpack.mp4
+2025-11-28 09:30:32 | INFO     | cvvr_desktop.desktop_app.controllers.trips_controller | Starting process and upload for trip 1b43dc19-d9c2-424c-8702-4d70cc16a99c
+2025-11-28 09:30:32 | ERROR    | cvvr_desktop.desktop_app.services.local_processing_service | Local backend is not running
+2025-11-28 09:30:32 | INFO     | cvvr_desktop.desktop_app.controllers.trips_controller | Progress [1b43dc19-d9c2-424c-8702-4d70cc16a99c]: Processing and uploading to S3...
+2025-11-28 09:30:32 | ERROR    | cvvr_desktop.desktop_app.controllers.trips_controller | Upload workflow failed for trip 1b43dc19-d9c2-424c-8702-4d70cc16a99c: Local processing backend is not running. Please start the backend service.
+2025-11-28 09:30:37 | INFO     | cvvr_desktop.desktop_app.main | Application closing
+2025-11-28 09:30:37 | INFO     | cvvr_desktop.desktop_app.main | Stopping backend...
+2025-11-28 09:30:37 | INFO     | cvvr_desktop.desktop_app.main | Application exited with code: 0
+2025-11-28 09:30:37 | INFO     | cvvr_desktop.desktop_app.main | ============================================================

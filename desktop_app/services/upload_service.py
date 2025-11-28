@@ -94,8 +94,8 @@ class UploadService:
             file_name = os.path.basename(file_path)
             
             # Check file size
-        if file_size > settings.max_file_size:
-            return False, None, f"File too large. Maximum: {MAX_FILE_SIZE_GB} GB"
+            if file_size > settings.max_file_size:
+                return False, None, f"File too large. Maximum: {MAX_FILE_SIZE_GB} GB"
             
             logger.info(f"Uploading {file_name} ({file_size / (1024**2):.1f} MB) to S3 subfolder '{subfolder}'")
             

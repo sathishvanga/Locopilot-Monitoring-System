@@ -154,8 +154,9 @@ class BackendManager:
                     if not os.path.exists(system_python_real) or not os.access(system_python_real, os.X_OK):
                         logger.error(f"System Python path is invalid or not executable: {system_python_real}")
                         system_python = None
+                
                 if system_python:
-                    logger.info(f"Using system Python: {system_python}")
+                    logger.info(f"Checking system Python: {system_python}")
                     python_exe = system_python
                     
                     # Check if system Python has required packages
@@ -164,16 +165,23 @@ class BackendManager:
                         check_cmd = [python_exe, "-c", "import gunicorn, uvicorn, fastapi, torch; print('OK')"]
                         result = sp.run(check_cmd, capture_output=True, timeout=5)
                         if result.returncode != 0:
-                            logger.error(
+                            error_output = result.stderr.decode('utf-8', errors='ignore')
+                            logger.warning(
                                 f"System Python at {python_exe} is missing required packages.\n"
-                                f"Please install: pip install gunicorn uvicorn fastapi torch ultralytics\n"
-                                f"Error: {result.stderr.decode('utf-8', errors='ignore')}"
+                                f"Error: {error_output}\n"
+                                f"Attempting to use bundled Python instead..."
                             )
-                            return False
+                            # Fall back to bundled Python (sys.executable)
+                            python_exe = sys.executable
+                            logger.info(f"Using bundled Python: {python_exe}")
+                        else:
+                            logger.info(f"System Python has required packages - using: {python_exe}")
                     except Exception as e:
-                        logger.warning(f"Could not verify system Python packages: {e}")
+                        logger.warning(f"Could not verify system Python packages: {e}, using bundled Python")
+                        python_exe = sys.executable
                 else:
-                    logger.warning("No system Python found, using packaged executable (may fail)")
+                    logger.warning("No system Python found, using bundled executable")
+                    python_exe = sys.executable
             
             # Find gunicorn_config.py path
             gunicorn_config_path = self._get_gunicorn_config_path(project_root)
@@ -239,10 +247,21 @@ class BackendManager:
             
             # Security: Validate all command arguments are safe
             # All paths have been validated above, but double-check
+            # Allow system executables (python, python3) and prevent path traversal
+            allowed_system_paths = ['/usr', '/opt', '/bin', '/sbin', '/Library']
             for arg in cmd:
-                if isinstance(arg, str) and ('..' in arg or arg.startswith('/') and not arg.startswith(project_root_real)):
-                    logger.error(f"Unsafe command argument detected: {arg}")
-                    return False
+                if isinstance(arg, str):
+                    # Block path traversal attempts
+                    if '..' in arg:
+                        logger.error(f"Unsafe command argument detected (path traversal): {arg}")
+                        return False
+                    # Allow system executables and project paths
+                    if arg.startswith('/'):
+                        is_system_path = any(arg.startswith(path) for path in allowed_system_paths)
+                        is_project_path = arg.startswith(project_root_real)
+                        if not (is_system_path or is_project_path):
+                            logger.error(f"Unsafe command argument detected: {arg}")
+                            return False
             
             # Start backend process with proper working directory and environment
             # Security: Use validated realpath for working directory

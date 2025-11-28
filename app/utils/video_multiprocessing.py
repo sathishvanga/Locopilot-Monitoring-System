@@ -7,7 +7,6 @@ with worker initialization, work partitioning, and progress tracking.
 
 import os
 import json
-import cv2
 import time
 import torch
 import numpy as np
@@ -18,6 +17,9 @@ from concurrent.futures import ProcessPoolExecutor, Future, as_completed
 from dataclasses import dataclass, asdict
 import multiprocessing as mp
 import gc
+
+# Delay cv2 import to avoid PyInstaller recursion issues
+# cv2 will be imported in worker_initializer where it's actually needed
 
 from .multiprocessing_config import MultiprocessingConfig
 from .logger import get_logger
@@ -95,6 +97,9 @@ def worker_initializer(config: MultiprocessingConfig):
     global _worker_models, _worker_config
     
     try:
+        # Import cv2 here to avoid PyInstaller recursion issues
+        import cv2
+        
         # Set environment variables
         config.set_worker_env_vars()
         
@@ -216,6 +221,7 @@ def calculate_frame_ranges(
     Returns:
         Tuple of (frame_ranges, total_frames, native_fps)
     """
+    import cv2  # Import here to avoid PyInstaller issues
     cap = cv2.VideoCapture(video_path)
     if not cap.isOpened():
         raise RuntimeError(f"Failed to open video: {video_path}")
