@@ -159,6 +159,7 @@ class VideoProcessingError(BaseModel):
     error: str = Field(..., description="Detailed error information")
     tripId: Optional[str] = Field(None, description="Trip ID if available")
     
+    
     class Config:
         """Pydantic configuration"""
         json_schema_extra = {
