@@ -6,6 +6,8 @@ on:
       - main
     paths:
       - 'desktop_app/**'
+      - 'app/**'  # Include app directory since it's packaged with the desktop app
+      - 'locopilot_monitor.py'  # Include root-level monitor file
       - '.github/workflows/build_windows.yml'
   workflow_dispatch:
   release:
