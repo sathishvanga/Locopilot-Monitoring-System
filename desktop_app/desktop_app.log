@@ -501,3 +501,12 @@
 2025-11-28 11:55:27 | INFO     | cvvr_desktop.desktop_app.controllers.trips_controller | Complete workflow finished - Activities: 1, Video URL: https://s3.ap-south-1.amazonaws.com/alphainspector/demo/cvvr/11-2025/08979c48-bdef-4ee5-b92b-fef7d579a587.mp4, Clips uploaded: 0
 2025-11-28 11:55:27 | INFO     | cvvr_desktop.desktop_app.controllers.trips_controller | Progress [fbbd32f2-6f79-4e4f-b4a5-1da42bebbe95]: Completed successfully!
 2025-11-28 11:55:27 | INFO     | cvvr_desktop.desktop_app.controllers.trips_controller | Upload workflow completed successfully for trip: fbbd32f2-6f79-4e4f-b4a5-1da42bebbe95
+2025-11-28 13:15:16 | INFO     | cvvr_desktop.desktop_app.controllers.trips_controller | Loading pending trips
+2025-11-28 13:15:16 | INFO     | cvvr_desktop.desktop_app.services.trip_service | Fetching pending trips from API
+2025-11-28 13:15:16 | INFO     | cvvr_desktop.desktop_app.services.trip_service | Successfully fetched 1 pending trips
+2025-11-28 13:15:16 | INFO     | cvvr_desktop.desktop_app.controllers.trips_controller | Loaded 1 trips
+2025-11-28 13:35:07 | INFO     | cvvr_desktop.desktop_app.main | Application closing
+2025-11-28 13:35:07 | INFO     | cvvr_desktop.desktop_app.main | Stopping backend...
+2025-11-28 13:35:07 | INFO     | cvvr_desktop.desktop_app.services.backend_manager | Backend was not started by us - leaving it running
+2025-11-28 13:35:07 | INFO     | cvvr_desktop.desktop_app.main | Application exited with code: 0
+2025-11-28 13:35:07 | INFO     | cvvr_desktop.desktop_app.main | ============================================================

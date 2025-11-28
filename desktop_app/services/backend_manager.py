@@ -55,20 +55,31 @@ class BackendManager:
             Path: Path to the 'app' directory containing backend code
         """
         if self._is_packaged():
-            # In packaged macOS app, backend is in Contents/Resources/app
-            # sys._MEIPASS can point to Contents/Frameworks, so we need to adjust
             meipass = Path(sys._MEIPASS)
             logger.info(f"sys._MEIPASS: {meipass}")
+            logger.info(f"Platform: {sys.platform}")
             
-            # Check if we're in Frameworks directory and adjust to Resources
-            if meipass.name == 'Frameworks':
-                # Navigate to Contents/Resources instead
-                backend_path = meipass.parent / 'Resources' / 'app'
-            else:
-                # Standard path
+            # Platform-specific path resolution
+            if sys.platform == 'darwin':  # macOS
+                # In packaged macOS app, backend is in Contents/Resources/app
+                # sys._MEIPASS can point to Contents/Frameworks, so we need to adjust
+                if meipass.name == 'Frameworks':
+                    # Navigate to Contents/Resources instead
+                    backend_path = meipass.parent / 'Resources' / 'app'
+                else:
+                    # Standard path
+                    backend_path = meipass / 'app'
+            elif sys.platform == 'win32':  # Windows
+                # On Windows onefile mode, app directory is directly in _MEIPASS
+                backend_path = meipass / 'app'
+            else:  # Linux or other
+                # Standard path for other platforms
                 backend_path = meipass / 'app'
             
             logger.info(f"Using packaged backend at: {backend_path}")
+            logger.info(f"Backend path exists: {backend_path.exists()}")
+            if backend_path.exists():
+                logger.info(f"Backend path contents: {list(backend_path.iterdir())[:5]}")
         else:
             # In development, backend is in project root
             desktop_app_dir = Path(__file__).parent.parent
@@ -149,12 +160,26 @@ class BackendManager:
             if self._is_packaged():
                 # Try to use system Python instead of the packaged executable
                 import shutil
-                system_python = shutil.which('python3') or shutil.which('python')
+                
+                # Platform-specific Python executable detection
+                if sys.platform == 'win32':  # Windows
+                    # Try py.exe (Python Launcher), then python.exe, then python
+                    system_python = (
+                        shutil.which('py') or
+                        shutil.which('python.exe') or
+                        shutil.which('python') or
+                        shutil.which('python3.exe') or
+                        shutil.which('python3')
+                    )
+                else:  # macOS/Linux
+                    system_python = shutil.which('python3') or shutil.which('python')
+                
                 if system_python:
                     logger.info(f"Using system Python: {system_python}")
                     python_exe = system_python
                 else:
                     logger.warning("No system Python found, using packaged executable (may fail)")
+                    logger.warning("Please ensure Python is installed and in PATH")
             
             cmd = [
                 python_exe,
@@ -198,16 +223,35 @@ class BackendManager:
                 return True
             else:
                 logger.warning("Backend failed to start within timeout")
+                # Try to read error output for debugging
+                if self.backend_process:
+                    try:
+                        _, stderr = self.backend_process.communicate(timeout=1)
+                        if stderr:
+                            logger.error(f"Backend stderr: {stderr.decode('utf-8', errors='ignore')}")
+                    except:
+                        pass
                 self._force_stop_backend()
                 return False
             
         except FileNotFoundError as e:
-            logger.error(f"Failed to start backend - uvicorn not found: {e}")
-            logger.error("Please ensure uvicorn is installed: pip install uvicorn")
+            logger.error(f"Failed to start backend - Python or uvicorn not found: {e}")
+            logger.error("Please ensure Python and uvicorn are installed:")
+            logger.error("  pip install uvicorn")
+            if sys.platform == 'win32':
+                logger.error("  Or ensure Python is in your PATH")
             return False
             
         except Exception as e:
             logger.error(f"Failed to start backend: {e}", exc_info=True)
+            # Try to read error output if process was created
+            if self.backend_process:
+                try:
+                    _, stderr = self.backend_process.communicate(timeout=1)
+                    if stderr:
+                        logger.error(f"Backend stderr: {stderr.decode('utf-8', errors='ignore')}")
+                except:
+                    pass
             return False
     
     def _wait_for_startup(self, timeout: int = 10) -> bool:
