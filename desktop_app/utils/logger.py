@@ -58,6 +58,9 @@ def setup_logging(
         file_handler.setLevel(getattr(logging, level.upper()))
         file_handler.setFormatter(formatter)
         logger.addHandler(file_handler)
+        
+        # Log the log file location for easy access
+        logger.info(f"Log file location: {log_path.absolute()}")
     
     # Prevent propagation to root logger
     logger.propagate = False

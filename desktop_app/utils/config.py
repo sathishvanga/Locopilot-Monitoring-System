@@ -2,9 +2,12 @@
 Configuration management using Pydantic Settings
 """
 
+import os
+import sys
+from pathlib import Path
 from typing import Optional
 from pydantic_settings import BaseSettings, SettingsConfigDict
-from pydantic import Field
+from pydantic import Field, field_validator
 
 
 class Settings(BaseSettings):
@@ -53,7 +56,33 @@ class Settings(BaseSettings):
     
     # Logging
     log_level: str = Field(default="INFO", description="Logging level")
-    log_file: str = Field(default="desktop_app.log", description="Log file path")
+    log_file: Optional[str] = Field(default=None, description="Log file path (auto-determined if None)")
+    
+    @field_validator('log_file', mode='before')
+    @classmethod
+    def set_log_file_path(cls, v: Optional[str]) -> str:
+        """Set log file path to a user-accessible location"""
+        if v:  # If explicitly set, use it
+            return v
+        
+        # Determine log file location based on platform
+        if sys.platform == 'win32':
+            # Windows: Use Desktop or AppData
+            desktop = Path.home() / 'Desktop'
+            if desktop.exists():
+                log_path = desktop / 'LocopilotCVVR.log'
+            else:
+                # Fallback to AppData
+                appdata = Path(os.getenv('APPDATA', Path.home() / 'AppData' / 'Roaming'))
+                log_path = appdata / 'LocopilotCVVR' / 'LocopilotCVVR.log'
+        elif sys.platform == 'darwin':
+            # macOS: Use Desktop
+            log_path = Path.home() / 'Desktop' / 'LocopilotCVVR.log'
+        else:
+            # Linux: Use home directory
+            log_path = Path.home() / 'LocopilotCVVR.log'
+        
+        return str(log_path)
     
     # UI Configuration
     window_width: int = Field(default=1200, description="Default window width")

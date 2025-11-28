@@ -215,6 +215,9 @@ class BackendManager:
             )
             
             logger.info(f"Backend process started with PID: {self.backend_process.pid}")
+            logger.info(f"Backend command: {' '.join(cmd)}")
+            logger.info(f"Working directory: {project_root}")
+            logger.info(f"Python executable: {python_exe}")
             self.backend_started_by_us = True
             
             # Wait for backend to become available
@@ -222,15 +225,35 @@ class BackendManager:
                 logger.info("Backend started successfully")
                 return True
             else:
-                logger.warning("Backend failed to start within timeout")
+                logger.error("Backend failed to start within timeout")
                 # Try to read error output for debugging
                 if self.backend_process:
                     try:
-                        _, stderr = self.backend_process.communicate(timeout=1)
-                        if stderr:
-                            logger.error(f"Backend stderr: {stderr.decode('utf-8', errors='ignore')}")
-                    except:
-                        pass
+                        # Check if process is still running
+                        poll_result = self.backend_process.poll()
+                        if poll_result is not None:
+                            logger.error(f"Backend process exited with code: {poll_result}")
+                        
+                        # Try to read stdout and stderr
+                        try:
+                            stdout, stderr = self.backend_process.communicate(timeout=2)
+                            if stdout:
+                                logger.error(f"Backend stdout: {stdout.decode('utf-8', errors='ignore')}")
+                            if stderr:
+                                logger.error(f"Backend stderr: {stderr.decode('utf-8', errors='ignore')}")
+                        except subprocess.TimeoutExpired:
+                            logger.error("Could not read backend output (process still running)")
+                            # Try to read what we can
+                            if hasattr(self.backend_process, 'stderr') and self.backend_process.stderr:
+                                try:
+                                    stderr_content = self.backend_process.stderr.read(1000)
+                                    if stderr_content:
+                                        logger.error(f"Backend stderr (partial): {stderr_content.decode('utf-8', errors='ignore')}")
+                                except:
+                                    pass
+                    except Exception as e:
+                        logger.error(f"Error reading backend output: {e}")
+                
                 self._force_stop_backend()
                 return False
             
