@@ -43,10 +43,12 @@ class APIClient:
         self.session = requests.Session()
         
         # Configure retries
+        # Note: 500 errors are usually not transient, so we reduce retries for them
+        # We'll capture the first error response to show actual error message
         retry_strategy = Retry(
             total=self.max_retries,
             backoff_factor=1,
-            status_forcelist=[429, 500, 502, 503, 504],
+            status_forcelist=[429, 502, 503, 504],  # Removed 500 - handle separately
             allowed_methods=["HEAD", "GET", "PUT", "DELETE", "OPTIONS", "TRACE", "POST"]
         )
         
@@ -177,6 +179,28 @@ class APIClient:
             response.raise_for_status()
             logger.debug(f"POST {url} - Status: {response.status_code}")
             return response
+            
+        except requests.HTTPError as e:
+            # For 500 errors, capture the error message from response before raising
+            # This ensures we get the actual backend error instead of generic retry error
+            if e.response is not None and e.response.status_code == 500:
+                try:
+                    error_data = e.response.json()
+                    error_msg = error_data.get("message") or error_data.get("detail") or error_data.get("error")
+                    if error_msg:
+                        # Attach error message to exception for better error handling
+                        e.error_message = error_msg
+                        logger.error(f"POST {url} failed with 500: {error_msg}")
+                except:
+                    # If we can't parse JSON, try to get text
+                    try:
+                        error_text = e.response.text[:200]  # First 200 chars
+                        if error_text:
+                            e.error_message = error_text
+                    except:
+                        pass
+            logger.error(f"POST {url} failed: {e}")
+            raise
             
         except requests.RequestException as e:
             logger.error(f"POST {url} failed: {e}")

@@ -146,13 +146,18 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
 @app.exception_handler(Exception)
 async def general_exception_handler(request: Request, exc: Exception):
     """Handle unexpected exceptions"""
-    logger.error(f"Unexpected error: {exc}", exc_info=True)
+    error_msg = str(exc) if exc else "Unknown error"
+    logger.error(f"Unexpected error: {error_msg}", exc_info=True)
+    
+    # Include error details in response for better debugging
+    # In production, we still want to see the error for desktop app debugging
     return JSONResponse(
         status_code=500,
         content={
             "status": "error",
-            "message": "Internal server error",
-            "error": str(exc) if settings.debug else "An unexpected error occurred"
+            "message": f"Internal server error: {error_msg}",
+            "error": error_msg,
+            "detail": error_msg
         }
     )
 

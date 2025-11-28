@@ -635,10 +635,16 @@ async def process_and_upload_video(
         raise
         
     except Exception as e:
-        logger.error(f"Process and upload failed: {e}", exc_info=True)
+        # Include more context in error message
+        error_detail = f"Processing failed for trip {tripId}"
+        if video_path:
+            error_detail += f" (video: {os.path.basename(video_path)})"
+        error_detail += f": {str(e)}"
+        
+        logger.error(f"Process and upload failed: {error_detail}", exc_info=True)
         raise HTTPException(
             status_code=500,
-            detail=f"Processing failed: {str(e)}"
+            detail=error_detail
         )
     
     finally:

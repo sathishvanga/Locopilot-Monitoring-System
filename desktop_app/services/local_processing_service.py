@@ -203,11 +203,65 @@ class LocalProcessingService:
             logger.error(f"Processing HTTP error: {e}")
             error_msg = f"Processing failed (HTTP {e.response.status_code})"
             
-            try:
-                error_data = e.response.json()
-                error_msg = error_data.get("message", error_msg) or error_data.get("detail", error_msg)
-            except:
-                pass
+            # Try multiple ways to extract error message
+            # 1. Check if error_message was attached by api_client
+            if hasattr(e, 'error_message') and e.error_message:
+                error_msg = e.error_message
+            # 2. Try to parse JSON response
+            elif e.response is not None:
+                try:
+                    error_data = e.response.json()
+                    error_msg = (
+                        error_data.get("message") or 
+                        error_data.get("detail") or 
+                        error_data.get("error") or 
+                        error_msg
+                    )
+                except:
+                    # 3. Try to get text response
+                    try:
+                        error_text = e.response.text[:500]  # First 500 chars
+                        if error_text and len(error_text.strip()) > 0:
+                            error_msg = f"Processing failed: {error_text.strip()}"
+                    except:
+                        pass
+            
+            return ProcessingResult(success=False, error=error_msg)
+            
+        except requests.RetryError as e:
+            # Handle retry exhaustion - try to extract error from the underlying exception
+            logger.error(f"Processing retry error: {e}")
+            error_msg = "Processing failed after multiple attempts"
+            
+            # RetryError wraps the underlying exception - try to extract it
+            # The underlying exception is usually an HTTPError with the response
+            underlying_exc = None
+            if hasattr(e, 'args') and len(e.args) > 0:
+                # The first argument is usually the underlying exception
+                underlying_exc = e.args[0]
+            
+            # Try to get response from underlying exception
+            if underlying_exc and hasattr(underlying_exc, 'response') and underlying_exc.response is not None:
+                try:
+                    error_data = underlying_exc.response.json()
+                    error_msg = (
+                        error_data.get("message") or 
+                        error_data.get("detail") or 
+                        error_data.get("error") or 
+                        error_msg
+                    )
+                except:
+                    try:
+                        error_text = underlying_exc.response.text[:500]
+                        if error_text and len(error_text.strip()) > 0:
+                            error_msg = f"Processing failed: {error_text.strip()}"
+                    except:
+                        pass
+            # Fallback: use the error message from the exception itself
+            elif underlying_exc:
+                error_str = str(underlying_exc)
+                if error_str and len(error_str.strip()) > 0:
+                    error_msg = f"Processing failed: {error_str}"
             
             return ProcessingResult(success=False, error=error_msg)
             
