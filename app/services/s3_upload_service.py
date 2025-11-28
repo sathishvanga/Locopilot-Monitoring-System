@@ -69,10 +69,14 @@ class S3UploadService:
                     'subFolderName': subfolder
                 }
                 
-                # Prepare headers
+                # Prepare headers - Use Authorization header (same as desktop app)
                 headers = {}
                 if auth_token:
+                    # Use Bearer token in Authorization header (same format as desktop app)
                     headers['Authorization'] = f'Bearer {auth_token}'
+                    logger.debug(f"S3 upload with Bearer token (length: {len(auth_token)})")
+                else:
+                    logger.warning("S3 upload attempted without auth token")
                 
                 # Make upload request
                 response = requests.post(
@@ -86,15 +90,36 @@ class S3UploadService:
             
             # Parse response
             result = response.json()
+            s3_url = None
             
-            # Extract S3 URL
-            if "url" in result:
-                s3_url = result["url"]
-            elif isinstance(result, dict) and "data" in result:
-                s3_url = result["data"].get("url")
+            # Check for error in response
+            if isinstance(result, dict):
+                # Check for error status
+                if result.get("status") != 1 and "mssg" in result:
+                    error_msg = result.get("mssg", "Upload failed")
+                    logger.error(f"S3 upload error: {error_msg} - Full response: {result}")
+                    return False, None, error_msg
+                
+                # Extract S3 URL - try multiple possible response formats
+                # Format 1: Direct url field
+                if "url" in result:
+                    s3_url = result["url"]
+                # Format 2: url in content object (actual API format)
+                elif "content" in result and isinstance(result["content"], dict):
+                    s3_url = result["content"].get("url")
+                # Format 3: url in data object (alternative format)
+                elif "data" in result and isinstance(result["data"], dict):
+                    s3_url = result["data"].get("url")
+                else:
+                    logger.error(f"Could not extract S3 URL from response: {result}")
+                    return False, None, "Invalid S3 API response format. Response: " + str(result)
             else:
-                logger.error(f"Unexpected S3 response: {result}")
+                logger.error(f"Unexpected S3 response type: {type(result)}")
                 return False, None, "Invalid response from S3 upload API"
+            
+            if not s3_url:
+                logger.error(f"Could not extract S3 URL from response: {result}")
+                return False, None, "Invalid S3 API response format. Response: " + str(result)
             
             logger.info(f"Successfully uploaded {file_name} to S3: {s3_url}")
             
@@ -102,7 +127,14 @@ class S3UploadService:
             
         except requests.HTTPError as e:
             logger.error(f"S3 upload HTTP error for {file_path}: {e}")
+            # Try to extract error message from response
             error_msg = f"Upload failed (HTTP {e.response.status_code})"
+            try:
+                error_data = e.response.json()
+                if isinstance(error_data, dict) and "mssg" in error_data:
+                    error_msg = error_data.get("mssg", error_msg)
+            except:
+                pass
             return False, None, error_msg
             
         except requests.Timeout:

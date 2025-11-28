@@ -145,6 +145,9 @@ class LocalProcessingService:
                 # Add auth token if provided
                 if auth_token:
                     data['authToken'] = auth_token
+                    logger.debug(f"Added auth token to request (length: {len(auth_token)})")
+                else:
+                    logger.warning("⚠️ No auth token provided - S3 upload may fail")
                 
                 # Make processing + upload request to NEW endpoint
                 response = self.local_api.post(

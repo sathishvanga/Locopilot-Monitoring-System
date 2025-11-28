@@ -451,6 +451,13 @@ async def process_and_upload_video(
         # Step 3: Upload original video to S3
         logger.info(f"☁️ Uploading original video to S3 (subfolder: {subFolderName})")
         
+        # Log token status (without exposing full token for security)
+        if authToken:
+            token_preview = f"{authToken[:10]}...{authToken[-10:]}" if len(authToken) > 20 else "***"
+            logger.info(f"Using auth token for S3 upload (length: {len(authToken)}, preview: {token_preview})")
+        else:
+            logger.warning("⚠️ No auth token provided for S3 upload - upload may fail")
+        
         video_upload_success, video_s3_url, video_error = s3_upload_service.upload_file(
             file_path=video_path,
             subfolder=subFolderName,
@@ -509,36 +516,45 @@ async def process_and_upload_video(
         # Step 5: Update activities.json with S3 URLs
         logger.info("📝 Updating activities.json with S3 URLs")
         
-        activities_json_path = os.path.join(result['run_dir'], 'activities.json')
-        updated_activities = []
+        # Extract values from result dictionary
+        run_dir = result.get('run_dir', result.get('runDir', ''))
+        run_id = result.get('run_id', result.get('runId', ''))
+        activities_count = result.get('activities_count', result.get('activitiesCount', 0))
         
-        if os.path.exists(activities_json_path):
-            import json
+        # Initialize activities list
+        activities = []
+        
+        if run_dir and os.path.exists(run_dir):
+            activities_json_path = os.path.join(run_dir, 'activities.json')
+            updated_activities = []
             
-            # Read existing activities
-            with open(activities_json_path, 'r', encoding='utf-8') as f:
-                activities = json.load(f)
-            
-            # Update each activity with S3 URLs
-            for activity in activities:
-                # Update activityClip with S3 URL
-                if 'activityClip' in activity and activity['activityClip']:
-                    local_clip_path = activity['activityClip']
-                    if local_clip_path in s3_file_mapping:
-                        activity['activityClip'] = s3_file_mapping[local_clip_path]
-                        logger.debug(f"Updated clip URL: {local_clip_path} -> {s3_file_mapping[local_clip_path]}")
+            if os.path.exists(activities_json_path):
+                import json
                 
-                # Update activityImage with S3 URL
-                if 'activityImage' in activity and activity['activityImage']:
-                    local_image_path = activity['activityImage']
-                    if local_image_path in s3_file_mapping:
-                        activity['activityImage'] = s3_file_mapping[local_image_path]
-                        logger.debug(f"Updated image URL: {local_image_path} -> {s3_file_mapping[local_image_path]}")
+                # Read existing activities
+                with open(activities_json_path, 'r', encoding='utf-8') as f:
+                    activities = json.load(f)
                 
-                updated_activities.append(activity)
-            
-            # Save updated activities.json with S3 URLs
-            with open(activities_json_path, 'w', encoding='utf-8') as f:
+                # Update each activity with S3 URLs
+                for activity in activities:
+                    # Update activityClip with S3 URL
+                    if 'activityClip' in activity and activity['activityClip']:
+                        local_clip_path = activity['activityClip']
+                        if local_clip_path in s3_file_mapping:
+                            activity['activityClip'] = s3_file_mapping[local_clip_path]
+                            logger.debug(f"Updated clip URL: {local_clip_path} -> {s3_file_mapping[local_clip_path]}")
+                    
+                    # Update activityImage with S3 URL
+                    if 'activityImage' in activity and activity['activityImage']:
+                        local_image_path = activity['activityImage']
+                        if local_image_path in s3_file_mapping:
+                            activity['activityImage'] = s3_file_mapping[local_image_path]
+                            logger.debug(f"Updated image URL: {local_image_path} -> {s3_file_mapping[local_image_path]}")
+                    
+                    updated_activities.append(activity)
+                
+                # Save updated activities.json with S3 URLs
+                with open(activities_json_path, 'w', encoding='utf-8') as f:
                     json.dump(updated_activities, f, indent=2, ensure_ascii=False)
                 
                 # Update activities for response
