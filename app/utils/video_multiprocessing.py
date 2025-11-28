@@ -170,6 +170,14 @@ def get_shared_pool(config: MultiprocessingConfig) -> ProcessPoolExecutor:
     if _shared_pool is not None:
         return _shared_pool
 
+    # ✅ WINDOWS FIX: Set Qt offscreen mode BEFORE creating process pool
+    # This prevents worker processes from creating GUI windows on Windows
+    # Must be set in main process before spawning workers
+    import sys
+    if sys.platform == 'win32':
+        os.environ['QT_QPA_PLATFORM'] = 'offscreen'
+        os.environ['DISPLAY'] = ''
+
     num_workers = config.get_num_workers()
     ctx = mp.get_context(config.start_method or "spawn")
 
@@ -446,6 +454,13 @@ class VideoMultiprocessingOrchestrator:
             f"Initializing process pool with {num_workers} workers "
             f"(method={self.config.start_method}, shared={self.use_shared_pool})"
         )
+        
+        # ✅ WINDOWS FIX: Set Qt offscreen mode BEFORE creating process pool
+        # This prevents worker processes from creating GUI windows on Windows
+        import sys
+        if sys.platform == 'win32':
+            os.environ['QT_QPA_PLATFORM'] = 'offscreen'
+            os.environ['DISPLAY'] = ''
         
         # Ensure multiprocessing start method is set
         try:

@@ -189,6 +189,15 @@ class TripsController(QObject):
         """
         logger.error(f"Failed to load trips: {error_message}")
         self.view.set_loading(False)
+        
+        # ✅ FIX: Don't show error popup on login screen - authentication errors are expected
+        # Only show error if user is already logged in (not an authentication error)
+        if "Authentication required" in error_message or "no authentication token" in error_message.lower():
+            # This is expected on login screen - just log it, don't show popup
+            logger.info("Trips load failed due to missing authentication (expected on login screen)")
+            return
+        
+        # For other errors (network, server issues), show the error
         self.view.show_error(f"Failed to load trips:\n{error_message}")
     
     def _on_upload_clicked(self, trip_uuid: str):

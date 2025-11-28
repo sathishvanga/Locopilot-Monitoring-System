@@ -41,6 +41,7 @@ a = Analysis(
         'PySide6.QtGui',
         'PySide6.QtWidgets',
         'pydantic',
+        'pydantic.computed_field',  # For computed_field decorator in config
         'pydantic_settings',
         'requests',
         

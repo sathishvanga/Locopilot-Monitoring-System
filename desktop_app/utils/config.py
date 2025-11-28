@@ -2,9 +2,10 @@
 Configuration management using Pydantic Settings
 """
 
+import multiprocessing
 from typing import Optional
 from pydantic_settings import BaseSettings, SettingsConfigDict
-from pydantic import Field
+from pydantic import Field, computed_field
 
 
 class Settings(BaseSettings):
@@ -66,6 +67,21 @@ class Settings(BaseSettings):
     auto_start_backend: bool = Field(default=True, description="Automatically start local backend on app launch")
     backend_startup_timeout: int = Field(default=10, description="Seconds to wait for backend startup")
     
+    # Backend worker configuration (for CPU utilization optimization)
+    # These can be overridden via environment variables: CVVR_BACKEND_WORKERS, CVVR_BACKEND_THREADS
+    backend_workers: Optional[int] = Field(
+        default=None,
+        description="Number of uvicorn workers (None = auto-detect based on CPU count)"
+    )
+    backend_threads: int = Field(
+        default=1,
+        description="Number of threads per worker (uvicorn supports this but typically use workers instead)"
+    )
+    backend_max_workers_cap: int = Field(
+        default=4,
+        description="Maximum number of backend workers (to prevent memory issues - each worker loads models)"
+    )
+    
     model_config = SettingsConfigDict(
         env_prefix="CVVR_",
         env_file=".env",
@@ -73,6 +89,31 @@ class Settings(BaseSettings):
         case_sensitive=False,
         extra="ignore"
     )
+    
+    @computed_field
+    @property
+    def effective_backend_workers(self) -> int:
+        """
+        Calculate effective number of backend workers based on CPU count
+        
+        Similar to gunicorn_config.py logic but optimized for desktop app:
+        - Desktop app can use more workers since it's single-user
+        - Formula: min(cpu_count // 2, max_workers_cap) for better CPU utilization
+        - Minimum 1 worker, maximum capped to prevent memory issues
+        
+        Returns:
+            int: Number of workers to use
+        """
+        if self.backend_workers is not None:
+            # User explicitly set workers
+            return max(1, min(self.backend_workers, self.backend_max_workers_cap))
+        
+        # Auto-detect based on CPU count
+        cpu_count = multiprocessing.cpu_count()
+        # Desktop app: use cpu_count // 2 for better utilization (more aggressive than server)
+        # But cap at max_workers_cap to prevent memory issues
+        workers = max(1, min(cpu_count // 2, self.backend_max_workers_cap))
+        return workers
 
 
 # Singleton instance

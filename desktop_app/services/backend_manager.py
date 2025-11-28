@@ -168,6 +168,10 @@ class BackendManager:
                 original_cwd = os.getcwd()
                 os.chdir(str(project_root))
                 
+                # Get worker configuration for optimal CPU utilization
+                num_workers = settings.effective_backend_workers
+                logger.info(f"Starting backend with {num_workers} worker(s) for optimal CPU utilization")
+                
                 # Start uvicorn in a daemon thread
                 # This runs completely in the background - user never sees it
                 self.backend_thread = threading.Thread(
@@ -176,7 +180,8 @@ class BackendManager:
                         str(project_root),
                         settings.local_backend_port,
                         "127.0.0.1",
-                        original_cwd
+                        original_cwd,
+                        num_workers
                     ),
                     daemon=True,
                     name="BackendServer"
@@ -188,6 +193,10 @@ class BackendManager:
                 
             else:
                 # In development mode, use subprocess with current Python
+                # Get worker configuration for optimal CPU utilization
+                num_workers = settings.effective_backend_workers
+                logger.info(f"Starting backend with {num_workers} worker(s) for optimal CPU utilization")
+                
                 logger.info("Running uvicorn via subprocess (development mode)...")
                 
                 cmd = [
@@ -196,6 +205,7 @@ class BackendManager:
                     "app.main:app",
                     "--host", "127.0.0.1",
                     "--port", str(settings.local_backend_port),
+                    "--workers", str(num_workers),
                     "--log-level", "warning"
                 ]
                 
@@ -252,7 +262,7 @@ class BackendManager:
                 logger.error("Backend server thread terminated unexpectedly")
             return False
     
-    def _run_uvicorn_in_thread(self, project_root: str, port: int, host: str, original_cwd: str) -> None:
+    def _run_uvicorn_in_thread(self, project_root: str, port: int, host: str, original_cwd: str, workers: int = 1) -> None:
         """
         Run uvicorn programmatically in a background thread
         
@@ -264,6 +274,7 @@ class BackendManager:
             port: Port number to run the server on
             host: Host address to bind to
             original_cwd: Original working directory to restore if needed
+            workers: Number of worker processes (for optimal CPU utilization)
         """
         try:
             # Set up the environment
@@ -329,10 +340,12 @@ class BackendManager:
             }
             
             # Run uvicorn - this will block the thread until server stops
+            # Use workers parameter for optimal CPU utilization (similar to gunicorn)
             uvicorn.run(
                 "app.main:app",
                 host=host,
                 port=port,
+                workers=workers,  # ✅ CPU OPTIMIZATION: Use multiple workers for better CPU utilization
                 log_level="warning",
                 access_log=False,  # Don't log access requests to keep it quiet
                 use_colors=False,  # Disable colors (avoids TTY checks)
