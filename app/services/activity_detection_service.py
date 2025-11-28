@@ -331,10 +331,11 @@ class ActivityDetectionService:
             run_dir = activity_repo.create_run_directory(base_name="run")
         
         # Create multiprocessing configuration
+        # Uses default max_workers_cap=6 for optimal CPU utilization (~60%) while maintaining memory safety
         config = MultiprocessingConfig(
             chunk_duration_seconds=6.0,
             max_workers=None,  # Auto-detect
-            max_workers_cap=8,
+            max_workers_cap=6,  # Consistent with default (increased from 2 for better CPU utilization)
             preload_models=True
         )
         

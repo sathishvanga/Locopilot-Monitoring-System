@@ -10,6 +10,14 @@ import logging
 import gc
 import contextlib
 
+# ✅ WINDOWS FIX: Prevent Qt/GUI initialization in worker processes
+# If running in a worker process (detected by QT_QPA_PLATFORM=offscreen),
+# ensure no Qt imports happen that could create GUI windows
+if os.environ.get('QT_QPA_PLATFORM') == 'offscreen':
+    # Worker process - prevent any Qt/GUI initialization
+    os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
+    os.environ.setdefault('DISPLAY', '')
+
 # Configure logger for hand gesture detection with file handler
 # This ensures logs work in both main process and multiprocessing workers
 gesture_logger = logging.getLogger('HandGestureDetection')

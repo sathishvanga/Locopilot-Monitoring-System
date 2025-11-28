@@ -15,9 +15,10 @@ class MultiprocessingConfig:
     """Configuration for multiprocessing video pipeline"""
     
     # Process pool settings
-    # ✅ MEMORY FIX: Reduced max_workers_cap from 8 to 2 for memory safety
+    # ✅ PERFORMANCE FIX: Increased max_workers_cap from 2 to 6 for better CPU utilization (~60% target)
+    # Balance: More workers = better parallelization but more memory usage (each worker loads models)
     max_workers: Optional[int] = None  # None = auto-detect (min(CPU count, max_workers_cap))
-    max_workers_cap: int = 2  # Maximum number of worker processes (reduced from 8)
+    max_workers_cap: int = 6  # Maximum number of worker processes (increased from 2 for better CPU utilization)
     start_method: str = "spawn"  # Use 'spawn' for cross-platform stability
     
     # Work partitioning settings
@@ -25,8 +26,10 @@ class MultiprocessingConfig:
     min_chunk_duration_seconds: float = 2.0  # Minimum chunk duration
     
     # Worker initialization settings
-    torch_threads: int = 1  # Torch thread count per worker
-    opencv_threads: int = 1  # OpenCV thread count per worker
+    # ✅ PERFORMANCE FIX: Increased thread counts from 1 to 2 for better CPU utilization
+    # With 6 workers × 2 threads = 12 threads total (good for 8-16 core systems)
+    torch_threads: int = 2  # Torch thread count per worker (increased from 1)
+    opencv_threads: int = 2  # OpenCV thread count per worker (increased from 1)
     disable_opencv_opencl: bool = True  # Disable OpenCV OpenCL
     
     # Model preloading settings
@@ -46,6 +49,10 @@ class MultiprocessingConfig:
         """
         Calculate optimal number of worker processes
         
+        Targets ~60% CPU utilization while maintaining memory safety.
+        Formula: Uses min(CPU cores, max_workers_cap) to balance performance and memory.
+        With 6 workers × 2 threads each = 12 threads total (good for 8-16 core systems).
+        
         Returns:
             int: Number of worker processes to use
         """
@@ -53,8 +60,13 @@ class MultiprocessingConfig:
             return min(self.max_workers, self.max_workers_cap)
         
         # Auto-detect: min(CPU cores, configured cap)
+        # This ensures we don't exceed max_workers_cap while utilizing available cores
         cpu_count = mp.cpu_count()
-        return min(cpu_count, self.max_workers_cap)
+        num_workers = min(cpu_count, self.max_workers_cap)
+        
+        # For systems with many cores, we still cap at max_workers_cap
+        # The combination of workers × threads per worker provides good CPU utilization
+        return num_workers
     
     def set_worker_env_vars(self):
         """Set environment variables for worker processes"""

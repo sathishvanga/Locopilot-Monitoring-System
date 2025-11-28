@@ -84,6 +84,7 @@ def worker_initializer(config: MultiprocessingConfig):
     Initialize worker process with models and configurations
     
     This function runs once per worker process at startup to:
+    - Prevent Qt/GUI initialization (Windows compatibility)
     - Set thread counts for Torch and OpenCV
     - Disable OpenCV OpenCL
     - Preload heavy models (YOLO, MediaPipe)
@@ -95,6 +96,11 @@ def worker_initializer(config: MultiprocessingConfig):
     global _worker_models, _worker_config
     
     try:
+        # ✅ WINDOWS FIX: Prevent Qt/GUI windows from opening in worker processes
+        # Set this FIRST before any imports that might trigger Qt initialization
+        os.environ['QT_QPA_PLATFORM'] = 'offscreen'
+        os.environ['DISPLAY'] = ''  # For compatibility on Linux/Unix systems
+        
         # Set environment variables
         config.set_worker_env_vars()
         
