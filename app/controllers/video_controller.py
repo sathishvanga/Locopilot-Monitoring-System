@@ -13,6 +13,7 @@ from fastapi.responses import JSONResponse
 from ..models.video_models import VideoProcessingResponse, VideoProcessingError
 from ..services.video_processing_service import VideoProcessingService
 from ..services.s3_upload_service import get_s3_upload_service
+from ..services.external_api_service import get_external_api_service
 from ..utils.logger import get_logger
 from ..utils.config import get_settings
 
@@ -438,7 +439,8 @@ async def process_and_upload_video(
             crew_role=1,  # LP role
             use_mock_detection=useMockDetection,
             use_multiprocessing=use_mp,  # ✅ Now using multiprocessing!
-            save_clips=saveClips
+            save_clips=saveClips,
+            skip_external_api=True  # Skip here - will call after S3 uploads with correct S3 URLs
         )
         
         logger.info(
@@ -521,46 +523,89 @@ async def process_and_upload_video(
         run_id = result.get('run_id', result.get('runId', ''))
         activities_count = result.get('activities_count', result.get('activitiesCount', 0))
         
-        # Initialize activities list
-        activities = []
+        # Initialize activities list - try to get from result first, then from file
+        activities = result.get('activities', [])
         
         if run_dir and os.path.exists(run_dir):
             activities_json_path = os.path.join(run_dir, 'activities.json')
-            updated_activities = []
             
             if os.path.exists(activities_json_path):
                 import json
                 
-                # Read existing activities
-                with open(activities_json_path, 'r', encoding='utf-8') as f:
-                    activities = json.load(f)
-                
-                # Update each activity with S3 URLs
-                for activity in activities:
-                    # Update activityClip with S3 URL
-                    if 'activityClip' in activity and activity['activityClip']:
-                        local_clip_path = activity['activityClip']
-                        if local_clip_path in s3_file_mapping:
-                            activity['activityClip'] = s3_file_mapping[local_clip_path]
-                            logger.debug(f"Updated clip URL: {local_clip_path} -> {s3_file_mapping[local_clip_path]}")
+                try:
+                    # Read existing activities
+                    with open(activities_json_path, 'r', encoding='utf-8') as f:
+                        activities = json.load(f)
                     
-                    # Update activityImage with S3 URL
-                    if 'activityImage' in activity and activity['activityImage']:
-                        local_image_path = activity['activityImage']
-                        if local_image_path in s3_file_mapping:
-                            activity['activityImage'] = s3_file_mapping[local_image_path]
-                            logger.debug(f"Updated image URL: {local_image_path} -> {s3_file_mapping[local_image_path]}")
+                    logger.info(f"📖 Loaded {len(activities)} activities from {activities_json_path}")
                     
-                    updated_activities.append(activity)
+                    # Update each activity with S3 URLs
+                    updated_activities = []
+                    for activity in activities:
+                        # Update activityClip with S3 URL
+                        if 'activityClip' in activity and activity['activityClip']:
+                            local_clip_path = activity['activityClip']
+                            if local_clip_path in s3_file_mapping:
+                                activity['activityClip'] = s3_file_mapping[local_clip_path]
+                                logger.debug(f"Updated clip URL: {local_clip_path} -> {s3_file_mapping[local_clip_path]}")
+                        
+                        # Update activityImage with S3 URL
+                        if 'activityImage' in activity and activity['activityImage']:
+                            local_image_path = activity['activityImage']
+                            if local_image_path in s3_file_mapping:
+                                activity['activityImage'] = s3_file_mapping[local_image_path]
+                                logger.debug(f"Updated image URL: {local_image_path} -> {s3_file_mapping[local_image_path]}")
+                        
+                        updated_activities.append(activity)
+                    
+                    # Save updated activities.json with S3 URLs
+                    with open(activities_json_path, 'w', encoding='utf-8') as f:
+                        json.dump(updated_activities, f, indent=2, ensure_ascii=False)
+                    
+                    # Update activities for response
+                    activities = updated_activities
+                    
+                    logger.info(f"✅ Updated {len(updated_activities)} activities with S3 URLs")
+                except Exception as e:
+                    logger.error(f"❌ Failed to update activities.json: {e}", exc_info=True)
+            else:
+                logger.warning(f"⚠️ Activities JSON file not found: {activities_json_path}")
+        else:
+            logger.warning(f"⚠️ Run directory not found: {run_dir}")
+        
+        # Step 6: Post results to external API with S3 URLs
+        # This ensures fileUrl in violations points to S3, not local backend
+        external_api_result = None
+        logger.info(f"🔍 Checking conditions for external API call: activities={len(activities) if activities else 0}, video_s3_url={'present' if video_s3_url else 'missing'}")
+        
+        if activities and video_s3_url:
+            try:
+                logger.info(f"🌐 Posting results to external API with S3 URLs for trip: {tripId}")
+                external_api_service = get_external_api_service()
                 
-                # Save updated activities.json with S3 URLs
-                with open(activities_json_path, 'w', encoding='utf-8') as f:
-                    json.dump(updated_activities, f, indent=2, ensure_ascii=False)
+                external_api_result = external_api_service.post_cvvr_results(
+                    trip_id=tripId,
+                    events=activities,  # Use updated activities with S3 URLs
+                    job_id=run_id,
+                    video_s3_url=video_s3_url  # Pass video S3 URL for fileUrl
+                )
                 
-                # Update activities for response
-                activities = updated_activities
-                
-                logger.info(f"✅ Updated {len(updated_activities)} activities with S3 URLs")
+                if external_api_result.get("success"):
+                    logger.info(
+                        f"✅ [external_api] Posted {external_api_result.get('violations_count', 0)} "
+                        f"violations with S3 URLs to external API for trip {tripId}"
+                    )
+                else:
+                    logger.warning(
+                        f"⚠️ [external_api] Failed to post to external API: {external_api_result.get('message')}"
+                    )
+            except Exception as e:
+                logger.error(f"❌ [external_api] Exception while posting to external API: {e}", exc_info=True)
+                external_api_result = {
+                    "success": False,
+                    "message": f"Exception: {str(e)}",
+                    "posted": False
+                }
         
         # Prepare response
         response_data = {
@@ -577,7 +622,8 @@ async def process_and_upload_video(
                 "clips_uploaded": len(evidence_urls),
                 "total_clips": len(clip_files),
                 "upload_errors": upload_errors if upload_errors else None,
-                "activities": activities  # ← Include updated activities with S3 URLs
+                "activities": activities,  # ← Include updated activities with S3 URLs
+                "external_api_result": external_api_result  # Include external API posting result
             }
         }
         

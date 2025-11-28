@@ -41,7 +41,8 @@ class ExternalAPIService:
         trip_id: str,
         events: List[Dict[str, Any]],
         job_id: Optional[str] = None,
-        host_url: Optional[str] = None
+        host_url: Optional[str] = None,
+        video_s3_url: Optional[str] = None
     ) -> Dict[str, Any]:
         """
         Post activity results to CVVR API
@@ -50,7 +51,8 @@ class ExternalAPIService:
             trip_id: Trip identifier
             events: List of detected activities
             job_id: Job/run identifier (optional, used for fileUrl construction)
-            host_url: Host URL for building media links (optional)
+            host_url: Host URL for building media links (optional, deprecated - use video_s3_url)
+            video_s3_url: S3 URL of the uploaded video (preferred for fileUrl)
             
         Returns:
             Dict with posting result (success status, response data, etc.)
@@ -72,7 +74,7 @@ class ExternalAPIService:
         
         logger.info(
             f"📤 [external_api] Preparing to post results for trip_id={trip_id}, "
-            f"events_count={len(events)}, job_id={job_id}, host_url={host_url}"
+            f"events_count={len(events)}, job_id={job_id}, video_s3_url={'provided' if video_s3_url else 'not provided'}"
         )
         
         # If no events, post no-events notice
@@ -84,7 +86,8 @@ class ExternalAPIService:
             trip_id=trip_id,
             events=events,
             job_id=job_id,
-            host_url=host_url
+            host_url=host_url,
+            video_s3_url=video_s3_url
         )
         
         # Post violations to API
@@ -282,7 +285,8 @@ class ExternalAPIService:
         trip_id: str,
         events: List[Dict[str, Any]],
         job_id: Optional[str] = None,
-        host_url: Optional[str] = None
+        host_url: Optional[str] = None,
+        video_s3_url: Optional[str] = None
     ) -> List[Dict[str, Any]]:
         """
         Transform internal events to external API violation format
@@ -291,7 +295,8 @@ class ExternalAPIService:
             trip_id: Trip identifier
             events: List of internal activity events
             job_id: Job/run identifier (optional)
-            host_url: Host URL for building fileUrl
+            host_url: Host URL for building fileUrl (deprecated - use video_s3_url)
+            video_s3_url: S3 URL of the uploaded video (preferred for fileUrl)
             
         Returns:
             List of violation payloads ready for API
@@ -304,7 +309,8 @@ class ExternalAPIService:
                     event=event,
                     trip_id=trip_id,
                     job_id=job_id,
-                    host_url=host_url
+                    host_url=host_url,
+                    video_s3_url=video_s3_url
                 )
                 if violation:
                     violations.append(violation)
@@ -320,7 +326,8 @@ class ExternalAPIService:
         event: Dict[str, Any],
         trip_id: str,
         job_id: Optional[str] = None,
-        host_url: Optional[str] = None
+        host_url: Optional[str] = None,
+        video_s3_url: Optional[str] = None
     ) -> Optional[Dict[str, Any]]:
         """
         Convert a single event to violation payload
@@ -329,7 +336,8 @@ class ExternalAPIService:
             event: Internal activity event
             trip_id: Trip identifier
             job_id: Job/run identifier (optional)
-            host_url: Host URL for building fileUrl
+            host_url: Host URL for building fileUrl (deprecated - use video_s3_url)
+            video_s3_url: S3 URL of the uploaded video (preferred for fileUrl)
             
         Returns:
             Violation payload dict or None if transformation fails
@@ -346,13 +354,23 @@ class ExternalAPIService:
             crew_name = event.get("crewName", "Unknown")
             activity_clip = event.get("activityClip", "")
             
-            # Build fileUrl using the same pattern as the first project (POC_2):
-            # {host_url}/api/jobs/{job_id}/media/{clip_filename}
+            # Determine fileUrl - prefer S3 URL, fallback to local backend URL
             file_url = ""
-            if host_url and job_id and activity_clip:
+            
+            # Priority 1: Use video S3 URL (preferred - this is the uploaded video)
+            if video_s3_url:
+                file_url = video_s3_url
+                logger.debug(f"Using video S3 URL for fileUrl: {video_s3_url[:50]}...")
+            # Priority 2: Use activityClip if it's already an S3 URL (from updated activities.json)
+            elif activity_clip and (activity_clip.startswith("http://") or activity_clip.startswith("https://")):
+                file_url = activity_clip
+                logger.debug(f"Using activityClip S3 URL for fileUrl: {activity_clip[:50]}...")
+            # Priority 3: Build local backend URL (fallback for backward compatibility)
+            elif host_url and job_id and activity_clip:
                 clip_name = os.path.basename(activity_clip)
                 media_prefix = f"{host_url}/api/jobs/{job_id}/media"
                 file_url = f"{media_prefix}/{clip_name}"
+                logger.debug(f"Using local backend URL for fileUrl: {file_url}")
             
             # Build violation payload
             payload = {

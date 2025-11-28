@@ -131,7 +131,8 @@ class VideoProcessingService:
         crew_role: int = 1,
         use_mock_detection: bool = False,
         use_multiprocessing: bool = False,
-        save_clips: bool = True
+        save_clips: bool = True,
+        skip_external_api: bool = False
     ) -> Dict[str, Any]:
         """
         Process video and detect activities
@@ -225,39 +226,48 @@ class VideoProcessingService:
             logger.info(f"💾 Saved {len(activities)} activities to {activities_json_path}")
             
             # Post results to external API (non-blocking, errors don't fail the job)
+            # Skip if called from process-and-upload endpoint (will be called later with S3 URLs)
             api_result = None
-            try:
-                logger.info(f"🌐 Attempting to post results to external API...")
-                external_api_service = get_external_api_service()
-                
-                # Extract run_id from run_dir for constructing job_id
-                run_id = os.path.basename(run_dir)
-                
-                # Post to external API
-                api_result = external_api_service.post_cvvr_results(
-                    trip_id=trip_id,
-                    events=activities,
-                    job_id=run_id,
-                    host_url=settings.host_url
-                )
-                
-                if api_result.get("success"):
-                    logger.info(
-                        f"✅ [external_api] Successfully posted {api_result.get('violations_count', 0)} "
-                        f"violations to external API for trip {trip_id}"
+            if not skip_external_api:
+                try:
+                    logger.info(f"🌐 Attempting to post results to external API...")
+                    external_api_service = get_external_api_service()
+                    
+                    # Extract run_id from run_dir for constructing job_id
+                    run_id = os.path.basename(run_dir)
+                    
+                    # Post to external API
+                    api_result = external_api_service.post_cvvr_results(
+                        trip_id=trip_id,
+                        events=activities,
+                        job_id=run_id,
+                        host_url=settings.host_url
                     )
-                else:
-                    logger.warning(
-                        f"⚠️ [external_api] Failed to post to external API: {api_result.get('message')}"
+                    
+                    if api_result.get("success"):
+                        logger.info(
+                            f"✅ [external_api] Successfully posted {api_result.get('violations_count', 0)} "
+                            f"violations to external API for trip {trip_id}"
+                        )
+                    else:
+                        logger.warning(
+                            f"⚠️ [external_api] Failed to post to external API: {api_result.get('message')}"
+                        )
+                except Exception as e:
+                    logger.error(
+                        f"❌ [external_api] Exception while posting to external API: {e}",
+                        exc_info=True
                     )
-            except Exception as e:
-                logger.error(
-                    f"❌ [external_api] Exception while posting to external API: {e}",
-                    exc_info=True
-                )
+                    api_result = {
+                        "success": False,
+                        "message": f"Exception: {str(e)}",
+                        "posted": False
+                    }
+            else:
+                logger.info(f"⏭️ [external_api] Skipping external API call (will be called later with S3 URLs)")
                 api_result = {
                     "success": False,
-                    "message": f"Exception: {str(e)}",
+                    "message": "Skipped - will be called later with S3 URLs",
                     "posted": False
                 }
             

@@ -238,3 +238,266 @@
 2025-11-28 11:24:09 | INFO     | cvvr_desktop.desktop_app.controllers.trips_controller | Complete workflow finished - Activities: 1, Video URL: https://s3.ap-south-1.amazonaws.com/alphainspector/demo/cvvr/11-2025/9b22ed86-e15d-484b-bef7-02b6584427cf.mp4, Clips uploaded: 0
 2025-11-28 11:24:09 | INFO     | cvvr_desktop.desktop_app.controllers.trips_controller | Progress [f2fa5625-8f59-4ea0-8402-eaae1f71e4b1]: Completed successfully!
 2025-11-28 11:24:09 | INFO     | cvvr_desktop.desktop_app.controllers.trips_controller | Upload workflow completed successfully for trip: f2fa5625-8f59-4ea0-8402-eaae1f71e4b1
+2025-11-28 11:25:52 | INFO     | cvvr_desktop.desktop_app.controllers.trips_controller | Loading pending trips
+2025-11-28 11:25:52 | INFO     | cvvr_desktop.desktop_app.services.trip_service | Fetching pending trips from API
+2025-11-28 11:25:53 | INFO     | cvvr_desktop.desktop_app.services.trip_service | Successfully fetched 1 pending trips
+2025-11-28 11:25:53 | INFO     | cvvr_desktop.desktop_app.controllers.trips_controller | Loaded 1 trips
+2025-11-28 11:25:54 | INFO     | cvvr_desktop.desktop_app.controllers.trips_controller | Loading pending trips
+2025-11-28 11:25:54 | INFO     | cvvr_desktop.desktop_app.services.trip_service | Fetching pending trips from API
+2025-11-28 11:25:55 | INFO     | cvvr_desktop.desktop_app.services.trip_service | Successfully fetched 1 pending trips
+2025-11-28 11:25:55 | INFO     | cvvr_desktop.desktop_app.controllers.trips_controller | Loaded 1 trips
+2025-11-28 11:25:55 | INFO     | cvvr_desktop.desktop_app.controllers.trips_controller | Upload clicked for trip: 336e0541-cc32-4961-8390-b3c0d01b2bb5
+2025-11-28 11:26:00 | INFO     | cvvr_desktop.desktop_app.controllers.trips_controller | Selected video: /Users/satishvanga/Documents/cvvr/bagpack.mp4
+2025-11-28 11:26:00 | INFO     | cvvr_desktop.desktop_app.controllers.trips_controller | Starting simplified workflow - Trip: 336e0541-cc32-4961-8390-b3c0d01b2bb5, Video: /Users/satishvanga/Documents/cvvr/bagpack.mp4
+2025-11-28 11:26:00 | INFO     | cvvr_desktop.desktop_app.controllers.trips_controller | Starting process and upload for trip 336e0541-cc32-4961-8390-b3c0d01b2bb5
+2025-11-28 11:26:00 | INFO     | cvvr_desktop.desktop_app.controllers.trips_controller | Progress [336e0541-cc32-4961-8390-b3c0d01b2bb5]: Processing and uploading to S3...
+2025-11-28 11:26:00 | INFO     | cvvr_desktop.desktop_app.services.local_processing_service | Processing and uploading video: /Users/satishvanga/Documents/cvvr/bagpack.mp4 (Trip: 336e0541-cc32-4961-8390-b3c0d01b2bb5)
+2025-11-28 11:26:30 | INFO     | cvvr_desktop.desktop_app.services.local_processing_service | Processing and upload completed - Activities: 1, Video URL: https://s3.ap-south-1.amazonaws.com/alphainspector/demo/cvvr/11-2025/e68dafba-aa2f-42c8-b708-dee679b2a73c.mp4, Clips uploaded: 0
+2025-11-28 11:26:30 | INFO     | cvvr_desktop.desktop_app.controllers.trips_controller | Complete workflow finished - Activities: 1, Video URL: https://s3.ap-south-1.amazonaws.com/alphainspector/demo/cvvr/11-2025/e68dafba-aa2f-42c8-b708-dee679b2a73c.mp4, Clips uploaded: 0
+2025-11-28 11:26:30 | INFO     | cvvr_desktop.desktop_app.controllers.trips_controller | Progress [336e0541-cc32-4961-8390-b3c0d01b2bb5]: Completed successfully!
+2025-11-28 11:26:30 | INFO     | cvvr_desktop.desktop_app.controllers.trips_controller | Upload workflow completed successfully for trip: 336e0541-cc32-4961-8390-b3c0d01b2bb5
+2025-11-28 11:30:11 | INFO     | cvvr_desktop.desktop_app.controllers.trips_controller | Loading pending trips
+2025-11-28 11:30:11 | INFO     | cvvr_desktop.desktop_app.services.trip_service | Fetching pending trips from API
+2025-11-28 11:30:12 | INFO     | cvvr_desktop.desktop_app.services.trip_service | Successfully fetched 1 pending trips
+2025-11-28 11:30:12 | INFO     | cvvr_desktop.desktop_app.controllers.trips_controller | Loaded 1 trips
+2025-11-28 11:30:13 | INFO     | cvvr_desktop.desktop_app.controllers.trips_controller | Upload clicked for trip: f7c92009-e031-43a9-b0e9-948dab07804b
+2025-11-28 11:30:17 | INFO     | cvvr_desktop.desktop_app.controllers.trips_controller | Selected video: /Users/satishvanga/Documents/cvvr/bagpack.mp4
+2025-11-28 11:30:17 | INFO     | cvvr_desktop.desktop_app.controllers.trips_controller | Starting simplified workflow - Trip: f7c92009-e031-43a9-b0e9-948dab07804b, Video: /Users/satishvanga/Documents/cvvr/bagpack.mp4
+2025-11-28 11:30:17 | INFO     | cvvr_desktop.desktop_app.controllers.trips_controller | Starting process and upload for trip f7c92009-e031-43a9-b0e9-948dab07804b
+2025-11-28 11:30:17 | INFO     | cvvr_desktop.desktop_app.controllers.trips_controller | Progress [f7c92009-e031-43a9-b0e9-948dab07804b]: Processing and uploading to S3...
+2025-11-28 11:30:17 | INFO     | cvvr_desktop.desktop_app.services.local_processing_service | Processing and uploading video: /Users/satishvanga/Documents/cvvr/bagpack.mp4 (Trip: f7c92009-e031-43a9-b0e9-948dab07804b)
+2025-11-28 11:30:48 | INFO     | cvvr_desktop.desktop_app.services.local_processing_service | Processing and upload completed - Activities: 1, Video URL: https://s3.ap-south-1.amazonaws.com/alphainspector/demo/cvvr/11-2025/d27f75b3-b8fa-4ff9-99d2-6d6c1f1f8723.mp4, Clips uploaded: 0
+2025-11-28 11:30:48 | INFO     | cvvr_desktop.desktop_app.controllers.trips_controller | Complete workflow finished - Activities: 1, Video URL: https://s3.ap-south-1.amazonaws.com/alphainspector/demo/cvvr/11-2025/d27f75b3-b8fa-4ff9-99d2-6d6c1f1f8723.mp4, Clips uploaded: 0
+2025-11-28 11:30:48 | INFO     | cvvr_desktop.desktop_app.controllers.trips_controller | Progress [f7c92009-e031-43a9-b0e9-948dab07804b]: Completed successfully!
+2025-11-28 11:30:48 | INFO     | cvvr_desktop.desktop_app.controllers.trips_controller | Upload workflow completed successfully for trip: f7c92009-e031-43a9-b0e9-948dab07804b
+2025-11-28 11:34:33 | INFO     | cvvr_desktop | Logging initialized - Level: INFO
+2025-11-28 11:34:33 | INFO     | cvvr_desktop.desktop_app.main | ============================================================
+2025-11-28 11:34:33 | INFO     | cvvr_desktop.desktop_app.main | Starting Locopilot CVVR Desktop v1.0.0
+2025-11-28 11:34:33 | INFO     | cvvr_desktop.desktop_app.main | ============================================================
+2025-11-28 11:34:33 | INFO     | cvvr_desktop.desktop_app.services.backend_manager | Backend manager initialized
+2025-11-28 11:34:33 | INFO     | cvvr_desktop.desktop_app.services.backend_manager | Running in packaged mode: True
+2025-11-28 11:34:33 | INFO     | cvvr_desktop.desktop_app.utils.api_client | API client initialized - Base URL: https://api.mindcoinapps.com/ai_demo_api
+2025-11-28 11:34:33 | INFO     | cvvr_desktop.desktop_app.services.auth_service | Authentication service initialized
+2025-11-28 11:34:33 | INFO     | cvvr_desktop.desktop_app.utils.api_client | API client initialized - Base URL: https://api.mindcoinapps.com/ai_demo_api
+2025-11-28 11:34:33 | INFO     | cvvr_desktop.desktop_app.services.trip_service | Trip service initialized
+2025-11-28 11:34:33 | INFO     | cvvr_desktop.desktop_app.utils.api_client | API client initialized - Base URL: https://api.mindcoinapps.com/ai_demo_api
+2025-11-28 11:34:33 | INFO     | cvvr_desktop.desktop_app.services.upload_service | Upload service initialized
+2025-11-28 11:34:33 | INFO     | cvvr_desktop.desktop_app.utils.api_client | API client initialized - Base URL: http://localhost:8000
+2025-11-28 11:34:33 | INFO     | cvvr_desktop.desktop_app.services.local_processing_service | Local processing service initialized
+2025-11-28 11:34:33 | INFO     | cvvr_desktop.desktop_app.controllers.login_controller | Login controller initialized
+2025-11-28 11:34:33 | INFO     | cvvr_desktop.desktop_app.controllers.trips_controller | Trips controller initialized
+2025-11-28 11:34:33 | INFO     | cvvr_desktop.desktop_app.controllers.trips_controller | Loading pending trips
+2025-11-28 11:34:33 | INFO     | cvvr_desktop.desktop_app.main | Main window initialized
+2025-11-28 11:34:33 | ERROR    | cvvr_desktop.desktop_app.services.trip_service | Cannot fetch trips - no authentication token
+2025-11-28 11:34:33 | INFO     | cvvr_desktop.desktop_app.main | Application started successfully
+2025-11-28 11:34:33 | ERROR    | cvvr_desktop.desktop_app.controllers.trips_controller | Failed to load trips: Authentication required - please login
+2025-11-28 11:34:33 | INFO     | cvvr_desktop.desktop_app.main | Auto-starting local backend...
+2025-11-28 11:34:33 | INFO     | cvvr_desktop.desktop_app.services.backend_manager | Backend is already running - reusing existing instance
+2025-11-28 11:34:33 | INFO     | cvvr_desktop.desktop_app.main | Backend is ready
+2025-11-28 11:34:39 | INFO     | cvvr_desktop.desktop_app.main | Application closing
+2025-11-28 11:34:39 | INFO     | cvvr_desktop.desktop_app.main | Stopping backend...
+2025-11-28 11:34:39 | INFO     | cvvr_desktop.desktop_app.services.backend_manager | Backend was not started by us - leaving it running
+2025-11-28 11:34:39 | INFO     | cvvr_desktop.desktop_app.main | Application exited with code: 0
+2025-11-28 11:34:39 | INFO     | cvvr_desktop.desktop_app.main | ============================================================
+2025-11-28 11:34:40 | INFO     | cvvr_desktop.desktop_app.main | Application closing
+2025-11-28 11:34:40 | INFO     | cvvr_desktop.desktop_app.main | Stopping backend...
+2025-11-28 11:34:40 | INFO     | cvvr_desktop.desktop_app.services.backend_manager | Backend was not started by us - leaving it running
+2025-11-28 11:34:40 | INFO     | cvvr_desktop.desktop_app.main | Application exited with code: 0
+2025-11-28 11:34:40 | INFO     | cvvr_desktop.desktop_app.main | ============================================================
+2025-11-28 11:34:48 | INFO     | cvvr_desktop | Logging initialized - Level: INFO
+2025-11-28 11:34:48 | INFO     | cvvr_desktop.desktop_app.main | ============================================================
+2025-11-28 11:34:48 | INFO     | cvvr_desktop.desktop_app.main | Starting Locopilot CVVR Desktop v1.0.0
+2025-11-28 11:34:48 | INFO     | cvvr_desktop.desktop_app.main | ============================================================
+2025-11-28 11:34:48 | INFO     | cvvr_desktop.desktop_app.services.backend_manager | Backend manager initialized
+2025-11-28 11:34:48 | INFO     | cvvr_desktop.desktop_app.services.backend_manager | Running in packaged mode: True
+2025-11-28 11:34:48 | INFO     | cvvr_desktop.desktop_app.utils.api_client | API client initialized - Base URL: https://api.mindcoinapps.com/ai_demo_api
+2025-11-28 11:34:48 | INFO     | cvvr_desktop.desktop_app.services.auth_service | Authentication service initialized
+2025-11-28 11:34:48 | INFO     | cvvr_desktop.desktop_app.utils.api_client | API client initialized - Base URL: https://api.mindcoinapps.com/ai_demo_api
+2025-11-28 11:34:48 | INFO     | cvvr_desktop.desktop_app.services.trip_service | Trip service initialized
+2025-11-28 11:34:48 | INFO     | cvvr_desktop.desktop_app.utils.api_client | API client initialized - Base URL: https://api.mindcoinapps.com/ai_demo_api
+2025-11-28 11:34:48 | INFO     | cvvr_desktop.desktop_app.services.upload_service | Upload service initialized
+2025-11-28 11:34:48 | INFO     | cvvr_desktop.desktop_app.utils.api_client | API client initialized - Base URL: http://localhost:8000
+2025-11-28 11:34:48 | INFO     | cvvr_desktop.desktop_app.services.local_processing_service | Local processing service initialized
+2025-11-28 11:34:48 | INFO     | cvvr_desktop.desktop_app.controllers.login_controller | Login controller initialized
+2025-11-28 11:34:48 | INFO     | cvvr_desktop.desktop_app.controllers.trips_controller | Trips controller initialized
+2025-11-28 11:34:48 | INFO     | cvvr_desktop.desktop_app.controllers.trips_controller | Loading pending trips
+2025-11-28 11:34:48 | INFO     | cvvr_desktop.desktop_app.main | Main window initialized
+2025-11-28 11:34:48 | ERROR    | cvvr_desktop.desktop_app.services.trip_service | Cannot fetch trips - no authentication token
+2025-11-28 11:34:48 | INFO     | cvvr_desktop.desktop_app.main | Application started successfully
+2025-11-28 11:34:48 | ERROR    | cvvr_desktop.desktop_app.controllers.trips_controller | Failed to load trips: Authentication required - please login
+2025-11-28 11:34:48 | INFO     | cvvr_desktop.desktop_app.main | Auto-starting local backend...
+2025-11-28 11:34:48 | INFO     | cvvr_desktop.desktop_app.services.backend_manager | Backend is already running - reusing existing instance
+2025-11-28 11:34:48 | INFO     | cvvr_desktop.desktop_app.main | Backend is ready
+2025-11-28 11:34:57 | INFO     | cvvr_desktop.desktop_app.controllers.login_controller | Initiating login for user: 9705589009
+2025-11-28 11:34:57 | INFO     | cvvr_desktop.desktop_app.controllers.login_controller | Login worker started for user: 9705589009
+2025-11-28 11:34:57 | INFO     | cvvr_desktop.desktop_app.services.auth_service | Attempting login for user: 9705589009
+2025-11-28 11:34:58 | INFO     | cvvr_desktop.desktop_app.services.auth_service | Login successful for user: Venky (9705589009)
+2025-11-28 11:34:58 | INFO     | cvvr_desktop.desktop_app.controllers.login_controller | Login successful: Venky (9705589009)
+2025-11-28 11:34:58 | INFO     | cvvr_desktop.desktop_app.main | Navigating to trips view
+2025-11-28 11:34:58 | INFO     | cvvr_desktop.desktop_app.controllers.trips_controller | Loading pending trips
+2025-11-28 11:34:58 | INFO     | cvvr_desktop.desktop_app.services.trip_service | Fetching pending trips from API
+2025-11-28 11:34:58 | INFO     | cvvr_desktop.desktop_app.services.trip_service | Successfully fetched 0 pending trips
+2025-11-28 11:34:58 | INFO     | cvvr_desktop.desktop_app.controllers.trips_controller | Loaded 0 trips
+2025-11-28 11:35:19 | INFO     | cvvr_desktop.desktop_app.controllers.trips_controller | Loading pending trips
+2025-11-28 11:35:19 | INFO     | cvvr_desktop.desktop_app.services.trip_service | Fetching pending trips from API
+2025-11-28 11:35:19 | INFO     | cvvr_desktop.desktop_app.services.trip_service | Successfully fetched 1 pending trips
+2025-11-28 11:35:19 | INFO     | cvvr_desktop.desktop_app.controllers.trips_controller | Loaded 1 trips
+2025-11-28 11:35:21 | INFO     | cvvr_desktop.desktop_app.controllers.trips_controller | Upload clicked for trip: 402783fc-12b5-45ed-bc4e-db637f94a676
+2025-11-28 11:35:30 | INFO     | cvvr_desktop.desktop_app.controllers.trips_controller | Selected video: /Users/satishvanga/Documents/cvvr/bagpack.mp4
+2025-11-28 11:35:30 | INFO     | cvvr_desktop.desktop_app.controllers.trips_controller | Starting simplified workflow - Trip: 402783fc-12b5-45ed-bc4e-db637f94a676, Video: /Users/satishvanga/Documents/cvvr/bagpack.mp4
+2025-11-28 11:35:30 | INFO     | cvvr_desktop.desktop_app.controllers.trips_controller | Starting process and upload for trip 402783fc-12b5-45ed-bc4e-db637f94a676
+2025-11-28 11:35:30 | INFO     | cvvr_desktop.desktop_app.controllers.trips_controller | Progress [402783fc-12b5-45ed-bc4e-db637f94a676]: Processing and uploading to S3...
+2025-11-28 11:35:30 | INFO     | cvvr_desktop.desktop_app.services.local_processing_service | Processing and uploading video: /Users/satishvanga/Documents/cvvr/bagpack.mp4 (Trip: 402783fc-12b5-45ed-bc4e-db637f94a676)
+2025-11-28 11:36:00 | INFO     | cvvr_desktop.desktop_app.services.local_processing_service | Processing and upload completed - Activities: 1, Video URL: https://s3.ap-south-1.amazonaws.com/alphainspector/demo/cvvr/11-2025/c3662c98-b1ab-44ad-a570-56a813415048.mp4, Clips uploaded: 0
+2025-11-28 11:36:00 | INFO     | cvvr_desktop.desktop_app.controllers.trips_controller | Complete workflow finished - Activities: 1, Video URL: https://s3.ap-south-1.amazonaws.com/alphainspector/demo/cvvr/11-2025/c3662c98-b1ab-44ad-a570-56a813415048.mp4, Clips uploaded: 0
+2025-11-28 11:36:00 | INFO     | cvvr_desktop.desktop_app.controllers.trips_controller | Progress [402783fc-12b5-45ed-bc4e-db637f94a676]: Completed successfully!
+2025-11-28 11:36:00 | INFO     | cvvr_desktop.desktop_app.controllers.trips_controller | Upload workflow completed successfully for trip: 402783fc-12b5-45ed-bc4e-db637f94a676
+2025-11-28 11:41:34 | INFO     | cvvr_desktop | Logging initialized - Level: INFO
+2025-11-28 11:41:34 | INFO     | cvvr_desktop.desktop_app.main | ============================================================
+2025-11-28 11:41:34 | INFO     | cvvr_desktop.desktop_app.main | Starting Locopilot CVVR Desktop v1.0.0
+2025-11-28 11:41:34 | INFO     | cvvr_desktop.desktop_app.main | ============================================================
+2025-11-28 11:41:34 | INFO     | cvvr_desktop.desktop_app.services.backend_manager | Backend manager initialized
+2025-11-28 11:41:34 | INFO     | cvvr_desktop.desktop_app.services.backend_manager | Running in packaged mode: True
+2025-11-28 11:41:34 | INFO     | cvvr_desktop.desktop_app.utils.api_client | API client initialized - Base URL: https://api.mindcoinapps.com/ai_demo_api
+2025-11-28 11:41:34 | INFO     | cvvr_desktop.desktop_app.services.auth_service | Authentication service initialized
+2025-11-28 11:41:34 | INFO     | cvvr_desktop.desktop_app.utils.api_client | API client initialized - Base URL: https://api.mindcoinapps.com/ai_demo_api
+2025-11-28 11:41:34 | INFO     | cvvr_desktop.desktop_app.services.trip_service | Trip service initialized
+2025-11-28 11:41:34 | INFO     | cvvr_desktop.desktop_app.utils.api_client | API client initialized - Base URL: https://api.mindcoinapps.com/ai_demo_api
+2025-11-28 11:41:34 | INFO     | cvvr_desktop.desktop_app.services.upload_service | Upload service initialized
+2025-11-28 11:41:34 | INFO     | cvvr_desktop.desktop_app.utils.api_client | API client initialized - Base URL: http://localhost:8000
+2025-11-28 11:41:34 | INFO     | cvvr_desktop.desktop_app.services.local_processing_service | Local processing service initialized
+2025-11-28 11:41:34 | INFO     | cvvr_desktop.desktop_app.controllers.login_controller | Login controller initialized
+2025-11-28 11:41:34 | INFO     | cvvr_desktop.desktop_app.controllers.trips_controller | Trips controller initialized
+2025-11-28 11:41:34 | INFO     | cvvr_desktop.desktop_app.controllers.trips_controller | Loading pending trips
+2025-11-28 11:41:34 | INFO     | cvvr_desktop.desktop_app.main | Main window initialized
+2025-11-28 11:41:34 | ERROR    | cvvr_desktop.desktop_app.services.trip_service | Cannot fetch trips - no authentication token
+2025-11-28 11:41:34 | INFO     | cvvr_desktop.desktop_app.main | Application started successfully
+2025-11-28 11:41:34 | ERROR    | cvvr_desktop.desktop_app.controllers.trips_controller | Failed to load trips: Authentication required - please login
+2025-11-28 11:41:34 | INFO     | cvvr_desktop.desktop_app.main | Auto-starting local backend...
+2025-11-28 11:41:34 | INFO     | cvvr_desktop.desktop_app.services.backend_manager | Backend is already running - reusing existing instance
+2025-11-28 11:41:34 | INFO     | cvvr_desktop.desktop_app.main | Backend is ready
+2025-11-28 11:41:53 | INFO     | cvvr_desktop.desktop_app.controllers.login_controller | Initiating login for user: 9705589009
+2025-11-28 11:41:53 | INFO     | cvvr_desktop.desktop_app.controllers.login_controller | Login worker started for user: 9705589009
+2025-11-28 11:41:53 | INFO     | cvvr_desktop.desktop_app.services.auth_service | Attempting login for user: 9705589009
+2025-11-28 11:41:54 | INFO     | cvvr_desktop.desktop_app.services.auth_service | Login successful for user: Venky (9705589009)
+2025-11-28 11:41:54 | INFO     | cvvr_desktop.desktop_app.controllers.login_controller | Login successful: Venky (9705589009)
+2025-11-28 11:41:54 | INFO     | cvvr_desktop.desktop_app.main | Navigating to trips view
+2025-11-28 11:41:54 | INFO     | cvvr_desktop.desktop_app.controllers.trips_controller | Loading pending trips
+2025-11-28 11:41:54 | INFO     | cvvr_desktop.desktop_app.services.trip_service | Fetching pending trips from API
+2025-11-28 11:41:55 | INFO     | cvvr_desktop.desktop_app.services.trip_service | Successfully fetched 0 pending trips
+2025-11-28 11:41:55 | INFO     | cvvr_desktop.desktop_app.controllers.trips_controller | Loaded 0 trips
+2025-11-28 11:43:24 | INFO     | cvvr_desktop | Logging initialized - Level: INFO
+2025-11-28 11:43:24 | INFO     | cvvr_desktop.desktop_app.main | ============================================================
+2025-11-28 11:43:24 | INFO     | cvvr_desktop.desktop_app.main | Starting Locopilot CVVR Desktop v1.0.0
+2025-11-28 11:43:24 | INFO     | cvvr_desktop.desktop_app.main | ============================================================
+2025-11-28 11:43:24 | INFO     | cvvr_desktop.desktop_app.services.backend_manager | Backend manager initialized
+2025-11-28 11:43:24 | INFO     | cvvr_desktop.desktop_app.services.backend_manager | Running in packaged mode: True
+2025-11-28 11:43:24 | INFO     | cvvr_desktop.desktop_app.utils.api_client | API client initialized - Base URL: https://api.mindcoinapps.com/ai_demo_api
+2025-11-28 11:43:24 | INFO     | cvvr_desktop.desktop_app.services.auth_service | Authentication service initialized
+2025-11-28 11:43:24 | INFO     | cvvr_desktop.desktop_app.utils.api_client | API client initialized - Base URL: https://api.mindcoinapps.com/ai_demo_api
+2025-11-28 11:43:24 | INFO     | cvvr_desktop.desktop_app.services.trip_service | Trip service initialized
+2025-11-28 11:43:24 | INFO     | cvvr_desktop.desktop_app.utils.api_client | API client initialized - Base URL: https://api.mindcoinapps.com/ai_demo_api
+2025-11-28 11:43:24 | INFO     | cvvr_desktop.desktop_app.services.upload_service | Upload service initialized
+2025-11-28 11:43:24 | INFO     | cvvr_desktop.desktop_app.utils.api_client | API client initialized - Base URL: http://localhost:8000
+2025-11-28 11:43:24 | INFO     | cvvr_desktop.desktop_app.services.local_processing_service | Local processing service initialized
+2025-11-28 11:43:25 | INFO     | cvvr_desktop.desktop_app.controllers.login_controller | Login controller initialized
+2025-11-28 11:43:25 | INFO     | cvvr_desktop.desktop_app.controllers.trips_controller | Trips controller initialized
+2025-11-28 11:43:25 | INFO     | cvvr_desktop.desktop_app.controllers.trips_controller | Loading pending trips
+2025-11-28 11:43:25 | INFO     | cvvr_desktop.desktop_app.main | Main window initialized
+2025-11-28 11:43:25 | ERROR    | cvvr_desktop.desktop_app.services.trip_service | Cannot fetch trips - no authentication token
+2025-11-28 11:43:25 | INFO     | cvvr_desktop.desktop_app.main | Application started successfully
+2025-11-28 11:43:25 | ERROR    | cvvr_desktop.desktop_app.controllers.trips_controller | Failed to load trips: Authentication required - please login
+2025-11-28 11:43:25 | INFO     | cvvr_desktop.desktop_app.main | Auto-starting local backend...
+2025-11-28 11:43:25 | INFO     | cvvr_desktop.desktop_app.services.backend_manager | Backend is already running - reusing existing instance
+2025-11-28 11:43:25 | INFO     | cvvr_desktop.desktop_app.main | Backend is ready
+2025-11-28 11:43:29 | INFO     | cvvr_desktop.desktop_app.main | Application closing
+2025-11-28 11:43:29 | INFO     | cvvr_desktop.desktop_app.main | Stopping backend...
+2025-11-28 11:43:29 | INFO     | cvvr_desktop.desktop_app.services.backend_manager | Backend was not started by us - leaving it running
+2025-11-28 11:43:29 | INFO     | cvvr_desktop.desktop_app.main | Application exited with code: 0
+2025-11-28 11:43:29 | INFO     | cvvr_desktop.desktop_app.main | ============================================================
+2025-11-28 11:43:32 | INFO     | cvvr_desktop.desktop_app.main | Application closing
+2025-11-28 11:43:32 | INFO     | cvvr_desktop.desktop_app.main | Stopping backend...
+2025-11-28 11:43:32 | INFO     | cvvr_desktop.desktop_app.services.backend_manager | Backend was not started by us - leaving it running
+2025-11-28 11:43:32 | INFO     | cvvr_desktop.desktop_app.main | Application exited with code: 0
+2025-11-28 11:43:32 | INFO     | cvvr_desktop.desktop_app.main | ============================================================
+2025-11-28 11:43:39 | INFO     | cvvr_desktop.desktop_app.controllers.login_controller | Initiating login for user: 9705589009
+2025-11-28 11:43:39 | INFO     | cvvr_desktop.desktop_app.controllers.login_controller | Login worker started for user: 9705589009
+2025-11-28 11:43:39 | INFO     | cvvr_desktop.desktop_app.services.auth_service | Attempting login for user: 9705589009
+2025-11-28 11:43:40 | INFO     | cvvr_desktop.desktop_app.services.auth_service | Login successful for user: Venky (9705589009)
+2025-11-28 11:43:40 | INFO     | cvvr_desktop.desktop_app.controllers.login_controller | Login successful: Venky (9705589009)
+2025-11-28 11:43:40 | INFO     | cvvr_desktop.desktop_app.main | Navigating to trips view
+2025-11-28 11:43:40 | INFO     | cvvr_desktop.desktop_app.controllers.trips_controller | Loading pending trips
+2025-11-28 11:43:40 | INFO     | cvvr_desktop.desktop_app.services.trip_service | Fetching pending trips from API
+2025-11-28 11:43:40 | INFO     | cvvr_desktop.desktop_app.services.trip_service | Successfully fetched 0 pending trips
+2025-11-28 11:43:40 | INFO     | cvvr_desktop.desktop_app.controllers.trips_controller | Loaded 0 trips
+2025-11-28 11:43:48 | INFO     | cvvr_desktop.desktop_app.controllers.trips_controller | Loading pending trips
+2025-11-28 11:43:48 | INFO     | cvvr_desktop.desktop_app.services.trip_service | Fetching pending trips from API
+2025-11-28 11:43:48 | INFO     | cvvr_desktop.desktop_app.services.trip_service | Successfully fetched 0 pending trips
+2025-11-28 11:43:48 | INFO     | cvvr_desktop.desktop_app.controllers.trips_controller | Loaded 0 trips
+2025-11-28 11:44:11 | INFO     | cvvr_desktop.desktop_app.controllers.trips_controller | Loading pending trips
+2025-11-28 11:44:11 | INFO     | cvvr_desktop.desktop_app.services.trip_service | Fetching pending trips from API
+2025-11-28 11:44:11 | INFO     | cvvr_desktop.desktop_app.services.trip_service | Successfully fetched 1 pending trips
+2025-11-28 11:44:11 | INFO     | cvvr_desktop.desktop_app.controllers.trips_controller | Loaded 1 trips
+2025-11-28 11:44:16 | INFO     | cvvr_desktop.desktop_app.controllers.trips_controller | Upload clicked for trip: 98feffa5-f742-4a0d-8c5f-803dbe2ea5a3
+2025-11-28 11:44:24 | INFO     | cvvr_desktop.desktop_app.controllers.trips_controller | Selected video: /Users/satishvanga/Documents/cvvr/bagpack.mp4
+2025-11-28 11:44:24 | INFO     | cvvr_desktop.desktop_app.controllers.trips_controller | Starting simplified workflow - Trip: 98feffa5-f742-4a0d-8c5f-803dbe2ea5a3, Video: /Users/satishvanga/Documents/cvvr/bagpack.mp4
+2025-11-28 11:44:24 | INFO     | cvvr_desktop.desktop_app.controllers.trips_controller | Starting process and upload for trip 98feffa5-f742-4a0d-8c5f-803dbe2ea5a3
+2025-11-28 11:44:24 | INFO     | cvvr_desktop.desktop_app.controllers.trips_controller | Progress [98feffa5-f742-4a0d-8c5f-803dbe2ea5a3]: Processing and uploading to S3...
+2025-11-28 11:44:24 | INFO     | cvvr_desktop.desktop_app.services.local_processing_service | Processing and uploading video: /Users/satishvanga/Documents/cvvr/bagpack.mp4 (Trip: 98feffa5-f742-4a0d-8c5f-803dbe2ea5a3)
+2025-11-28 11:45:04 | INFO     | cvvr_desktop.desktop_app.services.local_processing_service | Processing and upload completed - Activities: 1, Video URL: https://s3.ap-south-1.amazonaws.com/alphainspector/demo/cvvr/11-2025/535a7aae-039c-4f73-b264-91d6cade8e4f.mp4, Clips uploaded: 0
+2025-11-28 11:45:04 | INFO     | cvvr_desktop.desktop_app.controllers.trips_controller | Complete workflow finished - Activities: 1, Video URL: https://s3.ap-south-1.amazonaws.com/alphainspector/demo/cvvr/11-2025/535a7aae-039c-4f73-b264-91d6cade8e4f.mp4, Clips uploaded: 0
+2025-11-28 11:45:04 | INFO     | cvvr_desktop.desktop_app.controllers.trips_controller | Progress [98feffa5-f742-4a0d-8c5f-803dbe2ea5a3]: Completed successfully!
+2025-11-28 11:45:04 | INFO     | cvvr_desktop.desktop_app.controllers.trips_controller | Upload workflow completed successfully for trip: 98feffa5-f742-4a0d-8c5f-803dbe2ea5a3
+2025-11-28 11:54:02 | INFO     | cvvr_desktop.desktop_app.main | Application closing
+2025-11-28 11:54:02 | INFO     | cvvr_desktop.desktop_app.main | Stopping backend...
+2025-11-28 11:54:02 | INFO     | cvvr_desktop.desktop_app.services.backend_manager | Backend was not started by us - leaving it running
+2025-11-28 11:54:02 | INFO     | cvvr_desktop.desktop_app.main | Application exited with code: 0
+2025-11-28 11:54:02 | INFO     | cvvr_desktop.desktop_app.main | ============================================================
+2025-11-28 11:54:10 | INFO     | cvvr_desktop | Logging initialized - Level: INFO
+2025-11-28 11:54:10 | INFO     | cvvr_desktop.desktop_app.main | ============================================================
+2025-11-28 11:54:10 | INFO     | cvvr_desktop.desktop_app.main | Starting Locopilot CVVR Desktop v1.0.0
+2025-11-28 11:54:10 | INFO     | cvvr_desktop.desktop_app.main | ============================================================
+2025-11-28 11:54:10 | INFO     | cvvr_desktop.desktop_app.services.backend_manager | Backend manager initialized
+2025-11-28 11:54:10 | INFO     | cvvr_desktop.desktop_app.services.backend_manager | Running in packaged mode: True
+2025-11-28 11:54:10 | INFO     | cvvr_desktop.desktop_app.utils.api_client | API client initialized - Base URL: https://api.mindcoinapps.com/ai_demo_api
+2025-11-28 11:54:10 | INFO     | cvvr_desktop.desktop_app.services.auth_service | Authentication service initialized
+2025-11-28 11:54:10 | INFO     | cvvr_desktop.desktop_app.utils.api_client | API client initialized - Base URL: https://api.mindcoinapps.com/ai_demo_api
+2025-11-28 11:54:10 | INFO     | cvvr_desktop.desktop_app.services.trip_service | Trip service initialized
+2025-11-28 11:54:10 | INFO     | cvvr_desktop.desktop_app.utils.api_client | API client initialized - Base URL: https://api.mindcoinapps.com/ai_demo_api
+2025-11-28 11:54:10 | INFO     | cvvr_desktop.desktop_app.services.upload_service | Upload service initialized
+2025-11-28 11:54:10 | INFO     | cvvr_desktop.desktop_app.utils.api_client | API client initialized - Base URL: http://localhost:8000
+2025-11-28 11:54:10 | INFO     | cvvr_desktop.desktop_app.services.local_processing_service | Local processing service initialized
+2025-11-28 11:54:10 | INFO     | cvvr_desktop.desktop_app.controllers.login_controller | Login controller initialized
+2025-11-28 11:54:10 | INFO     | cvvr_desktop.desktop_app.controllers.trips_controller | Trips controller initialized
+2025-11-28 11:54:10 | INFO     | cvvr_desktop.desktop_app.controllers.trips_controller | Loading pending trips
+2025-11-28 11:54:10 | INFO     | cvvr_desktop.desktop_app.main | Main window initialized
+2025-11-28 11:54:10 | ERROR    | cvvr_desktop.desktop_app.services.trip_service | Cannot fetch trips - no authentication token
+2025-11-28 11:54:10 | INFO     | cvvr_desktop.desktop_app.main | Application started successfully
+2025-11-28 11:54:10 | ERROR    | cvvr_desktop.desktop_app.controllers.trips_controller | Failed to load trips: Authentication required - please login
+2025-11-28 11:54:10 | INFO     | cvvr_desktop.desktop_app.main | Auto-starting local backend...
+2025-11-28 11:54:10 | INFO     | cvvr_desktop.desktop_app.services.backend_manager | Backend is already running - reusing existing instance
+2025-11-28 11:54:10 | INFO     | cvvr_desktop.desktop_app.main | Backend is ready
+2025-11-28 11:54:20 | INFO     | cvvr_desktop.desktop_app.controllers.login_controller | Initiating login for user: 9705589009
+2025-11-28 11:54:20 | INFO     | cvvr_desktop.desktop_app.controllers.login_controller | Login worker started for user: 9705589009
+2025-11-28 11:54:20 | INFO     | cvvr_desktop.desktop_app.services.auth_service | Attempting login for user: 9705589009
+2025-11-28 11:54:21 | INFO     | cvvr_desktop.desktop_app.services.auth_service | Login successful for user: Venky (9705589009)
+2025-11-28 11:54:21 | INFO     | cvvr_desktop.desktop_app.controllers.login_controller | Login successful: Venky (9705589009)
+2025-11-28 11:54:21 | INFO     | cvvr_desktop.desktop_app.main | Navigating to trips view
+2025-11-28 11:54:21 | INFO     | cvvr_desktop.desktop_app.controllers.trips_controller | Loading pending trips
+2025-11-28 11:54:21 | INFO     | cvvr_desktop.desktop_app.services.trip_service | Fetching pending trips from API
+2025-11-28 11:54:21 | INFO     | cvvr_desktop.desktop_app.services.trip_service | Successfully fetched 0 pending trips
+2025-11-28 11:54:21 | INFO     | cvvr_desktop.desktop_app.controllers.trips_controller | Loaded 0 trips
+2025-11-28 11:54:47 | INFO     | cvvr_desktop.desktop_app.controllers.trips_controller | Loading pending trips
+2025-11-28 11:54:47 | INFO     | cvvr_desktop.desktop_app.services.trip_service | Fetching pending trips from API
+2025-11-28 11:54:47 | INFO     | cvvr_desktop.desktop_app.services.trip_service | Successfully fetched 1 pending trips
+2025-11-28 11:54:47 | INFO     | cvvr_desktop.desktop_app.controllers.trips_controller | Loaded 1 trips
+2025-11-28 11:54:48 | INFO     | cvvr_desktop.desktop_app.controllers.trips_controller | Upload clicked for trip: fbbd32f2-6f79-4e4f-b4a5-1da42bebbe95
+2025-11-28 11:54:54 | INFO     | cvvr_desktop.desktop_app.controllers.trips_controller | Selected video: /Users/satishvanga/Documents/cvvr/bagpack.mp4
+2025-11-28 11:54:54 | INFO     | cvvr_desktop.desktop_app.controllers.trips_controller | Starting simplified workflow - Trip: fbbd32f2-6f79-4e4f-b4a5-1da42bebbe95, Video: /Users/satishvanga/Documents/cvvr/bagpack.mp4
+2025-11-28 11:54:54 | INFO     | cvvr_desktop.desktop_app.controllers.trips_controller | Starting process and upload for trip fbbd32f2-6f79-4e4f-b4a5-1da42bebbe95
+2025-11-28 11:54:54 | INFO     | cvvr_desktop.desktop_app.controllers.trips_controller | Progress [fbbd32f2-6f79-4e4f-b4a5-1da42bebbe95]: Processing and uploading to S3...
+2025-11-28 11:54:54 | INFO     | cvvr_desktop.desktop_app.services.local_processing_service | Processing and uploading video: /Users/satishvanga/Documents/cvvr/bagpack.mp4 (Trip: fbbd32f2-6f79-4e4f-b4a5-1da42bebbe95)
+2025-11-28 11:55:27 | INFO     | cvvr_desktop.desktop_app.services.local_processing_service | Processing and upload completed - Activities: 1, Video URL: https://s3.ap-south-1.amazonaws.com/alphainspector/demo/cvvr/11-2025/08979c48-bdef-4ee5-b92b-fef7d579a587.mp4, Clips uploaded: 0
+2025-11-28 11:55:27 | INFO     | cvvr_desktop.desktop_app.controllers.trips_controller | Complete workflow finished - Activities: 1, Video URL: https://s3.ap-south-1.amazonaws.com/alphainspector/demo/cvvr/11-2025/08979c48-bdef-4ee5-b92b-fef7d579a587.mp4, Clips uploaded: 0
+2025-11-28 11:55:27 | INFO     | cvvr_desktop.desktop_app.controllers.trips_controller | Progress [fbbd32f2-6f79-4e4f-b4a5-1da42bebbe95]: Completed successfully!
+2025-11-28 11:55:27 | INFO     | cvvr_desktop.desktop_app.controllers.trips_controller | Upload workflow completed successfully for trip: fbbd32f2-6f79-4e4f-b4a5-1da42bebbe95
