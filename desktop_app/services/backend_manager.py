@@ -11,6 +11,7 @@ import time
 import socket
 import subprocess
 import signal
+import threading
 from typing import Optional
 from pathlib import Path
 import requests
@@ -34,6 +35,7 @@ class BackendManager:
     def __init__(self):
         """Initialize backend manager"""
         self.backend_process: Optional[subprocess.Popen] = None
+        self.backend_thread: Optional[threading.Thread] = None
         self.backend_started_by_us = False
         logger.info("Backend manager initialized")
         logger.info(f"Running in packaged mode: {self._is_packaged()}")
@@ -152,70 +154,63 @@ class BackendManager:
             project_root = backend_path.parent
             logger.info(f"Backend project root: {project_root}")
             
-            # Build uvicorn command
-            # In packaged mode, sys.executable may not support spawning processes
-            # Try to find system Python as fallback
-            python_exe = sys.executable
-            
+            # In packaged mode, run uvicorn programmatically from within the app
+            # This avoids requiring system Python or manual installation
+            # User doesn't need to know about Python, uvicorn, or any tech stack
             if self._is_packaged():
-                # Try to use system Python instead of the packaged executable
-                import shutil
+                logger.info("Starting backend server (packaged mode)...")
                 
-                # Platform-specific Python executable detection
-                if sys.platform == 'win32':  # Windows
-                    # Try py.exe (Python Launcher), then python.exe, then python
-                    system_python = (
-                        shutil.which('py') or
-                        shutil.which('python.exe') or
-                        shutil.which('python') or
-                        shutil.which('python3.exe') or
-                        shutil.which('python3')
-                    )
-                else:  # macOS/Linux
-                    system_python = shutil.which('python3') or shutil.which('python')
+                # Ensure the app module is in the path
+                if str(project_root) not in sys.path:
+                    sys.path.insert(0, str(project_root))
                 
-                if system_python:
-                    logger.info(f"Using system Python: {system_python}")
-                    python_exe = system_python
-                else:
-                    logger.warning("No system Python found, using packaged executable (may fail)")
-                    logger.warning("Please ensure Python is installed and in PATH")
-            
-            cmd = [
-                python_exe,
-                "-m", "uvicorn",
-                "app.main:app",
-                "--host", "127.0.0.1",
-                "--port", str(settings.local_backend_port),
-                "--log-level", "warning"
-            ]
-            
-            # Prepare environment variables
-            env = os.environ.copy()
-            
-            # In packaged mode, ensure Python can find the backend modules
-            if self._is_packaged():
-                # Add project root to PYTHONPATH so 'app' module can be imported
-                if 'PYTHONPATH' in env:
-                    env['PYTHONPATH'] = f"{project_root}{os.pathsep}{env['PYTHONPATH']}"
-                else:
-                    env['PYTHONPATH'] = str(project_root)
-                logger.info(f"Set PYTHONPATH to: {env['PYTHONPATH']}")
-            
-            # Start backend process with proper working directory and environment
-            self.backend_process = subprocess.Popen(
-                cmd,
-                cwd=str(project_root),
-                env=env,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                stdin=subprocess.DEVNULL,
-                # Prevent subprocess from inheriting signals
-                start_new_session=True if os.name != 'nt' else False
-            )
-            
-            logger.info(f"Backend process started with PID: {self.backend_process.pid}")
-            self.backend_started_by_us = True
+                # Change to project root directory for proper module resolution
+                original_cwd = os.getcwd()
+                os.chdir(str(project_root))
+                
+                # Start uvicorn in a daemon thread
+                # This runs completely in the background - user never sees it
+                self.backend_thread = threading.Thread(
+                    target=self._run_uvicorn_in_thread,
+                    args=(
+                        str(project_root),
+                        settings.local_backend_port,
+                        "127.0.0.1",
+                        original_cwd
+                    ),
+                    daemon=True,
+                    name="BackendServer"
+                )
+                self.backend_thread.start()
+                
+                logger.info("Backend server thread started")
+                self.backend_started_by_us = True
+                
+            else:
+                # In development mode, use subprocess with current Python
+                logger.info("Running uvicorn via subprocess (development mode)...")
+                
+                cmd = [
+                    sys.executable,
+                    "-m", "uvicorn",
+                    "app.main:app",
+                    "--host", "127.0.0.1",
+                    "--port", str(settings.local_backend_port),
+                    "--log-level", "warning"
+                ]
+                
+                # Start backend process
+                self.backend_process = subprocess.Popen(
+                    cmd,
+                    cwd=str(project_root),
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    stdin=subprocess.DEVNULL,
+                    start_new_session=True if os.name != 'nt' else False
+                )
+                
+                logger.info(f"Backend process started with PID: {self.backend_process.pid}")
+                self.backend_started_by_us = True
             
             # Wait for backend to become available
             if self._wait_for_startup(timeout=settings.backend_startup_timeout):
@@ -231,15 +226,15 @@ class BackendManager:
                             logger.error(f"Backend stderr: {stderr.decode('utf-8', errors='ignore')}")
                     except:
                         pass
+                # Check if thread failed
+                if self.backend_thread and not self.backend_thread.is_alive():
+                    logger.error("Backend server thread terminated unexpectedly")
                 self._force_stop_backend()
                 return False
             
         except FileNotFoundError as e:
-            logger.error(f"Failed to start backend - Python or uvicorn not found: {e}")
-            logger.error("Please ensure Python and uvicorn are installed:")
-            logger.error("  pip install uvicorn")
-            if sys.platform == 'win32':
-                logger.error("  Or ensure Python is in your PATH")
+            logger.error(f"Failed to start backend server: {e}")
+            # Don't expose technical details to users - just log internally
             return False
             
         except Exception as e:
@@ -252,7 +247,57 @@ class BackendManager:
                         logger.error(f"Backend stderr: {stderr.decode('utf-8', errors='ignore')}")
                 except:
                     pass
+            # Check if thread failed
+            if self.backend_thread and not self.backend_thread.is_alive():
+                logger.error("Backend server thread terminated unexpectedly")
             return False
+    
+    def _run_uvicorn_in_thread(self, project_root: str, port: int, host: str, original_cwd: str) -> None:
+        """
+        Run uvicorn programmatically in a background thread
+        
+        This function runs uvicorn in a daemon thread, completely hidden from the user.
+        The user never sees Python, uvicorn, or any technical details - it just works.
+        
+        Args:
+            project_root: Path to the project root (where app module is located)
+            port: Port number to run the server on
+            host: Host address to bind to
+            original_cwd: Original working directory to restore if needed
+        """
+        try:
+            # Set up the environment
+            if project_root not in sys.path:
+                sys.path.insert(0, project_root)
+            
+            # Change to project root directory for proper module resolution
+            os.chdir(project_root)
+            
+            # Import uvicorn and run the server
+            # This runs in the background - completely transparent to the user
+            import uvicorn
+            
+            logger.debug(f"Starting uvicorn server on {host}:{port}")
+            
+            # Run uvicorn - this will block the thread until server stops
+            uvicorn.run(
+                "app.main:app",
+                host=host,
+                port=port,
+                log_level="warning",
+                access_log=False  # Don't log access requests to keep it quiet
+            )
+        except Exception as e:
+            # Log error but don't expose technical details to user
+            import traceback
+            error_msg = f"Backend server error: {e}\n{traceback.format_exc()}\n"
+            logger.error(error_msg)
+            
+            # Try to restore original directory
+            try:
+                os.chdir(original_cwd)
+            except:
+                pass
     
     def _wait_for_startup(self, timeout: int = 10) -> bool:
         """
@@ -288,6 +333,21 @@ class BackendManager:
                 logger.info("Backend was not started by us - leaving it running")
                 return
             
+            # Handle threading.Thread (packaged mode)
+            if self.backend_thread is not None:
+                if not self.backend_thread.is_alive():
+                    logger.debug("Backend thread already terminated")
+                    return
+                
+                logger.info("Stopping backend server...")
+                # For threads, we can't directly terminate uvicorn
+                # Uvicorn will stop when the main process exits (daemon thread)
+                # But we can try to signal it to stop gracefully
+                # The thread will be cleaned up automatically when app exits
+                logger.info("Backend server will stop when application exits")
+                return
+            
+            # Handle subprocess.Popen (development mode)
             if self.backend_process is None:
                 logger.debug("No backend process to stop")
                 return
@@ -323,7 +383,15 @@ class BackendManager:
             logger.error(f"Error stopping backend: {e}", exc_info=True)
     
     def _force_stop_backend(self) -> None:
-        """Force kill the backend process"""
+        """Force stop the backend"""
+        # Handle threading.Thread - daemon threads stop automatically
+        if self.backend_thread is not None:
+            # Daemon threads are automatically terminated when main process exits
+            # We can't forcefully kill a thread, but uvicorn should stop gracefully
+            logger.debug("Backend thread will be cleaned up automatically")
+            return
+        
+        # Handle subprocess.Popen
         if self.backend_process is None:
             return
         
@@ -347,10 +415,18 @@ class BackendManager:
         """
         is_running = self.is_backend_running()
         
+        # Get PID from either process type
+        process_pid = None
+        if self.backend_thread is not None:
+            # Threads don't have PIDs, use thread identifier
+            process_pid = self.backend_thread.ident if self.backend_thread.is_alive() else None
+        elif self.backend_process is not None:
+            process_pid = self.backend_process.pid if self.backend_process.poll() is None else None
+        
         status = {
             "is_running": is_running,
             "started_by_us": self.backend_started_by_us,
-            "process_pid": self.backend_process.pid if self.backend_process else None,
+            "process_pid": process_pid,
             "backend_url": settings.local_backend_url
         }
         

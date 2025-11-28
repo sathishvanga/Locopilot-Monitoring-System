@@ -206,10 +206,10 @@ class TripsController(QObject):
             self.local_processing.backend_warning_shown = True
             response = QMessageBox.warning(
                 self.view,
-                "Local Processing Unavailable",
-                "The local video processing backend is not running.\n\n"
+                "Video Processing Unavailable",
+                "Video analysis is currently unavailable.\n\n"
                 "You can still upload videos directly to the server.\n\n"
-                "Note: Without local processing, videos will be uploaded as-is without analysis.\n\n"
+                "Note: Videos will be uploaded without local analysis.\n\n"
                 "Continue with upload?",
                 QMessageBox.Yes | QMessageBox.No,
                 QMessageBox.Yes  # Default to Yes

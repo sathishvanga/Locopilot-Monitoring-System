@@ -109,10 +109,10 @@ class LocalProcessingService:
         try:
             # Check if backend is running
             if not self.is_backend_running():
-                logger.error("Local backend is not running")
+                logger.error("Video processing service is not available")
                 return ProcessingResult(
                     success=False,
-                    error="Local processing backend is not running. Please start the backend service."
+                    error="Video processing service is not ready. Please wait a moment and try again."
                 )
             
             # Validate video file
