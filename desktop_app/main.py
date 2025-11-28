@@ -41,7 +41,9 @@ class MainWindow(QMainWindow):
         """Initialize main window"""
         super().__init__()
         
-        # Initialize backend manager (but don't start yet to avoid blocking)
+        # Initialize backend manager
+        # Backend will start automatically when window is shown (in showEvent)
+        # This ensures video processing is ready when user opens the app
         self.backend_manager = BackendManager()
         
         # Initialize services
@@ -94,25 +96,37 @@ class MainWindow(QMainWindow):
         """
         Handle show event - start backend after window is visible
         
+        The backend starts automatically when the app opens - user doesn't need to do anything.
+        It runs silently in the background.
+        
         Args:
             event: Show event
         """
         super().showEvent(event)
         
-        # Start backend after window is shown to avoid blocking UI
+        # Always start backend automatically when app opens (if enabled)
+        # This ensures video processing is ready for the user
         if settings.auto_start_backend and not hasattr(self, '_backend_started'):
             self._backend_started = True
             # Use QTimer to start backend in the next event loop iteration
+            # This prevents blocking the UI while backend starts
             QTimer.singleShot(100, self._start_backend_async)
     
     def _start_backend_async(self):
-        """Start backend asynchronously after UI is shown"""
-        logger.info("Auto-starting local backend...")
+        """
+        Start backend asynchronously after UI is shown
+        
+        This runs automatically when the app opens - completely transparent to the user.
+        The backend starts in the background and is ready for video processing.
+        """
+        logger.info("Starting video processing service...")
         backend_started = self.backend_manager.start_backend()
         if backend_started:
-            logger.info("Backend is ready")
+            logger.info("Video processing service is ready")
         else:
-            logger.warning("Backend failed to start - video processing will not be available")
+            # Log warning but don't show error to user - they can still use the app
+            # The app will show a friendly message if they try to process videos
+            logger.warning("Video processing service unavailable - app will continue without it")
     
     def _setup_controllers(self):
         """Setup controllers and connect signals"""

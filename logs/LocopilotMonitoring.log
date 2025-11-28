@@ -2884,3 +2884,93 @@ KeyError: 'run_id'
 2025-11-28 14:13:34,557 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Sample FPS: 0.5
 2025-11-28 14:13:34,558 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] YOLO weights: yolo11s.pt
 2025-11-28 14:13:34,558 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] ============================================================
+2025-11-28 14:14:37,938 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Shutting down application...
+2025-11-28 14:14:38,914 [N/A] [N/A] [N/A] [N/A] [INFO] [app.utils.logger] [N/A N/A] Logging initialized - Level: INFO, Environment: development, Log file: logs/LocopilotMonitoring.log
+2025-11-28 14:14:38,917 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] ============================================================
+2025-11-28 14:14:38,917 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Starting Locopilot Monitoring System v1.0.0
+2025-11-28 14:14:38,917 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Environment: Production
+2025-11-28 14:14:38,917 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Output directory: /Users/satishvanga/Desktop/Locopilot Monitoring System/locopilot_evidence
+2025-11-28 14:14:38,917 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Upload directory: /tmp/locopilot_uploads
+2025-11-28 14:14:38,917 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Sample FPS: 0.5
+2025-11-28 14:14:38,917 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] YOLO weights: yolo11s.pt
+2025-11-28 14:14:38,917 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] ============================================================
+2025-11-28 14:14:57,926 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Shutting down application...
+2025-11-28 14:14:58,884 [N/A] [N/A] [N/A] [N/A] [INFO] [app.utils.logger] [N/A N/A] Logging initialized - Level: INFO, Environment: development, Log file: logs/LocopilotMonitoring.log
+2025-11-28 14:14:58,887 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] ============================================================
+2025-11-28 14:14:58,887 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Starting Locopilot Monitoring System v1.0.0
+2025-11-28 14:14:58,887 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Environment: Production
+2025-11-28 14:14:58,887 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Output directory: /Users/satishvanga/Desktop/Locopilot Monitoring System/locopilot_evidence
+2025-11-28 14:14:58,887 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Upload directory: /tmp/locopilot_uploads
+2025-11-28 14:14:58,887 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Sample FPS: 0.5
+2025-11-28 14:14:58,887 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] YOLO weights: yolo11s.pt
+2025-11-28 14:14:58,887 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] ============================================================
+2025-11-28 14:15:11,424 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Shutting down application...
+2025-11-28 14:15:12,218 [N/A] [N/A] [N/A] [N/A] [INFO] [app.utils.logger] [N/A N/A] Logging initialized - Level: INFO, Environment: development, Log file: logs/LocopilotMonitoring.log
+2025-11-28 14:15:12,222 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] ============================================================
+2025-11-28 14:15:12,222 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Starting Locopilot Monitoring System v1.0.0
+2025-11-28 14:15:12,222 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Environment: Production
+2025-11-28 14:15:12,222 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Output directory: /Users/satishvanga/Desktop/Locopilot Monitoring System/locopilot_evidence
+2025-11-28 14:15:12,222 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Upload directory: /tmp/locopilot_uploads
+2025-11-28 14:15:12,222 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Sample FPS: 0.5
+2025-11-28 14:15:12,222 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] YOLO weights: yolo11s.pt
+2025-11-28 14:15:12,222 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] ============================================================
+2025-11-28 14:34:55,909 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Shutting down application...
+2025-11-28 14:34:56,973 [N/A] [N/A] [N/A] [N/A] [INFO] [app.utils.logger] [N/A N/A] Logging initialized - Level: INFO, Environment: development, Log file: logs/LocopilotMonitoring.log
+2025-11-28 14:34:56,977 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] ============================================================
+2025-11-28 14:34:56,977 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Starting Locopilot Monitoring System v1.0.0
+2025-11-28 14:34:56,977 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Environment: Production
+2025-11-28 14:34:56,977 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Output directory: /Users/satishvanga/Desktop/Locopilot Monitoring System/locopilot_evidence
+2025-11-28 14:34:56,977 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Upload directory: /tmp/locopilot_uploads
+2025-11-28 14:34:56,977 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Sample FPS: 0.5
+2025-11-28 14:34:56,977 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] YOLO weights: yolo11s.pt
+2025-11-28 14:34:56,977 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] ============================================================
+2025-11-28 14:35:24,268 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Shutting down application...
+2025-11-28 14:35:25,028 [N/A] [N/A] [N/A] [N/A] [INFO] [app.utils.logger] [N/A N/A] Logging initialized - Level: INFO, Environment: development, Log file: logs/LocopilotMonitoring.log
+2025-11-28 14:35:25,032 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] ============================================================
+2025-11-28 14:35:25,032 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Starting Locopilot Monitoring System v1.0.0
+2025-11-28 14:35:25,032 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Environment: Production
+2025-11-28 14:35:25,032 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Output directory: /Users/satishvanga/Desktop/Locopilot Monitoring System/locopilot_evidence
+2025-11-28 14:35:25,032 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Upload directory: /tmp/locopilot_uploads
+2025-11-28 14:35:25,032 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Sample FPS: 0.5
+2025-11-28 14:35:25,032 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] YOLO weights: yolo11s.pt
+2025-11-28 14:35:25,032 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] ============================================================
+2025-11-28 14:35:50,609 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Shutting down application...
+2025-11-28 14:35:51,390 [N/A] [N/A] [N/A] [N/A] [INFO] [app.utils.logger] [N/A N/A] Logging initialized - Level: INFO, Environment: development, Log file: logs/LocopilotMonitoring.log
+2025-11-28 14:35:51,393 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] ============================================================
+2025-11-28 14:35:51,393 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Starting Locopilot Monitoring System v1.0.0
+2025-11-28 14:35:51,393 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Environment: Production
+2025-11-28 14:35:51,393 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Output directory: /Users/satishvanga/Desktop/Locopilot Monitoring System/locopilot_evidence
+2025-11-28 14:35:51,393 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Upload directory: /tmp/locopilot_uploads
+2025-11-28 14:35:51,393 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Sample FPS: 0.5
+2025-11-28 14:35:51,393 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] YOLO weights: yolo11s.pt
+2025-11-28 14:35:51,393 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] ============================================================
+2025-11-28 14:36:16,359 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Shutting down application...
+2025-11-28 14:36:17,107 [N/A] [N/A] [N/A] [N/A] [INFO] [app.utils.logger] [N/A N/A] Logging initialized - Level: INFO, Environment: development, Log file: logs/LocopilotMonitoring.log
+2025-11-28 14:36:17,110 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] ============================================================
+2025-11-28 14:36:17,110 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Starting Locopilot Monitoring System v1.0.0
+2025-11-28 14:36:17,110 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Environment: Production
+2025-11-28 14:36:17,110 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Output directory: /Users/satishvanga/Desktop/Locopilot Monitoring System/locopilot_evidence
+2025-11-28 14:36:17,110 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Upload directory: /tmp/locopilot_uploads
+2025-11-28 14:36:17,110 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Sample FPS: 0.5
+2025-11-28 14:36:17,110 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] YOLO weights: yolo11s.pt
+2025-11-28 14:36:17,110 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] ============================================================
+2025-11-28 14:36:54,818 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Shutting down application...
+2025-11-28 14:36:55,565 [N/A] [N/A] [N/A] [N/A] [INFO] [app.utils.logger] [N/A N/A] Logging initialized - Level: INFO, Environment: development, Log file: logs/LocopilotMonitoring.log
+2025-11-28 14:36:55,568 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] ============================================================
+2025-11-28 14:36:55,568 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Starting Locopilot Monitoring System v1.0.0
+2025-11-28 14:36:55,568 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Environment: Production
+2025-11-28 14:36:55,568 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Output directory: /Users/satishvanga/Desktop/Locopilot Monitoring System/locopilot_evidence
+2025-11-28 14:36:55,568 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Upload directory: /tmp/locopilot_uploads
+2025-11-28 14:36:55,568 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Sample FPS: 0.5
+2025-11-28 14:36:55,568 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] YOLO weights: yolo11s.pt
+2025-11-28 14:36:55,568 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] ============================================================
+2025-11-28 14:37:07,192 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Shutting down application...
+2025-11-28 14:37:07,924 [N/A] [N/A] [N/A] [N/A] [INFO] [app.utils.logger] [N/A N/A] Logging initialized - Level: INFO, Environment: development, Log file: logs/LocopilotMonitoring.log
+2025-11-28 14:37:07,927 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] ============================================================
+2025-11-28 14:37:07,927 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Starting Locopilot Monitoring System v1.0.0
+2025-11-28 14:37:07,927 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Environment: Production
+2025-11-28 14:37:07,927 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Output directory: /Users/satishvanga/Desktop/Locopilot Monitoring System/locopilot_evidence
+2025-11-28 14:37:07,927 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Upload directory: /tmp/locopilot_uploads
+2025-11-28 14:37:07,927 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Sample FPS: 0.5
+2025-11-28 14:37:07,927 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] YOLO weights: yolo11s.pt
+2025-11-28 14:37:07,927 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] ============================================================

@@ -273,11 +273,60 @@ class BackendManager:
             # Change to project root directory for proper module resolution
             os.chdir(project_root)
             
-            # Import uvicorn and run the server
-            # This runs in the background - completely transparent to the user
+            # Fix stdout/stderr for PyInstaller bundled apps
+            # In packaged apps running in threads, stdout/stderr might be None
+            # This causes uvicorn's logging to fail when checking isatty()
+            import io
+            import logging as std_logging
+            
+            # Create dummy streams with isatty() method to avoid uvicorn logging errors
+            class DummyStream:
+                def write(self, s): pass
+                def flush(self): pass
+                def isatty(self): return False
+                def fileno(self): return -1
+            
+            if sys.stdout is None or not hasattr(sys.stdout, 'isatty'):
+                sys.stdout = DummyStream()
+            if sys.stderr is None or not hasattr(sys.stderr, 'isatty'):
+                sys.stderr = DummyStream()
+            
+            # Import uvicorn
             import uvicorn
             
             logger.debug(f"Starting uvicorn server on {host}:{port}")
+            
+            # Create a minimal log config that doesn't use DefaultFormatter
+            # This avoids the isatty() issue in packaged apps
+            log_config = {
+                "version": 1,
+                "disable_existing_loggers": False,
+                "formatters": {
+                    "default": {
+                        "format": "%(levelname)s: %(message)s",
+                    },
+                    "access": {
+                        "format": '%(client_addr)s - "%(request_line)s" %(status_code)s',
+                    },
+                },
+                "handlers": {
+                    "default": {
+                        "formatter": "default",
+                        "class": "logging.StreamHandler",
+                        "stream": sys.stdout,
+                    },
+                    "access": {
+                        "formatter": "access",
+                        "class": "logging.StreamHandler",
+                        "stream": sys.stdout,
+                    },
+                },
+                "loggers": {
+                    "uvicorn": {"handlers": ["default"], "level": "WARNING", "propagate": False},
+                    "uvicorn.error": {"handlers": ["default"], "level": "WARNING", "propagate": False},
+                    "uvicorn.access": {"handlers": ["access"], "level": "WARNING", "propagate": False},
+                },
+            }
             
             # Run uvicorn - this will block the thread until server stops
             uvicorn.run(
@@ -285,7 +334,9 @@ class BackendManager:
                 host=host,
                 port=port,
                 log_level="warning",
-                access_log=False  # Don't log access requests to keep it quiet
+                access_log=False,  # Don't log access requests to keep it quiet
+                use_colors=False,  # Disable colors (avoids TTY checks)
+                log_config=log_config  # Use custom log config that avoids DefaultFormatter
             )
         except Exception as e:
             # Log error but don't expose technical details to user
