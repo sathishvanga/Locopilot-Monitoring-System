@@ -137,16 +137,12 @@ class TripsView(QWidget):
         
         # Define columns
         self.columns = [
-            "UUID",
-            "Date/Time",
+            "Trip ID",
+            "Train No",
+            "Created At",
+            "Section Name",
             "From Station",
             "To Station",
-            "Section",
-            "Train No",
-            "Loco No",
-            "Created By",
-            "Analysis Type",
-            "Status",
             "Action"
         ]
         
@@ -159,15 +155,18 @@ class TripsView(QWidget):
         self.table.setSelectionBehavior(QTableWidget.SelectRows)
         self.table.setSelectionMode(QTableWidget.SingleSelection)
         
+        # Increase row height for bigger buttons
+        self.table.verticalHeader().setDefaultSectionSize(60)
+        
         # Set column widths
         header = self.table.horizontalHeader()
         for i, col in enumerate(self.columns):
-            if col == "UUID":
+            if col == "Trip ID":
                 header.setSectionResizeMode(i, QHeaderView.Fixed)
                 self.table.setColumnWidth(i, 250)
             elif col == "Action":
                 header.setSectionResizeMode(i, QHeaderView.Fixed)
-                self.table.setColumnWidth(i, 150)
+                self.table.setColumnWidth(i, 180)
             else:
                 header.setSectionResizeMode(i, QHeaderView.Stretch)
         
@@ -190,70 +189,53 @@ class TripsView(QWidget):
         self.table.setRowCount(len(trips))
         
         for row, trip in enumerate(trips):
-            # UUID
+            # Trip ID (UUID)
             uuid_item = QTableWidgetItem(trip.uuid[:20] + "..." if len(trip.uuid) > 20 else trip.uuid)
             uuid_item.setFlags(uuid_item.flags() & ~Qt.ItemIsEditable)
             uuid_item.setToolTip(trip.uuid)  # Full UUID on hover
             self.table.setItem(row, 0, uuid_item)
             
-            # Date/Time
-            datetime_item = QTableWidgetItem(trip.dateTime or "N/A")
-            datetime_item.setFlags(datetime_item.flags() & ~Qt.ItemIsEditable)
-            self.table.setItem(row, 1, datetime_item)
-            
-            # From Station
-            from_item = QTableWidgetItem(trip.fromStation or trip.fromStationId or "N/A")
-            from_item.setFlags(from_item.flags() & ~Qt.ItemIsEditable)
-            self.table.setItem(row, 2, from_item)
-            
-            # To Station
-            to_item = QTableWidgetItem(trip.toStation or trip.toStationId or "N/A")
-            to_item.setFlags(to_item.flags() & ~Qt.ItemIsEditable)
-            self.table.setItem(row, 3, to_item)
-            
-            # Section
-            section_item = QTableWidgetItem(trip.sectionName or trip.sectionId or "N/A")
-            section_item.setFlags(section_item.flags() & ~Qt.ItemIsEditable)
-            self.table.setItem(row, 4, section_item)
-            
             # Train No
             train_item = QTableWidgetItem(trip.trainNo or "N/A")
             train_item.setFlags(train_item.flags() & ~Qt.ItemIsEditable)
-            self.table.setItem(row, 5, train_item)
+            self.table.setItem(row, 1, train_item)
             
-            # Loco No
-            loco_item = QTableWidgetItem(trip.locoNo or "N/A")
-            loco_item.setFlags(loco_item.flags() & ~Qt.ItemIsEditable)
-            self.table.setItem(row, 6, loco_item)
-            
-            # Created By
-            created_item = QTableWidgetItem(trip.createdBy or "N/A")
+            # Created At (createdDate)
+            created_date = getattr(trip, 'createdDate', None) or trip.dateTime or "N/A"
+            created_item = QTableWidgetItem(created_date)
             created_item.setFlags(created_item.flags() & ~Qt.ItemIsEditable)
-            self.table.setItem(row, 7, created_item)
+            self.table.setItem(row, 2, created_item)
             
-            # Analysis Type
-            analysis_item = QTableWidgetItem(trip.analysisType or "N/A")
-            analysis_item.setFlags(analysis_item.flags() & ~Qt.ItemIsEditable)
-            self.table.setItem(row, 8, analysis_item)
+            # Section Name
+            section_item = QTableWidgetItem(trip.sectionName or trip.sectionId or "N/A")
+            section_item.setFlags(section_item.flags() & ~Qt.ItemIsEditable)
+            self.table.setItem(row, 3, section_item)
             
-            # Status
-            status_text = "Pending" if trip.status is None else str(trip.status)
-            status_item = QTableWidgetItem(status_text)
-            status_item.setFlags(status_item.flags() & ~Qt.ItemIsEditable)
-            self.table.setItem(row, 9, status_item)
+            # From Station Name
+            from_station = getattr(trip, 'fromStationName', None) or trip.fromStation or trip.fromStationId or "N/A"
+            from_item = QTableWidgetItem(from_station)
+            from_item.setFlags(from_item.flags() & ~Qt.ItemIsEditable)
+            self.table.setItem(row, 4, from_item)
+            
+            # To Station Name
+            to_station = getattr(trip, 'toStationName', None) or trip.toStation or trip.toStationId or "N/A"
+            to_item = QTableWidgetItem(to_station)
+            to_item.setFlags(to_item.flags() & ~Qt.ItemIsEditable)
+            self.table.setItem(row, 5, to_item)
             
             # Action button
             upload_button = QPushButton("📤 Upload Video")
-            upload_button.setFixedHeight(35)
+            upload_button.setFixedHeight(50)
             upload_button.setCursor(Qt.PointingHandCursor)
             upload_button.setStyleSheet("""
                 QPushButton {
                     background-color: #34C759;
                     color: white;
                     border: none;
-                    border-radius: 6px;
-                    font-size: 12px;
+                    border-radius: 8px;
+                    font-size: 14px;
                     font-weight: bold;
+                    padding: 8px;
                 }
                 QPushButton:hover {
                     background-color: #2DB04A;
@@ -266,7 +248,7 @@ class TripsView(QWidget):
                 }
             """)
             upload_button.clicked.connect(lambda checked, uuid=trip.uuid: self.upload_clicked.emit(uuid))
-            self.table.setCellWidget(row, 10, upload_button)
+            self.table.setCellWidget(row, 6, upload_button)
         
         # Update status
         if len(trips) == 0:
@@ -305,7 +287,7 @@ class TripsView(QWidget):
         for row in range(self.table.rowCount()):
             uuid_item = self.table.item(row, 0)
             if uuid_item and trip_uuid in uuid_item.toolTip():
-                button = self.table.cellWidget(row, 10)
+                button = self.table.cellWidget(row, 6)
                 if isinstance(button, QPushButton):
                     if state == "uploading":
                         button.setEnabled(False)
@@ -321,9 +303,10 @@ class TripsView(QWidget):
                                 background-color: #34C759;
                                 color: white;
                                 border: none;
-                                border-radius: 6px;
-                                font-size: 12px;
+                                border-radius: 8px;
+                                font-size: 14px;
                                 font-weight: bold;
+                                padding: 8px;
                             }
                         """)
                     elif state == "error":
@@ -334,9 +317,10 @@ class TripsView(QWidget):
                                 background-color: #FF3B30;
                                 color: white;
                                 border: none;
-                                border-radius: 6px;
-                                font-size: 12px;
+                                border-radius: 8px;
+                                font-size: 14px;
                                 font-weight: bold;
+                                padding: 8px;
                             }
                             QPushButton:hover {
                                 background-color: #E02B1F;

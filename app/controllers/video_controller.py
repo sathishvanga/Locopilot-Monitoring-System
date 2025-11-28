@@ -333,16 +333,17 @@ async def get_run_media(run_id: str, filename: str, request: Request) -> Respons
 
 @router.post(
     "/v1/video/process-and-upload",
-    summary="Process video and upload to S3",
+    summary="Process video and upload evidence clips to S3",
     description="""
     Complete workflow for desktop application:
-    1. Process video (activity detection with YOLO)
+    1. Process video locally (activity detection with YOLO)
     2. Generate evidence clips
-    3. Upload original video to S3
-    4. Upload all evidence clips to S3
+    3. Upload evidence clips to S3 (original video is NOT uploaded)
+    4. Post results to external API with evidence clip S3 URLs
     5. Return S3 URLs and processing results
     
-    This endpoint combines processing and uploading for better efficiency.
+    Note: Original video is processed locally only and not uploaded to S3.
+    Only evidence clips are uploaded to S3.
     """
 )
 async def process_and_upload_video(
@@ -450,32 +451,9 @@ async def process_and_upload_video(
             f"Clips: {len(result.get('clipFiles', result.get('clip_files', [])))}"
         )
         
-        # Step 3: Upload original video to S3
-        logger.info(f"☁️ Uploading original video to S3 (subfolder: {subFolderName})")
-        
-        # Log token status (without exposing full token for security)
-        if authToken:
-            token_preview = f"{authToken[:10]}...{authToken[-10:]}" if len(authToken) > 20 else "***"
-            logger.info(f"Using auth token for S3 upload (length: {len(authToken)}, preview: {token_preview})")
-        else:
-            logger.warning("⚠️ No auth token provided for S3 upload - upload may fail")
-        
-        video_upload_success, video_s3_url, video_error = s3_upload_service.upload_file(
-            file_path=video_path,
-            subfolder=subFolderName,
-            auth_token=authToken
-        )
-        
-        if not video_upload_success:
-            logger.error(f"Failed to upload video to S3: {video_error}")
-            raise HTTPException(
-                status_code=500,
-                detail=f"Video processing succeeded but S3 upload failed: {video_error}"
-            )
-        
-        logger.info(f"✅ Video uploaded to S3: {video_s3_url}")
-        
-        # Step 4: Upload evidence files (clips + images) to S3
+        # Step 3: Upload evidence files (clips + images) to S3
+        # Note: Original video is NOT uploaded - only evidence clips are uploaded
+        video_s3_url = None  # No original video URL since we don't upload it
         clip_files = result.get('clip_files', [])
         evidence_urls = []
         upload_errors = []
@@ -515,7 +493,7 @@ async def process_and_upload_video(
             
             logger.info(f"✅ Uploaded {len(file_urls)}/{len(all_files_to_upload)} files to S3")
         
-        # Step 5: Update activities.json with S3 URLs
+        # Step 3 (continued): Update activities.json with S3 URLs
         logger.info("📝 Updating activities.json with S3 URLs")
         
         # Extract values from result dictionary
@@ -573,21 +551,22 @@ async def process_and_upload_video(
         else:
             logger.warning(f"⚠️ Run directory not found: {run_dir}")
         
-        # Step 6: Post results to external API with S3 URLs
-        # This ensures fileUrl in violations points to S3, not local backend
+        # Step 4: Post results to external API with evidence clip S3 URLs
+        # Note: We don't upload original video, so video_s3_url is None
+        # The external API will use evidence clip URLs from activities
         external_api_result = None
-        logger.info(f"🔍 Checking conditions for external API call: activities={len(activities) if activities else 0}, video_s3_url={'present' if video_s3_url else 'missing'}")
+        logger.info(f"🔍 Checking conditions for external API call: activities={len(activities) if activities else 0}")
         
-        if activities and video_s3_url:
+        if activities:
             try:
                 logger.info(f"🌐 Posting results to external API with S3 URLs for trip: {tripId}")
                 external_api_service = get_external_api_service()
                 
                 external_api_result = external_api_service.post_cvvr_results(
                     trip_id=tripId,
-                    events=activities,  # Use updated activities with S3 URLs
+                    events=activities,  # Use updated activities with S3 URLs (evidence clips)
                     job_id=run_id,
-                    video_s3_url=video_s3_url  # Pass video S3 URL for fileUrl
+                    video_s3_url=None  # No original video URL - we don't upload original video
                 )
                 
                 if external_api_result.get("success"):
@@ -617,7 +596,7 @@ async def process_and_upload_video(
                 "run_dir": run_dir,
                 "activities_count": activities_count,
                 "processing_time_seconds": result.get('processingTime', result.get('processing_time', 0)),
-                "video_url": video_s3_url,
+                "video_url": None,  # Original video is not uploaded to S3
                 "evidence_clips": evidence_urls,
                 "clips_uploaded": len(evidence_urls),
                 "total_clips": len(clip_files),

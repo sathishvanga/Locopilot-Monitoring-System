@@ -6,6 +6,7 @@ Uses environment variables with sensible defaults for production deployment.
 
 import os
 import json
+import tempfile
 from typing import Optional, List
 from functools import lru_cache
 from pydantic import field_validator
@@ -42,7 +43,8 @@ class Settings(BaseSettings):
     # File upload settings
     max_upload_size: int = 500 * 1024 * 1024  # 500 MB
     allowed_video_extensions: List[str] = [".mp4", ".avi", ".mov", ".mkv"]
-    upload_dir: str = os.getenv("UPLOAD_DIR", "/tmp/locopilot_uploads")  # Use temp dir for production
+    # Use cross-platform temp directory (works on Windows, macOS, and Linux)
+    upload_dir: str = os.getenv("UPLOAD_DIR", os.path.join(tempfile.gettempdir(), "locopilot_uploads"))
     
     # Output settings
     # Convert to absolute path to avoid path resolution issues
