@@ -15,15 +15,18 @@ class MultiprocessingConfig:
     """Configuration for multiprocessing video pipeline"""
     
     # Process pool settings
-    # ✅ PERFORMANCE FIX: Increased max_workers_cap from 2 to 6 for better CPU utilization (~60% target)
+    # ✅ PERFORMANCE TUNING: Optimized for 16‑core production servers
     # Balance: More workers = better parallelization but more memory usage (each worker loads models)
     max_workers: Optional[int] = None  # None = auto-detect (min(CPU count, max_workers_cap))
-    max_workers_cap: int = 6  # Maximum number of worker processes (increased from 2 for better CPU utilization)
+    # On a 16‑core box, 8 workers × 2 threads ≈ 16 logical threads of heavy work
+    max_workers_cap: int = 8  # Maximum number of worker processes
     start_method: str = "spawn"  # Use 'spawn' for cross-platform stability
     
     # Work partitioning settings
-    chunk_duration_seconds: float = 6.0  # Split video into 6-second chunks
-    min_chunk_duration_seconds: float = 2.0  # Minimum chunk duration
+    # ✅ PERFORMANCE TUNING: Use larger chunks to reduce per‑task overhead
+    # 20s chunks dramatically cut the number of tasks while still balancing load well.
+    chunk_duration_seconds: float = 20.0  # Split video into ~20-second chunks
+    min_chunk_duration_seconds: float = 5.0  # Minimum chunk duration
     
     # Worker initialization settings
     # ✅ PERFORMANCE FIX: Increased thread counts from 1 to 2 for better CPU utilization

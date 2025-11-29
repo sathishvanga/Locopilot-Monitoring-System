@@ -60,8 +60,11 @@ class Settings(BaseSettings):
     
     # Multiprocessing settings
     enable_multiprocessing: bool = True
-    mp_chunk_duration: float = 6.0  # Chunk duration in seconds
-    mp_max_workers: int = 5  # 0 = auto-detect
+    # ✅ PERFORMANCE: 10s chunks balance overhead vs parallelism better than 20s
+    # 10s chunks: ~230 chunks, each takes ~15-20s to process (better load distribution)
+    # 20s chunks: ~115 chunks, each takes ~35-40s (workers idle longer between chunks)
+    mp_chunk_duration: float = 10.0  # Chunk duration in seconds (optimized for load balancing)
+    mp_max_workers: Optional[int] = None  # None = auto-detect (uses min(CPU count, max_workers_cap))
     mp_max_workers_cap: int = 8  # Maximum number of workers
     
     # Model settings

@@ -325,17 +325,22 @@ class ActivityDetectionService:
         from ..utils.multiprocessing_config import MultiprocessingConfig
         from ..repositories.activity_repository import ActivityRepository
         
+        # Get settings for configuration
+        settings = get_settings()
+        
         # Create run directory only if not provided
         if run_dir is None:
             activity_repo = ActivityRepository(output_dir=output_dir)
             run_dir = activity_repo.create_run_directory(base_name="run")
         
         # Create multiprocessing configuration
-        # Uses default max_workers_cap=6 for optimal CPU utilization (~60%) while maintaining memory safety
+        # ✅ PERFORMANCE: 10s chunks optimize load balancing vs overhead
+        # Smaller chunks (10s) provide better work distribution across 8 workers
+        # Each chunk processes faster (~15-20s), keeping workers busy and reducing idle time
         config = MultiprocessingConfig(
-            chunk_duration_seconds=6.0,
+            chunk_duration_seconds=settings.mp_chunk_duration,  # Use config value (default 10.0s)
             max_workers=None,  # Auto-detect
-            max_workers_cap=6,  # Consistent with default (increased from 2 for better CPU utilization)
+            max_workers_cap=settings.mp_max_workers_cap,  # Use config value (default 8)
             preload_models=True
         )
         

@@ -259,7 +259,7 @@ Environment=CORS_ORIGINS=*
 # Video processing configuration
 Environment=SAMPLE_FPS=0.5
 Environment=ENABLE_MULTIPROCESSING=true
-Environment=MP_CHUNK_DURATION=6
+Environment=MP_CHUNK_DURATION=10
 Environment=MP_MAX_WORKERS=${POOL_PROCS}
 
 # Model configuration
