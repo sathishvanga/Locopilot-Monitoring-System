@@ -15,24 +15,25 @@ class MultiprocessingConfig:
     """Configuration for multiprocessing video pipeline"""
     
     # Process pool settings
-    # ✅ PERFORMANCE TUNING: Optimized for 16‑core production servers
+    # ✅ PERFORMANCE BOOST: Optimized for maximum CPU utilization
     # Balance: More workers = better parallelization but more memory usage (each worker loads models)
     max_workers: Optional[int] = None  # None = auto-detect (min(CPU count, max_workers_cap))
-    # On a 16‑core box, 8 workers × 2 threads ≈ 16 logical threads of heavy work
-    max_workers_cap: int = 8  # Maximum number of worker processes
+    # On an 11-core system: 12 workers × 3 threads ≈ 36 logical threads (aggressive parallelism)
+    max_workers_cap: int = 12  # Maximum number of worker processes (matches CPU cores + oversubscription)
     start_method: str = "spawn"  # Use 'spawn' for cross-platform stability
     
     # Work partitioning settings
-    # ✅ PERFORMANCE TUNING: Use larger chunks to reduce per‑task overhead
-    # 20s chunks dramatically cut the number of tasks while still balancing load well.
-    chunk_duration_seconds: float = 20.0  # Split video into ~20-second chunks
-    min_chunk_duration_seconds: float = 5.0  # Minimum chunk duration
+    # ✅ PERFORMANCE BOOST: 6s chunks maximize parallelism with 12 workers
+    # 6s chunks: ~380 chunks, excellent load distribution across 12 workers
+    # Smaller chunks = workers never idle, constant throughput
+    chunk_duration_seconds: float = 6.0  # Split video into ~6-second chunks
+    min_chunk_duration_seconds: float = 2.0  # Minimum chunk duration
     
     # Worker initialization settings
-    # ✅ PERFORMANCE FIX: Increased thread counts from 1 to 2 for better CPU utilization
-    # With 6 workers × 2 threads = 12 threads total (good for 8-16 core systems)
-    torch_threads: int = 2  # Torch thread count per worker (increased from 1)
-    opencv_threads: int = 2  # OpenCV thread count per worker (increased from 1)
+    # ✅ PERFORMANCE BOOST: Aggressive threading for maximum CPU utilization
+    # With 12 workers × 3 threads = 36 threads total (saturates 11-core CPU)
+    torch_threads: int = 3  # Torch thread count per worker (increased for aggressive parallelism)
+    opencv_threads: int = 3  # OpenCV thread count per worker (increased for aggressive parallelism)
     disable_opencv_opencl: bool = True  # Disable OpenCV OpenCL
     
     # Model preloading settings
@@ -51,11 +52,11 @@ class MultiprocessingConfig:
     def get_num_workers(self) -> int:
         """
         Calculate optimal number of worker processes
-        
-        Targets ~60% CPU utilization while maintaining memory safety.
+
+        Targets maximum CPU utilization for fastest processing.
         Formula: Uses min(CPU cores, max_workers_cap) to balance performance and memory.
-        With 6 workers × 2 threads each = 12 threads total (good for 8-16 core systems).
-        
+        With 11 workers × 3 threads each = 33 threads total (saturates 11-core system).
+
         Returns:
             int: Number of worker processes to use
         """

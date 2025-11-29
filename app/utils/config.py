@@ -60,12 +60,12 @@ class Settings(BaseSettings):
     
     # Multiprocessing settings
     enable_multiprocessing: bool = True
-    # ✅ PERFORMANCE: 10s chunks balance overhead vs parallelism better than 20s
-    # 10s chunks: ~230 chunks, each takes ~15-20s to process (better load distribution)
-    # 20s chunks: ~115 chunks, each takes ~35-40s (workers idle longer between chunks)
-    mp_chunk_duration: float = 10.0  # Chunk duration in seconds (optimized for load balancing)
+    # ✅ PERFORMANCE BOOST: 6s chunks maximize parallelism with minimal overhead
+    # 6s chunks: ~380 chunks, better load distribution across more workers
+    # Smaller chunks = workers stay busy, no idle time waiting for long tasks
+    mp_chunk_duration: float = 6.0  # Chunk duration in seconds (optimized for 11-core system)
     mp_max_workers: Optional[int] = None  # None = auto-detect (uses min(CPU count, max_workers_cap))
-    mp_max_workers_cap: int = 8  # Maximum number of workers
+    mp_max_workers_cap: int = 12  # Maximum number of workers (11 cores + slight oversubscription)
     
     # Model settings
     yolo_weights: str = os.getenv("YOLO_WEIGHTS_PRELOAD", "yolo11s.pt")

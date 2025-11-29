@@ -3578,7 +3578,7 @@ class LocopilotActivityMonitor:
                     debug_info = person_data['debug_info']
                     
                     # Log mind diversion
-                    if activities['mind_diversion'] and self.consecutive_detections['mind_diversion'] == 0:
+                    if activities.get('mind_diversion', False) and self.consecutive_detections.get('mind_diversion', 0) == 0:
                         head_pose = debug_info.get('head_pose', {})
                         yaw = head_pose.get('yaw', 0)
                         pitch = head_pose.get('pitch', 0)
@@ -3610,7 +3610,7 @@ class LocopilotActivityMonitor:
                     if activities['writing'] and self.consecutive_detections['writing'] == 0:
                         print(f"[{timestamp}] WRITING detected for {role_name} (Person {person_idx+1})")
                     
-                    if activities['packing'] and self.consecutive_detections['packing_bags'] == 0:
+                    if activities.get('packing', False) and self.consecutive_detections.get('packing_bags', 0) == 0:
                         print(f"[{timestamp}] PACKING detected for {role_name} (Person {person_idx+1})")
                 
                 # Face-based sleep detection (still use EAR as additional signal)
