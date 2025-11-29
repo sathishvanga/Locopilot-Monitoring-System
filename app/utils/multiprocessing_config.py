@@ -13,27 +13,29 @@ from typing import Optional
 @dataclass
 class MultiprocessingConfig:
     """Configuration for multiprocessing video pipeline"""
-    
+
     # Process pool settings
-    # ✅ PERFORMANCE BOOST: Optimized for maximum CPU utilization
+    # ✅ PRODUCTION OPTIMIZED: Environment-aware configuration
     # Balance: More workers = better parallelization but more memory usage (each worker loads models)
     max_workers: Optional[int] = None  # None = auto-detect (min(CPU count, max_workers_cap))
-    # On an 11-core system: 12 workers × 3 threads ≈ 36 logical threads (aggressive parallelism)
-    max_workers_cap: int = 12  # Maximum number of worker processes (matches CPU cores + oversubscription)
+    # Production (12-core): 14 workers × 3 threads ≈ 42 logical threads (max throughput)
+    # Development (11-core): 12 workers × 3 threads ≈ 36 logical threads
+    max_workers_cap: int = int(os.getenv("MP_MAX_WORKERS_CAP", "12"))  # Maximum number of worker processes
     start_method: str = "spawn"  # Use 'spawn' for cross-platform stability
-    
+
     # Work partitioning settings
-    # ✅ PERFORMANCE BOOST: 6s chunks maximize parallelism with 12 workers
-    # 6s chunks: ~380 chunks, excellent load distribution across 12 workers
-    # Smaller chunks = workers never idle, constant throughput
-    chunk_duration_seconds: float = 6.0  # Split video into ~6-second chunks
+    # ✅ PRODUCTION OPTIMIZED: 5s chunks for 12+ core servers, 6s for development
+    # Production: 5s chunks = ~450 chunks (optimal for 14 workers)
+    # Development: 6s chunks = ~380 chunks (optimal for 11-12 workers)
+    chunk_duration_seconds: float = float(os.getenv("MP_CHUNK_DURATION", "6.0"))  # Configurable chunk duration
     min_chunk_duration_seconds: float = 2.0  # Minimum chunk duration
-    
+
     # Worker initialization settings
-    # ✅ PERFORMANCE BOOST: Aggressive threading for maximum CPU utilization
-    # With 12 workers × 3 threads = 36 threads total (saturates 11-core CPU)
-    torch_threads: int = 3  # Torch thread count per worker (increased for aggressive parallelism)
-    opencv_threads: int = 3  # OpenCV thread count per worker (increased for aggressive parallelism)
+    # ✅ PRODUCTION OPTIMIZED: Thread counts from environment or defaults
+    # Production: 3 threads (Xeon processors benefit from higher threading)
+    # Development: 3 threads (balanced for consumer CPUs)
+    torch_threads: int = int(os.getenv("TORCH_THREADS", "3"))  # Torch thread count per worker
+    opencv_threads: int = int(os.getenv("OPENCV_THREADS", "3"))  # OpenCV thread count per worker
     disable_opencv_opencl: bool = True  # Disable OpenCV OpenCL
     
     # Model preloading settings

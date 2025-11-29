@@ -259,22 +259,26 @@ Environment=CORS_ORIGINS=*
 # Video processing configuration
 Environment=SAMPLE_FPS=0.5
 Environment=ENABLE_MULTIPROCESSING=true
-Environment=MP_CHUNK_DURATION=10
-Environment=MP_MAX_WORKERS=${POOL_PROCS}
+# ✅ PRODUCTION OPTIMIZED: 5s chunks for 12-core Dell PowerEdge R420
+Environment=MP_CHUNK_DURATION=5.0
+# ✅ PRODUCTION: 14 workers on 12-core server (slight oversubscription for optimal throughput)
+Environment=MP_MAX_WORKERS_CAP=14
 
 # Model configuration
 Environment=YOLO_WEIGHTS=yolo11s.pt
 Environment=PRELOAD_OCR=1
 
+# Worker threading configuration
+# ✅ PRODUCTION: 3 threads per worker (Xeon processors benefit from higher threading)
+Environment=TORCH_THREADS=3
+Environment=OPENCV_THREADS=3
+
 # Performance tuning (CPU-only)
 Environment=CUDA_VISIBLE_DEVICES=
-Environment=OMP_NUM_THREADS=1
-Environment=OPENBLAS_NUM_THREADS=1
-Environment=MKL_NUM_THREADS=1
-Environment=NUMEXPR_NUM_THREADS=1
-Environment=OPENCV_NUM_THREADS=1
-Environment=TORCH_NUM_THREADS=1
-Environment=TORCH_NUM_INTEROP_THREADS=1
+Environment=OMP_NUM_THREADS=3
+Environment=OPENBLAS_NUM_THREADS=3
+Environment=MKL_NUM_THREADS=3
+Environment=NUMEXPR_NUM_THREADS=3
 
 # Start service
 ExecStart=/opt/poc2/venv/bin/gunicorn -c gunicorn_config.py app.main:app -k uvicorn.workers.UvicornWorker

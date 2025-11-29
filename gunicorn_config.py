@@ -9,18 +9,32 @@ import os
 
 
 # Worker configuration
-# ✅ MEMORY FIX: Reduced from cpu_count//2 to max 2 workers to prevent memory explosion
-workers = max(1, min(2, multiprocessing.cpu_count() // 4))
+# ✅ PRODUCTION OPTIMIZED: Environment-aware worker configuration
+# Development (11 cores): 2 workers for stability
+# Production (12 cores): 3 workers for higher throughput
+cpu_count = multiprocessing.cpu_count()
+gunicorn_workers = int(os.getenv("GUNICORN_WORKERS", "2"))
+
+# Auto-detect optimal workers for production
+if cpu_count >= 12:
+    # Production server (12+ cores): 3 workers
+    workers = gunicorn_workers if gunicorn_workers > 0 else 3
+else:
+    # Development machine (<12 cores): 2 workers
+    workers = gunicorn_workers if gunicorn_workers > 0 else max(1, min(2, cpu_count // 4))
+
 threads = 1
 worker_class = "uvicorn.workers.UvicornWorker"
-print(f" [gunicorn_config.py] CPU count: {multiprocessing.cpu_count()}")
-print(f" [gunicorn_config.py] Workers: {workers} (limited to 2 max for memory management)")
+print(f" [gunicorn_config.py] CPU count: {cpu_count}")
+print(f" [gunicorn_config.py] Workers: {workers} (optimized for {'production' if cpu_count >= 12 else 'development'})")
+
 # Application preloading
 preload_app = True
 
 # Timeouts
-timeout = 600  # 10 minutes for video processing
-graceful_timeout = 30
+# ✅ PRODUCTION: Increased timeout for long videos (15 minutes)
+timeout = int(os.getenv("GUNICORN_TIMEOUT", "900"))  # 15 minutes for long video processing
+graceful_timeout = 60
 keepalive = 5
 
 # Request limits
