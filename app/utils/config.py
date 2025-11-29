@@ -15,6 +15,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 # Suppress PyTorch/YOLO NNPACK warnings early (before torch imports)
 os.environ.setdefault('OMP_NUM_THREADS', '1')
 os.environ.setdefault('MKL_NUM_THREADS', '1')
+os.environ.setdefault('TF_CPP_MIN_LOG_LEVEL', '3')  # Suppress TensorFlow warnings
 
 
 class Settings(BaseSettings):

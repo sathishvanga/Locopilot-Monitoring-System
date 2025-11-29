@@ -102,17 +102,38 @@ app = FastAPI(
     lifespan=lifespan
 )
 
-# Configure CORS
+# Configure CORS with explicit settings for large file uploads
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["*"],  # Allow all origins (can be restricted in production)
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"],  # Explicit methods
+    allow_headers=["*"],  # Allow all headers including Content-Type, Content-Length
+    expose_headers=["*"],  # Expose all headers in response
+    max_age=3600,  # Cache preflight requests for 1 hour
 )
 
 # Add logging middleware for request/response tracking
 app.add_middleware(LoggingMiddleware)
+
+
+# Explicit OPTIONS handler for CORS preflight (backup to middleware)
+@app.options("/{full_path:path}")
+async def options_handler(full_path: str):
+    """
+    Handle CORS preflight OPTIONS requests explicitly.
+    
+    This ensures OPTIONS requests are handled even if middleware fails.
+    """
+    return JSONResponse(
+        content={},
+        headers={
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS, PATCH",
+            "Access-Control-Allow-Headers": "*",
+            "Access-Control-Max-Age": "3600",
+        }
+    )
 
 
 # Exception handlers
@@ -126,6 +147,11 @@ async def http_exception_handler(request: Request, exc: StarletteHTTPException):
             "status": "error",
             "message": exc.detail,
             "error": str(exc.detail)
+        },
+        headers={
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS, PATCH",
+            "Access-Control-Allow-Headers": "*",
         }
     )
 
@@ -140,6 +166,11 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
             "status": "error",
             "message": "Validation error",
             "errors": exc.errors()
+        },
+        headers={
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS, PATCH",
+            "Access-Control-Allow-Headers": "*",
         }
     )
 
@@ -159,6 +190,11 @@ async def general_exception_handler(request: Request, exc: Exception):
             "message": f"Internal server error: {error_msg}",
             "error": error_msg,
             "detail": error_msg
+        },
+        headers={
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS, PATCH",
+            "Access-Control-Allow-Headers": "*",
         }
     )
 

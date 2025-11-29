@@ -95,7 +95,11 @@ async def process_video_streaming(
     video_path = None
 
     try:
+        # Log request details for debugging
         logger.info(f"📥 [V2 Streaming] Received video processing request for trip: {tripId}")
+        logger.info(f"📥 [V2 Streaming] Content-Type: {request.headers.get('content-type', 'N/A')}")
+        logger.info(f"📥 [V2 Streaming] Content-Length: {request.headers.get('content-length', 'N/A')}")
+        logger.info(f"📥 [V2 Streaming] Origin: {request.headers.get('origin', 'N/A')}")
 
         # Validate tripId
         if not tripId or not tripId.strip():
@@ -104,13 +108,33 @@ async def process_video_streaming(
         # Validate filename and extension
         filename = video.filename
         if not filename:
-            raise HTTPException(status_code=400, detail="Filename is required")
+            # Swagger UI sometimes sends files without filename - try to detect from content-type
+            content_type = video.content_type or ""
+            logger.warning(f"⚠️ No filename provided, content-type: {content_type}")
+            
+            # Try to infer extension from content-type
+            content_type_map = {
+                "video/mp4": ".mp4",
+                "video/x-msvideo": ".avi",
+                "video/quicktime": ".mov",
+                "video/x-matroska": ".mkv",
+            }
+            
+            inferred_ext = content_type_map.get(content_type.lower())
+            if inferred_ext:
+                filename = f"upload{inferred_ext}"
+                logger.info(f"✅ Inferred filename: {filename} from content-type: {content_type}")
+            else:
+                raise HTTPException(
+                    status_code=400, 
+                    detail=f"Filename is required. Content-Type: {content_type}. Please ensure the file has a proper filename."
+                )
 
         file_ext = os.path.splitext(filename)[1].lower()
         if file_ext not in settings.allowed_video_extensions:
             raise HTTPException(
                 status_code=400,
-                detail=f"Invalid file extension. Allowed: {', '.join(settings.allowed_video_extensions)}"
+                detail=f"Invalid file extension '{file_ext}'. Allowed: {', '.join(settings.allowed_video_extensions)}. Filename: {filename}"
             )
 
         # Pre-check disk space using Content-Length header if available

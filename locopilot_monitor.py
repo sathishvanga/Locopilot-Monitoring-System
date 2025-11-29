@@ -3,12 +3,36 @@ import json
 import numpy as np
 from datetime import datetime, timedelta
 from collections import deque
-import mediapipe as mp
-from ultralytics import YOLO
 import os
 import logging
 import gc
 import contextlib
+import warnings
+import sys
+import io
+
+# Suppress warnings before importing models
+warnings.filterwarnings('ignore', category=UserWarning, module='ultralytics')
+warnings.filterwarnings('ignore', message='.*Error decoding JSON.*')
+warnings.filterwarnings('ignore', message='.*settings.json.*')
+warnings.filterwarnings('ignore', message='.*Creating new Ultralytics Settings.*')
+warnings.filterwarnings('ignore', message='.*View Ultralytics Settings.*')
+warnings.filterwarnings('ignore', message='.*Update Settings.*')
+warnings.filterwarnings('ignore', message='.*inference_feedback_manager.*')
+warnings.filterwarnings('ignore', message='.*Feedback manager requires.*')
+warnings.filterwarnings('ignore', message='.*All log messages before absl::InitializeLog.*')
+warnings.filterwarnings('ignore', message='.*landmark_projection_calculator.*')
+warnings.filterwarnings('ignore', message='.*NORM_RECT.*')
+warnings.filterwarnings('ignore', message='.*IMAGE_DIMENSIONS.*')
+
+# Suppress absl logging (TensorFlow/MediaPipe)
+logging.getLogger('absl').setLevel(logging.ERROR)
+
+# Set environment variables to suppress warnings
+os.environ.setdefault('TF_CPP_MIN_LOG_LEVEL', '3')
+
+import mediapipe as mp
+from ultralytics import YOLO
 
 # ✅ WINDOWS FIX: Prevent Qt/GUI initialization in worker processes
 # If running in a worker process (detected by QT_QPA_PLATFORM=offscreen),
@@ -62,6 +86,59 @@ def video_capture_context(video_path):
             cap.release()
 
 
+@contextlib.contextmanager
+def suppress_harmless_stderr():
+    """
+    Context manager to suppress harmless stderr messages from model loading.
+    
+    Filters out known harmless messages from Ultralytics, TensorFlow Lite, and MediaPipe
+    while preserving actual error messages.
+    """
+    original_stderr = sys.stderr
+    
+    class FilteredStderr:
+        """Filter stderr to suppress known harmless messages"""
+        def __init__(self, original):
+            self.original = original
+            self.buffer = io.StringIO()
+        
+        def write(self, message):
+            # List of harmless message patterns to filter
+            harmless_patterns = [
+                'Error decoding JSON from',
+                'Starting with an empty dictionary',
+                'Creating new Ultralytics Settings',
+                'View Ultralytics Settings',
+                'Update Settings with',
+                'inference_feedback_manager.cc',
+                'Feedback manager requires',
+                'All log messages before absl::InitializeLog',
+                'landmark_projection_calculator.cc',
+                'Using NORM_RECT without IMAGE_DIMENSIONS',
+                'WARNING ⚠️',
+            ]
+            
+            # Check if message contains any harmless pattern
+            is_harmless = any(pattern in message for pattern in harmless_patterns)
+            
+            if not is_harmless:
+                # Write actual errors/warnings to original stderr
+                self.original.write(message)
+        
+        def flush(self):
+            self.original.flush()
+        
+        def __getattr__(self, name):
+            # Delegate all other attributes to original stderr
+            return getattr(self.original, name)
+    
+    try:
+        sys.stderr = FilteredStderr(original_stderr)
+        yield
+    finally:
+        sys.stderr = original_stderr
+
+
 class LocopilotActivityMonitor:
     def __init__(self, video_path, output_dir="evidence", save_annotated_frames=False, frame_save_interval=1, sample_fps=1.0, run_dir=None, create_run_dir=True):
         self.video_path = video_path
@@ -102,28 +179,31 @@ class LocopilotActivityMonitor:
             self.evidence_clips_dir = None
             self.frames_dir = None
         
-        # Initialize models
+        # Initialize models with stderr suppression for harmless warnings
         print("Loading YOLO model...")
-        self.yolo_model = YOLO('yolo11s.pt')
-        print("Initializing MediaPipe...")
-        self.mp_pose = mp.solutions.pose
-        self.mp_face_mesh = mp.solutions.face_mesh
-        self.mp_drawing = mp.solutions.drawing_utils
-        self.mp_drawing_styles = mp.solutions.drawing_styles
+        with suppress_harmless_stderr():
+            self.yolo_model = YOLO('yolo11s.pt')
         
-        # NOTE: MediaPipe Pose only supports single-person tracking
-        # For multi-person scenarios, hands from the "primary" detected person are tracked
-        # Face mesh supports multiple people (up to 2) for microsleep detection
-        self.pose = self.mp_pose.Pose(
-            min_detection_confidence=0.3,
-            min_tracking_confidence=0.3
-        )
-        self.face_mesh = self.mp_face_mesh.FaceMesh(
-            max_num_faces=2,  # Track up to 2 faces (both loco pilots)
-            refine_landmarks=True,
-            min_detection_confidence=0.5,
-            min_tracking_confidence=0.5
-        )
+        print("Initializing MediaPipe...")
+        with suppress_harmless_stderr():
+            self.mp_pose = mp.solutions.pose
+            self.mp_face_mesh = mp.solutions.face_mesh
+            self.mp_drawing = mp.solutions.drawing_utils
+            self.mp_drawing_styles = mp.solutions.drawing_styles
+            
+            # NOTE: MediaPipe Pose only supports single-person tracking
+            # For multi-person scenarios, hands from the "primary" detected person are tracked
+            # Face mesh supports multiple people (up to 2) for microsleep detection
+            self.pose = self.mp_pose.Pose(
+                min_detection_confidence=0.3,
+                min_tracking_confidence=0.3
+            )
+            self.face_mesh = self.mp_face_mesh.FaceMesh(
+                max_num_faces=2,  # Track up to 2 faces (both loco pilots)
+                refine_landmarks=True,
+                min_detection_confidence=0.5,
+                min_tracking_confidence=0.5
+            )
         
         # Activity tracking with temporal filtering
         self.activities = {

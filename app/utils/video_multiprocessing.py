@@ -11,6 +11,8 @@ import cv2
 import time
 import torch
 import numpy as np
+import sys
+import io
 from datetime import datetime, timedelta
 from typing import Dict, Any, List, Optional, Tuple
 from pathlib import Path
@@ -18,6 +20,7 @@ from concurrent.futures import ProcessPoolExecutor, Future, as_completed
 from dataclasses import dataclass, asdict
 import multiprocessing as mp
 import gc
+import contextlib
 
 from .multiprocessing_config import MultiprocessingConfig
 from .logger import get_logger
@@ -26,6 +29,59 @@ from .config import get_settings
 
 logger = get_logger(__name__)
 settings = get_settings()
+
+
+@contextlib.contextmanager
+def suppress_harmless_stderr():
+    """
+    Context manager to suppress harmless stderr messages from model loading.
+    
+    Filters out known harmless messages from Ultralytics, TensorFlow Lite, and MediaPipe
+    while preserving actual error messages.
+    """
+    original_stderr = sys.stderr
+    
+    class FilteredStderr:
+        """Filter stderr to suppress known harmless messages"""
+        def __init__(self, original):
+            self.original = original
+            self.buffer = io.StringIO()
+        
+        def write(self, message):
+            # List of harmless message patterns to filter
+            harmless_patterns = [
+                'Error decoding JSON from',
+                'Starting with an empty dictionary',
+                'Creating new Ultralytics Settings',
+                'View Ultralytics Settings',
+                'Update Settings with',
+                'inference_feedback_manager.cc',
+                'Feedback manager requires',
+                'All log messages before absl::InitializeLog',
+                'landmark_projection_calculator.cc',
+                'Using NORM_RECT without IMAGE_DIMENSIONS',
+                'WARNING ⚠️',
+            ]
+            
+            # Check if message contains any harmless pattern
+            is_harmless = any(pattern in message for pattern in harmless_patterns)
+            
+            if not is_harmless:
+                # Write actual errors/warnings to original stderr
+                self.original.write(message)
+        
+        def flush(self):
+            self.original.flush()
+        
+        def __getattr__(self, name):
+            # Delegate all other attributes to original stderr
+            return getattr(self.original, name)
+    
+    try:
+        sys.stderr = FilteredStderr(original_stderr)
+        yield
+    finally:
+        sys.stderr = original_stderr
 
 
 # Global variables for worker processes (initialized once per worker)
@@ -119,27 +175,57 @@ def worker_initializer(config: MultiprocessingConfig):
         
         # Preload models if enabled
         if config.preload_models:
+            # Suppress warnings before loading models
+            import warnings
+            import logging as std_logging
+            
+            # Suppress Ultralytics warnings
+            warnings.filterwarnings('ignore', category=UserWarning, module='ultralytics')
+            warnings.filterwarnings('ignore', message='.*Error decoding JSON.*')
+            warnings.filterwarnings('ignore', message='.*settings.json.*')
+            warnings.filterwarnings('ignore', message='.*Creating new Ultralytics Settings.*')
+            warnings.filterwarnings('ignore', message='.*View Ultralytics Settings.*')
+            warnings.filterwarnings('ignore', message='.*Update Settings.*')
+            
+            # Suppress TensorFlow Lite warnings (from MediaPipe)
+            warnings.filterwarnings('ignore', message='.*inference_feedback_manager.*')
+            warnings.filterwarnings('ignore', message='.*Feedback manager requires.*')
+            warnings.filterwarnings('ignore', message='.*All log messages before absl::InitializeLog.*')
+            
+            # Suppress MediaPipe warnings
+            warnings.filterwarnings('ignore', message='.*landmark_projection_calculator.*')
+            warnings.filterwarnings('ignore', message='.*NORM_RECT.*')
+            warnings.filterwarnings('ignore', message='.*IMAGE_DIMENSIONS.*')
+            
+            # Suppress absl logging (TensorFlow/MediaPipe)
+            std_logging.getLogger('absl').setLevel(std_logging.ERROR)
+            
+            # Set environment variables to suppress warnings
+            os.environ.setdefault('TF_CPP_MIN_LOG_LEVEL', '3')
+            
             from ultralytics import YOLO
             import mediapipe as mp
             
-            logger.info(f"Worker {os.getpid()} loading YOLO model: {config.yolo_model_path}")
-            yolo_model = YOLO(config.yolo_model_path)
-            
-            logger.info(f"Worker {os.getpid()} initializing MediaPipe")
-            mp_pose = mp.solutions.pose
-            mp_face_mesh = mp.solutions.face_mesh
-            
-            pose = mp_pose.Pose(
-                min_detection_confidence=0.3,
-                min_tracking_confidence=0.3
-            )
-            
-            face_mesh = mp_face_mesh.FaceMesh(
-                max_num_faces=2,
-                refine_landmarks=True,
-                min_detection_confidence=0.5,
-                min_tracking_confidence=0.5
-            )
+            # Suppress harmless stderr messages during model loading
+            with suppress_harmless_stderr():
+                logger.info(f"Worker {os.getpid()} loading YOLO model: {config.yolo_model_path}")
+                yolo_model = YOLO(config.yolo_model_path)
+                
+                logger.info(f"Worker {os.getpid()} initializing MediaPipe")
+                mp_pose = mp.solutions.pose
+                mp_face_mesh = mp.solutions.face_mesh
+                
+                pose = mp_pose.Pose(
+                    min_detection_confidence=0.3,
+                    min_tracking_confidence=0.3
+                )
+                
+                face_mesh = mp_face_mesh.FaceMesh(
+                    max_num_faces=2,
+                    refine_landmarks=True,
+                    min_detection_confidence=0.5,
+                    min_tracking_confidence=0.5
+                )
             
             _worker_models = {
                 'yolo': yolo_model,

@@ -96,12 +96,22 @@ def setup_logging(level: Optional[str] = None) -> None:
     # Disable PyTorch/YOLO warnings (NNPACK, etc.)
     import warnings
     warnings.filterwarnings('ignore', category=UserWarning, module='torch')
+    warnings.filterwarnings('ignore', category=UserWarning, module='ultralytics')
+    warnings.filterwarnings('ignore', message='.*Error decoding JSON.*')
+    warnings.filterwarnings('ignore', message='.*settings.json.*')
+    warnings.filterwarnings('ignore', message='.*inference_feedback_manager.*')
+    warnings.filterwarnings('ignore', message='.*landmark_projection_calculator.*')
+    warnings.filterwarnings('ignore', message='.*NORM_RECT.*')
+    warnings.filterwarnings('ignore', message='.*IMAGE_DIMENSIONS.*')
+    
     import logging as std_logging
     std_logging.getLogger('ultralytics').setLevel(std_logging.ERROR)
+    std_logging.getLogger('absl').setLevel(std_logging.ERROR)  # Suppress TensorFlow/MediaPipe absl warnings
     
     # Set environment variable to suppress NNPACK warnings
     os.environ['OMP_NUM_THREADS'] = '1'
     os.environ['MKL_NUM_THREADS'] = '1'
+    os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'  # Suppress TensorFlow warnings
     
     for logger_name in noisy_loggers:
         logging.getLogger(logger_name).disabled = True
