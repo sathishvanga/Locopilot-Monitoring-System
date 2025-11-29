@@ -32,8 +32,10 @@ print(f" [gunicorn_config.py] Workers: {workers} (optimized for {'production' if
 preload_app = True
 
 # Timeouts
-# ✅ PRODUCTION: Increased timeout for long videos (15 minutes)
-timeout = int(os.getenv("GUNICORN_TIMEOUT", "900"))  # 15 minutes for long video processing
+# ✅ PRODUCTION: Increased timeout for long videos and large file uploads (30 minutes)
+# Note: Large file uploads (up to 1GB) require extended timeout
+# Body size limit handled by Nginx and application validation
+timeout = int(os.getenv("GUNICORN_TIMEOUT", "1800"))  # 30 minutes for long video processing + large uploads
 graceful_timeout = 60
 keepalive = 5
 

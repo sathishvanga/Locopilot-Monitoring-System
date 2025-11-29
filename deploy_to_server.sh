@@ -97,6 +97,15 @@ mkdir -p "$APP_DIR/logs"
 mkdir -p /tmp/locopilot_uploads
 chmod 755 /tmp/locopilot_uploads
 
+# Create chunk upload directory for resumable uploads
+mkdir -p /tmp/locopilot_uploads_chunks
+chmod 755 /tmp/locopilot_uploads_chunks
+echo "✅ Chunk upload directory created"
+
+# Create scripts directory if it doesn't exist
+mkdir -p "$APP_DIR/scripts"
+echo "✅ Scripts directory created"
+
 echo "✅ Directory structure created"
 
 # Set up Python virtual environment
@@ -224,6 +233,21 @@ print("\n✅ All critical imports successful!")
 PY
 
 "$APP_DIR/venv/bin/python" "$APP_DIR/_import_check.py"
+
+# Deploy cleanup script
+echo "📦 Deploying cleanup script..."
+if [ -f "$APP_DIR/scripts/cleanup_old_uploads.sh" ]; then
+    chmod +x "$APP_DIR/scripts/cleanup_old_uploads.sh"
+    echo "✅ Cleanup script deployed and made executable"
+else
+    echo "⚠️ Warning: cleanup_old_uploads.sh not found, skipping cron setup"
+fi
+
+# Setup cron job for cleanup (runs daily at 2 AM)
+echo "⏰ Setting up cron job for cleanup..."
+CRON_CMD="0 2 * * * $APP_DIR/scripts/cleanup_old_uploads.sh >> $APP_DIR/logs/cleanup.log 2>&1"
+(crontab -l 2>/dev/null | grep -v "cleanup_old_uploads.sh"; echo "$CRON_CMD") | crontab -
+echo "✅ Cron job configured (runs daily at 2 AM)"
 
 # Determine CPU count for worker configuration
 POOL_PROCS=$( (command -v nproc >/dev/null 2>&1 && nproc) || (getconf _NPROCESSORS_ONLN) || echo 4 )

@@ -1,0 +1,1401 @@
+
+╭─── Claude Code v2.0.55 ──────────────────────────────────────────────────────╮
+│                                           │ Tips for getting started         │
+│           Welcome back Sathish!           │ Run /init to create a CLAUDE.md… │
+│                                           │ Run /install-github-app to tag … │
+│                  ▐▛███▜▌                  │ ──────────────────────────────── │
+│                 ▝▜█████▛▘                 │ Recent activity                  │
+│                   ▘▘ ▝▝                   │ No recent activity               │
+│                                           │                                  │
+│          Sonnet 4.5 · Claude Pro          │                                  │
+│   ~/Desktop/Locopilot Monitoring System   │                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+
+> ````
+My FastAPI app must accept video uploads up to 1 GB. Files under 8MB already
+ work; larger files fail. Do not use AWS S3 or presigned URLs — implement 
+direct uploads to the server with safe streaming and an optional server-side
+ chunked (resumable) upload flow.
+
+Your tasks:
+1. Inspect the project for any FastAPI/Starlette/ASGI/middleware/request 
+caps and raise limits to 1GB.
+2. Ensure reverse proxy (Nginx/Traefik) and ASGI server timeouts and limits 
+support 1GB uploads.
+3. Replace or update upload endpoints to:
+   - a) A streaming-to-disk endpoint that never loads the whole file into 
+memory.
+   - b) A server-managed chunked/resumable upload workflow 
+(initiate/upload-chunk/complete) so clients can resume interrupted uploads.
+4. Add robust error handling and logging (413 for oversize, 408/504 for 
+timeouts, 500 for server errors).
+5. Add housekeeping: partial-upload cleanup, disk-space checks, and 
+monitoring notes.
+6. Provide exact code and config snippets to paste into the repo, plus a 
+short deployment checklist.
+
+## Streaming-to-disk (single-request) — memory-efficient, supports 1GB
+Use this when client can send the whole file in one request. It streams the 
+UploadFile to disk in large chunks and validates size on the fly.
+
+```python
+# streaming_upload.py
+import os
+import logging
+import aiofiles
+from fastapi import FastAPI, File, UploadFile, HTTPException, Request
+from fastapi.middleware.cors import CORSMiddleware
+from starlette.types import ASGIApp
+
+logger = logging.getLogger("uvicorn.error")
+
+ONE_GB = 1 * 1024 * 1024 * 1024
+CHUNK_SIZE = 8 * 1024 * 1024  # 8MB per read
+
+class LargeFileMiddleware:
+    def __init__(self, app: ASGIApp, max_size: int = ONE_GB):
+        self.app = app
+        self.max_size = max_size
+
+    async def __call__(self, scope, receive, send):
+        if scope.get("type") == "http":
+            scope.setdefault("state", {})["max_body_size"] = self.max_size
+        await self.app(scope, receive, send)
+
+app = FastAPI()
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+# Add middleware - adjust placement if your project already modifies 
+middleware stack
+app.add_middleware(LargeFileMiddleware, max_size=ONE_GB)
+
+UPLOAD_DIR = "uploads"
+os.makedirs(UPLOAD_DIR, exist_ok=True)
+
+@app.post("/upload-video")
+async def upload_video(file: UploadFile = File(...), request: Request = 
+None, max_size: int = ONE_GB):
+    filename = file.filename
+    safe_filename = os.path.basename(filename)
+    file_path = os.path.join(UPLOAD_DIR, safe_filename)
+    total = 0
+
+    # Optional: quick pre-check if Content-Length provided
+    content_length = None
+    if request:
+        content_length = request.headers.get("content-length")
+        if content_length:
+            try:
+                if int(content_length) > max_size:
+                    raise HTTPException(status_code=413, detail=f"File 
+exceeds {max_size // (1024*1024)}MB limit.")
+            except ValueError:
+                pass
+
+    try:
+        async with aiofiles.open(file_path, "wb") as out_file:
+            while True:
+                chunk = await file.read(CHUNK_SIZE)
+                if not chunk:
+                    break
+                total += len(chunk)
+                if total > max_size:
+                    # cleanup partial
+                    await out_file.close()
+                    if os.path.exists(file_path):
+                        os.remove(file_path)
+                    logger.warning("Upload exceeded max size; removed 
+partial file %s", file_path)
+                    raise HTTPException(status_code=413, detail="File 
+exceeds maximum allowed size.")
+                await out_file.write(chunk)
+
+        logger.info("Upload finished: %s (%d bytes)", file_path, total)
+        return {"success": True, "filename": safe_filename, "size": total, 
+"path": file_path}
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("Upload failed for %s", safe_filename)
+        if os.path.exists(file_path):
+            os.remove(file_path)
+        raise HTTPException(status_code=500, detail=f"Upload failed: 
+{str(exc)}")
+````
+
+## Server-managed chunked/resumable uploads (recommended for unreliable 
+networks and very large files)
+
+This gives clients a way to upload in parts and resume if interrupted. The 
+server stores parts in a temporary folder, validates each part, and finally 
+assembles them.
+
+```python
+# chunked_upload.py
+import os
+import uuid
+import shutil
+import math
+import aiofiles
+from typing import List
+from fastapi import FastAPI, HTTPException, UploadFile, File, Form
+from fastapi.responses import JSONResponse
+from starlette.status import HTTP_200_OK
+
+app = FastAPI()
+
+TEMP_DIR = "uploads_tmp"         # holds chunk files per upload_id
+FINAL_DIR = "uploads"            # assembled final files
+os.makedirs(TEMP_DIR, exist_ok=True)
+os.makedirs(FINAL_DIR, exist_ok=True)
+
+MAX_SIZE = 1 * 1024 * 1024 * 1024  # 1GB
+
+@app.post("/upload/initiate")
+def initiate_upload(filename: str = Form(...), total_size: int = Form(...)):
+    if total_size > MAX_SIZE:
+        raise HTTPException(status_code=413, detail="Total size exceeds 
+server limit.")
+    upload_id = str(uuid.uuid4())
+    upload_meta_dir = os.path.join(TEMP_DIR, upload_id)
+    os.makedirs(upload_meta_dir, exist_ok=True)
+    # Save metadata
+    with open(os.path.join(upload_meta_dir, "meta.txt"), "w") as f:
+        f.write(f"{filename}\n{total_size}\n")
+    return {"upload_id": upload_id, "chunk_size_recommendation": 8 * 1024 * 
+1024}
+
+@app.post("/upload/chunk")
+async def upload_chunk(
+    upload_id: str = Form(...),
+    part_number: int = Form(...),  # 1-based
+    chunk: UploadFile = File(...)
+):
+    upload_path = os.path.join(TEMP_DIR, upload_id)
+    if not os.path.exists(upload_path):
+        raise HTTPException(status_code=404, detail="Upload ID not found.")
+    chunk_filename = os.path.join(upload_path, 
+f"part_{part_number:06d}.chunk")
+    try:
+        async with aiofiles.open(chunk_filename, "wb") as f:
+            while True:
+                data = await chunk.read(8 * 1024 * 1024)
+                if not data:
+                    break
+                await f.write(data)
+        return {"status": "ok", "part": part_number}
+    except Exception as e:
+        # cleanup partial chunk if exists
+        if os.path.exists(chunk_filename):
+            os.remove(chunk_filename)
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/upload/complete")
+def complete_upload(upload_id: str = Form(...)):
+    upload_path = os.path.join(TEMP_DIR, upload_id)
+    meta_file = os.path.join(upload_path, "meta.txt")
+    if not os.path.exists(meta_file):
+        raise HTTPException(status_code=404, detail="Upload ID not found.")
+    with open(meta_file, "r") as f:
+        filename = f.readline().strip()
+        total_size_expected = int(f.readline().strip())
+
+    # list parts in order
+    parts = sorted([p for p in os.listdir(upload_path) if 
+p.startswith("part_")])
+    if not parts:
+        raise HTTPException(status_code=400, detail="No parts uploaded.")
+    final_path = os.path.join(FINAL_DIR, os.path.basename(filename))
+    bytes_written = 0
+    try:
+        with open(final_path, "wb") as dest:
+            for part in parts:
+                part_path = os.path.join(upload_path, part)
+                with open(part_path, "rb") as pf:
+                    while True:
+                        chunk = pf.read(8 * 1024 * 1024)
+                        if not chunk:
+                            break
+                        dest.write(chunk)
+                        bytes_written += len(chunk)
+        # verify assembled size
+        if bytes_written != total_size_expected:
+            # cleanup
+            os.remove(final_path)
+            raise HTTPException(status_code=400, detail=f"Assembled size 
+mismatch: {bytes_written} != {total_size_expected}")
+        # cleanup temp
+        shutil.rmtree(upload_path)
+        return {"success": True, "filename": filename, "size": 
+bytes_written, "path": final_path}
+    except Exception as e:
+        if os.path.exists(final_path):
+            os.remove(final_path)
+        raise HTTPException(status_code=500, detail=str(e))
+```
+
+### Client-side chunk upload flow (high-level)
+
+1. Call `/upload/initiate` with filename and total_size → receive 
+`upload_id`.
+2. Split file into N parts (e.g., 8MB each). Send each part as 
+`multipart/form-data` to `/upload/chunk` with `upload_id` and `part_number`.
+3. After all parts uploaded, call `/upload/complete` to assemble the file on
+ the server.
+4. Implement retry logic for failed part uploads and a status check if 
+needed.
+
+## Nginx (reverse-proxy) config changes — set to 1G
+
+```nginx
+http {
+    client_max_body_size 1G;
+    client_body_timeout 600s;
+    proxy_read_timeout 600s;
+    proxy_connect_timeout 600s;
+    proxy_send_timeout 600s;
+
+    # Option: disable proxy request buffering to prevent buffering large 
+request bodies on proxy
+    # location /upload-video {
+    #     proxy_request_buffering off;
+    #     proxy_pass http://backend_upstream;
+    # }
+}
+```
+
+## Uvicorn/Gunicorn recommendations
+
+* Uvicorn: `uvicorn main:app --host 0.0.0.0 --port 8000 --workers 1 
+--timeout-keep-alive 120`
+
+  * Use fewer workers for heavy disk I/O; consider running multiple 
+instances behind a load balancer.
+* Gunicorn + Uvicorn workers: `gunicorn -k uvicorn.workers.UvicornWorker 
+--workers 2 --timeout 600 --graceful-timeout 120 main:app`
+* Monitor worker memory and disk I/O; spawning many workers with heavy 
+uploads will exhaust I/O.
+
+## Logging, errors, and monitoring
+
+* Return 413 for size checks, 404/400 for invalid upload_id or part missing,
+ 500 for server errors.
+* Log start time, end time, bytes transferred, client IP, upload_id, and any
+ exceptions.
+* Track partial uploads for cleanup (e.g., remove temp folders older than 24
+ hours via cron or background job).
+
+## Housekeeping & operational notes
+
+* Disk space: ensure disk has comfortable headroom — e.g., if N concurrent 
+uploads possible, disk >= N * 1GB + spare.
+* Throttling: limit concurrent full-backend uploads. Implement rate limits 
+per client or concurrent-upload limits.
+* Cleanup job: run a periodic task to remove temp dirs older than X hours 
+(e.g., 24 hours).
+* Integrity: optionally compute checksum (MD5/SHA256) on the client and 
+verify after assemble.
+* Security: validate filenames, sanitize input, and protect endpoints (auth 
+/ signed tokens) if necessary.
+* Resumable options: you can also adopt the TUS protocol via a TUS server if
+ you want a standardized resumable flow.
+
+## Exact checklist for me to apply to your codebase
+
+* Search for existing `/upload-video` or similar endpoints and replace with 
+the streaming endpoint above (or add chunked endpoints).
+* Add `LargeFileMiddleware` into the middleware stack (or configure at ASGI 
+server if your server supports explicit body size limit).
+* Update Nginx site config to `client_max_body_size 1G` and timeouts.
+* Ensure Uvicorn/Gunicorn start scripts use increased timeouts as suggested.
+* Add logging and partial-file cleanup scripts.
+* Add a README note describing the client chunking protocol and recommended 
+chunk size.
+
+## Deliverable format
+
+Return the corrected code files exactly as they should appear, and 
+optionally a before/after diff if I paste the current endpoint file(s) here.
+ If you prefer, I can produce runnable test scripts for a client to upload a
+ 1GB test file (or a smaller test file) to validate the flow.
+
+```
+
+--- 
+
+⏺ I'll help you implement 1GB video upload support with both streaming and
+  chunked/resumable upload options. Let me first explore your codebase to
+  understand the current implementation.
+
+⏺ 3 Explore agents finished (ctrl+o to expand)
+   ├─ Find FastAPI upload endpoints · 13 tool uses · 44.2k tokens
+   │  ⎿ Done
+   ├─ Find ASGI and deployment config · 18 tool uses · 45.8k tokens
+   │  ⎿ Done
+   └─ Find logging and storage setup · 21 tool uses · 45.3k tokens
+      ⎿ Done
+
+⏺ Perfect! I have a comprehensive understanding of your codebase. Now let me
+   create a detailed implementation plan for 1GB video upload support.
+
+⏺ Plan(Create 1GB upload implementation plan)
+  ⎿  Done (20 tool uses · 68.1k tokens · 7m 29s)                           
+
+⏺ Now let me synthesize the findings and create a comprehensive
+  implementation plan. First, I need to clarify a few architectural
+  decisions with you:
+                                                                           
+⏺ User answered Claude's questions:
+  ⎿  · Should I modify the existing endpoints (/api/jobs and 
+     /api/v1/video/process-and-upload) to use streaming internally, or 
+     create brand new streaming endpoints and keep the old ones for backward
+      compatibility? → Replace entirely with versioned endpoints
+     · Do you want both the streaming endpoint AND the chunked/resumable 
+     upload workflow, or just the streaming endpoint? (Chunked adds 
+     complexity but enables resume on network failures) → Both streaming and
+      chunked
+     · Are your video uploads currently going through an Nginx reverse 
+     proxy, or is the FastAPI server directly exposed to clients? → once 
+     login to server ther we configured the nginx reverse proxy
+
+⏺ Perfect! Now let me create a comprehensive implementation plan based on
+  your requirements.
+
+⏺ Updated plan
+  ⎿  /plan to preview · ~/.claude/plans/tingly-hugging-honey.md
+
+⏺ Perfect! I've created a comprehensive implementation plan for 1GB video
+  upload support. The plan includes:
+
+  Plan Highlights
+
+  ✅ Architecture: New v2 API endpoints with both streaming and
+  chunked/resumable upload workflows
+  ✅ Memory-efficient: Streams in 1MB chunks, never loads full file into
+  memory
+  ✅ Nginx configuration: Proper reverse proxy setup with 1GB limits and
+  30-minute timeouts
+  ✅ Housekeeping: Automatic cleanup via cron job, disk space validation
+  ✅ Error handling: Proper HTTP status codes (413, 507, 408, 500)
+  ✅ Backward compatible: Old v1 endpoints remain functional
+
+  What's Included
+
+  - 5 new files to create (~1,245 lines of new code)
+  - 5 existing files to modify (~22 lines changed)
+  - 1 Nginx config update on server
+  - Detailed code patterns and examples
+  - Complete deployment checklist
+  - Testing strategy
+  - Monitoring and housekeeping setup
+
+  Key Decisions Based on Your Answers
+
+  1. ✅ v2 endpoints - Clean versioned API (/api/v2/jobs/streaming,
+  /api/v2/upload/*)
+  2. ✅ Both upload methods - Streaming for simple cases, chunked for
+  resumable uploads
+  3. ✅ Nginx configuration - Included complete reverse proxy setup
+
+  The plan is now ready for your review at:
+  /Users/satishvanga/.claude/plans/tingly-hugging-honey.md
+                                                                           
+⏺ User approved Claude's plan
+  ⎿  Plan saved to: ~/.claude/plans/tingly-hugging-honey.md · /plan to edit
+     Implementation Plan: 1GB Video Upload Support with Streaming & 
+     Chunked/Resumable Uploads
+
+     Executive Summary
+
+     Goal: Enable 1GB video uploads to the FastAPI application using 
+     memory-efficient streaming and resumable chunked upload workflows.
+
+     Approach: Create new v2 API endpoints with:
+     - Streaming upload: Direct-to-disk streaming for reliable networks 
+     (single request, 1GB max)
+     - Chunked upload: 3-step resumable protocol for unreliable networks 
+     (initiate → upload chunks → complete)
+     - Nginx configuration: Properly configured reverse proxy limits and 
+     timeouts
+     - Housekeeping: Automatic cleanup of partial uploads and disk space 
+     validation
+
+     Timeline: ~8-10 hours of implementation + 2 hours testing/deployment
+
+     ---
+     Architecture Overview
+
+     Current State (v1 endpoints)
+
+     Client → Nginx → Gunicorn → FastAPI → await video.read() → Memory (❌ 
+     500MB limit)
+     Problem: Entire file loaded into memory, crashes on large files
+
+     New State (v2 endpoints)
+
+     Client → Nginx (1GB limit) → Gunicorn → FastAPI → Stream to disk → 
+     Process
+     Solution: Stream in 1MB chunks, never load entire file into memory
+
+     Upload Methods
+
+     1. Streaming Upload (/api/v2/jobs/streaming)
+       - Single request with file stream
+       - FastAPI reads in chunks, writes directly to disk
+       - Validates size on-the-fly
+       - Returns 413 if file exceeds 1GB
+     2. Chunked Upload (3-endpoint workflow)
+       - POST /api/v2/upload/initiate → Returns upload_id
+       - POST /api/v2/upload/chunk → Upload 10MB parts
+       - POST /api/v2/upload/complete → Assemble & validate
+       - Supports resume on network failure
+
+     ---
+     Files to Create
+
+     1. /app/utils/disk_utils.py (NEW)
+
+     Purpose: Disk space validation utilities
+
+     def get_free_disk_space(directory: str) -> int:
+         """Returns free disk space in bytes"""
+
+     def check_disk_space_available(directory: str, required_bytes: int, 
+     reserve_gb: int = 5) -> tuple[bool, str]:
+         """Validates sufficient disk space exists"""
+         # Returns (True, "") if OK, (False, "error message") if 
+     insufficient
+
+     Lines: ~80 lines
+
+     ---
+     2. /app/models/chunked_upload_models.py (NEW)
+
+     Purpose: Pydantic models for chunked upload workflow
+
+     class InitiateUploadRequest(BaseModel):
+         filename: str
+         total_size: int
+         tripId: str
+
+     class InitiateUploadResponse(BaseModel):
+         upload_id: str
+         chunk_size_recommendation: int
+         expires_at: str
+
+     class UploadChunkRequest(BaseModel):
+         upload_id: str
+         part_number: int  # 1-based
+
+     class CompleteUploadRequest(BaseModel):
+         upload_id: str
+
+     Lines: ~150 lines (includes validation)
+
+     ---
+     3. /app/services/chunked_upload_service.py (NEW)
+
+     Purpose: Core business logic for chunked uploads
+
+     Key Methods:
+     async def initiate_upload(filename: str, total_size: int, trip_id: str)
+      -> tuple[str, int]:
+         """Creates upload session, returns upload_id and recommended chunk 
+     size"""
+
+     async def save_chunk(upload_id: str, part_number: int, chunk: 
+     UploadFile) -> bool:
+         """Saves individual chunk to temp directory"""
+
+     async def complete_upload(upload_id: str) -> tuple[str, int]:
+         """Assembles chunks, validates size, returns final file path"""
+
+     def cleanup_upload_session(upload_id: str) -> None:
+         """Removes temp directory for upload session"""
+
+     def cleanup_expired_sessions(max_age_hours: int = 24) -> int:
+         """Removes sessions older than max_age_hours, returns count 
+     deleted"""
+
+     Directory Structure:
+     /tmp/locopilot_uploads_chunks/
+       └── {upload_id}/
+           ├── meta.json          # {filename, total_size, trip_id, 
+     created_at}
+           ├── part_000001.chunk
+           ├── part_000002.chunk
+           └── ...
+
+     Lines: ~400 lines
+
+     ---
+     4. /app/controllers/v2_video_controller.py (NEW)
+
+     Purpose: New v2 endpoints for streaming and chunked uploads
+
+     Endpoints:
+
+     Streaming Endpoints (2)
+
+     @router.post("/v2/jobs/streaming")
+     async def process_video_streaming(...)
+         # Streams video to disk, processes, returns results
+         # Equivalent to old /api/jobs but with streaming
+
+     @router.post("/v2/video/process-and-upload/streaming")
+     async def process_and_upload_video_streaming(...)
+         # Streaming version of /api/v1/video/process-and-upload
+
+     Chunked Upload Endpoints (3)
+
+     @router.post("/v2/upload/initiate")
+     async def initiate_chunked_upload(...)
+         # Returns upload_id for session
+
+     @router.post("/v2/upload/chunk")
+     async def upload_chunk(...)
+         # Saves chunk, returns success
+
+     @router.post("/v2/upload/complete")
+     async def complete_chunked_upload(...)
+         # Assembles file, then calls video processing
+
+     @router.get("/v2/upload/{upload_id}/status")
+     async def get_upload_status(...)
+         # Returns which chunks have been uploaded
+
+     @router.delete("/v2/upload/{upload_id}")
+     async def cancel_upload(...)
+         # Cancels and cleans up session
+
+     Lines: ~600 lines total
+
+     Integration: Import and register in app/main.py:
+     from app.controllers.v2_video_controller import router as 
+     v2_video_router
+     app.include_router(v2_video_router)
+
+     ---
+     Files to Modify
+
+     5. /app/utils/config.py
+
+     Changes:
+     # Line 44 - Change from 500 MB to 1 GB
+     max_upload_size: int = 1 * 1024 * 1024 * 1024  # 1 GB (was 500 MB)
+
+     # Add new settings after line 47
+     chunk_upload_dir: str = os.getenv(
+         "CHUNK_UPLOAD_DIR",
+         os.path.join(tempfile.gettempdir(), "locopilot_uploads_chunks")
+     )
+     chunk_size_default: int = 10 * 1024 * 1024  # 10 MB chunks
+     chunk_session_ttl_hours: int = 24  # Auto-cleanup after 24 hours
+     disk_reserve_gb: int = 5  # Reserve 5GB for system
+     stream_chunk_size: int = 1 * 1024 * 1024  # 1 MB read size for 
+     streaming
+
+     Lines Modified: 1 line changed, 6 lines added
+
+     ---
+     6. /gunicorn_config.py
+
+     Changes:
+     # Line 36 - Increase timeout from 900s to 1800s (30 minutes)
+     timeout = int(os.getenv("GUNICORN_TIMEOUT", "1800"))  # was 900
+
+     # Add comment after line 36
+     # Note: Large file uploads (up to 1GB) require extended timeout
+     # Body size limit handled by Nginx and application validation
+
+     Lines Modified: 1 line changed, 2 comment lines added
+
+     ---
+     7. /deploy_to_server.sh
+
+     Changes:
+
+     After line 98 (after creating upload/output directories):
+     # Create chunk upload directory
+     ssh locopilot@103.195.244.67 "sudo mkdir -p 
+     /tmp/locopilot_uploads_chunks && sudo chown locopilot:locopilot 
+     /tmp/locopilot_uploads_chunks"
+
+     # Deploy cleanup script
+     scp scripts/cleanup_old_uploads.sh locopilot@103.195.244.67:/opt/poc2/
+
+     # Setup cron job for cleanup (runs daily at 2 AM)
+     ssh locopilot@103.195.244.67 "sudo crontab -l | grep -v 
+     cleanup_old_uploads || true" > current_cron.txt
+     echo "0 2 * * * /opt/poc2/scripts/cleanup_old_uploads.sh >> 
+     /opt/poc2/logs/cleanup.log 2>&1" >> current_cron.txt
+     ssh locopilot@103.195.244.67 "sudo crontab current_cron.txt"
+     rm current_cron.txt
+
+     Lines Added: ~10 lines
+
+     ---
+     8. /requirements.txt
+
+     Changes:
+     # Add at end of file
+     aiofiles==23.2.1  # Async file I/O for streaming uploads
+
+     Lines Added: 1 line
+
+     ---
+     9. scripts/cleanup_old_uploads.sh (NEW)
+
+     Purpose: Cron job to cleanup expired chunk sessions
+
+     #!/bin/bash
+     # Cleanup chunked upload sessions older than 24 hours
+
+     CHUNK_DIR="/tmp/locopilot_uploads_chunks"
+     MAX_AGE_HOURS=24
+
+     echo "$(date): Starting cleanup of uploads older than 
+     ${MAX_AGE_HOURS}h"
+
+     find "$CHUNK_DIR" -mindepth 1 -maxdepth 1 -type d -mmin 
+     +$((MAX_AGE_HOURS * 60)) | while read dir; do
+         echo "Removing expired session: $dir"
+         rm -rf "$dir"
+     done
+
+     echo "$(date): Cleanup complete"
+
+     Lines: ~15 lines
+
+     ---
+     Nginx Configuration (on Server 103.195.244.67)
+
+     File: /etc/nginx/sites-available/poc2 (or wherever your Nginx config 
+     is)
+
+     Changes Required:
+
+     # Add/modify in server block or location block for /api/
+     server {
+         listen 80;
+         server_name 103.195.244.67;
+
+         # File upload limits
+         client_max_body_size 1G;             # Allow 1GB uploads
+         client_body_timeout 1800s;           # 30 minute timeout for upload
+         client_header_timeout 60s;           # Header timeout
+
+         # Proxy timeouts
+         proxy_connect_timeout 60s;           # Connection to backend
+         proxy_send_timeout 1800s;            # Sending request to backend
+         proxy_read_timeout 1800s;            # Reading response from 
+     backend
+
+         # Buffering (disable for large uploads to save memory)
+         proxy_request_buffering off;         # Stream directly to backend
+         proxy_buffering off;                 # Don't buffer responses
+
+         location /api/ {
+             proxy_pass http://127.0.0.1:8000;
+             proxy_set_header Host $host;
+             proxy_set_header X-Real-IP $remote_addr;
+             proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+             proxy_set_header X-Forwarded-Proto $scheme;
+
+             # Override timeouts for upload endpoints
+             proxy_read_timeout 1800s;
+             proxy_send_timeout 1800s;
+         }
+     }
+
+     Steps:
+     1. SSH to server: ssh locopilot@103.195.244.67
+     2. Edit config: sudo nano /etc/nginx/sites-available/poc2
+     3. Test config: sudo nginx -t
+     4. Reload Nginx: sudo systemctl reload nginx
+
+     ---
+     Implementation Steps
+
+     Phase 1: Core Infrastructure (3-4 hours)
+
+     1. Create utility files
+       - Create app/utils/disk_utils.py with disk space checking
+       - Update requirements.txt with aiofiles==23.2.1
+       - Install locally: pip install aiofiles==23.2.1
+     2. Update configuration
+       - Modify app/utils/config.py (change max_upload_size to 1GB, add 
+     chunk settings)
+       - Modify gunicorn_config.py (increase timeout to 1800s)
+     3. Create data models
+       - Create app/models/chunked_upload_models.py with all Pydantic models
+
+     Phase 2: Chunked Upload Service (3-4 hours)
+
+     4. Implement chunked upload service
+       - Create app/services/chunked_upload_service.py
+       - Implement initiate/save_chunk/complete/cleanup methods
+       - Add extensive logging with emoji patterns (📦, ✅, ❌)
+
+     Phase 3: API Endpoints (2-3 hours)
+
+     5. Create v2 controller
+       - Create app/controllers/v2_video_controller.py
+       - Implement streaming endpoints (2)
+       - Implement chunked endpoints (5)
+       - Add proper error handling (413, 507, 408, 500)
+     6. Register v2 router
+       - Modify app/main.py to include v2 router
+       - Add after line 166
+
+     Phase 4: Deployment Scripts (1 hour)
+
+     7. Update deployment
+       - Create scripts/cleanup_old_uploads.sh
+       - Modify deploy_to_server.sh to:
+           - Create chunk directory
+         - Deploy cleanup script
+         - Setup cron job
+
+     Phase 5: Server Configuration (1 hour)
+
+     8. Configure Nginx
+       - SSH to server
+       - Update Nginx config with 1GB limits and timeouts
+       - Test and reload
+     9. Deploy to production
+       - Run ./deploy_to_server.sh
+       - Restart service: sudo systemctl restart poc2
+       - Verify logs: tail -f /opt/poc2/logs/LocopilotMonitoring.log
+
+     ---
+     Detailed Code Patterns
+
+     Streaming Upload Pattern
+
+     @router.post("/v2/jobs/streaming")
+     async def process_video_streaming(
+         background_tasks: BackgroundTasks,
+         video: UploadFile = File(...),
+         tripId: str = Form(...),
+         # ... other params
+     ):
+         filename = video.filename
+         safe_filename = 
+     f"{tripId}_{int(time.time())}{os.path.splitext(filename)[1]}"
+         file_path = os.path.join(settings.upload_dir, safe_filename)
+
+         # Pre-check disk space
+         content_length = request.headers.get("content-length")
+         if content_length:
+             size_estimate = int(content_length)
+             has_space, err_msg = check_disk_space_available(
+                 settings.upload_dir, size_estimate, 
+     settings.disk_reserve_gb
+             )
+             if not has_space:
+                 raise HTTPException(status_code=507, detail=err_msg)
+
+         total_bytes = 0
+         try:
+             async with aiofiles.open(file_path, "wb") as out_file:
+                 while True:
+                     chunk = await video.read(settings.stream_chunk_size)  #
+      1MB chunks
+                     if not chunk:
+                         break
+                     total_bytes += len(chunk)
+
+                     # Enforce size limit on-the-fly
+                     if total_bytes > settings.max_upload_size:
+                         await out_file.close()
+                         if os.path.exists(file_path):
+                             os.remove(file_path)
+                         logger.warning(f"❌ Upload exceeded 1GB limit: 
+     {file_path}")
+                         raise HTTPException(
+                             status_code=413,
+                             detail=f"File exceeds maximum size of 1GB"
+                         )
+
+                     await out_file.write(chunk)
+
+             logger.info(f"✅ Video streamed to disk: {file_path} 
+     ({total_bytes} bytes)")
+
+             # Now process video (existing logic)
+             result = video_processing_service.process_video(...)
+
+             # Schedule cleanup
+             background_tasks.add_task(
+                 video_processing_service.cleanup_uploaded_video,
+                 file_path
+             )
+
+             return result
+
+         except HTTPException:
+             raise
+         except Exception as e:
+             logger.error(f"❌ Streaming upload failed: {e}", exc_info=True)
+             if os.path.exists(file_path):
+                 os.remove(file_path)
+             raise HTTPException(status_code=500, detail=str(e))
+
+     Chunked Upload Pattern
+
+     @router.post("/v2/upload/initiate")
+     async def initiate_chunked_upload(
+         filename: str = Form(...),
+         total_size: int = Form(...),
+         tripId: str = Form(...)
+     ):
+         # Validate size
+         if total_size > settings.max_upload_size:
+             raise HTTPException(status_code=413, detail="File exceeds 1GB 
+     limit")
+
+         # Check disk space
+         has_space, err_msg = check_disk_space_available(
+             settings.chunk_upload_dir, total_size, settings.disk_reserve_gb
+         )
+         if not has_space:
+             raise HTTPException(status_code=507, detail=err_msg)
+
+         # Create session
+         upload_id, chunk_size = await 
+     chunked_upload_service.initiate_upload(
+             filename, total_size, tripId
+         )
+
+         return {
+             "upload_id": upload_id,
+             "chunk_size_recommendation": chunk_size,
+             "total_chunks": math.ceil(total_size / chunk_size)
+         }
+
+     @router.post("/v2/upload/chunk")
+     async def upload_chunk(
+         upload_id: str = Form(...),
+         part_number: int = Form(...),
+         chunk: UploadFile = File(...)
+     ):
+         success = await chunked_upload_service.save_chunk(
+             upload_id, part_number, chunk
+         )
+         if not success:
+             raise HTTPException(status_code=404, detail="Upload session not
+      found")
+
+         return {"status": "ok", "part": part_number}
+
+     @router.post("/v2/upload/complete")
+     async def complete_chunked_upload(
+         background_tasks: BackgroundTasks,
+         upload_id: str = Form(...)
+     ):
+         try:
+             # Assemble file
+             file_path, total_size = await 
+     chunked_upload_service.complete_upload(upload_id)
+
+             # Extract metadata
+             meta = chunked_upload_service.get_metadata(upload_id)
+             trip_id = meta["trip_id"]
+
+             # Process video (existing logic)
+             result = video_processing_service.process_video(...)
+
+             # Cleanup
+             background_tasks.add_task(
+                 video_processing_service.cleanup_uploaded_video,
+                 file_path
+             )
+             background_tasks.add_task(
+                 chunked_upload_service.cleanup_upload_session,
+                 upload_id
+             )
+
+             return result
+
+         except FileNotFoundError:
+             raise HTTPException(status_code=404, detail="Upload session not
+      found")
+         except ValueError as e:
+             raise HTTPException(status_code=400, detail=str(e))
+         except Exception as e:
+             logger.error(f"❌ Complete upload failed: {e}", exc_info=True)
+             raise HTTPException(status_code=500, detail=str(e))
+
+     ---
+     Error Handling & HTTP Status Codes
+
+     | Code | Scenario                            | Response                
+                                                |
+     |------|-------------------------------------|-------------------------
+     -------------------------------------------|
+     | 200  | Upload successful                   | {"status": "success", 
+     ...}                                         |
+     | 400  | Invalid tripId, missing chunks      | {"status": "error", 
+     "message": "..."}                              |
+     | 404  | Upload session not found            | {"status": "error", 
+     "message": "Upload session not found"}         |
+     | 408  | Request timeout (client too slow)   | {"status": "error", 
+     "message": "Upload timeout"}                   |
+     | 413  | File exceeds 1GB                    | {"status": "error", 
+     "message": "File exceeds maximum size of 1GB"} |
+     | 507  | Insufficient disk space             | {"status": "error", 
+     "message": "Insufficient disk space"}          |
+     | 500  | Server error (disk write, assembly) | {"status": "error", 
+     "message": "Upload failed: ..."}               |
+     | 504  | Gateway timeout (Nginx)             | Nginx default error page
+                                                |
+
+     Logging Pattern
+
+     Follow existing emoji patterns:
+     - 📥 File received
+     - ✅ Success
+     - ❌ Error
+     - 🗑️ Cleanup
+     - 📦 Chunk received
+     - 🔧 Assembly started
+     - 💾 File saved
+
+     Example:
+     logger.info(f"📥 Initiated upload session {upload_id} for {filename} 
+     ({total_size} bytes)")
+     logger.info(f"📦 Chunk {part_number} received for {upload_id}")
+     logger.info(f"🔧 Assembling {len(parts)} chunks for {upload_id}")
+     logger.info(f"✅ Upload complete: {file_path} ({total_size} bytes)")
+     logger.warning(f"❌ Upload exceeded size limit: {upload_id}")
+
+     ---
+     Deployment Checklist
+
+     Pre-Deployment
+
+     - Backup current code on server
+     - Test locally with 1GB test file
+     - Install aiofiles in local venv
+     - Verify all new files created
+     - Run local FastAPI server and test endpoints
+
+     Deployment
+
+     - Update requirements.txt on server via deploy_to_server.sh
+     - Deploy code changes
+     - Create /tmp/locopilot_uploads_chunks directory
+     - Deploy cleanup script to /opt/poc2/scripts/
+     - Setup cron job for cleanup
+     - Update Nginx config with 1GB limits
+     - Test Nginx config: sudo nginx -t
+     - Reload Nginx: sudo systemctl reload nginx
+     - Restart FastAPI service: sudo systemctl restart poc2
+     - Verify service started: sudo systemctl status poc2
+
+     Post-Deployment Testing
+
+     - Test /v2/jobs/streaming with 100 MB file
+     - Test /v2/jobs/streaming with 1 GB file
+     - Test chunked upload workflow (initiate → chunks → complete)
+     - Test chunked upload resume (upload partial, resume)
+     - Test error cases (file too large, disk full simulation)
+     - Verify cleanup job runs (check cron logs next day)
+     - Monitor disk usage: df -h /tmp
+     - Monitor logs: tail -f /opt/poc2/logs/LocopilotMonitoring.log
+     - Test old v1 endpoints still work (backward compatibility check)
+
+     Rollback Plan (If Deployment Fails)
+
+     1. SSH to server: ssh locopilot@103.195.244.67
+     2. Revert code: cd /opt/poc2 && git reset --hard HEAD~1
+     3. Revert Nginx: sudo nano /etc/nginx/sites-available/poc2 (restore old
+      values)
+     4. Reload Nginx: sudo systemctl reload nginx
+     5. Restart service: sudo systemctl restart poc2
+
+     ---
+     Monitoring & Housekeeping
+
+     Disk Space Monitoring
+
+     Add to monitoring dashboard:
+     # Check upload temp directory
+     df -h /tmp
+     du -sh /tmp/locopilot_uploads
+     du -sh /tmp/locopilot_uploads_chunks
+
+     # Check for stale sessions
+     find /tmp/locopilot_uploads_chunks -mindepth 1 -maxdepth 1 -type d 
+     -mmin +1440
+
+     Cleanup Job Verification
+
+     Check cron job:
+     sudo crontab -l | grep cleanup_old_uploads
+
+     Check cleanup logs:
+     tail -f /opt/poc2/logs/cleanup.log
+
+     Manual cleanup trigger:
+     /opt/poc2/scripts/cleanup_old_uploads.sh
+
+     Performance Metrics to Monitor
+
+     1. Upload duration (logged in middleware)
+     2. Disk I/O (iostat)
+     3. Memory usage per worker (htop)
+     4. Concurrent uploads (active sessions count)
+     5. Chunk assembly time (logged in service)
+     6. Cleanup job success rate (cron logs)
+
+     ---
+     Client Implementation Guide (For Reference)
+
+     Streaming Upload (Simple)
+
+     import requests
+
+     files = {"video": open("video.mp4", "rb")}
+     data = {"tripId": "trip123", ...}
+
+     response = requests.post(
+         "http://103.195.244.67/api/v2/jobs/streaming",
+         files=files,
+         data=data,
+         timeout=1800  # 30 minutes
+     )
+
+     Chunked Upload (Resumable)
+
+     import requests
+     import os
+     import math
+
+     CHUNK_SIZE = 10 * 1024 * 1024  # 10 MB
+
+     # Step 1: Initiate
+     response = 
+     requests.post("http://103.195.244.67/api/v2/upload/initiate", data={
+         "filename": "video.mp4",
+         "total_size": os.path.getsize("video.mp4"),
+         "tripId": "trip123"
+     })
+     upload_id = response.json()["upload_id"]
+
+     # Step 2: Upload chunks
+     with open("video.mp4", "rb") as f:
+         part_number = 1
+         while True:
+             chunk = f.read(CHUNK_SIZE)
+             if not chunk:
+                 break
+
+             files = {"chunk": ("chunk", chunk, "application/octet-stream")}
+             data = {"upload_id": upload_id, "part_number": part_number}
+
+             response = requests.post(
+                 "http://103.195.244.67/api/v2/upload/chunk",
+                 files=files,
+                 data=data
+             )
+
+             if response.status_code != 200:
+                 print(f"Chunk {part_number} failed, retrying...")
+                 # Retry logic here
+
+             part_number += 1
+
+     # Step 3: Complete
+     response = 
+     requests.post("http://103.195.244.67/api/v2/upload/complete", data={
+         "upload_id": upload_id
+     })
+     result = response.json()
+
+     ---
+     Testing Strategy
+
+     Unit Tests (Optional)
+
+     Create tests/test_chunked_upload.py:
+     - Test disk space validation
+     - Test chunk saving
+     - Test chunk assembly
+     - Test session cleanup
+
+     Integration Tests
+
+     1. Small file (100 MB) - streaming endpoint
+     2. Large file (1 GB) - streaming endpoint
+     3. Chunked upload (500 MB) - full workflow
+     4. Chunked resume - upload 50%, simulate failure, resume
+     5. Error case: File too large - 2 GB file
+     6. Error case: Invalid chunk order - skip chunk #2
+     7. Error case: Disk full - simulate with quota
+
+     Load Testing (Optional)
+
+     # Simulate 5 concurrent 100MB uploads
+     for i in {1..5}; do
+         curl -X POST http://103.195.244.67/api/v2/jobs/streaming \
+              -F "video=@test_100mb.mp4" \
+              -F "tripId=trip_$i" &
+     done
+     wait
+
+     ---
+     Critical Files Summary
+
+     Files to CREATE (5 new files)
+
+     1. app/utils/disk_utils.py (~80 lines)
+     2. app/models/chunked_upload_models.py (~150 lines)
+     3. app/services/chunked_upload_service.py (~400 lines)
+     4. app/controllers/v2_video_controller.py (~600 lines)
+     5. scripts/cleanup_old_uploads.sh (~15 lines)
+
+     Files to MODIFY (5 existing files)
+
+     6. app/utils/config.py (1 line changed, 6 lines added)
+     7. gunicorn_config.py (1 line changed, 2 lines added)
+     8. deploy_to_server.sh (~10 lines added)
+     9. requirements.txt (1 line added)
+     10. app/main.py (2 lines added to register v2 router)
+
+     Files to CONFIGURE (1 server file)
+
+     11. /etc/nginx/sites-available/poc2 (Nginx config on server)
+
+     Total New Code: ~1,245 lines
+     Total Modified Lines: ~22 lines
+
+     ---
+     Risk Mitigation
+
+     | Risk                                    | Mitigation                 
+                       |
+     |-----------------------------------------|----------------------------
+     ------------------|
+     | Disk space exhaustion                   | Pre-upload validation with 
+     5GB reserve       |
+     | Abandoned uploads filling disk          | 24-hour TTL + daily cron 
+     cleanup             |
+     | Memory spikes from large files          | Stream in 1MB chunks, never
+      load full file   |
+     | Slow uploads blocking workers           | 30-minute timeout, chunked 
+     option for resume |
+     | Network interruption mid-upload         | Chunked upload with resume 
+     capability        |
+     | Nginx buffering large requests          | proxy_request_buffering off
+      in config        |
+     | Multiple workers processing same upload | Use unique upload_id per 
+     session             |
+     | Assembly failure leaving partial files  | Try-catch with cleanup in 
+     finally block      |
+
+     ---
+     Success Criteria
+
+     - Successfully upload and process 1GB video via streaming endpoint
+     - Successfully upload and process 1GB video via chunked endpoint
+     - Resume chunked upload after simulated network failure
+     - Proper HTTP status codes returned for all error cases
+     - Cleanup job removes sessions older than 24 hours
+     - Disk space validation prevents uploads when < 5GB free
+     - Memory usage stays stable during 1GB upload (no spikes)
+     - Old v1 endpoints continue working (backward compatibility)
+     - All uploads logged with proper emoji patterns
+     - Nginx returns 413 for files > 1GB at proxy level
+
+     ---
+     Next Steps After Implementation
+
+     1. Monitor production for 1 week
+       - Track upload success rates
+       - Monitor disk space trends
+       - Identify any timeout issues
+     2. Optimize if needed
+       - Adjust chunk size based on network conditions
+       - Tune worker count based on concurrent uploads
+       - Adjust cleanup frequency based on disk usage
+     3. Document for team
+       - Update API documentation with v2 endpoints
+       - Add client examples for chunked upload
+       - Create runbook for troubleshooting uploads
+     4. Future enhancements
+       - Add checksum validation (MD5/SHA256)
+       - Add upload progress API endpoint
+       - Add rate limiting per client
+       - Consider TUS protocol for standardization
+
+
+
+
+
+
+
+
+
+
+
+
+⏺ Perfect! The plan is approved. Let me start implementation by creating a
+  todo list to track progress.
+
+⏺ Now let me start with Phase 1: Core Infrastructure. First, I'll create the
+   disk space validation utilities.
+
+⏺ Write(app/utils/disk_utils.py)
+  ⎿  Wrote 169 lines to app/utils/disk_utils.py                            
+     """
+     Disk space utilities for validating sufficient storage before file 
+     uploads.
+     This module provides utilities to check available disk space and ensure
+     sufficient storage exists for large file uploads (up to 1GB).
+     """
+     import os
+     import shutil
+     from typing import Tuple
+
+     … +159 lines (ctrl+o to expand)
+
+⏺ Read(requirements.txt)
+  ⎿  Read 36 lines
+
+⏺ Update(requirements.txt)
+  ⎿  Updated requirements.txt with 2 additions                         
+       33    # Note: mediapipe requires numpy<2, which is incompatible 
+            with opencv-python>=4.12
+       34    # Using opencv-contrib-python instead, which includes all 
+            opencv-python features
+       35    
+       36 +  # Async file I/O for streaming uploads
+       37 +  aiofiles==23.2.1
+
+⏺ Read(app/utils/config.py)
+  ⎿  Read 107 lines
+
+⏺ Update(app/utils/config.py)
+  ⎿  Updated app/utils/config.py with 11 additions and 1 removal        
+       41        port: int = 8000
+       42        
+       43        # File upload settings
+       44 -      max_upload_size: int = 500 * 1024 * 1024  # 500 MB
+       44 +      max_upload_size: int = 1 * 1024 * 1024 * 1024  # 
+          +  1 GB (upgraded from 500 MB)
+       45        allowed_video_extensions: List[str] = [".mp4", ".avi", 
+            ".mov", ".mkv"]
+       46        # Use cross-platform temp directory (works on Windows, 
+            macOS, and Linux)
+       47        upload_dir: str = os.getenv("UPLOAD_DIR", 
+            os.path.join(tempfile.gettempdir(), "locopilot_uploads"))
+       48 +  
+       49 +      # Chunked upload settings (for resumable uploads)
+       50 +      chunk_upload_dir: str = os.getenv(
+       51 +          "CHUNK_UPLOAD_DIR",
+       52 +          os.path.join(tempfile.gettempdir(), 
+          + "locopilot_uploads_chunks")
+       53 +      )
+       54 +      chunk_size_default: int = 10 * 1024 * 1024  # 10 MB 
+          + default chunk size
+       55 +      chunk_session_ttl_hours: int = 24  # Auto-cleanup 
+          + sessions after 24 hours
+       56 +      disk_reserve_gb: int = 5  # Reserve 5GB minimum disk 
+          + space
+       57 +      stream_chunk_size: int = 1 * 1024 * 1024  # 1 MB read 
+          + size for streaming uploads
+       58        
+       59        # Output settings
+       60        # Convert to absolute path to avoid path resolution 
+            issues
+
+⏺ Read(gunicorn_config.py)
+  ⎿  Read 142 lines
+
+⏺ Update(gunicorn_config.py)
+  ⎿  Updated gunicorn_config.py with 4 additions and 2 removals         
+       32    preload_app = True
+       33    
+       34    # Timeouts
+       35 -  # ✅ PRODUCTION: Increased timeout for long videos (15
+          -   minutes)
+       36 -  timeout = int(os.getenv("GUNICORN_TIMEOUT", "900"))  # 15 
+          - minutes for long video processing
+       35 +  # ✅ PRODUCTION: Increased timeout for long videos 
+          +  and large file uploads (30 minutes)
+       36 +  # Note: Large file uploads (up to 1GB) require extended 
+          + timeout
+       37 +  # Body size limit handled by Nginx and application 
+          + validation
+       38 +  timeout = int(os.getenv("GUNICORN_TIMEOUT", "1800"))  # 30 
+          + minutes for long video processing + large uploads
+       39    graceful_timeout = 60
+       40    keepalive = 5
+       41    
+
+⏺ Write(app/models/chunked_upload_models.py)
+  ⎿  Wrote 139 lines to app/models/chunked_upload_models.py                
+     """
+     Pydantic models for chunked/resumable upload workflow.
+     This module defines the request and response models for the 3-step 
+     chunked upload process:
+     1. Initiate upload session
+     2. Upload individual chunks
+     3. Complete and assemble final file
+     """
+     from typing import List, Optional
+     … +129 lines (ctrl+o to expand)
+
+⏺ Write(app/services/chunked_upload_service.py)
+  ⎿  Wrote 463 lines to app/services/chunked_upload_service.py      
+     """
+     Chunked upload service for managing resumable file uploads.
+     This service handles the 3-step chunked upload workflow:
+     1. Initiate upload session → Returns upload_id
+     2. Upload chunks → Saves individual parts
+     3. Complete upload → Assembles chunks into final file
+     Sessions are stored in temporary directories with metadata and 
+     automatically
+     cleaned up after the configured TTL (default: 24 hours).
+     … +453 lines (ctrl+o to expand)
+
+⏺ Read(app/controllers/video_controller.py)
+  ⎿  Read 100 lines
+
+⏺ Now let me create the v2 video controller with all the streaming and
+  chunked upload endpoints:
+
+⏺ Write(app/controllers/v2_video_controller.py)
+  ⎿  Wrote 527 lines to app/controllers/v2_video_controller.py             
+     """
+     V2 Video Controller - Enhanced API endpoints with streaming and chunked
+      uploads
+     Provides memory-efficient video upload capabilities:
+     1. Streaming uploads - Direct-to-disk for 1GB files
+     2. Chunked uploads - Resumable 3-step protocol for unreliable networks
+     """
+     from typing import Optional
+     import os
+     … +517 lines (ctrl+o to expand)
+  ⎿  5-hour limit reached · resets 4:30pm (Asia/Calcutta) · /upgrade to Max or 
+     turn on /extra-usage
+     /upgrade to increase your usage limit.
+
+> /upgrade 
+  ⎿  Login interrupted
+
+> ok then give the plan.md 
+  ⎿  Found 4 new diagnostic issues in 1 file (ctrl+o to expand)
+  ⎿  5-hour limit reached · resets 4:30pm (Asia/Calcutta) · /upgrade to Max or 
+     turn on /extra-usage
+     /upgrade to increase your usage limit.
+
+
+

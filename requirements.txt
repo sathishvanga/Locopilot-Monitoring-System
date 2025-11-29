@@ -33,3 +33,5 @@ scipy>=1.12.0
 # Note: mediapipe requires numpy<2, which is incompatible with opencv-python>=4.12
 # Using opencv-contrib-python instead, which includes all opencv-python features
 
+# Async file I/O for streaming uploads
+aiofiles==23.2.1

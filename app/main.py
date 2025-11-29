@@ -19,6 +19,7 @@ from fastapi.exceptions import RequestValidationError
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from .controllers import video_router
+from .controllers.v2_video_controller import router as v2_video_router
 from .middleware import LoggingMiddleware
 from .utils.logger import setup_logging, get_logger
 from .utils.config import get_settings
@@ -164,6 +165,7 @@ async def general_exception_handler(request: Request, exc: Exception):
 
 # Register routers
 app.include_router(video_router)
+app.include_router(v2_video_router)
 
 
 # Root endpoint

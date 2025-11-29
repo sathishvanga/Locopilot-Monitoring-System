@@ -605,3 +605,6 @@ RuntimeError: No response returned.
 2025-11-29 12:49:57,055 [N/A] [N/A] [N/A] [b1fe6e8d-458d-4a86-90c2-7b6caa1c0fe1] [INFO] [app.middleware.logging_middleware] [GET /favicon.ico] 📥 Request received - Method: GET, Path: /favicon.ico, Client: 127.0.0.1, User: N/A
 2025-11-29 12:49:57,055 [N/A] [N/A] [N/A] [b1fe6e8d-458d-4a86-90c2-7b6caa1c0fe1] [WARNING] [app.main] [GET /favicon.ico] HTTP 404: Not Found
 2025-11-29 12:49:57,056 [N/A] [N/A] [N/A] [b1fe6e8d-458d-4a86-90c2-7b6caa1c0fe1] [INFO] [app.middleware.logging_middleware] [GET /favicon.ico] 📤 Request completed - Status: 404, Duration: 0.0010s
+2025-11-29 13:24:03,002 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Shutting down application...
+2025-11-29 13:24:03,005 [N/A] [N/A] [N/A] [N/A] [INFO] [app.utils.video_multiprocessing] [N/A N/A] Shutting down shared ProcessPoolExecutor
+2025-11-29 13:24:03,015 [N/A] [N/A] [N/A] [N/A] [INFO] [app.main] [N/A N/A] Shutting down application...

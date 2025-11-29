@@ -41,10 +41,20 @@ class Settings(BaseSettings):
     port: int = 8000
     
     # File upload settings
-    max_upload_size: int = 500 * 1024 * 1024  # 500 MB
+    max_upload_size: int = 1 * 1024 * 1024 * 1024  # 1 GB (upgraded from 500 MB)
     allowed_video_extensions: List[str] = [".mp4", ".avi", ".mov", ".mkv"]
     # Use cross-platform temp directory (works on Windows, macOS, and Linux)
     upload_dir: str = os.getenv("UPLOAD_DIR", os.path.join(tempfile.gettempdir(), "locopilot_uploads"))
+
+    # Chunked upload settings (for resumable uploads)
+    chunk_upload_dir: str = os.getenv(
+        "CHUNK_UPLOAD_DIR",
+        os.path.join(tempfile.gettempdir(), "locopilot_uploads_chunks")
+    )
+    chunk_size_default: int = 10 * 1024 * 1024  # 10 MB default chunk size
+    chunk_session_ttl_hours: int = 24  # Auto-cleanup sessions after 24 hours
+    disk_reserve_gb: int = 5  # Reserve 5GB minimum disk space
+    stream_chunk_size: int = 1 * 1024 * 1024  # 1 MB read size for streaming uploads
     
     # Output settings
     # Convert to absolute path to avoid path resolution issues
