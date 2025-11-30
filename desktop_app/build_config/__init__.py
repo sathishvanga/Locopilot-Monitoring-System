@@ -1,4 +1,0 @@
-"""
-Build configuration for PyInstaller
-"""
-
