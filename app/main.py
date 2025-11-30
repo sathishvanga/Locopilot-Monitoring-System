@@ -140,13 +140,30 @@ async def options_handler(full_path: str):
 @app.exception_handler(StarletteHTTPException)
 async def http_exception_handler(request: Request, exc: StarletteHTTPException):
     """Handle HTTP exceptions"""
+    # Log detailed information for debugging
     logger.warning(f"HTTP {exc.status_code}: {exc.detail}")
+    logger.warning(f"Request path: {request.url.path}, Method: {request.method}")
+    logger.warning(f"Content-Type: {request.headers.get('content-type', 'N/A')}")
+    logger.warning(f"Content-Length: {request.headers.get('content-length', 'N/A')}")
+    
+    # Provide more helpful error message for parsing errors
+    error_message = str(exc.detail)
+    if "parsing the body" in error_message.lower():
+        error_message = (
+            "There was an error parsing the request body. "
+            "This usually means: (1) The file is corrupted or invalid, "
+            "(2) The Content-Type header is incorrect, "
+            "(3) The request was interrupted during upload. "
+            "Please try again with a valid video file (.mp4, .avi, .mov, .mkv)."
+        )
+    
     return JSONResponse(
         status_code=exc.status_code,
         content={
             "status": "error",
-            "message": exc.detail,
-            "error": str(exc.detail)
+            "message": error_message,
+            "error": str(exc.detail),
+            "original_error": str(exc.detail)
         },
         headers={
             "Access-Control-Allow-Origin": "*",
@@ -159,13 +176,22 @@ async def http_exception_handler(request: Request, exc: StarletteHTTPException):
 @app.exception_handler(RequestValidationError)
 async def validation_exception_handler(request: Request, exc: RequestValidationError):
     """Handle request validation errors"""
-    logger.warning(f"Validation error: {exc.errors()}")
+    error_details = exc.errors()
+    error_msg = str(error_details)
+    
+    # Log detailed error information
+    logger.warning(f"Validation error: {error_msg}")
+    logger.warning(f"Request path: {request.url.path}, Method: {request.method}")
+    logger.warning(f"Content-Type: {request.headers.get('content-type', 'N/A')}")
+    logger.warning(f"Content-Length: {request.headers.get('content-length', 'N/A')}")
+    
     return JSONResponse(
         status_code=422,
         content={
             "status": "error",
             "message": "Validation error",
-            "errors": exc.errors()
+            "errors": error_details,
+            "detail": "There was an error parsing the request. Please ensure the file is a valid video file (.mp4, .avi, .mov, .mkv) and the request is properly formatted."
         },
         headers={
             "Access-Control-Allow-Origin": "*",
