@@ -13,3 +13,4 @@ desktop_app/build_config/build/
 desktop_app/build_config/dist/
 *.spec
 *.pyc
+logs/

@@ -40,7 +40,7 @@ class MultiprocessingConfig:
     
     # Model preloading settings
     preload_models: bool = True  # Preload models in worker initializer
-    yolo_model_path: str = "yolo11s.pt"  # Path to YOLO model weights
+    yolo_model_path: str = "yolov8m.pt"  # Path to YOLO model weights
     model_cache_dir: Optional[str] = None  # Model cache directory
     
     # Progress settings
