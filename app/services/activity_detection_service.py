@@ -37,6 +37,7 @@ class ActivityDetectionService:
             'group_detected': ActivityTypeEnum.GROUP_DETECTED,
             'lp_hand_gesture': ActivityTypeEnum.LP_NOT_EXCHANGING_HAND_GESTURE,
             'alp_hand_gesture': ActivityTypeEnum.ALP_NOT_EXCHANGING_HAND_GESTURE,
+            'mind_diversion': ActivityTypeEnum.MIND_DIVERSION,
             'no_person_detected': ActivityTypeEnum.NO_PERSON_DETECTED
         }
         
@@ -49,6 +50,7 @@ class ActivityDetectionService:
             'group_detected': 'More than 2 people (group) detected',
             'lp_hand_gesture': 'LP not exchanging hand gesture',
             'alp_hand_gesture': 'ALP not exchanging hand gesture',
+            'mind_diversion': 'Mind diversion - attention diverted from controls',
             'no_person_detected': 'No person detected in frame'
         }
         
@@ -61,6 +63,7 @@ class ActivityDetectionService:
             'group_detected': 'more_than_2_deduplicated_persons',
             'lp_hand_gesture': 'lp_hand_raised_gesture_detected',
             'alp_hand_gesture': 'alp_hand_raised_gesture_detected',
+            'mind_diversion': 'head_turned_side_and_down',
             'no_person_detected': 'zero_persons_in_frame'
         }
         

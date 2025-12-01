@@ -98,6 +98,40 @@ class Settings(BaseSettings):
     upload_session_timeout: int = 3600  # 1 hour in seconds
     max_upload_sessions: int = 100  # Prevent memory exhaustion
     chunks_cleanup_interval: int = 300  # 5 minutes
+    
+    # Image preprocessing settings (for MediaPipe detection enhancement)
+    enable_image_preprocessing: bool = bool(int(os.getenv("ENABLE_IMAGE_PREPROCESSING", "1")))  # Enable by default
+    use_clahe: bool = bool(int(os.getenv("USE_CLAHE", "1")))  # CLAHE is most effective
+    use_gamma_correction: bool = bool(int(os.getenv("USE_GAMMA_CORRECTION", "1")))
+    use_unsharp_masking: bool = bool(int(os.getenv("USE_UNSHARP_MASKING", "0")))  # Optional, can add artifacts
+    use_noise_reduction: bool = bool(int(os.getenv("USE_NOISE_REDUCTION", "1")))
+    adaptive_preprocessing: bool = bool(int(os.getenv("ADAPTIVE_PREPROCESSING", "1")))  # Use quality metrics
+    clahe_clip_limit: float = float(os.getenv("CLAHE_CLIP_LIMIT", "2.0"))
+    
+    # Parse tile grid size from environment variable (JSON array string)
+    @field_validator('clahe_tile_grid_size', mode='before')
+    @classmethod
+    def parse_tile_grid_size(cls, v):
+        """Parse tile grid size from JSON string or return default"""
+        if v is None:
+            return [8, 8]
+        if isinstance(v, str):
+            try:
+                parsed = json.loads(v)
+                if isinstance(parsed, list) and len(parsed) == 2:
+                    return [int(parsed[0]), int(parsed[1])]
+            except (json.JSONDecodeError, ValueError, TypeError, IndexError):
+                pass
+            return [8, 8]
+        if isinstance(v, list) and len(v) == 2:
+            return [int(v[0]), int(v[1])]
+        return [8, 8]
+    
+    clahe_tile_grid_size: List[int] = json.loads(os.getenv("CLAHE_TILE_GRID_SIZE", "[8, 8]"))
+    gamma_value: float = float(os.getenv("GAMMA_VALUE", "1.2"))
+    unsharp_strength: float = float(os.getenv("UNSHARP_STRENGTH", "1.5"))
+    unsharp_radius: int = int(os.getenv("UNSHARP_RADIUS", "1"))
+    noise_reduction_kernel: int = int(os.getenv("NOISE_REDUCTION_KERNEL", "3"))
 
 
 @lru_cache()

@@ -9,6 +9,48 @@ import os
 import logging
 import gc
 import contextlib
+import sys
+
+# Add app directory to path for importing preprocessing service
+script_dir = os.path.dirname(os.path.abspath(__file__))
+if script_dir not in sys.path:
+    sys.path.insert(0, script_dir)
+
+# Import preprocessing service and config
+try:
+    from app.services.image_preprocessing_service import ImagePreprocessingService
+    from app.utils.config import get_settings
+except ImportError:
+    # Fallback: try importing as module
+    try:
+        import importlib.util
+        preprocessing_path = os.path.join(script_dir, 'app', 'services', 'image_preprocessing_service.py')
+        config_path = os.path.join(script_dir, 'app', 'utils', 'config.py')
+        
+        if os.path.exists(preprocessing_path):
+            spec = importlib.util.spec_from_file_location("image_preprocessing_service", preprocessing_path)
+            if spec and spec.loader:
+                preprocessing_module = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(preprocessing_module)
+                ImagePreprocessingService = preprocessing_module.ImagePreprocessingService
+            else:
+                ImagePreprocessingService = None
+        else:
+            ImagePreprocessingService = None
+        
+        if os.path.exists(config_path):
+            spec = importlib.util.spec_from_file_location("config", config_path)
+            if spec and spec.loader:
+                config_module = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(config_module)
+                get_settings = config_module.get_settings
+            else:
+                get_settings = None
+        else:
+            get_settings = None
+    except Exception:
+        ImagePreprocessingService = None
+        get_settings = None
 
 # ✅ WINDOWS FIX: Prevent Qt/GUI initialization in worker processes
 # If running in a worker process (detected by QT_QPA_PLATFORM=offscreen),
@@ -128,6 +170,32 @@ class LocopilotActivityMonitor:
 
         # Cell phone detection confidence threshold (configurable)
         self.cell_phone_confidence = float(os.getenv("CELL_PHONE_CONFIDENCE", "0.45"))
+        
+        # Initialize image preprocessing service for MediaPipe enhancement
+        if ImagePreprocessingService is not None and get_settings is not None:
+            try:
+                settings = get_settings()
+                preprocessing_config = {
+                    'enable_image_preprocessing': settings.enable_image_preprocessing,
+                    'use_clahe': settings.use_clahe,
+                    'use_gamma_correction': settings.use_gamma_correction,
+                    'use_unsharp_masking': settings.use_unsharp_masking,
+                    'use_noise_reduction': settings.use_noise_reduction,
+                    'adaptive_preprocessing': settings.adaptive_preprocessing,
+                    'clahe_clip_limit': settings.clahe_clip_limit,
+                    'clahe_tile_grid_size': settings.clahe_tile_grid_size,
+                    'gamma_value': settings.gamma_value,
+                    'unsharp_strength': settings.unsharp_strength,
+                    'unsharp_radius': settings.unsharp_radius,
+                    'noise_reduction_kernel': settings.noise_reduction_kernel
+                }
+                self.preprocessing_service = ImagePreprocessingService(config=preprocessing_config)
+                print("Image preprocessing service initialized")
+            except Exception as e:
+                print(f"Warning: Failed to initialize image preprocessing service: {e}")
+                self.preprocessing_service = None
+        else:
+            self.preprocessing_service = None
 
         # Activity tracking with temporal filtering
         self.activities = {
@@ -153,10 +221,11 @@ class LocopilotActivityMonitor:
         self.activity_thresholds = {
             'packing_bags': {
                 'min_duration': 0.0,          # NO minimum duration - any detection creates activity
-                'required_consecutive': 3,    # 3 samples @ 0.5fps = 6 seconds - INCREASED to reduce false positives
-                'margin': 25,                 # Hand proximity margin - reduced from 40 to 25 for stricter detection
-                'region_margin': 100,         # Region overlap margin for backpack detection
-                'grace_frames': 5             # Allow 5 samples (~10s) gap to group nearby detections
+                'required_consecutive': 2,    # REDUCED from 3 to 2 samples @ 0.5fps = 4 seconds (faster detection)
+                'margin': 50,                 # INCREASED from 25 to 50px - more lenient hand proximity
+                'region_margin': 150,         # INCREASED from 100 to 150px - wider region overlap
+                'grace_frames': 5,            # Allow 5 samples (~10s) gap to group nearby detections
+                'sustained_proximity_seconds': 4.0  # NEW: If hand near backpack for 4+ seconds, detect as packing
             },
             'writing': {
                 'min_duration': 0.0,          # NO minimum duration - any detection creates activity
@@ -285,6 +354,7 @@ class LocopilotActivityMonitor:
             'group_detected': 7,
             'lp_hand_gesture': 8,
             'alp_hand_gesture': 9,
+            'mind_diversion': 10,
             'no_person_detected': 11
         }
         
@@ -327,6 +397,29 @@ class LocopilotActivityMonitor:
         
         # Store all activities for final JSON array output
         self.all_activities = []
+
+    def _preprocess_frame_for_pose(self, frame: np.ndarray) -> np.ndarray:
+        """
+        Preprocess frame before MediaPipe Pose processing
+        
+        Applies image enhancement techniques to improve MediaPipe detection,
+        especially for hand/wrist landmarks in challenging lighting conditions.
+        
+        Args:
+            frame: RGB image (numpy array, uint8) ready for MediaPipe
+            
+        Returns:
+            Preprocessed RGB image ready for MediaPipe
+        """
+        if self.preprocessing_service is None:
+            return frame
+        
+        try:
+            return self.preprocessing_service.preprocess_for_mediapipe(frame)
+        except Exception as e:
+            # Log error but return original frame to avoid breaking processing
+            gesture_logger.warning(f"Preprocessing error: {e}, using original frame")
+            return frame
 
     def update_per_person_detection(self, person_idx, activity_type, detected, timestamp_sec):
         """
@@ -1690,8 +1783,38 @@ class LocopilotActivityMonitor:
                 person_poses[person_idx] = None
                 continue
             
-            # Crop frame to person's bounding box
-            cropped_frame = frame[y1:y2, x1:x2]
+            # Add padding to bbox for better pose detection, especially for extended arms/hands
+            # Overhead cameras need more padding, especially vertically for raised hands
+            padding_x = int((x2 - x1) * 0.25)  # 25% padding
+            padding_y = int((y2 - y1) * 0.35)   # 35% padding (more vertical for raised hands)
+            
+            # Expand bbox with padding, but stay within frame bounds
+            x1_padded = max(0, x1 - padding_x)
+            y1_padded = max(0, y1 - padding_y)
+            x2_padded = min(w, x2 + padding_x)
+            y2_padded = min(h, y2 + padding_y)
+            
+            # Ensure minimum crop size for MediaPipe (at least 256x256 pixels)
+            crop_width = x2_padded - x1_padded
+            crop_height = y2_padded - y1_padded
+            min_size = 256
+            
+            if crop_width < min_size or crop_height < min_size:
+                # Expand to minimum size, centered on original crop
+                if crop_width < min_size:
+                    center_x = (x1_padded + x2_padded) // 2
+                    x1_padded = max(0, center_x - min_size // 2)
+                    x2_padded = min(w, x1_padded + min_size)
+                    x1_padded = max(0, x2_padded - min_size)  # Adjust if hit boundary
+                
+                if crop_height < min_size:
+                    center_y = (y1_padded + y2_padded) // 2
+                    y1_padded = max(0, center_y - min_size // 2)
+                    y2_padded = min(h, y1_padded + min_size)
+                    y1_padded = max(0, y2_padded - min_size)  # Adjust if hit boundary
+            
+            # Crop frame to person's bounding box with padding
+            cropped_frame = frame[y1_padded:y2_padded, x1_padded:x2_padded]
             
             # Check if crop is valid
             if cropped_frame.size == 0:
@@ -1701,6 +1824,9 @@ class LocopilotActivityMonitor:
             # Convert to RGB for MediaPipe
             cropped_rgb = cv2.cvtColor(cropped_frame, cv2.COLOR_BGR2RGB)
             
+            # Apply image preprocessing to enhance MediaPipe detection
+            cropped_rgb = self._preprocess_frame_for_pose(cropped_rgb)
+            
             # Run MediaPipe Pose on cropped region
             try:
                 pose_result = self.pose.process(cropped_rgb)
@@ -1709,10 +1835,10 @@ class LocopilotActivityMonitor:
                     # Translate landmarks from cropped coordinates to full frame coordinates
                     translated_landmarks = self.translate_pose_landmarks(
                         pose_result.pose_landmarks,
-                        offset_x=x1,
-                        offset_y=y1,
-                        crop_width=x2-x1,
-                        crop_height=y2-y1,
+                        offset_x=x1_padded,
+                        offset_y=y1_padded,
+                        crop_width=x2_padded-x1_padded,
+                        crop_height=y2_padded-y1_padded,
                         frame_width=w,
                         frame_height=h
                     )
@@ -2556,8 +2682,9 @@ class LocopilotActivityMonitor:
         history['timestamps'].append(timestamp_sec)
         history['active_hand'].append(active_hand)
 
-        # Need at least 4 samples to detect pattern (8 seconds)
-        if len(history['distances']) < 4:
+        # REDUCED: Need at least 3 samples to detect pattern (6 seconds @ 0.5fps)
+        # This allows faster detection while still having enough data
+        if len(history['distances']) < 3:
             return {
                 'packing_motion_detected': False,
                 'direction_changes': 0,
@@ -2569,10 +2696,18 @@ class LocopilotActivityMonitor:
         # Analyze motion pattern
         distances = list(history['distances'])
 
-        # Calculate velocity (pixels per frame)
+        # Calculate velocity (pixels per second, accounting for frame timing)
+        # At 0.5fps, frames are 2 seconds apart, so we need to normalize
         velocities = []
         for i in range(1, len(distances)):
-            velocity = abs(distances[i] - distances[i-1])
+            distance_change = abs(distances[i] - distances[i-1])
+            time_diff = history['timestamps'][i] - history['timestamps'][i-1]
+            if time_diff > 0:
+                # Convert to pixels per second
+                velocity = distance_change / time_diff
+            else:
+                # Fallback: assume 2 seconds between frames at 0.5fps
+                velocity = distance_change / 2.0
             velocities.append(velocity)
 
         avg_velocity = sum(velocities) / len(velocities) if velocities else 0
@@ -2589,19 +2724,33 @@ class LocopilotActivityMonitor:
 
             prev_direction = current_direction
 
-        # Packing motion criteria:
-        # 1. At least 2 direction changes (back-and-forth motion)
-        # 2. Moderate velocity (30-120 px/frame - not too slow, not too fast)
-        # 3. Hand consistency (same hand used in recent frames)
+        # Packing motion criteria (RELAXED):
+        # 1. At least 1 direction change (back-and-forth motion) - REDUCED from 2
+        # 2. Moderate velocity (15-200 px/sec - RELAXED range, accounting for frame timing)
+        # 3. Hand consistency (same hand used in recent frames) - RELAXED
+        # 4. OR: Sustained proximity (hand near backpack for extended time)
 
-        # Check hand consistency (at least 3 of last 4 frames use same hand)
-        recent_hands = list(history['active_hand'])[-4:]
-        hand_consistency = recent_hands.count(active_hand) >= 3
+        # Check hand consistency (at least 2 of last 3 frames use same hand) - RELAXED
+        recent_hands = list(history['active_hand'])[-3:]
+        hand_consistency = recent_hands.count(active_hand) >= 2 if len(recent_hands) >= 2 else True
 
+        # Check sustained proximity (hand consistently close to backpack)
+        # If all distances are below threshold, it's sustained proximity
+        proximity_threshold = 100  # pixels
+        sustained_proximity = all(d < proximity_threshold for d in distances[-3:]) if len(distances) >= 3 else False
+        
+        # Calculate time span of history
+        time_span = history['timestamps'][-1] - history['timestamps'][0] if len(history['timestamps']) >= 2 else 0
+        sustained_proximity_time = time_span >= 4.0  # 4+ seconds of proximity
+
+        # Packing detected if:
+        # - Motion pattern detected (direction changes + velocity + consistency), OR
+        # - Sustained proximity for 4+ seconds (simpler case: hand just stays near backpack)
         packing_detected = (
-            direction_changes >= 2 and
-            30 <= avg_velocity <= 120 and
-            hand_consistency
+            (direction_changes >= 1 and  # REDUCED from 2
+             15 <= avg_velocity <= 200 and  # RELAXED range: 15-200 px/sec (was 30-120 px/frame)
+             hand_consistency) or
+            (sustained_proximity and sustained_proximity_time)  # NEW: Sustained proximity fallback
         )
 
         return {
@@ -2611,7 +2760,10 @@ class LocopilotActivityMonitor:
             'history_length': len(history['distances']),
             'hand_consistency': hand_consistency,
             'active_hand': active_hand,
-            'reason': 'valid_pattern' if packing_detected else 'no_packing_pattern'
+            'sustained_proximity': sustained_proximity,
+            'sustained_proximity_time': sustained_proximity_time,
+            'time_span': time_span,
+            'reason': 'valid_pattern' if packing_detected else ('sustained_proximity' if (sustained_proximity and sustained_proximity_time) else 'no_packing_pattern')
         }
 
     def detect_multi_person_pose_and_gestures(self, frame, person_roles):
@@ -2643,15 +2795,35 @@ class LocopilotActivityMonitor:
             bbox = person_data['bbox']  # [x1, y1, x2, y2]
             x1, y1, x2, y2 = bbox
             
-            # Add padding to bbox for better pose detection (10% on each side)
-            padding_x = int((x2 - x1) * 0.1)
-            padding_y = int((y2 - y1) * 0.1)
+            # INCREASED padding for better pose detection, especially for extended arms/hands
+            # Overhead cameras need more padding, especially vertically for raised hands
+            padding_x = int((x2 - x1) * 0.25)  # Increased from 10% to 25%
+            padding_y = int((y2 - y1) * 0.35)   # Increased from 10% to 35% (more vertical for raised hands)
             
             # Expand bbox with padding, but stay within frame bounds
             x1_padded = int(max(0, x1 - padding_x))
             y1_padded = int(max(0, y1 - padding_y))
             x2_padded = int(min(w, x2 + padding_x))
             y2_padded = int(min(h, y2 + padding_y))
+            
+            # Ensure minimum crop size for MediaPipe (at least 256x256 pixels)
+            crop_width = x2_padded - x1_padded
+            crop_height = y2_padded - y1_padded
+            min_size = 256
+            
+            if crop_width < min_size or crop_height < min_size:
+                # Expand to minimum size, centered on original crop
+                if crop_width < min_size:
+                    center_x = (x1_padded + x2_padded) // 2
+                    x1_padded = max(0, center_x - min_size // 2)
+                    x2_padded = min(w, x1_padded + min_size)
+                    x1_padded = max(0, x2_padded - min_size)  # Adjust if hit boundary
+                
+                if crop_height < min_size:
+                    center_y = (y1_padded + y2_padded) // 2
+                    y1_padded = max(0, center_y - min_size // 2)
+                    y2_padded = min(h, y1_padded + min_size)
+                    y1_padded = max(0, y2_padded - min_size)  # Adjust if hit boundary
             
             # Crop frame to this person's region
             try:
@@ -2662,6 +2834,9 @@ class LocopilotActivityMonitor:
                 
                 # Convert to RGB for MediaPipe
                 cropped_rgb = cv2.cvtColor(cropped_frame, cv2.COLOR_BGR2RGB)
+                
+                # Apply image preprocessing to enhance MediaPipe detection
+                cropped_rgb = self._preprocess_frame_for_pose(cropped_rgb)
                 
                 # Run MediaPipe Pose on this cropped region
                 pose_result = self.pose.process(cropped_rgb)
@@ -2793,15 +2968,35 @@ class LocopilotActivityMonitor:
             bbox = person_data['bbox']  # [x1, y1, x2, y2]
             x1, y1, x2, y2 = bbox
             
-            # Add padding to bbox for better pose detection (10% on each side)
-            padding_x = int((x2 - x1) * 0.1)
-            padding_y = int((y2 - y1) * 0.1)
+            # INCREASED padding for better pose detection, especially for extended arms/hands
+            # Overhead cameras need more padding, especially vertically for raised hands
+            padding_x = int((x2 - x1) * 0.25)  # Increased from 10% to 25%
+            padding_y = int((y2 - y1) * 0.35)   # Increased from 10% to 35% (more vertical for raised hands)
             
             # Expand bbox with padding, but stay within frame bounds
             x1_padded = int(max(0, x1 - padding_x))
             y1_padded = int(max(0, y1 - padding_y))
             x2_padded = int(min(w, x2 + padding_x))
             y2_padded = int(min(h, y2 + padding_y))
+            
+            # Ensure minimum crop size for MediaPipe (at least 256x256 pixels)
+            crop_width = x2_padded - x1_padded
+            crop_height = y2_padded - y1_padded
+            min_size = 256
+            
+            if crop_width < min_size or crop_height < min_size:
+                # Expand to minimum size, centered on original crop
+                if crop_width < min_size:
+                    center_x = (x1_padded + x2_padded) // 2
+                    x1_padded = max(0, center_x - min_size // 2)
+                    x2_padded = min(w, x1_padded + min_size)
+                    x1_padded = max(0, x2_padded - min_size)  # Adjust if hit boundary
+                
+                if crop_height < min_size:
+                    center_y = (y1_padded + y2_padded) // 2
+                    y1_padded = max(0, center_y - min_size // 2)
+                    y2_padded = min(h, y1_padded + min_size)
+                    y1_padded = max(0, y2_padded - min_size)  # Adjust if hit boundary
             
             # Crop frame to this person's region
             try:
@@ -2812,6 +3007,9 @@ class LocopilotActivityMonitor:
                 
                 # Convert to RGB for MediaPipe
                 cropped_rgb = cv2.cvtColor(cropped_frame, cv2.COLOR_BGR2RGB)
+                
+                # Apply image preprocessing to enhance MediaPipe detection
+                cropped_rgb = self._preprocess_frame_for_pose(cropped_rgb)
                 
                 # Run MediaPipe Pose on this cropped region
                 pose_result = self.pose.process(cropped_rgb)
@@ -3082,14 +3280,34 @@ class LocopilotActivityMonitor:
                     landmarks = translated_landmarks.landmark
                     right_hand = landmarks[self.mp_pose.PoseLandmark.RIGHT_WRIST]
                     left_hand = landmarks[self.mp_pose.PoseLandmark.LEFT_WRIST]
-
-                    # Use smoothed hand positions to reduce pose estimation noise
-                    right_hand_coords = _get_smoothed_hand_position(
-                        person_idx, 'right', right_hand, w, h, timestamp_sec
-                    )
-                    left_hand_coords = _get_smoothed_hand_position(
-                        person_idx, 'left', left_hand, w, h, timestamp_sec
-                    )
+                    
+                    # Check wrist visibility - only use if visible enough
+                    right_wrist_visible = right_hand.visibility > 0.3  # MediaPipe visibility threshold
+                    left_wrist_visible = left_hand.visibility > 0.3
+                    
+                    # Use smoothed hand positions to reduce pose estimation noise (only if visible)
+                    right_hand_coords = None
+                    left_hand_coords = None
+                    
+                    if right_wrist_visible:
+                        right_hand_coords = _get_smoothed_hand_position(
+                            person_idx, 'right', right_hand, w, h, timestamp_sec
+                        )
+                    elif left_wrist_visible:
+                        # Fallback: if right wrist not visible, try using right elbow as approximation
+                        right_elbow = landmarks[self.mp_pose.PoseLandmark.RIGHT_ELBOW]
+                        if right_elbow.visibility > 0.3:
+                            right_hand_coords = (int(right_elbow.x * w), int(right_elbow.y * h))
+                    
+                    if left_wrist_visible:
+                        left_hand_coords = _get_smoothed_hand_position(
+                            person_idx, 'left', left_hand, w, h, timestamp_sec
+                        )
+                    elif right_wrist_visible:
+                        # Fallback: if left wrist not visible, try using left elbow as approximation
+                        left_elbow = landmarks[self.mp_pose.PoseLandmark.LEFT_ELBOW]
+                        if left_elbow.visibility > 0.3:
+                            left_hand_coords = (int(left_elbow.x * w), int(left_elbow.y * h))
 
                     # Separate margins: region overlap vs. hand proximity
                     region_margin = self.activity_thresholds['packing_bags'].get('region_margin', 100)
@@ -3118,9 +3336,14 @@ class LocopilotActivityMonitor:
                                 # Store motion analysis in debug info
                                 person_debug_info['packing_motion'] = packing_motion_analysis
 
-                                # Only trigger if motion analysis confirms packing pattern
-                                if packing_motion_analysis['packing_motion_detected']:
-                                    # Use per-person temporal filtering (3 frame requirement)
+                                # IMPROVED: Trigger if motion analysis confirms packing pattern OR sustained proximity
+                                # This handles cases where person is consistently near backpack (simpler packing activity)
+                                motion_confirmed = packing_motion_analysis['packing_motion_detected']
+                                sustained_proximity = packing_motion_analysis.get('sustained_proximity', False) and \
+                                                     packing_motion_analysis.get('sustained_proximity_time', False)
+                                
+                                if motion_confirmed or sustained_proximity:
+                                    # Use per-person temporal filtering (now 2 frame requirement after threshold change)
                                     should_trigger = self.update_per_person_detection(
                                         person_idx, 'packing_bags', True, timestamp_sec
                                     )
@@ -3501,15 +3724,35 @@ class LocopilotActivityMonitor:
         for bbox in person_boxes:
             x1, y1, x2, y2 = map(int, bbox)
             
-            # Add padding to bbox for better pose detection (10% on each side)
-            padding_x = int((x2 - x1) * 0.1)
-            padding_y = int((y2 - y1) * 0.1)
+            # INCREASED padding for better pose detection, especially for extended arms/hands
+            # Overhead cameras need more padding, especially vertically for raised hands
+            padding_x = int((x2 - x1) * 0.25)  # Increased from 10% to 25%
+            padding_y = int((y2 - y1) * 0.35)   # Increased from 10% to 35% (more vertical for raised hands)
             
             # Expand bbox with padding, but stay within frame bounds
             x1_padded = max(0, x1 - padding_x)
             y1_padded = max(0, y1 - padding_y)
             x2_padded = min(w, x2 + padding_x)
             y2_padded = min(h, y2 + padding_y)
+            
+            # Ensure minimum crop size for MediaPipe (at least 256x256 pixels)
+            crop_width = x2_padded - x1_padded
+            crop_height = y2_padded - y1_padded
+            min_size = 256
+            
+            if crop_width < min_size or crop_height < min_size:
+                # Expand to minimum size, centered on original crop
+                if crop_width < min_size:
+                    center_x = (x1_padded + x2_padded) // 2
+                    x1_padded = max(0, center_x - min_size // 2)
+                    x2_padded = min(w, x1_padded + min_size)
+                    x1_padded = max(0, x2_padded - min_size)  # Adjust if hit boundary
+                
+                if crop_height < min_size:
+                    center_y = (y1_padded + y2_padded) // 2
+                    y1_padded = max(0, center_y - min_size // 2)
+                    y2_padded = min(h, y1_padded + min_size)
+                    y1_padded = max(0, y2_padded - min_size)  # Adjust if hit boundary
             
             try:
                 # Crop frame to this person's region
@@ -3520,6 +3763,9 @@ class LocopilotActivityMonitor:
                 
                 # Convert to RGB for MediaPipe
                 cropped_rgb = cv2.cvtColor(cropped_frame, cv2.COLOR_BGR2RGB)
+                
+                # Apply image preprocessing to enhance MediaPipe detection
+                cropped_rgb = self._preprocess_frame_for_pose(cropped_rgb)
                 
                 # Run MediaPipe Pose on cropped region
                 pose_result = self.pose.process(cropped_rgb)
