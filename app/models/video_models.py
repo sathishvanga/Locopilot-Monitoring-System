@@ -153,13 +153,13 @@ class VideoProcessingResponse(BaseModel):
 
 class VideoProcessingError(BaseModel):
     """Error response model for video processing failures"""
-    
+
     status: str = Field(default="error", description="Error status")
     message: str = Field(..., description="Error message")
     error: str = Field(..., description="Detailed error information")
     tripId: Optional[str] = Field(None, description="Trip ID if available")
-    
-    
+
+
     class Config:
         """Pydantic configuration"""
         json_schema_extra = {
@@ -168,6 +168,89 @@ class VideoProcessingError(BaseModel):
                 "message": "Failed to process video",
                 "error": "Invalid video format: file corrupted",
                 "tripId": "TRIP-20251110-001"
+            }
+        }
+
+
+class ChunkedUploadInitiateResponse(BaseModel):
+    """
+    Response model for initiating a chunked upload session
+    """
+
+    status: str = Field(
+        default="initiated",
+        description="Upload initiation status"
+    )
+    uploadId: str = Field(
+        ...,
+        description="Unique upload session identifier (UUID)"
+    )
+    totalChunks: int = Field(
+        ...,
+        description="Total number of chunks to upload"
+    )
+    chunkSize: int = Field(
+        default=8388608,
+        description="Size of each chunk in bytes (8 MB)"
+    )
+    expiresAt: str = Field(
+        ...,
+        description="ISO timestamp when this upload session expires"
+    )
+
+    class Config:
+        """Pydantic configuration"""
+        json_schema_extra = {
+            "example": {
+                "status": "initiated",
+                "uploadId": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+                "totalChunks": 13,
+                "chunkSize": 8388608,
+                "expiresAt": "2025-11-30T15:30:00Z"
+            }
+        }
+
+
+class ChunkedUploadChunkResponse(BaseModel):
+    """
+    Response model for uploading a single chunk
+    """
+
+    status: str = Field(
+        default="received",
+        description="Chunk upload status"
+    )
+    uploadId: str = Field(
+        ...,
+        description="Upload session identifier"
+    )
+    chunkIndex: int = Field(
+        ...,
+        description="Index of the chunk that was uploaded"
+    )
+    receivedChunks: int = Field(
+        ...,
+        description="Total number of chunks received so far"
+    )
+    totalChunks: int = Field(
+        ...,
+        description="Total number of chunks expected"
+    )
+    complete: bool = Field(
+        default=False,
+        description="Whether all chunks have been received"
+    )
+
+    class Config:
+        """Pydantic configuration"""
+        json_schema_extra = {
+            "example": {
+                "status": "received",
+                "uploadId": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+                "chunkIndex": 5,
+                "receivedChunks": 6,
+                "totalChunks": 13,
+                "complete": False
             }
         }
 

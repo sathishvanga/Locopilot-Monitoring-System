@@ -11,6 +11,7 @@ os.environ.setdefault('OMP_NUM_THREADS', '1')
 os.environ.setdefault('MKL_NUM_THREADS', '1')
 os.environ.setdefault('TORCH_CPP_LOG_LEVEL', 'ERROR')
 
+import asyncio
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -23,6 +24,7 @@ from .middleware import LoggingMiddleware
 from .utils.logger import setup_logging, get_logger
 from .utils.config import get_settings
 from .utils.video_multiprocessing import shutdown_shared_pool
+from .services.chunked_upload_service import get_chunked_upload_service
 
 
 # Initialize settings and logging
@@ -31,11 +33,31 @@ setup_logging(level=settings.log_level)
 logger = get_logger(__name__)
 
 
+async def periodic_cleanup():
+    """
+    Periodically clean up expired upload sessions
+
+    This background task runs every 5 minutes to remove expired
+    chunked upload sessions and their associated chunk files.
+    """
+    chunked_upload_service = get_chunked_upload_service()
+
+    while True:
+        try:
+            await asyncio.sleep(settings.chunks_cleanup_interval)
+            chunked_upload_service.cleanup_expired_sessions()
+        except asyncio.CancelledError:
+            logger.info("Cleanup task cancelled")
+            break
+        except Exception as e:
+            logger.error(f"Cleanup task error: {e}", exc_info=True)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """
     Application lifespan manager
-    
+
     Handles startup and shutdown events for resource initialization
     and cleanup.
     """
@@ -47,16 +69,28 @@ async def lifespan(app: FastAPI):
     logger.info(f"Upload directory: {settings.upload_dir}")
     logger.info(f"Sample FPS: {settings.sample_fps}")
     logger.info(f"YOLO weights: {settings.yolo_weights}")
+    logger.info(f"Chunked upload enabled - Cleanup interval: {settings.chunks_cleanup_interval}s")
     logger.info("=" * 60)
-    
+
     # Preload models if configured
     if settings.preload_ocr:
         logger.info("OCR preloading enabled")
-    
+
+    # Start background cleanup task for chunked uploads
+    cleanup_task = asyncio.create_task(periodic_cleanup())
+    logger.info("🧹 Started background cleanup task for chunked uploads")
+
     yield
-    
+
     # Shutdown
     logger.info("Shutting down application...")
+
+    # Cancel cleanup task
+    cleanup_task.cancel()
+    try:
+        await cleanup_task
+    except asyncio.CancelledError:
+        pass
 
     # Ensure shared multiprocessing pool is shut down cleanly
     try:
@@ -66,6 +100,8 @@ async def lifespan(app: FastAPI):
             f"Error while shutting down shared multiprocessing pool: {e}",
             exc_info=True,
         )
+
+    logger.info("Shutdown complete")
 
 
 # Create FastAPI application

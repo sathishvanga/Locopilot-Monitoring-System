@@ -81,7 +81,7 @@ class Settings(BaseSettings):
     
     # External API settings (CVVR API)
     cvvr_api_url: str = os.getenv(
-        "CVVR_API_URL", 
+        "CVVR_API_URL",
         "https://api.mindcoinapps.com/ai_demo_api/cvvr/cvvrTripViolations/addUpdateBulk"
     )
     cvvr_api_url_no_events: str = os.getenv(
@@ -92,6 +92,12 @@ class Settings(BaseSettings):
     cvvr_api_timeout: int = int(os.getenv("CVVR_API_TIMEOUT", "30"))
     cvvr_api_enabled: bool = bool(int(os.getenv("CVVR_API_ENABLED", "1")))  # Enable by default
     host_url: str = os.getenv("HOST_URL", "https://celebxmedia.info")  # URL for building fileUrl
+
+    # Chunked upload settings
+    chunk_size: int = 8 * 1024 * 1024  # Fixed 8 MB chunk size
+    upload_session_timeout: int = 3600  # 1 hour in seconds
+    max_upload_sessions: int = 100  # Prevent memory exhaustion
+    chunks_cleanup_interval: int = 300  # 5 minutes
 
 
 @lru_cache()
