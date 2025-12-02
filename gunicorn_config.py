@@ -56,7 +56,7 @@ proc_name = "locopilot-monitor"
 
 # Environment variables
 raw_env = [
-    "YOLO_WEIGHTS_PRELOAD=yolo11s.pt",
+    "YOLO_WEIGHTS_PRELOAD=yolo11n.pt",  # YOLOv8n (nano) for faster CPU inference
     "PRELOAD_OCR=1",
 ]
 
