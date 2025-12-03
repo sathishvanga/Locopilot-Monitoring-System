@@ -68,7 +68,7 @@ class Settings(BaseSettings):
     mp_max_workers_cap: int = 12  # Maximum number of workers (11 cores + slight oversubscription)
     
     # Model settings
-    yolo_weights: str = os.getenv("YOLO_WEIGHTS_PRELOAD", "yolov8n.pt")  # YOLOv8n for faster CPU
+    yolo_weights: str = os.getenv("YOLO_WEIGHTS_PRELOAD", "yolov8m.pt")  # YOLOv8m for faster CPU
     preload_ocr: bool = bool(int(os.getenv("PRELOAD_OCR", "0")))
     
     # Logging settings
