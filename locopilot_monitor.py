@@ -109,6 +109,34 @@ class LocopilotActivityMonitor:
         self.video_path = video_path
         self.output_dir = output_dir
         
+        # Initialize logger
+        self.logger = logging.getLogger(f'{self.__class__.__name__}')
+        if not self.logger.handlers:
+            # Create logs directory if it doesn't exist
+            log_dir = 'logs'
+            os.makedirs(log_dir, exist_ok=True)
+            
+            # File handler - writes to the same log file as main application
+            file_handler = logging.FileHandler(os.path.join(log_dir, 'LocopilotMonitoring.log'))
+            file_handler.setLevel(logging.DEBUG)
+            
+            # Console handler - for terminal output
+            console_handler = logging.StreamHandler()
+            console_handler.setLevel(logging.INFO)
+            
+            # Formatter
+            formatter = logging.Formatter(
+                '%(asctime)s,%(msecs)03d [N/A] [N/A] [N/A] [N/A] [%(levelname)s] [%(name)s] [N/A N/A] %(message)s',
+                datefmt='%Y-%m-%d %H:%M:%S'
+            )
+            file_handler.setFormatter(formatter)
+            console_handler.setFormatter(formatter)
+            
+            # Add handlers
+            self.logger.addHandler(file_handler)
+            self.logger.addHandler(console_handler)
+            self.logger.setLevel(logging.DEBUG)
+        
         # Frame sampling configuration
         self.sample_fps = sample_fps  # Sample frames at this rate (e.g., 0.5 = 1 frame every 2 seconds)
         
@@ -150,19 +178,25 @@ class LocopilotActivityMonitor:
         # Use YOLOv8n (nano) for faster CPU inference - 3-5x faster than YOLOv8m
         # Trade-off: Slightly lower accuracy, but much better for CPU-only deployment
         self.yolo_model = YOLO('yolov8m.pt')
-        print("Initializing MediaPipe...")
-        self.mp_pose = mp.solutions.pose
+
+        # YOLOv8-Pose for body pose estimation (replaces MediaPipe Pose)
+        # Benefits: Native multi-person detection, works better with side/back views
+        print("Loading YOLOv8-Pose model...")
+        from app.services.yolo_pose_adapter import YoloPoseAdapter, YOLO_KEYPOINT_INDICES, get_keypoint_by_name
+        self.yolo_pose = YoloPoseAdapter(model_path='yolov8m-pose.pt', conf_threshold=0.45)
+        self.yolo_keypoint_indices = YOLO_KEYPOINT_INDICES
+        self._get_keypoint_by_name = get_keypoint_by_name
+
+        print("Initializing MediaPipe FaceMesh...")
+        # Keep MediaPipe references for backward compatibility with landmark constants
+        self.mp_pose = mp.solutions.pose  # Keep for PoseLandmark constants (used in legacy code)
         self.mp_face_mesh = mp.solutions.face_mesh
         self.mp_drawing = mp.solutions.drawing_utils
         self.mp_drawing_styles = mp.solutions.drawing_styles
-        
-        # NOTE: MediaPipe Pose only supports single-person tracking
-        # For multi-person scenarios, hands from the "primary" detected person are tracked
-        # Face mesh supports multiple people (up to 2) for microsleep detection
-        self.pose = self.mp_pose.Pose(
-            min_detection_confidence=0.3,
-            min_tracking_confidence=0.3
-        )
+
+        # NOTE: MediaPipe Pose is replaced by YOLOv8-Pose for better multi-person support
+        # and improved detection from side/back camera views
+        # Face mesh is kept for Eye Aspect Ratio (EAR) calculation - no YOLO equivalent
         self.face_mesh = self.mp_face_mesh.FaceMesh(
             max_num_faces=2,  # Track up to 2 faces (both loco pilots)
             refine_landmarks=True,
@@ -231,9 +265,11 @@ class LocopilotActivityMonitor:
             },
             'writing': {
                 'min_duration': 0.0,          # NO minimum duration - any detection creates activity
-                'required_consecutive': 2,    # 2 samples @ 0.5fps = 4 seconds - INCREASED to reduce false positives
-                'margin': 70,                 # Reduced from 100 to 70 for stricter hand-to-book proximity detection
-                'grace_frames': 8             # Allow 8 samples (~16s) gap to group nearby detections
+                'required_consecutive': 3,    # 3 samples @ 0.5fps = 6 seconds - INCREASED to reduce false positives
+                'margin': 100,                # Hand-to-book proximity for book detection method (100px)
+                'grace_frames': 8,            # Allow 8 samples (~16s) gap to group nearby detections
+                # NOTE: Pose-based detection (wrist proximity + head down) uses separate internal
+                #       threshold of 200px for wrist distance, validated in detect_writing_by_wrist_proximity()
             },
             'cell_phone': {
                 'min_duration': 0.0,          # NO minimum duration - any detection creates activity
@@ -261,13 +297,13 @@ class LocopilotActivityMonitor:
             },
             'lp_hand_gesture': {
                 'min_duration': 0.0,          # NO minimum duration - any coordination failure creates activity
-                'required_consecutive': 1,    # 1 sample @ 0.5fps = instant detection (reduced from 2)
+                'required_consecutive': 2,    # INCREASED to 2 samples @ 0.5fps = 4 seconds (reduced false positives with improved landmarks)
                 'margin': None,               # N/A for hand gesture detection
                 'grace_frames': 5             # Allow 5 samples (~10s) gap to handle multiple raises
             },
             'alp_hand_gesture': {
                 'min_duration': 0.0,          # NO minimum duration - any coordination failure creates activity
-                'required_consecutive': 1,    # 1 sample @ 0.5fps = instant detection (reduced from 2)
+                'required_consecutive': 2,    # INCREASED to 2 samples @ 0.5fps = 4 seconds (reduced false positives with improved landmarks)
                 'margin': None,               # N/A for hand gesture detection
                 'grace_frames': 5             # Allow 5 samples (~10s) gap to handle multiple raises
             },
@@ -343,6 +379,11 @@ class LocopilotActivityMonitor:
         self.hand_position_history = {}
         self.hand_history_max_length = 10  # Track last 10 positions (~20s at 0.5 fps)
 
+        # Landmark stability tracking to detect erratic jumps (poor detection quality)
+        # Format: {person_idx: {'right_shoulder': deque([coords]), 'left_shoulder': deque([coords])}}
+        self.landmark_stability_history = {}
+        self.max_landmark_jump_threshold = 100  # pixels - shoulders shouldn't jump more than this
+
         # Evidence counter
         self.evidence_counter = 0
         
@@ -400,28 +441,25 @@ class LocopilotActivityMonitor:
         # Store all activities for final JSON array output
         self.all_activities = []
 
-    def _preprocess_frame_for_pose(self, frame: np.ndarray) -> np.ndarray:
-        """
-        Preprocess frame before MediaPipe Pose processing
-        
-        Applies image enhancement techniques to improve MediaPipe detection,
-        especially for hand/wrist landmarks in challenging lighting conditions.
-        
+    def get_keypoint(self, landmarks, keypoint_name):
+        """Get a keypoint from landmarks by name (works with both YOLO and MediaPipe formats).
+
+        This method provides backward compatibility for code that was written for MediaPipe
+        by mapping keypoint names to YOLO indices.
+
         Args:
-            frame: RGB image (numpy array, uint8) ready for MediaPipe
-            
+            landmarks: YoloPoseLandmarks or MediaPipe NormalizedLandmarkList
+            keypoint_name: String name like 'nose', 'left_wrist', 'RIGHT_SHOULDER', etc.
+                          Case-insensitive, supports both 'left_wrist' and 'LEFT_WRIST'
+
         Returns:
-            Preprocessed RGB image ready for MediaPipe
+            Landmark object with x, y, z, visibility attributes
+
+        Example:
+            nose = self.get_keypoint(landmarks, 'nose')
+            left_wrist = self.get_keypoint(landmarks, 'left_wrist')
         """
-        if self.preprocessing_service is None:
-            return frame
-        
-        try:
-            return self.preprocessing_service.preprocess_for_mediapipe(frame)
-        except Exception as e:
-            # Log error but return original frame to avoid breaking processing
-            gesture_logger.warning(f"Preprocessing error: {e}, using original frame")
-            return frame
+        return self._get_keypoint_by_name(landmarks, keypoint_name)
 
     def update_per_person_detection(self, person_idx, activity_type, detected, timestamp_sec):
         """
@@ -557,63 +595,58 @@ class LocopilotActivityMonitor:
         """
         try:
             # Use nose, neck (midpoint of shoulders), and reference points
-            nose = landmarks[self.mp_pose.PoseLandmark.NOSE]
-            left_shoulder = landmarks[self.mp_pose.PoseLandmark.LEFT_SHOULDER]
-            right_shoulder = landmarks[self.mp_pose.PoseLandmark.RIGHT_SHOULDER]
-            
+            nose = self.get_keypoint(landmarks, 'nose')
+            left_shoulder = self.get_keypoint(landmarks, 'left_shoulder')
+            right_shoulder = self.get_keypoint(landmarks, 'right_shoulder')
+
             # Calculate neck position (midpoint between shoulders)
             neck_x = (left_shoulder.x + right_shoulder.x) / 2
             neck_y = (left_shoulder.y + right_shoulder.y) / 2
-            
+
             # Calculate angle from vertical
             # Positive y goes down in image coordinates
             delta_y = nose.y - neck_y
             delta_x = nose.x - neck_x
-            
+
             # Calculate angle in degrees
             # Negative angle = head tilted forward/down (sleeping position)
             angle = np.arctan2(delta_y, delta_x) * 180 / np.pi - 90
-            
+
             return angle
-            
+
         except Exception as e:
             return None
-    
+
     def calculate_movement_score(self, current_landmarks, previous_landmarks):
         """Calculate movement score between two sets of pose landmarks.
-        
+
         Returns:
             float: Movement score (0 = no movement, higher = more movement)
         """
         if previous_landmarks is None:
             return 0.0
-        
+
         try:
             # Key landmarks to track for movement (upper body)
-            key_landmarks = [
-                self.mp_pose.PoseLandmark.NOSE,
-                self.mp_pose.PoseLandmark.LEFT_SHOULDER,
-                self.mp_pose.PoseLandmark.RIGHT_SHOULDER,
-                self.mp_pose.PoseLandmark.LEFT_ELBOW,
-                self.mp_pose.PoseLandmark.RIGHT_ELBOW,
-                self.mp_pose.PoseLandmark.LEFT_WRIST,
-                self.mp_pose.PoseLandmark.RIGHT_WRIST
+            key_landmark_names = [
+                'nose', 'left_shoulder', 'right_shoulder',
+                'left_elbow', 'right_elbow', 'left_wrist', 'right_wrist'
             ]
-            
+
             total_movement = 0.0
-            for landmark_id in key_landmarks:
-                curr = current_landmarks[landmark_id]
-                prev = previous_landmarks[landmark_id]
-                
+            for landmark_name in key_landmark_names:
+                curr = self.get_keypoint(current_landmarks, landmark_name)
+                prev = self.get_keypoint(previous_landmarks, landmark_name)
+
                 # Calculate Euclidean distance
                 distance = np.sqrt(
-                    (curr.x - prev.x) ** 2 + 
+                    (curr.x - prev.x) ** 2 +
                     (curr.y - prev.y) ** 2
                 )
                 total_movement += distance
             
             # Normalize by number of landmarks
-            movement_score = total_movement / len(key_landmarks)
+            movement_score = total_movement / len(key_landmark_names)
             
             return movement_score
             
@@ -743,114 +776,205 @@ class LocopilotActivityMonitor:
             h, w = frame_shape[:2]
             
             # Get wrist landmarks
-            right_wrist = landmarks[self.mp_pose.PoseLandmark.RIGHT_WRIST]
-            left_wrist = landmarks[self.mp_pose.PoseLandmark.LEFT_WRIST]
-            
+            right_wrist = self.get_keypoint(landmarks, 'right_wrist')
+            left_wrist = self.get_keypoint(landmarks, 'left_wrist')
+
             # Check if wrists are visible enough
             if right_wrist.visibility < 0.5 or left_wrist.visibility < 0.5:
                 return None
-            
+
             # Convert normalized coordinates to pixel coordinates
             right_wrist_px = (right_wrist.x * w, right_wrist.y * h)
             left_wrist_px = (left_wrist.x * w, left_wrist.y * h)
-            
+
             # Calculate Euclidean distance
             distance = np.sqrt(
-                (right_wrist_px[0] - left_wrist_px[0])**2 + 
+                (right_wrist_px[0] - left_wrist_px[0])**2 +
                 (right_wrist_px[1] - left_wrist_px[1])**2
             )
-            
+
             return distance
         except Exception as e:
             return None
-    
+
     def detect_writing_posture(self, pose_landmarks, frame_shape):
         """Instantly detect writing posture based on hand position.
-        
-        Checks if hands are in typical writing position (lap area, close together).
-        This provides instant detection without requiring sustained duration.
-        
+
+        Checks if hands are in typical writing position using multiple criteria:
+        1. Hands below shoulders (relaxed check for camera angles)
+        2. Hands in lap area (strict check)
+        3. Head looking down (indicates reading/writing posture)
+
         Args:
-            pose_landmarks: MediaPipe pose landmarks
+            pose_landmarks: YoloPoseLandmarks or MediaPipe pose landmarks
             frame_shape: Tuple of (height, width) of the frame
-            
+
         Returns:
             bool: True if writing posture detected, False otherwise
         """
         if not pose_landmarks:
             return False
-        
+
         # Validate pose landmarks before using
         if not self.validate_pose_landmarks(pose_landmarks):
             return False
-        
+
         try:
-            landmarks = pose_landmarks.landmark
             h, w = frame_shape[:2]
-            
+
             # Get key body points
-            left_shoulder = landmarks[self.mp_pose.PoseLandmark.LEFT_SHOULDER]
-            right_shoulder = landmarks[self.mp_pose.PoseLandmark.RIGHT_SHOULDER]
-            left_hip = landmarks[self.mp_pose.PoseLandmark.LEFT_HIP]
-            right_hip = landmarks[self.mp_pose.PoseLandmark.RIGHT_HIP]
-            left_wrist = landmarks[self.mp_pose.PoseLandmark.LEFT_WRIST]
-            right_wrist = landmarks[self.mp_pose.PoseLandmark.RIGHT_WRIST]
-            
+            left_shoulder = self.get_keypoint(pose_landmarks, 'left_shoulder')
+            right_shoulder = self.get_keypoint(pose_landmarks, 'right_shoulder')
+            left_hip = self.get_keypoint(pose_landmarks, 'left_hip')
+            right_hip = self.get_keypoint(pose_landmarks, 'right_hip')
+            left_wrist = self.get_keypoint(pose_landmarks, 'left_wrist')
+            right_wrist = self.get_keypoint(pose_landmarks, 'right_wrist')
+
             # Calculate vertical positions (normalized 0-1)
             shoulder_y = (left_shoulder.y + right_shoulder.y) / 2
             hip_y = (left_hip.y + right_hip.y) / 2
             left_wrist_y = left_wrist.y
             right_wrist_y = right_wrist.y
-            
+
             # Calculate wrist positions relative to body
-            # Lap area: between hip and below (y > hip_y)
-            # Chest area: between shoulder and hip
+            # Option 1: Lap area (strict) - wrists below hips
             left_in_lap = left_wrist_y > hip_y
             right_in_lap = right_wrist_y > hip_y
-            
+
+            # Option 2: Below shoulders (relaxed) - better for various camera angles
+            left_below_shoulders = left_wrist_y > shoulder_y
+            right_below_shoulders = right_wrist_y > shoulder_y
+
             # Calculate wrist distance (in pixels)
             left_wrist_x = int(left_wrist.x * w)
             left_wrist_y_px = int(left_wrist.y * h)
             right_wrist_x = int(right_wrist.x * w)
             right_wrist_y_px = int(right_wrist.y * h)
-            
-            wrist_distance = ((left_wrist_x - right_wrist_x) ** 2 + 
+
+            wrist_distance = ((left_wrist_x - right_wrist_x) ** 2 +
                             (left_wrist_y_px - right_wrist_y_px) ** 2) ** 0.5
-            
-            # Writing posture criteria:
-            # 1. Both wrists in lap area (below hips)
-            # 2. Wrists close together (within 200 pixels)
-            WRITING_WRIST_DISTANCE = 200  # pixels
-            
-            if (left_in_lap and right_in_lap and wrist_distance <= WRITING_WRIST_DISTANCE):
+
+            # Check if head is looking down (indicates reading/writing)
+            head_looking_down = self.detect_head_looking_down(pose_landmarks)
+
+            # Writing posture criteria (RELAXED):
+            # 1. Wrists close together (increased from 200 to 300 pixels)
+            # 2. Either: hands in lap OR hands below shoulders
+            # 3. Bonus: head looking down strengthens detection
+            WRITING_WRIST_DISTANCE = 300  # pixels - increased from 200
+
+            # Hands in writing position (either strict lap OR relaxed below-shoulders)
+            hands_in_lap = left_in_lap and right_in_lap
+            hands_below_shoulders = left_below_shoulders and right_below_shoulders
+            hands_in_writing_position = hands_in_lap or hands_below_shoulders
+
+            # Detect if wrists are close enough
+            wrists_close = wrist_distance <= WRITING_WRIST_DISTANCE
+
+            # Writing detected if:
+            # - Hands below shoulders + wrists close, OR
+            # - Head looking down + hands below shoulders (even with wider wrist distance)
+            if hands_in_writing_position and wrists_close:
                 return True
-            
+
+            # Extra: Head looking down with hands below shoulders (wider tolerance)
+            RELAXED_WRIST_DISTANCE = 400  # even more relaxed when head is down
+            if head_looking_down and hands_below_shoulders and wrist_distance <= RELAXED_WRIST_DISTANCE:
+                return True
+
             return False
-            
+
         except Exception as e:
             return False
-    
-    def detect_writing_by_wrist_proximity(self, pose_landmarks, frame_shape, person_idx, timestamp_sec):
-        """Detect writing activity based on wrist proximity heuristic.
-        
-        When both wrists are close together (typical writing posture) for a sustained duration,
-        it indicates writing activity.
-        
+
+    def detect_head_looking_down(self, pose_landmarks):
+        """Check if head is tilted down (looking at lap area).
+
+        Uses nose position relative to eyes to detect downward head tilt,
+        which indicates reading/writing posture.
+
         Args:
-            pose_landmarks: MediaPipe pose landmarks
+            pose_landmarks: YoloPoseLandmarks or MediaPipe pose landmarks
+
+        Returns:
+            bool: True if head is looking down, False otherwise
+        """
+        try:
+            nose = self.get_keypoint(pose_landmarks, 'nose')
+            left_eye = self.get_keypoint(pose_landmarks, 'left_eye')
+            right_eye = self.get_keypoint(pose_landmarks, 'right_eye')
+
+            if nose is None or left_eye is None or right_eye is None:
+                return False
+
+            # Calculate average eye Y position
+            eye_y = (left_eye.y + right_eye.y) / 2
+
+            # Head is looking down when nose is significantly below eye line
+            # Using normalized coordinates (0-1), so 0.02 = ~2% of frame height
+            HEAD_DOWN_THRESHOLD = 0.02
+            return nose.y > eye_y + HEAD_DOWN_THRESHOLD
+
+        except Exception as e:
+            return False
+
+    def check_hands_below_shoulders(self, pose_landmarks):
+        """Check if both hands are below shoulder level.
+
+        A more relaxed check than "hands in lap" for various camera angles.
+
+        Args:
+            pose_landmarks: YoloPoseLandmarks or MediaPipe pose landmarks
+
+        Returns:
+            bool: True if both hands are below shoulders, False otherwise
+        """
+        try:
+            left_shoulder = self.get_keypoint(pose_landmarks, 'left_shoulder')
+            right_shoulder = self.get_keypoint(pose_landmarks, 'right_shoulder')
+            left_wrist = self.get_keypoint(pose_landmarks, 'left_wrist')
+            right_wrist = self.get_keypoint(pose_landmarks, 'right_wrist')
+
+            if any(p is None for p in [left_shoulder, right_shoulder, left_wrist, right_wrist]):
+                return False
+
+            shoulder_y = (left_shoulder.y + right_shoulder.y) / 2
+            return left_wrist.y > shoulder_y and right_wrist.y > shoulder_y
+
+        except Exception as e:
+            return False
+
+    def detect_writing_by_wrist_proximity(self, pose_landmarks, frame_shape, person_idx, timestamp_sec):
+        """Detect writing activity based on wrist proximity + head posture heuristic.
+
+        When both wrists are close together AND head is tilted down (typical writing posture)
+        for a sustained duration, it indicates writing activity. This method serves as a fallback
+        when book detection doesn't trigger but person is clearly writing.
+
+        Required Conditions (both must be true):
+        1. Wrist proximity: Left and right wrists within 200px of each other
+        2. Head posture: Head tilted down (nose below eye line)
+        3. Temporal: Sustained for 4+ seconds across 3+ consecutive frames
+
+        Args:
+            pose_landmarks: MediaPipe pose landmarks (must include wrist + head keypoints)
             frame_shape: Tuple of (height, width) of the frame
             person_idx: Index of the person being analyzed
             timestamp_sec: Current timestamp in seconds
-            
+
         Returns:
-            bool: True if writing detected by wrist proximity, False otherwise
+            bool: True if writing detected by pose-based heuristic, False otherwise
         """
         # Calculate distance between wrists
         wrist_distance = self.calculate_wrist_distance(pose_landmarks, frame_shape)
-        
+
+        # DEBUG: Log wrist distance calculation
         if wrist_distance is None:
+            self.logger.debug(f"Person {person_idx}: Wrist distance = None (landmarks missing)")
             return False
-        
+        else:
+            self.logger.debug(f"Person {person_idx}: Wrist distance = {wrist_distance:.1f}px")
+
         # Initialize tracking for this person if needed
         if person_idx not in self.wrist_proximity_tracking:
             self.wrist_proximity_tracking[person_idx] = {
@@ -858,36 +982,73 @@ class LocopilotActivityMonitor:
                 'duration': 0.0,
                 'consecutive_frames': 0
             }
-        
-        # Configurable thresholds
-        MAX_WRIST_DISTANCE = 150  # pixels - wrists must be within this distance
-        MIN_DURATION = 3.0  # seconds - REDUCED from 4.0 to 2.0 for faster writing detection
-        REQUIRED_CONSECUTIVE = 2  # frames - matches existing writing threshold @ 0.5fps
-        
+
+        # Configurable thresholds (MODERATE to balance detection vs false positives)
+        MAX_WRIST_DISTANCE = 200  # pixels - increased from 150 to 200 for more natural writing positions
+        MIN_DURATION = 4.0  # seconds - sustained writing posture requirement
+        REQUIRED_CONSECUTIVE = 3  # frames @ 0.5fps = 6 seconds total
+
         person_tracking = self.wrist_proximity_tracking[person_idx]
-        
+
         # Check if wrists are close enough
         if wrist_distance <= MAX_WRIST_DISTANCE:
-            # Wrists are close - update tracking
+            # NEW: Check if head is looking down (required for writing posture)
+            head_looking_down = self.detect_head_looking_down(pose_landmarks)
+
+            # DEBUG: Log head state
+            self.logger.debug(f"Person {person_idx}: Head looking down = {head_looking_down}")
+
+            if not head_looking_down:
+                # Head not down - reset tracking (not a writing posture)
+                if person_tracking['start_time'] is not None:
+                    # Was tracking, now stopped because head is up
+                    self.logger.debug(
+                        f"Person {person_idx}: Wrists close ({wrist_distance:.1f}px) but head not down - "
+                        f"resetting writing tracker"
+                    )
+                person_tracking['start_time'] = None
+                person_tracking['duration'] = 0.0
+                person_tracking['consecutive_frames'] = 0
+                return False
+
+            # BOTH conditions met: wrists close AND head down
+            # Update tracking
             if person_tracking['start_time'] is None:
                 # Start new proximity event
                 person_tracking['start_time'] = timestamp_sec
                 person_tracking['consecutive_frames'] = 1
+                self.logger.debug(
+                    f"Person {person_idx}: Writing posture started - wrists={wrist_distance:.1f}px, head=down"
+                )
             else:
                 # Continue existing proximity event
                 person_tracking['duration'] = timestamp_sec - person_tracking['start_time']
                 person_tracking['consecutive_frames'] += 1
-            
+                self.logger.debug(
+                    f"Person {person_idx}: Writing posture continuing - wrists={wrist_distance:.1f}px, "
+                    f"head=down, frames={person_tracking['consecutive_frames']}, "
+                    f"duration={person_tracking['duration']:.1f}s"
+                )
+
             # Check if thresholds are met
-            if (person_tracking['consecutive_frames'] >= REQUIRED_CONSECUTIVE and 
+            if (person_tracking['consecutive_frames'] >= REQUIRED_CONSECUTIVE and
                 person_tracking['duration'] >= MIN_DURATION):
+                self.logger.info(
+                    f"Person {person_idx}: WRITING CONFIRMED via pose - wrists close + head down for "
+                    f"{person_tracking['duration']:.1f}s ({person_tracking['consecutive_frames']} frames)"
+                )
                 return True
         else:
             # Wrists are too far apart - reset tracking
+            if person_tracking['start_time'] is not None:
+                self.logger.debug(
+                    f"Person {person_idx}: Writing posture lost - wrists too far ({wrist_distance:.1f}px) - "
+                    f"resetting tracker"
+                )
             person_tracking['start_time'] = None
             person_tracking['duration'] = 0.0
             person_tracking['consecutive_frames'] = 0
-        
+
         return False
     
     def get_roi_around_keypoint(self, keypoint_coords, frame_shape, roi_size=150):
@@ -1180,12 +1341,18 @@ class LocopilotActivityMonitor:
                 xyxy = box.xyxy[0].cpu().numpy()
                 
                 class_name = self.yolo_model.names[cls]
-                # Detect person and backpack from full frame
+                # Detect person and bag types (backpack, handbag, suitcase) from full frame
                 if class_name == 'person' and conf > 0.5:
                     detections['person'].append(xyxy)
                     person_boxes.append(xyxy)
-                elif class_name == 'backpack' and conf > 0.5:
-                    detections['backpack'].append(xyxy)
+                elif class_name in ['backpack', 'handbag', 'suitcase']:
+                    # Log all bag detections for debugging
+                    if conf > 0.25:  # Log even low-confidence detections
+                        self.logger.debug(f"BAG DETECTED: {class_name} conf={conf:.2f} bbox={xyxy}")
+                    if conf > 0.4:
+                        # All bag types go into 'backpack' list for unified packing detection
+                        detections['backpack'].append(xyxy)
+                        self.logger.info(f"BAG ADDED: {class_name} conf={conf:.2f}")
                 # OPTION 3: Re-enable book detection in full frame with moderate confidence
                 # But only if book is within reasonable distance of a person
                 elif class_name == 'book' and conf > 0.2:  # Increased from 0.2 to 0.35 to reduce false positives
@@ -1213,29 +1380,30 @@ class LocopilotActivityMonitor:
         
         # Stage 2: Pose-guided ROI detection (if pose landmarks available)
         if use_pose_guided and pose_landmarks is not None:
-            landmarks = pose_landmarks.landmark
             h, w = frame.shape[:2]
-            
+
             # Define keypoints of interest with ROI sizes
             # OPTIMIZED CONFIGURATION: Uniform 180px ROI for YOLOv8m
+            # Format: (display_name, keypoint_name_for_lookup, roi_size)
+            # Note: RIGHT_INDEX/LEFT_INDEX map to wrist in YOLO (no finger keypoints)
             keypoints_of_interest = [
                 # Hands (for phone, book, pen, pencil) - FOCUSED ON HANDS ONLY
-                ('RIGHT_WRIST', self.mp_pose.PoseLandmark.RIGHT_WRIST, 180),  # Optimized for YOLOv8m
-                ('LEFT_WRIST', self.mp_pose.PoseLandmark.LEFT_WRIST, 180),    # Optimized for YOLOv8m
-                ('RIGHT_INDEX', self.mp_pose.PoseLandmark.RIGHT_INDEX, 180),  # Optimized for YOLOv8m
-                ('LEFT_INDEX', self.mp_pose.PoseLandmark.LEFT_INDEX, 180),    # Optimized for YOLOv8m
+                ('RIGHT_WRIST', 'right_wrist', 180),  # Optimized for YOLOv8m
+                ('LEFT_WRIST', 'left_wrist', 180),    # Optimized for YOLOv8m
+                ('RIGHT_INDEX', 'right_wrist', 180),  # Maps to wrist (YOLO has no finger keypoints)
+                ('LEFT_INDEX', 'left_wrist', 180),    # Maps to wrist (YOLO has no finger keypoints)
 
                 # Lap/Torso area (for books, reading, writing on lap) - REDUCED SIZE
-                ('RIGHT_HIP', self.mp_pose.PoseLandmark.RIGHT_HIP, 180),  # Optimized for YOLOv8m
-                ('LEFT_HIP', self.mp_pose.PoseLandmark.LEFT_HIP, 180),    # Optimized for YOLOv8m
-                
+                ('RIGHT_HIP', 'right_hip', 180),  # Optimized for YOLOv8m
+                ('LEFT_HIP', 'left_hip', 180),    # Optimized for YOLOv8m
+
                 # Ears (for phone calls) - REDUCED SIZE
-                ('RIGHT_EAR', self.mp_pose.PoseLandmark.RIGHT_EAR, 180),  # Reduced from 240px to 180px
-                ('LEFT_EAR', self.mp_pose.PoseLandmark.LEFT_EAR, 180),    # Reduced from 240px to 180px
-                
+                ('RIGHT_EAR', 'right_ear', 180),  # Reduced from 240px to 180px
+                ('LEFT_EAR', 'left_ear', 180),    # Reduced from 240px to 180px
+
                 # REMOVED: Shoulders, Mouth, Nose ROIs (causing too many false positives)
             ]
-            
+
             # OPTIMIZATION: Collect all ROIs first instead of processing sequentially
             # This enables batch YOLO inference for massive performance improvement
             roi_bboxes = []
@@ -1245,32 +1413,32 @@ class LocopilotActivityMonitor:
             import time
             debug_logger = logging.getLogger('locopilot_monitor')
 
-            for keypoint_name, keypoint_idx, roi_size in keypoints_of_interest:
+            for display_name, keypoint_name, roi_size in keypoints_of_interest:
                 try:
-                    landmark = landmarks[keypoint_idx]
+                    landmark = self.get_keypoint(pose_landmarks, keypoint_name)
 
                     # Check visibility
                     if landmark.visibility < 0.5:
                         roi_bboxes.append(None)
-                        roi_names.append(keypoint_name)
+                        roi_names.append(display_name)
                         continue
 
                     keypoint_coords = (int(landmark.x * w), int(landmark.y * h))
                     roi_bbox = self.get_roi_around_keypoint(keypoint_coords, frame.shape, roi_size)
 
                     roi_bboxes.append(roi_bbox)
-                    roi_names.append(keypoint_name)
+                    roi_names.append(display_name)
 
                     if roi_bbox is not None:
-                        detections['roi_boxes'].append((keypoint_name, roi_bbox))
+                        detections['roi_boxes'].append((display_name, roi_bbox))
 
                         # DEBUG: Log ROI creation for key body parts
-                        if keypoint_name in ['RIGHT_WRIST', 'LEFT_WRIST', 'RIGHT_HIP', 'LEFT_HIP', 'NOSE']:
-                            debug_logger.info(f"[DEBUG ROI] Creating {keypoint_name} ROI: size={roi_size}px, coords={keypoint_coords}")
+                        if display_name in ['RIGHT_WRIST', 'LEFT_WRIST', 'RIGHT_HIP', 'LEFT_HIP', 'NOSE']:
+                            debug_logger.info(f"[DEBUG ROI] Creating {display_name} ROI: size={roi_size}px, coords={keypoint_coords}")
 
                 except Exception as e:
                     roi_bboxes.append(None)
-                    roi_names.append(keypoint_name)
+                    roi_names.append(display_name)
                     continue
 
             # OPTIMIZATION: Batch process all ROIs in single YOLO call
@@ -1637,67 +1805,95 @@ class LocopilotActivityMonitor:
             thickness=3              # Thicker connections (increased from default 2)
         )
         
-        # Key landmarks to label
-        key_landmarks_to_label = {
-            self.mp_pose.PoseLandmark.NOSE: "Nose",
-            self.mp_pose.PoseLandmark.LEFT_SHOULDER: "L Shoulder",
-            self.mp_pose.PoseLandmark.RIGHT_SHOULDER: "R Shoulder",
-            self.mp_pose.PoseLandmark.LEFT_ELBOW: "L Elbow",
-            self.mp_pose.PoseLandmark.RIGHT_ELBOW: "R Elbow",
-            self.mp_pose.PoseLandmark.LEFT_WRIST: "L Wrist",
-            self.mp_pose.PoseLandmark.RIGHT_WRIST: "R Wrist",
-            self.mp_pose.PoseLandmark.LEFT_HIP: "L Hip",
-            self.mp_pose.PoseLandmark.RIGHT_HIP: "R Hip",
-            self.mp_pose.PoseLandmark.LEFT_KNEE: "L Knee",
-            self.mp_pose.PoseLandmark.RIGHT_KNEE: "R Knee",
-            self.mp_pose.PoseLandmark.LEFT_ANKLE: "L Ankle",
-            self.mp_pose.PoseLandmark.RIGHT_ANKLE: "R Ankle",
-        }
-        
+        # Key landmarks to label (using YOLO keypoint names)
+        key_landmarks_to_label = [
+            ('nose', "Nose"),
+            ('left_shoulder', "L Shoulder"),
+            ('right_shoulder', "R Shoulder"),
+            ('left_elbow', "L Elbow"),
+            ('right_elbow', "R Elbow"),
+            ('left_wrist', "L Wrist"),
+            ('right_wrist', "R Wrist"),
+            ('left_hip', "L Hip"),
+            ('right_hip', "R Hip"),
+            ('left_knee', "L Knee"),
+            ('right_knee', "R Knee"),
+            ('left_ankle', "L Ankle"),
+            ('right_ankle', "R Ankle"),
+        ]
+
+        # YOLO skeleton connections (COCO format)
+        skeleton_connections = [
+            ('nose', 'left_eye'), ('nose', 'right_eye'),
+            ('left_eye', 'left_ear'), ('right_eye', 'right_ear'),
+            ('left_shoulder', 'right_shoulder'),
+            ('left_shoulder', 'left_elbow'), ('right_shoulder', 'right_elbow'),
+            ('left_elbow', 'left_wrist'), ('right_elbow', 'right_wrist'),
+            ('left_shoulder', 'left_hip'), ('right_shoulder', 'right_hip'),
+            ('left_hip', 'right_hip'),
+            ('left_hip', 'left_knee'), ('right_hip', 'right_knee'),
+            ('left_knee', 'left_ankle'), ('right_knee', 'right_ankle'),
+        ]
+
         # Draw pose landmarks for ALL persons
         for person_idx, person_data in persons_data.items():
             pose_landmarks = person_data.get('pose_landmarks')
             if pose_landmarks:
-                # Draw pose connections with custom specs
-                self.mp_drawing.draw_landmarks(
-                    annotated_frame,
-                    pose_landmarks,
-                    self.mp_pose.POSE_CONNECTIONS,
-                    landmark_drawing_spec=landmark_drawing_spec,
-                    connection_drawing_spec=connection_drawing_spec
-                )
-                
-                # Draw labels for key landmarks
                 h, w = annotated_frame.shape[:2]
-                for landmark_id, landmark_name in key_landmarks_to_label.items():
+
+                # Draw skeleton connections
+                for start_name, end_name in skeleton_connections:
                     try:
-                        landmark = pose_landmarks.landmark[landmark_id]
-                        
+                        start = self.get_keypoint(pose_landmarks, start_name)
+                        end = self.get_keypoint(pose_landmarks, end_name)
+
+                        if start.visibility > 0.5 and end.visibility > 0.5:
+                            start_pt = (int(start.x * w), int(start.y * h))
+                            end_pt = (int(end.x * w), int(end.y * h))
+                            cv2.line(annotated_frame, start_pt, end_pt, (0, 255, 255), 3)
+                    except:
+                        continue
+
+                # Draw keypoints
+                for i in range(17):
+                    try:
+                        landmark = pose_landmarks.landmark[i]
+                        if landmark.visibility > 0.5:
+                            pt = (int(landmark.x * w), int(landmark.y * h))
+                            cv2.circle(annotated_frame, pt, 8, (0, 255, 0), -1)
+                    except:
+                        continue
+
+                # Draw labels for key landmarks
+                for keypoint_name, label_name in key_landmarks_to_label:
+                    try:
+                        landmark = self.get_keypoint(pose_landmarks, keypoint_name)
+
                         # Only draw if landmark is visible enough
                         if landmark.visibility > 0.5:
                             x = int(landmark.x * w)
                             y = int(landmark.y * h)
-                            
+
                             # Draw small label with background
-                            label_size, _ = cv2.getTextSize(landmark_name, cv2.FONT_HERSHEY_SIMPLEX, 0.4, 1)
+                            label_size, _ = cv2.getTextSize(label_name, cv2.FONT_HERSHEY_SIMPLEX, 0.4, 1)
                             label_w, label_h = label_size
-                            
+
                             # Background rectangle for better visibility
-                            cv2.rectangle(annotated_frame, 
-                                        (x - 2, y - label_h - 4), 
-                                        (x + label_w + 2, y + 2), 
+                            cv2.rectangle(annotated_frame,
+                                        (x - 2, y - label_h - 4),
+                                        (x + label_w + 2, y + 2),
                                         (0, 0, 0), -1)
-                            
+
                             # Label text in white
-                            cv2.putText(annotated_frame, landmark_name, 
-                                       (x, y), 
+                            cv2.putText(annotated_frame, label_name,
+                                       (x, y),
                                        cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 255), 1, cv2.LINE_AA)
                     except:
                         pass
-                
+
                 # Add person label near their head
                 try:
-                    nose = pose_landmarks.landmark[self.mp_pose.PoseLandmark.NOSE]
+                    nose = self.get_keypoint(pose_landmarks, 'nose')
                     nose_x = int(nose.x * w)
                     nose_y = int(nose.y * h)
                     
@@ -1849,192 +2045,12 @@ class LocopilotActivityMonitor:
         
         hx, hy = hand_coords
         x1, y1, x2, y2 = object_bbox
-        return (x1 - margin <= hx <= x2 + margin and 
+        return (x1 - margin <= hx <= x2 + margin and
                 y1 - margin <= hy <= y2 + margin)
-    
-    def detect_pose_per_person(self, frame, person_roles):
-        """Run MediaPipe Pose detection on each person's cropped bounding box.
-        
-        This enables multi-person pose detection by running single-person MediaPipe Pose
-        on each detected person's region separately.
-        
-        Args:
-            frame: Full video frame (BGR format)
-            person_roles: Dictionary of person roles with bounding boxes
-                         Format: {person_idx: {'bbox': [x1, y1, x2, y2], 'role': 'LP'/'ALP', ...}}
-        
-        Returns:
-            Dict[int, pose_landmarks]: Dictionary mapping person_idx to their pose landmarks
-                                      Returns None for persons where pose detection failed
-        """
-        if not person_roles:
-            return {}
-        
-        h, w = frame.shape[:2]
-        person_poses = {}
-        
-        for person_idx, person_data in person_roles.items():
-            if 'bbox' not in person_data:
-                person_poses[person_idx] = None
-                continue
-            
-            bbox = person_data['bbox']  # [x1, y1, x2, y2]
-            x1, y1, x2, y2 = bbox
-            
-            # Ensure bbox is within frame bounds
-            x1 = max(0, int(x1))
-            y1 = max(0, int(y1))
-            x2 = min(w, int(x2))
-            y2 = min(h, int(y2))
-            
-            # Check if bbox is valid
-            if x2 <= x1 or y2 <= y1:
-                person_poses[person_idx] = None
-                continue
-            
-            # Add padding to bbox for better pose detection, especially for extended arms/hands
-            # Overhead cameras need more padding, especially vertically for raised hands
-            padding_x = int((x2 - x1) * 0.25)  # 25% padding
-            padding_y = int((y2 - y1) * 0.35)   # 35% padding (more vertical for raised hands)
-            
-            # Expand bbox with padding, but stay within frame bounds
-            x1_padded = max(0, x1 - padding_x)
-            y1_padded = max(0, y1 - padding_y)
-            x2_padded = min(w, x2 + padding_x)
-            y2_padded = min(h, y2 + padding_y)
-            
-            # Ensure minimum crop size for MediaPipe (at least 256x256 pixels)
-            crop_width = x2_padded - x1_padded
-            crop_height = y2_padded - y1_padded
-            min_size = 256
-            
-            if crop_width < min_size or crop_height < min_size:
-                # Expand to minimum size, centered on original crop
-                if crop_width < min_size:
-                    center_x = (x1_padded + x2_padded) // 2
-                    x1_padded = max(0, center_x - min_size // 2)
-                    x2_padded = min(w, x1_padded + min_size)
-                    x1_padded = max(0, x2_padded - min_size)  # Adjust if hit boundary
-                
-                if crop_height < min_size:
-                    center_y = (y1_padded + y2_padded) // 2
-                    y1_padded = max(0, center_y - min_size // 2)
-                    y2_padded = min(h, y1_padded + min_size)
-                    y1_padded = max(0, y2_padded - min_size)  # Adjust if hit boundary
-            
-            # Crop frame to person's bounding box with padding
-            cropped_frame = frame[y1_padded:y2_padded, x1_padded:x2_padded]
-            
-            # Check if crop is valid
-            if cropped_frame.size == 0:
-                person_poses[person_idx] = None
-                continue
-            
-            # Convert to RGB for MediaPipe
-            cropped_rgb = cv2.cvtColor(cropped_frame, cv2.COLOR_BGR2RGB)
-            
-            # Apply image preprocessing to enhance MediaPipe detection
-            cropped_rgb = self._preprocess_frame_for_pose(cropped_rgb)
-            
-            # Run MediaPipe Pose on cropped region
-            try:
-                pose_result = self.pose.process(cropped_rgb)
-                
-                if pose_result.pose_landmarks:
-                    # Translate landmarks from cropped coordinates to full frame coordinates
-                    translated_landmarks = self.translate_pose_landmarks(
-                        pose_result.pose_landmarks,
-                        offset_x=x1_padded,
-                        offset_y=y1_padded,
-                        crop_width=x2_padded-x1_padded,
-                        crop_height=y2_padded-y1_padded,
-                        frame_width=w,
-                        frame_height=h
-                    )
-                    # Validate translated landmarks are valid
-                    if translated_landmarks is not None and len(translated_landmarks.landmark) > 0:
-                        person_poses[person_idx] = translated_landmarks
-                    else:
-                        person_poses[person_idx] = None
-                else:
-                    person_poses[person_idx] = None
-            except Exception as e:
-                print(f"Error processing pose for person {person_idx}: {e}")
-                person_poses[person_idx] = None
-        
-        return person_poses
-    
-    def translate_pose_landmarks(self, pose_landmarks, offset_x, offset_y, crop_width, crop_height, frame_width, frame_height):
-        """Translate pose landmarks from cropped coordinates back to full frame coordinates.
-        
-        Args:
-            pose_landmarks: MediaPipe pose landmarks (normalized to crop size)
-            offset_x: X offset of crop in full frame
-            offset_y: Y offset of crop in full frame
-            crop_width: Width of cropped region
-            crop_height: Height of cropped region
-            frame_width: Full frame width
-            frame_height: Full frame height
-        
-        Returns:
-            Translated pose landmarks in full frame coordinates, or None if validation fails
-        """
-        # Validate input parameters
-        if pose_landmarks is None:
-            return None
-        
-        if frame_width <= 0 or frame_height <= 0 or crop_width <= 0 or crop_height <= 0:
-            return None
-        
-        if not hasattr(pose_landmarks, 'landmark') or len(pose_landmarks.landmark) == 0:
-            return None
-        
-        import copy
-        from mediapipe.framework.formats import landmark_pb2
-        
-        # Create a deep copy of landmarks
-        translated = landmark_pb2.NormalizedLandmarkList()
-        
-        for landmark in pose_landmarks.landmark:
-            new_landmark = translated.landmark.add()
-            
-            # Validate input landmark coordinates (should be 0-1 for normalized)
-            if not (0 <= landmark.x <= 1 and 0 <= landmark.y <= 1):
-                # Invalid normalized coordinates, skip this landmark
-                continue
-            
-            # Convert normalized crop coordinates to pixel coordinates
-            pixel_x_in_crop = landmark.x * crop_width
-            pixel_y_in_crop = landmark.y * crop_height
-            
-            # Translate to full frame pixel coordinates
-            pixel_x_in_frame = pixel_x_in_crop + offset_x
-            pixel_y_in_frame = pixel_y_in_crop + offset_y
-            
-            # Normalize to full frame dimensions
-            normalized_x = pixel_x_in_frame / frame_width
-            normalized_y = pixel_y_in_frame / frame_height
-            
-            # Validate translated coordinates are within valid range (0-1)
-            # Allow slight overflow/underflow due to padding, but clamp to valid range
-            normalized_x = max(0.0, min(1.0, normalized_x))
-            normalized_y = max(0.0, min(1.0, normalized_y))
-            
-            new_landmark.x = normalized_x
-            new_landmark.y = normalized_y
-            new_landmark.z = landmark.z  # Z coordinate doesn't need translation
-            new_landmark.visibility = landmark.visibility if hasattr(landmark, 'visibility') else 1.0
-            
-            # Copy presence if it exists
-            if hasattr(landmark, 'presence'):
-                new_landmark.presence = landmark.presence
-        
-        # Validate we have at least some landmarks
-        if len(translated.landmark) == 0:
-            return None
-        
-        return translated
-    
+
+    # NOTE: detect_pose_per_person removed - replaced by YOLOv8-Pose
+    # NOTE: translate_pose_landmarks removed - not needed with YOLOv8-Pose (native multi-person)
+
     def validate_pose_landmarks(self, pose_landmarks, min_landmarks=10, min_visibility=0.3):
         """Validate that pose landmarks are valid and usable for activity detection.
         
@@ -2073,7 +2089,125 @@ class LocopilotActivityMonitor:
             return False
         
         return True
-    
+
+    def validate_anatomical_consistency(self, pose_landmarks, frame_shape):
+        """
+        Validate that pose landmarks follow anatomical rules.
+        Rejects physically impossible configurations.
+
+        Returns: (is_valid: bool, reason: str)
+        """
+        h, w = frame_shape[:2]
+
+        try:
+            # Get key landmarks
+            right_shoulder = self.get_keypoint(pose_landmarks, 'right_shoulder')
+            left_shoulder = self.get_keypoint(pose_landmarks, 'left_shoulder')
+            right_elbow = self.get_keypoint(pose_landmarks, 'right_elbow')
+            left_elbow = self.get_keypoint(pose_landmarks, 'left_elbow')
+            right_wrist = self.get_keypoint(pose_landmarks, 'right_wrist')
+            left_wrist = self.get_keypoint(pose_landmarks, 'left_wrist')
+            right_hip = self.get_keypoint(pose_landmarks, 'right_hip')
+            left_hip = self.get_keypoint(pose_landmarks, 'left_hip')
+            nose = self.get_keypoint(pose_landmarks, 'nose')
+
+            # Rule 1: Shoulders should be roughly horizontal (±30 degrees)
+            shoulder_y_diff = abs(right_shoulder.y - left_shoulder.y) * h
+            shoulder_x_diff = abs(right_shoulder.x - left_shoulder.x) * w
+            if shoulder_x_diff > 0:
+                shoulder_slope = shoulder_y_diff / shoulder_x_diff
+                if shoulder_slope > 0.6:  # ~30 degrees
+                    return False, "Shoulders not horizontal (slope too steep)"
+
+            # Rule 2: Shoulder-elbow-wrist distances must be reasonable
+            # Forearm (elbow-wrist) typically 80-120% of upper arm (shoulder-elbow)
+            def distance(lm1, lm2):
+                dx = (lm1.x - lm2.x) * w
+                dy = (lm1.y - lm2.y) * h
+                return (dx**2 + dy**2)**0.5
+
+            right_upper_arm = distance(right_shoulder, right_elbow)
+            right_forearm = distance(right_elbow, right_wrist)
+            left_upper_arm = distance(left_shoulder, left_elbow)
+            left_forearm = distance(left_elbow, left_wrist)
+
+            # Check proportions (forearm should be 50-150% of upper arm length)
+            if right_upper_arm > 10:  # Avoid division by very small numbers
+                right_ratio = right_forearm / right_upper_arm
+                if right_ratio < 0.5 or right_ratio > 1.5:
+                    return False, f"Right arm proportions invalid ({right_ratio:.2f})"
+
+            if left_upper_arm > 10:
+                left_ratio = left_forearm / left_upper_arm
+                if left_ratio < 0.5 or left_ratio > 1.5:
+                    return False, f"Left arm proportions invalid ({left_ratio:.2f})"
+
+            # Rule 3: Nose should be above shoulders (not inverted person)
+            avg_shoulder_y = (right_shoulder.y + left_shoulder.y) / 2
+            if nose.y > avg_shoulder_y + 0.1:  # Nose more than 10% below shoulders
+                return False, "Nose below shoulders (inverted detection)"
+
+            # Rule 4: Hips should be below shoulders
+            avg_hip_y = (right_hip.y + left_hip.y) / 2
+            if avg_hip_y < avg_shoulder_y:
+                return False, "Hips above shoulders (inverted detection)"
+
+            # Rule 5: High visibility required for key landmarks
+            if (right_shoulder.visibility < 0.5 or left_shoulder.visibility < 0.5 or
+                nose.visibility < 0.5):
+                return False, "Low visibility for critical landmarks"
+
+            return True, "Valid"
+
+        except (IndexError, AttributeError) as e:
+            return False, f"Missing landmarks: {e}"
+
+    def check_landmark_stability(self, person_idx, pose_landmarks, frame_shape):
+        """
+        Check if landmarks are stable over time (not jumping erratically).
+        Erratic jumps indicate poor detection quality.
+
+        Returns: (is_stable: bool, max_jump: float)
+        """
+        h, w = frame_shape[:2]
+
+        if person_idx not in self.landmark_stability_history:
+            self.landmark_stability_history[person_idx] = {
+                'right_shoulder': deque(maxlen=3),
+                'left_shoulder': deque(maxlen=3)
+            }
+
+        history = self.landmark_stability_history[person_idx]
+
+        # Get current shoulder positions (most stable body parts)
+        right_shoulder = self.get_keypoint(pose_landmarks, 'right_shoulder')
+        left_shoulder = self.get_keypoint(pose_landmarks, 'left_shoulder')
+
+        right_pos = (int(right_shoulder.x * w), int(right_shoulder.y * h))
+        left_pos = (int(left_shoulder.x * w), int(left_shoulder.y * h))
+
+        history['right_shoulder'].append(right_pos)
+        history['left_shoulder'].append(left_pos)
+
+        # Need at least 2 positions to check stability
+        if len(history['right_shoulder']) < 2:
+            return True, 0  # Not enough data, assume stable
+
+        # Calculate maximum jump between consecutive frames
+        max_jump = 0
+        for key in ['right_shoulder', 'left_shoulder']:
+            positions = list(history[key])
+            for i in range(1, len(positions)):
+                dx = positions[i][0] - positions[i-1][0]
+                dy = positions[i][1] - positions[i-1][1]
+                jump = (dx**2 + dy**2)**0.5
+                max_jump = max(max_jump, jump)
+
+        # Shoulders shouldn't jump more than 100px between frames (person sitting, camera static)
+        is_stable = max_jump < self.max_landmark_jump_threshold
+
+        return is_stable, max_jump
+
     def detect_hand_gesture(self, pose_landmarks, frame_shape, person_roles, yolo_person_boxes=None, 
                            person_activities=None, backpack_detections=None, 
                            person_idx=None, current_timestamp=None, frame_number=None):
@@ -2116,22 +2250,35 @@ class LocopilotActivityMonitor:
         # Overhead cameras may have lower visibility for some landmarks
         if not self.validate_pose_landmarks(pose_landmarks, min_landmarks=8, min_visibility=0.25):
             return False, False, {}
-        
+
+        # Validate anatomical consistency (reject physically impossible poses)
+        is_valid, reason = self.validate_anatomical_consistency(pose_landmarks, frame_shape)
+        if not is_valid:
+            return False, False, {'anatomical_validation_failed': reason}
+
+        # Check landmark stability (reject jittery detections)
+        if person_idx is not None:
+            is_stable, max_jump = self.check_landmark_stability(person_idx, pose_landmarks, frame_shape)
+            if not is_stable:
+                return False, False, {
+                    'unstable_landmarks': True,
+                    'max_jump': max_jump,
+                    'threshold': self.max_landmark_jump_threshold
+                }
+
         h, w = frame_shape[:2]
-        landmarks = pose_landmarks.landmark
-        
         # Get key body landmarks
         try:
-            right_wrist = landmarks[self.mp_pose.PoseLandmark.RIGHT_WRIST]
-            left_wrist = landmarks[self.mp_pose.PoseLandmark.LEFT_WRIST]
-            right_shoulder = landmarks[self.mp_pose.PoseLandmark.RIGHT_SHOULDER]
-            left_shoulder = landmarks[self.mp_pose.PoseLandmark.LEFT_SHOULDER]
-            right_elbow = landmarks[self.mp_pose.PoseLandmark.RIGHT_ELBOW]
-            left_elbow = landmarks[self.mp_pose.PoseLandmark.LEFT_ELBOW]
-            right_hip = landmarks[self.mp_pose.PoseLandmark.RIGHT_HIP]
-            left_hip = landmarks[self.mp_pose.PoseLandmark.LEFT_HIP]
-            nose = landmarks[self.mp_pose.PoseLandmark.NOSE]
-        except (IndexError, AttributeError):
+            right_wrist = self.get_keypoint(pose_landmarks, 'right_wrist')
+            left_wrist = self.get_keypoint(pose_landmarks, 'left_wrist')
+            right_shoulder = self.get_keypoint(pose_landmarks, 'right_shoulder')
+            left_shoulder = self.get_keypoint(pose_landmarks, 'left_shoulder')
+            right_elbow = self.get_keypoint(pose_landmarks, 'right_elbow')
+            left_elbow = self.get_keypoint(pose_landmarks, 'left_elbow')
+            right_hip = self.get_keypoint(pose_landmarks, 'right_hip')
+            left_hip = self.get_keypoint(pose_landmarks, 'left_hip')
+            nose = self.get_keypoint(pose_landmarks, 'nose')
+        except (IndexError, AttributeError, ValueError):
             return False, False, {}
         
         # Convert to pixel coordinates
@@ -2227,13 +2374,14 @@ class LocopilotActivityMonitor:
         matched_bbox = person_roles[matched_person_idx]['bbox']
         mx1, my1, mx2, my2 = matched_bbox
         
-        # Expand box by 80% for arm extension tolerance (INCREASED from 50% for overhead camera)
+        # Expand box for arm extension tolerance (FURTHER INCREASED for overhead camera)
         # Overhead cameras show arms extending more, especially when hands are raised high
         # Raised hands can extend significantly above the person's bbox
+        # When two people are close together, wrist may appear further from bbox center
         box_width = mx2 - mx1
         box_height = my2 - my1
-        margin_x = box_width * 0.8  # INCREASED from 0.5 to 0.8 for raised hands
-        margin_y = box_height * 1.2  # INCREASED from 0.5 to 1.2 for raised hands (upward extension)
+        margin_x = box_width * 1.0  # INCREASED from 0.8 to 1.0 (100% of box width)
+        margin_y = box_height * 1.5  # INCREASED from 1.2 to 1.5 for high raised hands
         
         expanded_x1 = mx1 - margin_x
         expanded_y1 = my1 - margin_y  # Allow significant upward extension
@@ -2454,84 +2602,70 @@ class LocopilotActivityMonitor:
             left_elbow_coords[1] > left_shoulder_coords[1] + 30  # Elbow significantly below shoulder
         )
         
-        # Right hand gesture detection (TRUE SIGNALING GESTURE)
-        # ADJUSTED thresholds for overhead camera angles (2024-12-01)
-        # Overhead cameras show smaller vertical distances, so thresholds are relaxed
+        # Right hand gesture detection (HAND RAISED TO FACE OR ABOVE)
+        # RELAXED thresholds to detect drinking/eating and any hand-to-face actions (2024-12-04)
+        # Detects: hand raised to face level, drinking, eating, signaling gestures
         right_hand_raised = (
             # CRITICAL: Wrist must belong to the same person (within expanded bbox)
             right_wrist_in_expanded and
 
-            # NOT in control panel operation zone (this filters out most false positives)
-            not right_in_control_zone and
+            # REMOVED: Control zone filter - we now want to detect hand-to-face actions
+            # not right_in_control_zone and
 
-            # CRITICAL: Hand raised above shoulder (RELAXED for overhead camera: >100px instead of >120px)
-            # Control panel operations: 30-80px above shoulder
-            # Body lean/posture variations: 80-100px above shoulder
-            # True hand signals: >100px above shoulder (further relaxed for overhead camera angles)
-            right_wrist_shoulder_vertical > 100 and  # RELAXED from 120px to 100px for better detection
+            # Hand at or above shoulder level (includes face-level actions like drinking)
+            # >0 means wrist is at or above shoulder height
+            right_wrist_shoulder_vertical > 0 and
 
-            # Wrist must be above elbow (vertical extension, not forward reach)
-            # RELAXED: >60px instead of >80px for overhead camera angles (better detection)
-            right_wrist_elbow_distance > 60 and  # RELAXED from 80px to 60px for better detection
+            # RELAXED: Allow bent arm (drinking position has wrist near elbow level)
+            # >-30 allows wrist to be slightly below elbow (bent arm holding cup)
+            right_wrist_elbow_distance > -30 and
 
-            # Arm should be extended (hand away from body, not tucked)
-            # RELAXED: >50px instead of >80px for overhead camera
-            right_arm_extension > 50 and  # RELAXED from 80px to 50px
+            # RELAXED: Allow arm close to body (drinking/eating position)
+            # >20px minimal extension (hand not completely against body)
+            right_arm_extension > 20 and
 
-            # CRITICAL: Elbow must NOT be significantly below shoulder (prevents body lean false positives)
-            # RELAXED: Allow elbow to be up to 100px below shoulder (was 80px) for overhead angles
-            (right_elbow_coords[1] < right_shoulder_coords[1] + 100) and  # RELAXED from 80px to 100px
+            # Allow elbow to be below shoulder (natural drinking/eating position)
+            (right_elbow_coords[1] < right_shoulder_coords[1] + 150) and
 
-            # Additional check: Elbow should be at or above shoulder (arm raised up, not forward)
-            # RELAXED: Allow more tolerance for overhead camera angles
-            (right_elbow_coords[1] >= right_shoulder_coords[1] - 120) and  # RELAXED from -100px to -120px
-
-            # Visibility checks (RELAXED for overhead camera angles)
-            right_wrist.visibility > 0.4 and  # RELAXED from 0.5 to 0.4
-            right_elbow.visibility > 0.4 and  # RELAXED from 0.5 to 0.4
-            right_shoulder.visibility > 0.5 and  # RELAXED from 0.6 to 0.5
+            # Visibility checks (FURTHER RELAXED for overhead cameras)
+            right_wrist.visibility > 0.3 and
+            right_elbow.visibility > 0.3 and
+            right_shoulder.visibility > 0.4 and
 
             # Within frame bounds
             0 < right_wrist_coords[0] < w and
             0 < right_wrist_coords[1] < h
         )
         
-        # Left hand gesture detection (TRUE SIGNALING GESTURE)
-        # ADJUSTED thresholds for overhead camera angles (2024-12-01)
-        # Overhead cameras show smaller vertical distances, so thresholds are relaxed
+        # Left hand gesture detection (HAND RAISED TO FACE OR ABOVE)
+        # RELAXED thresholds to detect drinking/eating and any hand-to-face actions (2024-12-04)
+        # Detects: hand raised to face level, drinking, eating, signaling gestures
         left_hand_raised = (
             # CRITICAL: Wrist must belong to the same person (within expanded bbox)
             left_wrist_in_expanded and
 
-            # NOT in control panel operation zone (this filters out most false positives)
-            not left_in_control_zone and
+            # REMOVED: Control zone filter - we now want to detect hand-to-face actions
+            # not left_in_control_zone and
 
-            # CRITICAL: Hand raised above shoulder (RELAXED for overhead camera: >100px instead of >120px)
-            # Control panel operations: 30-80px above shoulder
-            # Body lean/posture variations: 80-100px above shoulder
-            # True hand signals: >100px above shoulder (further relaxed for overhead camera angles)
-            left_wrist_shoulder_vertical > 100 and  # RELAXED from 120px to 100px for better detection
+            # Hand at or above shoulder level (includes face-level actions like drinking)
+            # >0 means wrist is at or above shoulder height
+            left_wrist_shoulder_vertical > 0 and
 
-            # Wrist must be above elbow (vertical extension, not forward reach)
-            # RELAXED: >60px instead of >80px for overhead camera angles (better detection)
-            left_wrist_elbow_distance > 60 and  # RELAXED from 80px to 60px for better detection
+            # RELAXED: Allow bent arm (drinking position has wrist near elbow level)
+            # >-30 allows wrist to be slightly below elbow (bent arm holding cup)
+            left_wrist_elbow_distance > -30 and
 
-            # Arm should be extended (hand away from body, not tucked)
-            # RELAXED: >50px instead of >80px for overhead camera
-            left_arm_extension > 50 and  # RELAXED from 80px to 50px
+            # RELAXED: Allow arm close to body (drinking/eating position)
+            # >20px minimal extension (hand not completely against body)
+            left_arm_extension > 20 and
 
-            # CRITICAL: Elbow must NOT be significantly below shoulder (prevents body lean false positives)
-            # RELAXED: Allow elbow to be up to 100px below shoulder (was 80px) for overhead angles
-            (left_elbow_coords[1] < left_shoulder_coords[1] + 100) and  # RELAXED from 80px to 100px
+            # Allow elbow to be below shoulder (natural drinking/eating position)
+            (left_elbow_coords[1] < left_shoulder_coords[1] + 150) and
 
-            # Additional check: Elbow should be at or above shoulder (arm raised up, not forward)
-            # RELAXED: Allow more tolerance for overhead camera angles
-            (left_elbow_coords[1] >= left_shoulder_coords[1] - 120) and  # RELAXED from -100px to -120px
-
-            # Visibility checks (RELAXED for overhead camera angles)
-            left_wrist.visibility > 0.4 and  # RELAXED from 0.5 to 0.4
-            left_elbow.visibility > 0.4 and  # RELAXED from 0.5 to 0.4
-            left_shoulder.visibility > 0.5 and  # RELAXED from 0.6 to 0.5
+            # Visibility checks (FURTHER RELAXED for overhead cameras)
+            left_wrist.visibility > 0.3 and
+            left_elbow.visibility > 0.3 and
+            left_shoulder.visibility > 0.4 and
 
             # Within frame bounds
             0 < left_wrist_coords[0] < w and
@@ -2543,38 +2677,40 @@ class LocopilotActivityMonitor:
         
         # COMPREHENSIVE DEBUG LOGGING for all checks
         frame_info = f"[Frame {frame_number}]" if frame_number is not None else ""
-        # VERBOSE DEBUG LOGGING DISABLED - Uncomment below to debug hand gesture detection
-        # gesture_logger.info(f"\n{'='*80}")
-        # gesture_logger.info(f"{frame_info} HAND GESTURE DEBUG - Person {matched_person_idx} ({matched_role})")
-        # gesture_logger.info(f"{'='*80}")
-        # gesture_logger.info(f"RIGHT HAND ANALYSIS:")
-        # gesture_logger.info(f"  - Wrist coords: {right_wrist_coords}")
-        # gesture_logger.info(f"  - Shoulder coords: {right_shoulder_coords}")
-        # gesture_logger.info(f"  - Elbow coords: {right_elbow_coords}")
-        # gesture_logger.info(f"  - Wrist > Shoulder (vertical): {right_wrist_shoulder_vertical:.1f}px (need >200px)")
-        # gesture_logger.info(f"  - Wrist > Elbow (vertical): {right_wrist_elbow_distance:.1f}px (need >130px)")
-        # gesture_logger.info(f"  - Arm extension (lateral): {right_arm_extension:.1f}px (need >80px)")
-        # gesture_logger.info(f"  - Elbow below shoulder: {right_elbow_coords[1] - right_shoulder_coords[1]:.1f}px (must be <50px)")
-        # gesture_logger.info(f"  - In control zone: {right_in_control_zone}")
-        # gesture_logger.info(f"  - Wrist in expanded bbox: {right_wrist_in_expanded}")
-        # gesture_logger.info(f"  - Visibility - Wrist: {right_wrist.visibility:.2f}, Elbow: {right_elbow.visibility:.2f}, Shoulder: {right_shoulder.visibility:.2f}")
-        # gesture_logger.info(f"  - RIGHT HAND RAISED: {right_hand_raised}")
-        # 
-        # gesture_logger.info(f"\nLEFT HAND ANALYSIS:")
-        # gesture_logger.info(f"  - Wrist coords: {left_wrist_coords}")
-        # gesture_logger.info(f"  - Shoulder coords: {left_shoulder_coords}")
-        # gesture_logger.info(f"  - Elbow coords: {left_elbow_coords}")
-        # gesture_logger.info(f"  - Wrist > Shoulder (vertical): {left_wrist_shoulder_vertical:.1f}px (need >200px)")
-        # gesture_logger.info(f"  - Wrist > Elbow (vertical): {left_wrist_elbow_distance:.1f}px (need >130px)")
-        # gesture_logger.info(f"  - Arm extension (lateral): {left_arm_extension:.1f}px (need >80px)")
-        # gesture_logger.info(f"  - Elbow below shoulder: {left_elbow_coords[1] - left_shoulder_coords[1]:.1f}px (must be <50px)")
-        # gesture_logger.info(f"  - In control zone: {left_in_control_zone}")
-        # gesture_logger.info(f"  - Wrist in expanded bbox: {left_wrist_in_expanded}")
-        # gesture_logger.info(f"  - Visibility - Wrist: {left_wrist.visibility:.2f}, Elbow: {left_elbow.visibility:.2f}, Shoulder: {left_shoulder.visibility:.2f}")
-        # gesture_logger.info(f"  - LEFT HAND RAISED: {left_hand_raised}")
-        # 
-        # gesture_logger.info(f"\nFINAL RESULT: {'GESTURE DETECTED' if hand_gesture_detected else 'NO GESTURE'}")
-        # gesture_logger.info(f"{'='*80}\n")
+        # DEBUG LOGGING ENABLED for hand gesture troubleshooting
+        gesture_logger.info(f"\n{'='*80}")
+        gesture_logger.info(f"{frame_info} HAND GESTURE DEBUG - Person {matched_person_idx} ({matched_role})")
+        gesture_logger.info(f"{'='*80}")
+        gesture_logger.info(f"MATCHED BBOX: {matched_bbox}")
+        gesture_logger.info(f"EXPANDED BBOX: x=[{expanded_x1:.0f}, {expanded_x2:.0f}], y=[{expanded_y1:.0f}, {expanded_y2:.0f}]")
+        gesture_logger.info(f"RIGHT HAND ANALYSIS:")
+        gesture_logger.info(f"  - Wrist coords: {right_wrist_coords}")
+        gesture_logger.info(f"  - Shoulder coords: {right_shoulder_coords}")
+        gesture_logger.info(f"  - Elbow coords: {right_elbow_coords}")
+        gesture_logger.info(f"  - Wrist above Shoulder: {right_wrist_shoulder_vertical:.1f}px (need >0)")
+        gesture_logger.info(f"  - Wrist above Elbow: {right_wrist_elbow_distance:.1f}px (need >-30)")
+        gesture_logger.info(f"  - Arm extension (lateral): {right_arm_extension:.1f}px (need >20)")
+        gesture_logger.info(f"  - Elbow position check: {right_elbow_coords[1] - right_shoulder_coords[1]:.1f}px (need <150)")
+        gesture_logger.info(f"  - Wrist in expanded bbox: {right_wrist_in_expanded}")
+        gesture_logger.info(f"  - Visibility - Wrist: {right_wrist.visibility:.2f} (need>0.3), Elbow: {right_elbow.visibility:.2f} (need>0.3), Shoulder: {right_shoulder.visibility:.2f} (need>0.4)")
+        gesture_logger.info(f"  - Within frame bounds: {0 < right_wrist_coords[0] < w and 0 < right_wrist_coords[1] < h}")
+        gesture_logger.info(f"  - RIGHT HAND RAISED: {right_hand_raised}")
+
+        gesture_logger.info(f"LEFT HAND ANALYSIS:")
+        gesture_logger.info(f"  - Wrist coords: {left_wrist_coords}")
+        gesture_logger.info(f"  - Shoulder coords: {left_shoulder_coords}")
+        gesture_logger.info(f"  - Elbow coords: {left_elbow_coords}")
+        gesture_logger.info(f"  - Wrist above Shoulder: {left_wrist_shoulder_vertical:.1f}px (need >0)")
+        gesture_logger.info(f"  - Wrist above Elbow: {left_wrist_elbow_distance:.1f}px (need >-30)")
+        gesture_logger.info(f"  - Arm extension (lateral): {left_arm_extension:.1f}px (need >20)")
+        gesture_logger.info(f"  - Elbow position check: {left_elbow_coords[1] - left_shoulder_coords[1]:.1f}px (need <150)")
+        gesture_logger.info(f"  - Wrist in expanded bbox: {left_wrist_in_expanded}")
+        gesture_logger.info(f"  - Visibility - Wrist: {left_wrist.visibility:.2f} (need>0.3), Elbow: {left_elbow.visibility:.2f} (need>0.3), Shoulder: {left_shoulder.visibility:.2f} (need>0.4)")
+        gesture_logger.info(f"  - Within frame bounds: {0 < left_wrist_coords[0] < w and 0 < left_wrist_coords[1] < h}")
+        gesture_logger.info(f"  - LEFT HAND RAISED: {left_hand_raised}")
+
+        gesture_logger.info(f"FINAL RESULT: {'GESTURE DETECTED' if hand_gesture_detected else 'NO GESTURE'}")
+        gesture_logger.info(f"{'='*80}\n")
         
         if not hand_gesture_detected:
             return False, False, {}
@@ -2659,8 +2795,8 @@ class LocopilotActivityMonitor:
         history = self.hand_position_history[person_idx]
 
         # Get current wrist positions
-        right_wrist = landmarks.landmark[self.mp_pose.PoseLandmark.RIGHT_WRIST]
-        left_wrist = landmarks.landmark[self.mp_pose.PoseLandmark.LEFT_WRIST]
+        right_wrist = self.get_keypoint(landmarks, 'right_wrist')
+        left_wrist = self.get_keypoint(landmarks, 'left_wrist')
 
         right_coords = (int(right_wrist.x * w), int(right_wrist.y * h))
         left_coords = (int(left_wrist.x * w), int(left_wrist.y * h))
@@ -2758,8 +2894,8 @@ class LocopilotActivityMonitor:
         backpack_center_y = (bp_y1 + bp_y2) / 2
 
         # Get current hand positions (use closer hand to backpack)
-        right_wrist = landmarks.landmark[self.mp_pose.PoseLandmark.RIGHT_WRIST]
-        left_wrist = landmarks.landmark[self.mp_pose.PoseLandmark.LEFT_WRIST]
+        right_wrist = self.get_keypoint(landmarks, 'right_wrist')
+        left_wrist = self.get_keypoint(landmarks, 'left_wrist')
 
         right_x, right_y = int(right_wrist.x * w), int(right_wrist.y * h)
         left_x, left_y = int(left_wrist.x * w), int(left_wrist.y * h)
@@ -2875,132 +3011,112 @@ class LocopilotActivityMonitor:
             'reason': 'valid_pattern' if packing_detected else ('sustained_proximity' if (sustained_proximity and sustained_proximity_time) else 'no_packing_pattern')
         }
 
-    def detect_multi_person_pose_and_gestures(self, frame, person_roles):
-        """Run MediaPipe Pose on each person's cropped bounding box for multi-person gesture detection.
-        
-        This allows simultaneous detection of hand gestures from multiple people (LP and ALP)
-        by running pose detection on cropped regions for each detected person.
-        
+    # NOTE: detect_multi_person_pose_and_gestures removed - replaced by YOLOv8-Pose
+
+    def _match_pose_to_roles(self, yolo_pose_results, person_roles):
+        """Match YOLOv8-Pose detections to identified person roles by bounding box IoU.
+
+        Enhanced with torso-center fallback for cases where bboxes overlap significantly.
+
         Args:
-            frame: The full frame image (BGR format)
-            person_roles: Dictionary of person roles from identify_person_roles()
-                         Format: {person_idx: {'bbox': [x1, y1, x2, y2], 'role': 'LP'/'ALP', ...}}
-        
+            yolo_pose_results: Dict from YoloPoseAdapter.process() containing:
+                {person_idx: {'bbox': [...], 'keypoints': YoloPoseLandmarks}}
+            person_roles: Dict from identify_person_roles() containing:
+                {person_idx: {'bbox': [...], 'role': 'LP'/'ALP', ...}}
+
         Returns:
-            dict: Results for each person
-                  Format: {person_idx: {'pose_landmarks': landmarks, 'gesture_detected': bool, 
-                          'gesture_type': 'lp'/'alp', 'debug_info': {}}}
+            Dict mapping person_idx (from person_roles) to YoloPoseLandmarks
         """
-        if not person_roles or len(person_roles) == 0:
-            return {}
-        
-        results = {}
-        h, w = frame.shape[:2]
-        
-        for person_idx, person_data in person_roles.items():
-            if 'bbox' not in person_data:
+        matched = {}
+        used_yolo_indices = set()
+
+        gesture_logger.info(f"[POSE MATCHING] Matching {len(yolo_pose_results)} YOLO poses to {len(person_roles)} person roles")
+
+        for person_idx, role_data in person_roles.items():
+            if 'bbox' not in role_data:
                 continue
-            
-            bbox = person_data['bbox']  # [x1, y1, x2, y2]
-            x1, y1, x2, y2 = bbox
-            
-            # INCREASED padding for better pose detection, especially for extended arms/hands
-            # Overhead cameras need more padding, especially vertically for raised hands
-            padding_x = int((x2 - x1) * 0.25)  # Increased from 10% to 25%
-            padding_y = int((y2 - y1) * 0.35)   # Increased from 10% to 35% (more vertical for raised hands)
-            
-            # Expand bbox with padding, but stay within frame bounds
-            x1_padded = int(max(0, x1 - padding_x))
-            y1_padded = int(max(0, y1 - padding_y))
-            x2_padded = int(min(w, x2 + padding_x))
-            y2_padded = int(min(h, y2 + padding_y))
-            
-            # Ensure minimum crop size for MediaPipe (at least 256x256 pixels)
-            crop_width = x2_padded - x1_padded
-            crop_height = y2_padded - y1_padded
-            min_size = 256
-            
-            if crop_width < min_size or crop_height < min_size:
-                # Expand to minimum size, centered on original crop
-                if crop_width < min_size:
-                    center_x = (x1_padded + x2_padded) // 2
-                    x1_padded = max(0, center_x - min_size // 2)
-                    x2_padded = min(w, x1_padded + min_size)
-                    x1_padded = max(0, x2_padded - min_size)  # Adjust if hit boundary
-                
-                if crop_height < min_size:
-                    center_y = (y1_padded + y2_padded) // 2
-                    y1_padded = max(0, center_y - min_size // 2)
-                    y2_padded = min(h, y1_padded + min_size)
-                    y1_padded = max(0, y2_padded - min_size)  # Adjust if hit boundary
-            
-            # Crop frame to this person's region
-            try:
-                cropped_frame = frame[y1_padded:y2_padded, x1_padded:x2_padded]
-                
-                if cropped_frame.size == 0:
+
+            role_bbox = role_data['bbox']
+            role_center_x = (role_bbox[0] + role_bbox[2]) / 2
+            role_center_y = (role_bbox[1] + role_bbox[3]) / 2
+            role_name = role_data.get('role', 'UNKNOWN')
+
+            # Collect all candidates with their IoU scores
+            candidates = []
+            for yolo_idx, yolo_data in yolo_pose_results.items():
+                if yolo_idx in used_yolo_indices:
                     continue
-                
-                # Convert to RGB for MediaPipe
-                cropped_rgb = cv2.cvtColor(cropped_frame, cv2.COLOR_BGR2RGB)
-                
-                # Apply image preprocessing to enhance MediaPipe detection
-                cropped_rgb = self._preprocess_frame_for_pose(cropped_rgb)
-                
-                # Run MediaPipe Pose on this cropped region
-                pose_result = self.pose.process(cropped_rgb)
-                
-                if pose_result.pose_landmarks:
-                    # Translate landmarks from cropped coordinates back to full frame coordinates
-                    translated_landmarks = self.translate_pose_landmarks(
-                        pose_result.pose_landmarks,
-                        x1_padded, y1_padded,
-                        x2_padded - x1_padded, y2_padded - y1_padded,
-                        w, h
-                    )
-                    
-                    # Validate translated landmarks are valid before using
-                    if translated_landmarks is None or len(translated_landmarks.landmark) == 0:
-                        continue
-                    
-                    # Create a single-person roles dict for this person
-                    single_person_roles = {person_idx: person_data}
-                    
-                    # Detect hand gesture for this specific person
-                    # Note: This function doesn't have activity context, so pass None
-                    # Consider using process_all_persons_activities() for full context-aware detection
-                    lp_gesture, alp_gesture, gesture_debug = self.detect_hand_gesture(
-                        translated_landmarks,
-                        frame.shape,
-                        single_person_roles,
-                        yolo_person_boxes=None,
-                        person_activities=None,
-                        backpack_detections=None,
-                        person_idx=None,
-                        current_timestamp=None
-                    )
-                    
-                    # Store results
-                    results[person_idx] = {
-                        'pose_landmarks': translated_landmarks,
-                        'gesture_detected': lp_gesture or alp_gesture,
-                        'gesture_type': 'lp' if lp_gesture else ('alp' if alp_gesture else None),
-                        'debug_info': gesture_debug,
-                        'role': person_data.get('role', 'UNKNOWN')
-                    }
-                    
-            except Exception as e:
-                print(f"Error processing person {person_idx}: {e}")
+
+                iou = self.calculate_iou(role_bbox, yolo_data['bbox'])
+                candidates.append({
+                    'yolo_idx': yolo_idx,
+                    'iou': iou,
+                    'keypoints': yolo_data['keypoints'],
+                    'bbox': yolo_data['bbox']
+                })
+
+            # Sort by IoU descending
+            candidates.sort(key=lambda x: x['iou'], reverse=True)
+
+            # Log all candidates
+            for c in candidates:
+                gesture_logger.debug(f"  [{role_name}] Candidate YOLO {c['yolo_idx']}: IoU={c['iou']:.3f}")
+
+            if not candidates:
+                gesture_logger.warning(f"[POSE MATCHING] No candidates for {role_name} (person {person_idx})")
                 continue
-        
-        return results
-    
+
+            best_candidate = candidates[0]
+
+            # Check if top two candidates have similar IoU (within 0.15) - use torso center as tiebreaker
+            if len(candidates) >= 2 and candidates[0]['iou'] - candidates[1]['iou'] < 0.15:
+                gesture_logger.info(f"[POSE MATCHING] Close IoU scores for {role_name}: {candidates[0]['iou']:.3f} vs {candidates[1]['iou']:.3f} - using torso center")
+
+                # Calculate torso center for each candidate using shoulders
+                best_dist = float('inf')
+                for c in candidates[:2]:  # Only compare top 2
+                    keypoints = c['keypoints']
+                    if len(keypoints.landmark) >= 7:  # Need at least shoulders
+                        # Get shoulder positions (indices 5 and 6 for left/right shoulder)
+                        left_shoulder = keypoints.landmark[5]
+                        right_shoulder = keypoints.landmark[6]
+
+                        # Get frame dimensions from bbox (approximate)
+                        bbox = c['bbox']
+                        frame_w = max(bbox[2], 1920)  # Estimate frame width
+                        frame_h = max(bbox[3], 1080)  # Estimate frame height
+
+                        # Calculate torso center in pixel coords
+                        torso_x = ((left_shoulder.x + right_shoulder.x) / 2) * frame_w
+                        torso_y = ((left_shoulder.y + right_shoulder.y) / 2) * frame_h
+
+                        # Distance from role bbox center to torso center
+                        dist = ((torso_x - role_center_x) ** 2 + (torso_y - role_center_y) ** 2) ** 0.5
+
+                        gesture_logger.debug(f"    Candidate {c['yolo_idx']}: torso=({torso_x:.0f}, {torso_y:.0f}), dist={dist:.0f}px")
+
+                        if dist < best_dist:
+                            best_dist = dist
+                            best_candidate = c
+
+                gesture_logger.info(f"[POSE MATCHING] Torso-based selection: YOLO {best_candidate['yolo_idx']} (dist={best_dist:.0f}px)")
+
+            # Match if IoU is above threshold (LOWERED from 0.3 to 0.2 for overlapping cases)
+            if best_candidate['iou'] > 0.2:
+                matched[person_idx] = best_candidate['keypoints']
+                used_yolo_indices.add(best_candidate['yolo_idx'])
+                gesture_logger.info(f"[POSE MATCHING] Matched {role_name} (person {person_idx}) -> YOLO {best_candidate['yolo_idx']} (IoU={best_candidate['iou']:.3f})")
+            else:
+                gesture_logger.warning(f"[POSE MATCHING] No match for {role_name} (person {person_idx}): best IoU={best_candidate['iou']:.3f} < 0.2")
+
+        return matched
+
     def process_all_persons_activities(self, frame, detections, person_roles, timestamp_sec, face_results=None, frame_number=None):
         """Process all detected persons for ALL activity detections (mind diversion, sleep, etc.)
-        
+
         This is the MAIN multi-person processing method that:
-        1. Crops each detected person's bounding box
-        2. Runs MediaPipe Pose on each crop
+        1. Runs YOLOv8-Pose once to get all persons with keypoints
+        2. Matches YOLO detections to person_roles by bounding box IoU
         3. Detects ALL activities for EACH person (mind diversion, sleep, cell phone, writing, etc.)
         4. Returns aggregated results for all persons
         
@@ -3068,77 +3184,81 @@ class LocopilotActivityMonitor:
         
         h, w = frame.shape[:2]
         persons_data = {}
-        
+
+        # ============ YOLOV8-POSE: Single inference for all persons ============
+        # Run YOLOv8-Pose once on the full frame to get all persons with keypoints
+        # This replaces the per-person MediaPipe cropping loop for better performance
+        yolo_pose_results = self.yolo_pose.process(frame)
+
+        # Match YOLO pose detections to person_roles by bounding box IoU
+        matched_poses = self._match_pose_to_roles(yolo_pose_results, person_roles)
+
         # Process each person individually
         for person_idx, person_data in person_roles.items():
             if 'bbox' not in person_data:
                 continue
-            
+
             bbox = person_data['bbox']  # [x1, y1, x2, y2]
-            x1, y1, x2, y2 = bbox
-            
-            # INCREASED padding for better pose detection, especially for extended arms/hands
-            # Overhead cameras need more padding, especially vertically for raised hands
-            padding_x = int((x2 - x1) * 0.25)  # Increased from 10% to 25%
-            padding_y = int((y2 - y1) * 0.35)   # Increased from 10% to 35% (more vertical for raised hands)
-            
-            # Expand bbox with padding, but stay within frame bounds
-            x1_padded = int(max(0, x1 - padding_x))
-            y1_padded = int(max(0, y1 - padding_y))
-            x2_padded = int(min(w, x2 + padding_x))
-            y2_padded = int(min(h, y2 + padding_y))
-            
-            # Ensure minimum crop size for MediaPipe (at least 256x256 pixels)
-            crop_width = x2_padded - x1_padded
-            crop_height = y2_padded - y1_padded
-            min_size = 256
-            
-            if crop_width < min_size or crop_height < min_size:
-                # Expand to minimum size, centered on original crop
-                if crop_width < min_size:
-                    center_x = (x1_padded + x2_padded) // 2
-                    x1_padded = max(0, center_x - min_size // 2)
-                    x2_padded = min(w, x1_padded + min_size)
-                    x1_padded = max(0, x2_padded - min_size)  # Adjust if hit boundary
-                
-                if crop_height < min_size:
-                    center_y = (y1_padded + y2_padded) // 2
-                    y1_padded = max(0, center_y - min_size // 2)
-                    y2_padded = min(h, y1_padded + min_size)
-                    y1_padded = max(0, y2_padded - min_size)  # Adjust if hit boundary
-            
-            # Crop frame to this person's region
+
+            # Get matched pose keypoints for this person
+            # YOLOv8-Pose provides full-frame coordinates directly (no cropping/translation needed)
             try:
-                cropped_frame = frame[y1_padded:y2_padded, x1_padded:x2_padded]
-                
-                if cropped_frame.size == 0:
+                if person_idx not in matched_poses:
+                    # No pose detected for this person, skip
                     continue
-                
-                # Convert to RGB for MediaPipe
-                cropped_rgb = cv2.cvtColor(cropped_frame, cv2.COLOR_BGR2RGB)
-                
-                # Apply image preprocessing to enhance MediaPipe detection
-                cropped_rgb = self._preprocess_frame_for_pose(cropped_rgb)
-                
-                # Run MediaPipe Pose on this cropped region
-                pose_result = self.pose.process(cropped_rgb)
-                
-                if not pose_result.pose_landmarks:
-                    continue
-                
-                # Translate landmarks from cropped coordinates back to full frame coordinates
-                translated_landmarks = self.translate_pose_landmarks(
-                    pose_result.pose_landmarks,
-                    x1_padded, y1_padded,
-                    x2_padded - x1_padded, y2_padded - y1_padded,
-                    w, h
-                )
-                
-                # Validate translated landmarks are valid before using for activity detection
+
+                # Get the matched YoloPoseLandmarks (MediaPipe-compatible interface)
+                translated_landmarks = matched_poses[person_idx]
+
+                # Validate landmarks are valid before using for activity detection
                 if translated_landmarks is None or len(translated_landmarks.landmark) == 0:
-                    # Skip this person if pose landmarks are invalid
                     continue
-                
+
+                # Check if at least some keypoints have good visibility
+                visible_count = sum(1 for lm in translated_landmarks.landmark if lm.visibility > 0.3)
+                if visible_count < 5:
+                    # Not enough visible keypoints, skip this person
+                    continue
+
+                # ============ KEYPOINT CONSISTENCY VALIDATION ============
+                # Verify that torso center falls within (or near) the person's bbox
+                # This catches cases where pose matching assigned wrong skeleton to person
+                h, w = frame.shape[:2]
+                left_shoulder = translated_landmarks.landmark[5]  # YOLO index
+                right_shoulder = translated_landmarks.landmark[6]  # YOLO index
+
+                # Calculate torso center in pixel coords
+                torso_center_x = ((left_shoulder.x + right_shoulder.x) / 2) * w
+                torso_center_y = ((left_shoulder.y + right_shoulder.y) / 2) * h
+
+                # Check if torso center is within expanded bbox (1.5x margin)
+                bbox_margin = 0.5  # 50% expansion
+                x1, y1, x2, y2 = bbox
+                bbox_width = x2 - x1
+                bbox_height = y2 - y1
+                expanded_x1 = x1 - bbox_width * bbox_margin
+                expanded_x2 = x2 + bbox_width * bbox_margin
+                expanded_y1 = y1 - bbox_height * bbox_margin
+                expanded_y2 = y2 + bbox_height * bbox_margin
+
+                torso_in_bbox = (
+                    expanded_x1 <= torso_center_x <= expanded_x2 and
+                    expanded_y1 <= torso_center_y <= expanded_y2
+                )
+
+                if not torso_in_bbox:
+                    gesture_logger.warning(
+                        f"[KEYPOINT VALIDATION] Person {person_idx} ({person_data.get('role', 'UNKNOWN')}): "
+                        f"Torso center ({torso_center_x:.0f}, {torso_center_y:.0f}) outside expanded bbox "
+                        f"[{expanded_x1:.0f}-{expanded_x2:.0f}, {expanded_y1:.0f}-{expanded_y2:.0f}] - SKIPPING"
+                    )
+                    continue
+                else:
+                    gesture_logger.debug(
+                        f"[KEYPOINT VALIDATION] Person {person_idx} ({person_data.get('role', 'UNKNOWN')}): "
+                        f"Torso center ({torso_center_x:.0f}, {torso_center_y:.0f}) VALID within bbox"
+                    )
+
                 # Initialize activity detection results for this person
                 person_activities = {
                     'mind_diversion': False,
@@ -3205,10 +3325,9 @@ class LocopilotActivityMonitor:
                     debug_logger = logging.getLogger('locopilot_monitor')
                     if self.consecutive_detections.get('cell_phone', 0) == 0:
                         debug_logger.info(f"[DEBUG CELL PHONE] {len(detections['cell_phone'])} phone(s) detected in frame")
-                    landmarks = translated_landmarks.landmark
-                    right_hand = landmarks[self.mp_pose.PoseLandmark.RIGHT_WRIST]
-                    left_hand = landmarks[self.mp_pose.PoseLandmark.LEFT_WRIST]
-                    
+                    right_hand = self.get_keypoint(translated_landmarks, 'right_wrist')
+                    left_hand = self.get_keypoint(translated_landmarks, 'left_wrist')
+
                     right_hand_coords = (int(right_hand.x * w), int(right_hand.y * h))
                     left_hand_coords = (int(left_hand.x * w), int(left_hand.y * h))
                     
@@ -3239,37 +3358,44 @@ class LocopilotActivityMonitor:
                 
                 # Method 1: Book detection (existing method)
                 if len(detections['book']) > 0:
-                    landmarks = translated_landmarks.landmark
-                    right_hand = landmarks[self.mp_pose.PoseLandmark.RIGHT_WRIST]
-                    
+                    right_hand = self.get_keypoint(translated_landmarks, 'right_wrist')
+                    left_hand = self.get_keypoint(translated_landmarks, 'left_wrist')
+
                     right_hand_coords = (int(right_hand.x * w), int(right_hand.y * h))
-                    
-                    margin = self.activity_thresholds['writing']['margin']
+                    left_hand_coords = (int(left_hand.x * w), int(left_hand.y * h))
+
+                    hand_margin = self.activity_thresholds['writing']['margin']
+                    # Use moderate margin for book-to-person association since book is typically in lap area
+                    # (below the person's detected bounding box which mainly covers upper body)
+                    person_book_margin = 150  # Reduced from 250 to 150 - stricter association to reduce false positives
                     for book_bbox in detections['book']:
-                        # Check if book is in this person's region
-                        book_in_person_region = self.bbox_overlap_with_margin(book_bbox, bbox, margin)
-                        
+                        # Check if book is in this person's region (use large margin for lap area)
+                        book_in_person_region = self.bbox_overlap_with_margin(book_bbox, bbox, person_book_margin)
+
                         if book_in_person_region:
-                            if self.check_hand_object_interaction(right_hand_coords, book_bbox, margin):
+                            # Check BOTH hands for interaction with book (use tighter margin)
+                            right_hand_near_book = self.check_hand_object_interaction(right_hand_coords, book_bbox, hand_margin)
+                            left_hand_near_book = self.check_hand_object_interaction(left_hand_coords, book_bbox, hand_margin)
+                            if right_hand_near_book or left_hand_near_book:
                                 writing_detected_by_book = True
                                 break
                 
                 # Method 2: Wrist proximity heuristic (temporal - requires sustained duration)
+                # DEBUG: Log that we're checking writing detection
+                self.logger.debug(f"Person {person_idx}: Calling writing detection (frame {frame_number})")
                 writing_detected_by_wrist = self.detect_writing_by_wrist_proximity(
                     translated_landmarks,
                     frame.shape,
                     person_idx,
                     timestamp_sec
                 )
-                
-                # Method 3: Instant writing posture check (NEW - immediate detection)
-                writing_detected_by_posture = self.detect_writing_posture(
-                    translated_landmarks,
-                    frame.shape
+                self.logger.debug(f"Person {person_idx}: Writing detection result = {writing_detected_by_wrist}")
+
+                # Combine the two original detection methods (book detection and wrist proximity)
+                writing_detected_raw = (
+                    writing_detected_by_book or
+                    writing_detected_by_wrist
                 )
-                
-                # Combine all three detection methods
-                writing_detected_raw = writing_detected_by_book or writing_detected_by_wrist or writing_detected_by_posture
                 should_trigger = self.update_per_person_detection(
                     person_idx, 'writing', writing_detected_raw, timestamp_sec
                 )
@@ -3279,9 +3405,7 @@ class LocopilotActivityMonitor:
                 if writing_detected_by_book:
                     person_debug_info['writing_method'] = 'book'
                 elif writing_detected_by_wrist:
-                    person_debug_info['writing_method'] = 'wrist_proximity'
-                elif writing_detected_by_posture:
-                    person_debug_info['writing_method'] = 'instant_posture'
+                    person_debug_info['writing_method'] = 'pose_based'
                 else:
                     person_debug_info['writing_method'] = 'none'
                 
@@ -3386,35 +3510,34 @@ class LocopilotActivityMonitor:
                 # 5. PACKING DETECTION (check if hand near backpack in THIS person's region)
                 # MOVED BEFORE HAND GESTURE: Need to detect this first for context-aware filtering
                 if len(detections['backpack']) > 0:
-                    landmarks = translated_landmarks.landmark
-                    right_hand = landmarks[self.mp_pose.PoseLandmark.RIGHT_WRIST]
-                    left_hand = landmarks[self.mp_pose.PoseLandmark.LEFT_WRIST]
-                    
+                    right_hand = self.get_keypoint(translated_landmarks, 'right_wrist')
+                    left_hand = self.get_keypoint(translated_landmarks, 'left_wrist')
+
                     # Check wrist visibility - only use if visible enough
-                    right_wrist_visible = right_hand.visibility > 0.3  # MediaPipe visibility threshold
+                    right_wrist_visible = right_hand.visibility > 0.3
                     left_wrist_visible = left_hand.visibility > 0.3
-                    
+
                     # Use smoothed hand positions to reduce pose estimation noise (only if visible)
                     right_hand_coords = None
                     left_hand_coords = None
-                    
+
                     if right_wrist_visible:
                         right_hand_coords = _get_smoothed_hand_position(
                             person_idx, 'right', right_hand, w, h, timestamp_sec
                         )
                     elif left_wrist_visible:
                         # Fallback: if right wrist not visible, try using right elbow as approximation
-                        right_elbow = landmarks[self.mp_pose.PoseLandmark.RIGHT_ELBOW]
+                        right_elbow = self.get_keypoint(translated_landmarks, 'right_elbow')
                         if right_elbow.visibility > 0.3:
                             right_hand_coords = (int(right_elbow.x * w), int(right_elbow.y * h))
-                    
+
                     if left_wrist_visible:
                         left_hand_coords = _get_smoothed_hand_position(
                             person_idx, 'left', left_hand, w, h, timestamp_sec
                         )
                     elif right_wrist_visible:
                         # Fallback: if left wrist not visible, try using left elbow as approximation
-                        left_elbow = landmarks[self.mp_pose.PoseLandmark.LEFT_ELBOW]
+                        left_elbow = self.get_keypoint(translated_landmarks, 'left_elbow')
                         if left_elbow.visibility > 0.3:
                             left_hand_coords = (int(left_elbow.x * w), int(left_elbow.y * h))
 
@@ -3611,17 +3734,15 @@ class LocopilotActivityMonitor:
         
         if not pose_landmarks:
             return result
-        
-        landmarks = pose_landmarks.landmark
-        
+
         try:
             # Get pose landmarks
-            nose = landmarks[self.mp_pose.PoseLandmark.NOSE]
-            left_shoulder = landmarks[self.mp_pose.PoseLandmark.LEFT_SHOULDER]
-            right_shoulder = landmarks[self.mp_pose.PoseLandmark.RIGHT_SHOULDER]
-            left_ear = landmarks[self.mp_pose.PoseLandmark.LEFT_EAR]
-            right_ear = landmarks[self.mp_pose.PoseLandmark.RIGHT_EAR]
-            
+            nose = self.get_keypoint(pose_landmarks, 'nose')
+            left_shoulder = self.get_keypoint(pose_landmarks, 'left_shoulder')
+            right_shoulder = self.get_keypoint(pose_landmarks, 'right_shoulder')
+            left_ear = self.get_keypoint(pose_landmarks, 'left_ear')
+            right_ear = self.get_keypoint(pose_landmarks, 'right_ear')
+
             # Check visibility
             if nose.visibility < 0.5:
                 return result
@@ -3810,115 +3931,7 @@ class LocopilotActivityMonitor:
             sorted_indices = remaining_indices
         
         return keep_boxes
-    
-    def validate_persons_with_pose(self, frame, person_boxes):
-        """Validate person detections by checking if MediaPipe can detect pose landmarks.
-        
-        This filters out false positives (seats, objects, etc.) that YOLO might misclassify
-        as persons. Only boxes where valid human pose is detected are kept.
-        
-        Args:
-            frame: The video frame (BGR format)
-            person_boxes: List of person bounding boxes [[x1, y1, x2, y2], ...]
-            
-        Returns:
-            List of validated person boxes (only those with successful pose detection)
-        """
-        if not person_boxes or len(person_boxes) == 0:
-            return []
-        
-        h, w = frame.shape[:2]
-        validated_boxes = []
-        
-        for bbox in person_boxes:
-            x1, y1, x2, y2 = map(int, bbox)
-            
-            # INCREASED padding for better pose detection, especially for extended arms/hands
-            # Overhead cameras need more padding, especially vertically for raised hands
-            padding_x = int((x2 - x1) * 0.25)  # Increased from 10% to 25%
-            padding_y = int((y2 - y1) * 0.35)   # Increased from 10% to 35% (more vertical for raised hands)
-            
-            # Expand bbox with padding, but stay within frame bounds
-            x1_padded = max(0, x1 - padding_x)
-            y1_padded = max(0, y1 - padding_y)
-            x2_padded = min(w, x2 + padding_x)
-            y2_padded = min(h, y2 + padding_y)
-            
-            # Ensure minimum crop size for MediaPipe (at least 256x256 pixels)
-            crop_width = x2_padded - x1_padded
-            crop_height = y2_padded - y1_padded
-            min_size = 256
-            
-            if crop_width < min_size or crop_height < min_size:
-                # Expand to minimum size, centered on original crop
-                if crop_width < min_size:
-                    center_x = (x1_padded + x2_padded) // 2
-                    x1_padded = max(0, center_x - min_size // 2)
-                    x2_padded = min(w, x1_padded + min_size)
-                    x1_padded = max(0, x2_padded - min_size)  # Adjust if hit boundary
-                
-                if crop_height < min_size:
-                    center_y = (y1_padded + y2_padded) // 2
-                    y1_padded = max(0, center_y - min_size // 2)
-                    y2_padded = min(h, y1_padded + min_size)
-                    y1_padded = max(0, y2_padded - min_size)  # Adjust if hit boundary
-            
-            try:
-                # Crop frame to this person's region
-                cropped_frame = frame[y1_padded:y2_padded, x1_padded:x2_padded]
-                
-                if cropped_frame.size == 0:
-                    continue
-                
-                # Convert to RGB for MediaPipe
-                cropped_rgb = cv2.cvtColor(cropped_frame, cv2.COLOR_BGR2RGB)
-                
-                # Apply image preprocessing to enhance MediaPipe detection
-                cropped_rgb = self._preprocess_frame_for_pose(cropped_rgb)
-                
-                # Run MediaPipe Pose on cropped region
-                pose_result = self.pose.process(cropped_rgb)
-                
-                # Only keep this person if pose landmarks are detected
-                if pose_result.pose_landmarks:
-                    # Strict validation: check if key landmarks are visible with higher thresholds
-                    landmarks = pose_result.pose_landmarks.landmark
-                    
-                    # Check critical landmarks (nose, shoulders, hips, wrists)
-                    nose = landmarks[self.mp_pose.PoseLandmark.NOSE]
-                    left_shoulder = landmarks[self.mp_pose.PoseLandmark.LEFT_SHOULDER]
-                    right_shoulder = landmarks[self.mp_pose.PoseLandmark.RIGHT_SHOULDER]
-                    left_hip = landmarks[self.mp_pose.PoseLandmark.LEFT_HIP]
-                    right_hip = landmarks[self.mp_pose.PoseLandmark.RIGHT_HIP]
-                    left_wrist = landmarks[self.mp_pose.PoseLandmark.LEFT_WRIST]
-                    right_wrist = landmarks[self.mp_pose.PoseLandmark.RIGHT_WRIST]
-                    
-                    # STRICT VALIDATION: Multiple checks to filter seats/objects
-                    # Check 1: Count visible upper body landmarks (higher threshold)
-                    upper_body_visible = sum([
-                        nose.visibility > 0.5,
-                        left_shoulder.visibility > 0.5,
-                        right_shoulder.visibility > 0.5
-                    ])
-                    
-                    # Check 2: At least one hip visible (seats typically don't have hip structure)
-                    hips_visible = (left_hip.visibility > 0.3 or right_hip.visibility > 0.3)
-                    
-                    # Check 3: At least one wrist visible (seats don't have arms)
-                    wrists_visible = (left_wrist.visibility > 0.3 or right_wrist.visibility > 0.3)
-                    
-                    # Accept only if:
-                    # - At least 2 upper body landmarks are clearly visible (visibility > 0.5)
-                    # - AND (hips OR wrists are visible) - ensures human body structure
-                    if upper_body_visible >= 2 and (hips_visible or wrists_visible):
-                        validated_boxes.append(bbox)
-                    
-            except Exception as e:
-                # If pose detection fails, skip this box (likely not a person)
-                continue
-        
-        return validated_boxes
-    
+
     def identify_person_roles(self, frame, person_boxes, detections):
         """Identify LP (Loco Pilot) and ALP (Assistant Loco Pilot) based on objects near each person.
         
@@ -4445,21 +4458,14 @@ class LocopilotActivityMonitor:
                     # Increased IOU threshold from 0.3 to 0.5 to better filter duplicate detections
                     deduplicated_persons = self.deduplicate_person_boxes(detections['person'], iou_threshold=0.5)
                     
-                    # *** POSE VALIDATION: Filter out false positives (seats, objects, etc.) ***
-                    # Only keep detections where MediaPipe can detect valid human pose landmarks
-                    validated_persons = self.validate_persons_with_pose(frame, deduplicated_persons)
-                    validated_count = len(validated_persons)
-                    
-                    # Log filtering results if any boxes were removed
-                    if len(deduplicated_persons) != validated_count:
-                        print(f"[{timestamp}] Pose validation: {len(deduplicated_persons)} deduplicated → {validated_count} validated (filtered {len(deduplicated_persons) - validated_count} false positives)")
-                    
-                    # Store validated boxes back in detections for visualization
-                    detections['deduplicated_person'] = validated_persons
-                    deduplicated_count = validated_count
-                    
+                    # Store deduplicated boxes in detections for visualization
+                    # NOTE: Removed pose validation as it was filtering out legitimate people
+                    # (MediaPipe struggles with back views, partial occlusions, overhead cameras)
+                    detections['deduplicated_person'] = deduplicated_persons
+                    deduplicated_count = len(deduplicated_persons)
+
                     # Identify person roles (LP, ALP, etc.)
-                    person_roles = self.identify_person_roles(frame, validated_persons, detections)
+                    person_roles = self.identify_person_roles(frame, deduplicated_persons, detections)
                     
                     # Log role identification (only once per detection cycle)
                     if self.consecutive_detections['group_detected'] == 0 and person_roles:
@@ -4819,18 +4825,10 @@ class LocopilotActivityMonitor:
                 if len(detections['person']) > 0:
                     deduplicated_persons = self.deduplicate_person_boxes(detections['person'], iou_threshold=0.5)
                     
-                    # *** POSE VALIDATION: Filter out false positives (seats, objects, etc.) ***
-                    # Only keep detections where MediaPipe can detect valid human pose landmarks
-                    validated_persons = self.validate_persons_with_pose(frame, deduplicated_persons)
-                    validated_count = len(validated_persons)
-                    
-                    # Log filtering results if any boxes were removed
-                    if len(deduplicated_persons) != validated_count:
-                        print(f"[{timestamp}] Pose validation: {len(deduplicated_persons)} deduplicated → {validated_count} validated (filtered {len(deduplicated_persons) - validated_count} false positives)")
-                    
-                    deduplicated_count = validated_count
-                    detections['deduplicated_person'] = validated_persons
-                    person_roles = self.identify_person_roles(frame, validated_persons, detections)
+                    # Store deduplicated boxes (no pose validation - it filters out legitimate people)
+                    deduplicated_count = len(deduplicated_persons)
+                    detections['deduplicated_person'] = deduplicated_persons
+                    person_roles = self.identify_person_roles(frame, deduplicated_persons, detections)
                     
                     if deduplicated_count > 2:
                         group_detected_flag = True
@@ -5019,17 +5017,17 @@ class LocopilotActivityMonitor:
 
     def cleanup(self):
         """
-        ✅ MEMORY FIX: Cleanup method to release MediaPipe resources
-        
+        ✅ MEMORY FIX: Cleanup method to release model resources
+
         This method mirrors POC_2's MediaPipeService.close() pattern.
         Call this after processing to free GPU/CPU resources.
         """
         try:
-            # Close MediaPipe models
-            if hasattr(self, 'pose') and self.pose is not None:
-                self.pose.close()
-                self.pose = None
-            
+            # Close YOLOv8-Pose model
+            if hasattr(self, 'yolo_pose') and self.yolo_pose is not None:
+                self.yolo_pose = None
+
+            # Close MediaPipe FaceMesh (still used for EAR calculation)
             if hasattr(self, 'face_mesh') and self.face_mesh is not None:
                 self.face_mesh.close()
                 self.face_mesh = None
@@ -5047,7 +5045,7 @@ class LocopilotActivityMonitor:
             # Force garbage collection
             gc.collect()
             
-            print("✅ Cleanup completed: MediaPipe models closed, buffers cleared")
+            print("✅ Cleanup completed: Models closed, buffers cleared")
         except Exception as e:
             print(f"⚠️ Warning during cleanup: {e}")
     

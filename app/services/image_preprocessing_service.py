@@ -138,7 +138,7 @@ class ImagePreprocessingService:
                 # Use more aggressive CLAHE for very dark images
                 if self.adaptive_preprocessing and needs_brightness_boost:
                     # Increase clip limit for darker images (more contrast enhancement)
-                    clahe_clip_limit = min(4.0, self.clahe_clip_limit * 1.5)
+                    clahe_clip_limit = min(2.5, self.clahe_clip_limit * 1.3)  # REDUCED max from 4.0 to 2.5
                     processed_frame = self.apply_clahe(processed_frame, clip_limit=clahe_clip_limit)
                 else:
                     processed_frame = self.apply_clahe(processed_frame)

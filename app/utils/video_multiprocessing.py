@@ -130,8 +130,11 @@ def worker_initializer(config: MultiprocessingConfig):
             mp_face_mesh = mp.solutions.face_mesh
             
             pose = mp_pose.Pose(
-                min_detection_confidence=0.3,
-                min_tracking_confidence=0.3
+                static_image_mode=True,        # Treat each frame independently (not video tracking)
+                model_complexity=1,             # TEMPORARILY using 1 (full model) - change to 2 after fixing SSL
+                min_detection_confidence=0.45, # Balanced: strict enough to filter bad poses, lenient for background people
+                min_tracking_confidence=0.45,  # Balanced: allows detection of partially occluded people
+                smooth_landmarks=False          # Disable temporal smoothing (we handle this separately)
             )
             
             face_mesh = mp_face_mesh.FaceMesh(

@@ -69,6 +69,8 @@ class Settings(BaseSettings):
     
     # Model settings
     yolo_weights: str = os.getenv("YOLO_WEIGHTS_PRELOAD", "yolov8m.pt")  # YOLOv8m for faster CPU
+    yolo_pose_weights: str = os.getenv("YOLO_POSE_WEIGHTS", "yolov8m-pose.pt")  # YOLOv8m-pose for multi-person pose
+    yolo_pose_confidence: float = float(os.getenv("YOLO_POSE_CONFIDENCE", "0.45"))  # Pose detection confidence
     preload_ocr: bool = bool(int(os.getenv("PRELOAD_OCR", "0")))
     
     # Logging settings
@@ -106,7 +108,7 @@ class Settings(BaseSettings):
     use_unsharp_masking: bool = bool(int(os.getenv("USE_UNSHARP_MASKING", "0")))  # Optional, can add artifacts
     use_noise_reduction: bool = bool(int(os.getenv("USE_NOISE_REDUCTION", "1")))
     adaptive_preprocessing: bool = bool(int(os.getenv("ADAPTIVE_PREPROCESSING", "1")))  # Use quality metrics
-    clahe_clip_limit: float = float(os.getenv("CLAHE_CLIP_LIMIT", "2.0"))
+    clahe_clip_limit: float = float(os.getenv("CLAHE_CLIP_LIMIT", "1.5"))  # REDUCED from 2.0 (less aggressive CLAHE)
     
     # Parse tile grid size from environment variable (JSON array string)
     @field_validator('clahe_tile_grid_size', mode='before')
@@ -127,7 +129,7 @@ class Settings(BaseSettings):
             return [int(v[0]), int(v[1])]
         return [8, 8]
     
-    clahe_tile_grid_size: List[int] = json.loads(os.getenv("CLAHE_TILE_GRID_SIZE", "[8, 8]"))
+    clahe_tile_grid_size: List[int] = json.loads(os.getenv("CLAHE_TILE_GRID_SIZE", "[16, 16]"))  # INCREASED from [8,8] (larger tiles, smoother)
     gamma_value: float = float(os.getenv("GAMMA_VALUE", "1.2"))
     unsharp_strength: float = float(os.getenv("UNSHARP_STRENGTH", "1.5"))
     unsharp_radius: int = int(os.getenv("UNSHARP_RADIUS", "1"))
