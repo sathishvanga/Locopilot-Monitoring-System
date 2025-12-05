@@ -72,7 +72,42 @@ class Settings(BaseSettings):
     yolo_pose_weights: str = os.getenv("YOLO_POSE_WEIGHTS", "yolov8m-pose.pt")  # YOLOv8m-pose for multi-person pose
     yolo_pose_confidence: float = float(os.getenv("YOLO_POSE_CONFIDENCE", "0.45"))  # Pose detection confidence
     preload_ocr: bool = bool(int(os.getenv("PRELOAD_OCR", "0")))
-    
+
+    # TIER 2 OPTIMIZATION: ONNX Runtime settings (3x faster CPU inference)
+    use_onnx_runtime: bool = bool(int(os.getenv("USE_ONNX_RUNTIME", "1")))  # Enable by default
+    onnx_yolo_weights: str = os.getenv("ONNX_YOLO_WEIGHTS", "yolov8m.onnx")
+    onnx_yolo_pose_weights: str = os.getenv("ONNX_YOLO_POSE_WEIGHTS", "yolov8m-pose.onnx")
+
+    # TIER 3 OPTIMIZATION: Motion-based frame skipping (30-50% frame reduction)
+    enable_motion_skipping: bool = bool(int(os.getenv("ENABLE_MOTION_SKIPPING", "1")))  # Enable by default
+    motion_threshold_low: float = float(os.getenv("MOTION_THRESHOLD_LOW", "0.005"))  # Skip if motion < 0.5%
+    motion_threshold_high: float = float(os.getenv("MOTION_THRESHOLD_HIGH", "0.05"))  # Always process if > 5%
+    baseline_frame_interval: int = int(os.getenv("BASELINE_FRAME_INTERVAL", "4"))  # Process every 4th frame minimum
+
+    # TIER 4.1 OPTIMIZATION: INT8 Quantization (2-3x additional speedup)
+    use_int8_quantization: bool = bool(int(os.getenv("USE_INT8_QUANTIZATION", "0")))  # Disabled by default (requires quantized models)
+    int8_yolo_weights: str = os.getenv("INT8_YOLO_WEIGHTS", "yolov8m_int8.onnx")
+    int8_yolo_pose_weights: str = os.getenv("INT8_YOLO_POSE_WEIGHTS", "yolov8m-pose_int8.onnx")
+
+    # TIER 4.2 OPTIMIZATION: Async Frame Reader (20-30% I/O overlap)
+    use_async_frame_reader: bool = bool(int(os.getenv("USE_ASYNC_FRAME_READER", "0")))  # Disabled by default
+    async_buffer_size: int = int(os.getenv("ASYNC_BUFFER_SIZE", "15"))  # 10-20 recommended for optimal performance
+
+    # PHASE 1.2 OPTIMIZATION: Frame Resolution Reduction for Detection (25-40% speedup)
+    detection_width: int = int(os.getenv("DETECTION_WIDTH", "640"))  # Default 640px (reduced from 1280)
+    detection_height: int = int(os.getenv("DETECTION_HEIGHT", "480"))  # Default 480px (reduced from 720)
+
+    @property
+    def detection_resolution(self) -> tuple:
+        """Detection resolution as (width, height) tuple"""
+        return (self.detection_width, self.detection_height)
+
+    # PHASE 1.3 OPTIMIZATION: Pose Cache Expansion (10-15% reduction in pose detection calls)
+    enable_pose_cache: bool = bool(int(os.getenv("ENABLE_POSE_CACHE", "1")))  # Enable by default
+    pose_cache_duration: float = float(os.getenv("POSE_CACHE_DURATION", "1.0"))  # Cache for 1 second
+    pose_cache_bbox_threshold: float = float(os.getenv("POSE_CACHE_BBOX_THRESHOLD", "0.1"))  # 10% movement threshold
+    pose_cache_stats_interval: int = int(os.getenv("POSE_CACHE_STATS_INTERVAL", "100"))  # Log stats every N frames
+
     # Logging settings
     log_level: str = "INFO"
     log_format: str = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
