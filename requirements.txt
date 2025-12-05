@@ -8,6 +8,10 @@ mediapipe==0.10.21
 # Ultralytics YOLO for object detection
 ultralytics>=8.0.0
 
+# ONNX Runtime for optimized CPU inference (3x faster than PyTorch)
+# TIER 2 OPTIMIZATION: Enables ONNX model execution
+onnxruntime>=1.16.0
+
 # NumPy - using version compatible with both opencv and mediapipe
 numpy>=1.26.0,<2.0.0
 

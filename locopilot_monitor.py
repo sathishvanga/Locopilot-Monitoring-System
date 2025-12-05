@@ -819,7 +819,7 @@ class LocopilotActivityMonitor:
         # Check cache expiration
         if time_elapsed > self.pose_cache_duration:
             self.pose_cache_invalidations['timeout'] += 1
-            self.log_debug(
+            self.debug_log(
                 lambda: f"[Pose Cache] Person {person_idx}: Cache expired "
                         f"(elapsed={time_elapsed:.3f}s > {self.pose_cache_duration}s)"
             )
@@ -841,7 +841,7 @@ class LocopilotActivityMonitor:
         bbox_movement = np.mean(bbox_diff) / current_size
 
         # Log detailed cache check
-        self.log_debug(
+        self.debug_log(
             lambda: f"[Pose Cache] Person {person_idx}: motion={motion_score:.4f}, "
                     f"bbox_movement={bbox_movement:.4f}, time_elapsed={time_elapsed:.3f}s"
         )
@@ -850,7 +850,7 @@ class LocopilotActivityMonitor:
         # Use cache if: low motion AND bbox stable
         if motion_score < self.motion_threshold_low and bbox_movement < self.pose_cache_bbox_threshold:
             self.pose_cache_hits += 1
-            self.log_debug(
+            self.debug_log(
                 lambda: f"[Pose Cache] Person {person_idx}: CACHE HIT "
                         f"(motion={motion_score:.4f} < {self.motion_threshold_low}, "
                         f"bbox_movement={bbox_movement:.4f} < {self.pose_cache_bbox_threshold})"
@@ -860,7 +860,7 @@ class LocopilotActivityMonitor:
         # Cache invalidation due to movement
         self.pose_cache_invalidations['bbox_movement'] += 1
         self.pose_cache_misses += 1
-        self.log_debug(
+        self.debug_log(
             lambda: f"[Pose Cache] Person {person_idx}: CACHE MISS due to movement "
                     f"(motion={motion_score:.4f}, bbox_movement={bbox_movement:.4f})"
         )
@@ -3603,7 +3603,7 @@ class LocopilotActivityMonitor:
         cached_poses_available = {}
         cache_check_start = time.time() if frame_number is not None else None
 
-        if self.pose_cache_enabled and motion_score < self.motion_threshold and len(person_roles) > 0:
+        if self.pose_cache_enabled and motion_score < self.motion_threshold_low and len(person_roles) > 0:
             # Low motion detected - check if we have valid cached poses for all persons
             all_persons_cached = True
             for person_idx, person_data in person_roles.items():
@@ -3621,7 +3621,7 @@ class LocopilotActivityMonitor:
 
             if all_persons_cached and len(cached_poses_available) == len(person_roles):
                 use_cached_poses = True
-                self.log_debug(
+                self.debug_log(
                     lambda: f"[Pose Cache] Using cached poses for {len(cached_poses_available)} person(s) "
                             f"(motion: {motion_score:.4f})"
                 )

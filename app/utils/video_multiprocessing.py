@@ -119,12 +119,35 @@ def worker_initializer(config: MultiprocessingConfig):
         
         # Preload models if enabled
         if config.preload_models:
-            from ultralytics import YOLO
             import mediapipe as mp
-            
-            logger.info(f"Worker {os.getpid()} loading YOLO model: {config.yolo_model_path}")
-            yolo_model = YOLO(config.yolo_model_path)
-            
+
+            # TIER 2 & 4.1 OPTIMIZATION: Check for ONNX models with INT8 support
+            use_onnx = os.getenv("USE_ONNX_RUNTIME", "1") == "1"
+            use_int8 = os.getenv("USE_INT8_QUANTIZATION", "0") == "1"
+
+            if use_onnx:
+                # Determine model path (INT8 or FP32 ONNX)
+                if use_int8 and os.path.exists('yolov8m_int8.onnx'):
+                    yolo_model_path = 'yolov8m_int8.onnx'
+                    logger.info(f"Worker {os.getpid()} loading INT8 ONNX YOLO model (5-8x faster)")
+                elif os.path.exists('yolov8m.onnx'):
+                    yolo_model_path = 'yolov8m.onnx'
+                    logger.info(f"Worker {os.getpid()} loading FP32 ONNX YOLO model (3x faster)")
+                else:
+                    use_onnx = False
+
+                if use_onnx:
+                    from app.services.onnx_yolo_wrapper import ONNXYOLODetector
+                    yolo_model = ONNXYOLODetector(yolo_model_path, conf_threshold=0.45)
+                else:
+                    logger.info(f"Worker {os.getpid()} loading PyTorch YOLO model: {config.yolo_model_path}")
+                    from ultralytics import YOLO
+                    yolo_model = YOLO(config.yolo_model_path)
+            else:
+                logger.info(f"Worker {os.getpid()} loading PyTorch YOLO model: {config.yolo_model_path}")
+                from ultralytics import YOLO
+                yolo_model = YOLO(config.yolo_model_path)
+
             logger.info(f"Worker {os.getpid()} initializing MediaPipe")
             mp_pose = mp.solutions.pose
             mp_face_mesh = mp.solutions.face_mesh
