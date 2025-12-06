@@ -1,5 +1,6 @@
 example_data/
 yolo*.pt
+*.onnx
 .DS_Store
 .venv/
 locopilot_evidence/
