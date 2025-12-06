@@ -3,6 +3,10 @@ Enhanced logging configuration with request context support
 
 Provides structured logging with request tracking, file rotation,
 and custom formatting for production environments.
+
+Configuration:
+    ENABLE_CONSOLE_LOGS: Set to "1" to enable console output (default: disabled)
+    LOG_LEVEL: Override log level (DEBUG, INFO, WARNING, ERROR, CRITICAL)
 """
 
 import os
@@ -19,6 +23,9 @@ settings = get_settings()
 # Create logs directory if it doesn't exist
 log_dir = settings.log_dir
 os.makedirs(log_dir, exist_ok=True)
+
+# Check if console logging is enabled (disabled by default for clean terminal output)
+ENABLE_CONSOLE_LOGS = os.getenv("ENABLE_CONSOLE_LOGS", "0") == "1"
 
 
 class RequestFormatter(logging.Formatter):
@@ -56,18 +63,21 @@ def setup_logging(level: Optional[str] = None) -> None:
     Configures:
     - Root logger with appropriate level
     - File handler with daily rotation (4-day retention)
-    - Console handler for errors
+    - Optional console handler (disabled by default, enable with ENABLE_CONSOLE_LOGS=1)
     - Custom formatter with request context
     - Disables noisy third-party loggers
     
     Args:
         level: Logging level (DEBUG, INFO, WARNING, ERROR, CRITICAL)
               If None, uses settings based on environment
+              
+    Environment Variables:
+        ENABLE_CONSOLE_LOGS: Set to "1" to enable console output (default: disabled)
     """
     # Configure root logger
     root_logger = logging.getLogger()
     
-    # Determine log level based on environment
+    # Determine log level based on environment or override
     if level:
         log_level = getattr(logging, level.upper())
     else:
@@ -109,6 +119,12 @@ def setup_logging(level: Optional[str] = None) -> None:
     # Create log file path
     log_file_path = os.path.join(log_dir, "LocopilotMonitoring.log")
     
+    # Custom formatter with request context
+    formatter = RequestFormatter(
+        "%(asctime)s [%(user_id)s] [%(cookie_id)s] [%(source_request_id)s] "
+        "[%(request_id)s] [%(levelname)s] [%(name)s] [%(method)s %(url)s] %(message)s"
+    )
+    
     # File handler with daily rotation (keeps 4 days of logs)
     file_handler = TimedRotatingFileHandler(
         filename=log_file_path,
@@ -118,6 +134,7 @@ def setup_logging(level: Optional[str] = None) -> None:
         encoding="utf-8",
         utc=True,
     )
+    file_handler.setFormatter(formatter)
     
     # Only add handler if not already present (avoid duplicates)
     if not any(
@@ -127,29 +144,26 @@ def setup_logging(level: Optional[str] = None) -> None:
     ):
         root_logger.addHandler(file_handler)
     
-    # Console handler for errors (production) or all messages (development)
-    stream_handler = logging.StreamHandler()
-    if settings.environment == "production":
-        stream_handler.setLevel(logging.ERROR)
-    else:
-        stream_handler.setLevel(logging.DEBUG)
+    # Console handler - DISABLED by default for clean terminal output
+    # Set ENABLE_CONSOLE_LOGS=1 to enable console logging for debugging
+    if ENABLE_CONSOLE_LOGS:
+        stream_handler = logging.StreamHandler()
+        if settings.environment == "production":
+            stream_handler.setLevel(logging.ERROR)
+        else:
+            stream_handler.setLevel(logging.DEBUG)
+        stream_handler.setFormatter(formatter)
+        
+        if not any(isinstance(h, logging.StreamHandler) for h in root_logger.handlers):
+            root_logger.addHandler(stream_handler)
     
-    if not any(isinstance(h, logging.StreamHandler) for h in root_logger.handlers):
-        root_logger.addHandler(stream_handler)
-    
-    # Custom formatter with request context
-    formatter = RequestFormatter(
-        "%(asctime)s [%(user_id)s] [%(cookie_id)s] [%(source_request_id)s] "
-        "[%(request_id)s] [%(levelname)s] [%(name)s] [%(method)s %(url)s] %(message)s"
-    )
-    
-    file_handler.setFormatter(formatter)
-    stream_handler.setFormatter(formatter)
-    
-    # Log initialization
+    # Log initialization (to file only)
     logger = logging.getLogger(__name__)
-    logger.info(f"Logging initialized - Level: {logging.getLevelName(log_level)}, "
-                f"Environment: {settings.environment}, Log file: {log_file_path}")
+    logger.info(
+        f"Logging initialized - Level: {logging.getLevelName(log_level)}, "
+        f"Environment: {settings.environment}, Log file: {log_file_path}, "
+        f"Console output: {'enabled' if ENABLE_CONSOLE_LOGS else 'disabled'}"
+    )
 
 
 def get_logger(name: str) -> logging.Logger:

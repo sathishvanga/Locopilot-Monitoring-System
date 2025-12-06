@@ -60,34 +60,44 @@ if os.environ.get('QT_QPA_PLATFORM') == 'offscreen':
     os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
     os.environ.setdefault('DISPLAY', '')
 
-# Configure logger for hand gesture detection with file handler
-# This ensures logs work in both main process and multiprocessing workers
-gesture_logger = logging.getLogger('HandGestureDetection')
-if not gesture_logger.handlers:
-    # Create logs directory if it doesn't exist
-    log_dir = 'logs'
-    os.makedirs(log_dir, exist_ok=True)
+# Configure module-level logger for file-only logging
+# Console output is disabled - all logs go to file only
+def _setup_module_logger(logger_name: str, level=logging.INFO) -> logging.Logger:
+    """
+    Setup a module-level logger with file-only output.
+    Console logging is disabled for clean terminal output.
     
-    # File handler - writes to the same log file as main application
-    file_handler = logging.FileHandler(os.path.join(log_dir, 'LocopilotMonitoring.log'))
-    file_handler.setLevel(logging.INFO)
-    
-    # Console handler - for terminal output
-    console_handler = logging.StreamHandler()
-    console_handler.setLevel(logging.INFO)
-    
-    # Formatter
-    formatter = logging.Formatter(
-        '%(asctime)s,%(msecs)03d [N/A] [N/A] [N/A] [N/A] [INFO] [%(name)s] [N/A N/A] %(message)s',
-        datefmt='%Y-%m-%d %H:%M:%S'
-    )
-    file_handler.setFormatter(formatter)
-    console_handler.setFormatter(formatter)
-    
-    # Add handlers
-    gesture_logger.addHandler(file_handler)
-    gesture_logger.addHandler(console_handler)
-    gesture_logger.setLevel(logging.INFO)
+    Args:
+        logger_name: Name for the logger
+        level: Logging level (default: INFO)
+        
+    Returns:
+        Configured logger instance
+    """
+    logger = logging.getLogger(logger_name)
+    if not logger.handlers:
+        # Create logs directory if it doesn't exist
+        log_dir = 'logs'
+        os.makedirs(log_dir, exist_ok=True)
+        
+        # File handler only - no console output
+        file_handler = logging.FileHandler(os.path.join(log_dir, 'LocopilotMonitoring.log'))
+        file_handler.setLevel(logging.DEBUG)
+        
+        # Formatter matching application format
+        formatter = logging.Formatter(
+            '%(asctime)s,%(msecs)03d [N/A] [N/A] [N/A] [N/A] [%(levelname)s] [%(name)s] [N/A N/A] %(message)s',
+            datefmt='%Y-%m-%d %H:%M:%S'
+        )
+        file_handler.setFormatter(formatter)
+        
+        logger.addHandler(file_handler)
+        logger.setLevel(level)
+    return logger
+
+# Module-level loggers (file-only output)
+gesture_logger = _setup_module_logger('HandGestureDetection')
+monitor_logger = _setup_module_logger('LocopilotMonitor')
 
 
 @contextlib.contextmanager
@@ -123,33 +133,8 @@ class LocopilotActivityMonitor:
         self.video_path = video_path
         self.output_dir = output_dir
         
-        # Initialize logger
-        self.logger = logging.getLogger(f'{self.__class__.__name__}')
-        if not self.logger.handlers:
-            # Create logs directory if it doesn't exist
-            log_dir = 'logs'
-            os.makedirs(log_dir, exist_ok=True)
-            
-            # File handler - writes to the same log file as main application
-            file_handler = logging.FileHandler(os.path.join(log_dir, 'LocopilotMonitoring.log'))
-            file_handler.setLevel(logging.DEBUG)
-            
-            # Console handler - for terminal output
-            console_handler = logging.StreamHandler()
-            console_handler.setLevel(logging.INFO)
-            
-            # Formatter
-            formatter = logging.Formatter(
-                '%(asctime)s,%(msecs)03d [N/A] [N/A] [N/A] [N/A] [%(levelname)s] [%(name)s] [N/A N/A] %(message)s',
-                datefmt='%Y-%m-%d %H:%M:%S'
-            )
-            file_handler.setFormatter(formatter)
-            console_handler.setFormatter(formatter)
-            
-            # Add handlers
-            self.logger.addHandler(file_handler)
-            self.logger.addHandler(console_handler)
-            self.logger.setLevel(logging.DEBUG)
+        # Initialize logger (file-only output, no console)
+        self.logger = _setup_module_logger(f'{self.__class__.__name__}', logging.DEBUG)
         
         # Frame sampling configuration
         self.sample_fps = sample_fps  # Sample frames at this rate (e.g., 0.5 = 1 frame every 2 seconds)
@@ -210,15 +195,15 @@ class LocopilotActivityMonitor:
                 raise ValueError("preloaded_models must contain 'yolo' and 'yolo_pose'")
         else:
             # Load models fresh (slow path - for standalone use)
-            print("Loading YOLO model...")
+            self.logger.info("Loading YOLO model...")
             self.yolo_model = YOLO('yolov8m.pt')
 
             # YOLOv8-Pose for body pose estimation (replaces MediaPipe Pose)
-            print("Loading YOLOv8-Pose model...")
+            self.logger.info("Loading YOLOv8-Pose model...")
             from app.services.yolo_pose_adapter import YoloPoseAdapter
             self.yolo_pose = YoloPoseAdapter(model_path='yolov8m-pose.pt', conf_threshold=0.45)
 
-            print("Initializing MediaPipe FaceMesh...")
+            self.logger.info("Initializing MediaPipe FaceMesh...")
             # Keep MediaPipe references for backward compatibility with landmark constants
             self.mp_pose = mp.solutions.pose
             self.mp_face_mesh = mp.solutions.face_mesh
@@ -252,9 +237,9 @@ class LocopilotActivityMonitor:
                         'noise_reduction_kernel': settings.noise_reduction_kernel
                     }
                     self.preprocessing_service = ImagePreprocessingService(config=preprocessing_config)
-                    print("Image preprocessing service initialized")
+                    self.logger.info("Image preprocessing service initialized")
                 except Exception as e:
-                    print(f"Warning: Failed to initialize image preprocessing service: {e}")
+                    self.logger.warning(f"Failed to initialize image preprocessing service: {e}")
                     self.preprocessing_service = None
             else:
                 self.preprocessing_service = None
@@ -568,10 +553,10 @@ class LocopilotActivityMonitor:
             # Calculate stride: how many frames to skip between samples
             step = max(1, int(round(native_fps / max(1e-6, float(self.sample_fps)))))
             
-            print(f"[Frame Sampling] Native FPS: {native_fps:.2f}, Sample FPS: {self.sample_fps}")
-            print(f"[Frame Sampling] Step: {step} (sampling 1 frame every {step} frames)")
-            print(f"[Frame Sampling] Frame range: {start_frame} - {end_frame}")
-            print(f"[Frame Sampling] Expected sampled frames: ~{((end_frame - start_frame) // step)}")
+            self.logger.debug(f"[Frame Sampling] Native FPS: {native_fps:.2f}, Sample FPS: {self.sample_fps}")
+            self.logger.debug(f"[Frame Sampling] Step: {step} (sampling 1 frame every {step} frames)")
+            self.logger.debug(f"[Frame Sampling] Frame range: {start_frame} - {end_frame}")
+            self.logger.debug(f"[Frame Sampling] Expected sampled frames: ~{((end_frame - start_frame) // step)}")
             
             sampled_idx = 0
             # Start from the beginning of the range, aligned to step
@@ -588,7 +573,7 @@ class LocopilotActivityMonitor:
                 yield sampled_idx, timestamp, frame, frame_idx
                 sampled_idx += 1
             
-            print(f"[Frame Sampling] Completed sampling, total samples: {sampled_idx}")
+            self.logger.debug(f"[Frame Sampling] Completed sampling, total samples: {sampled_idx}")
         
     def calculate_eye_aspect_ratio(self, landmarks):
         """Calculate Eye Aspect Ratio (EAR) for drowsiness detection"""
@@ -767,7 +752,7 @@ class LocopilotActivityMonitor:
         if sleep_indicators_met:
             if self.pose_sleep_start is None:
                 self.pose_sleep_start = timestamp_sec
-                print(f"[Pose-Based Sleep] Started tracking - head_tilt={avg_head_tilt:.1f}°, movement={avg_movement:.4f}")
+                self.logger.debug(f"[Pose-Based Sleep] Started tracking - head_tilt={avg_head_tilt:.1f}°, movement={avg_movement:.4f}")
             
             self.pose_sleep_duration = timestamp_sec - self.pose_sleep_start
             
@@ -781,7 +766,7 @@ class LocopilotActivityMonitor:
         else:
             # Reset if conditions not met
             if self.pose_sleep_start is not None:
-                print(f"[Pose-Based Sleep] Stopped - indicators not met")
+                self.logger.debug("[Pose-Based Sleep] Stopped - indicators not met")
             self.pose_sleep_start = None
             self.pose_sleep_duration = 0
             
@@ -3748,7 +3733,7 @@ class LocopilotActivityMonitor:
                 }
                 
             except Exception as e:
-                print(f"Error processing person {person_idx}: {e}")
+                self.logger.error(f"Error processing person {person_idx}: {e}")
                 continue
         
         # ============ AGGREGATE RESULTS ACROSS ALL PERSONS ============
@@ -4208,7 +4193,7 @@ class LocopilotActivityMonitor:
                 # - ALP typically on the RIGHT side
                 # Sort by X position (leftmost = LP, rightmost = ALP)
                 sorted_persons = sorted(person_scores, key=lambda x: (x['bbox'][0] + x['bbox'][2]) / 2)  # Sort by center_x
-                print(f"[INFO] Using spatial heuristic for role assignment (all scores zero)")
+                self.logger.debug("Using spatial heuristic for role assignment (all scores zero)")
 
             # Person with higher lp_score (or leftmost position) is LP
             person_roles[sorted_persons[0]['person_idx']] = {
@@ -4302,7 +4287,7 @@ class LocopilotActivityMonitor:
             self.activities[activity_name]['frames'] = list(self.frame_buffer)
             self.activities[activity_name]['duration'] = 0
             self.activities[activity_name]['person_roles'] = person_roles if person_roles else {}
-            print(f"[{timestamp}] Activity started: {activity_name}")
+            self.logger.info(f"[{timestamp}] Activity started: {activity_name}")
     
     def end_activity(self, activity_name, timestamp, fps, frame_count, people_count=1, save_clips=True):
         """End tracking an activity and optionally save evidence (only if meets minimum duration)"""
@@ -4321,7 +4306,7 @@ class LocopilotActivityMonitor:
             min_duration = self.activity_thresholds[activity_name]['min_duration']
             
             if actual_clip_duration < min_duration:
-                print(f"[{timestamp}] Activity '{activity_name}' too short ({actual_clip_duration:.2f}s < {min_duration}s) - discarded")
+                self.logger.debug(f"[{timestamp}] Activity '{activity_name}' too short ({actual_clip_duration:.2f}s < {min_duration}s) - discarded")
                 activity['frames'] = []
                 activity['duration'] = 0
                 self.consecutive_detections[activity_name] = 0
@@ -4455,11 +4440,11 @@ class LocopilotActivityMonitor:
             # Calculate end time string for logging
             end_time_str = str(timedelta(seconds=activity_end_seconds))
             
-            print(f"[{end_time_str}] Activity ended: {activity_name}")
-            print(f"  Clip Duration: {actual_clip_duration:.2f}s ({total_clip_frames} frames @ {self.sample_fps} FPS)")
-            print(f"  Min Duration Threshold: {min_duration}s | Required Consecutive: {self.activity_thresholds[activity_name]['required_consecutive']} frames")
-            print(f"  Evidence saved: {clip_filename}")
-            print(f"  Activity image: {image_filename}")
+            self.logger.info(f"[{end_time_str}] Activity ended: {activity_name}")
+            self.logger.info(f"  Clip Duration: {actual_clip_duration:.2f}s ({total_clip_frames} frames @ {self.sample_fps} FPS)")
+            self.logger.debug(f"  Min Duration Threshold: {min_duration}s | Required Consecutive: {self.activity_thresholds[activity_name]['required_consecutive']} frames")
+            self.logger.info(f"  Evidence saved: {clip_filename}")
+            self.logger.info(f"  Activity image: {image_filename}")
             
             activity['frames'] = []
             activity['duration'] = 0
@@ -4504,22 +4489,22 @@ class LocopilotActivityMonitor:
         step = max(1, int(round(fps / max(1e-6, float(self.sample_fps)))))
         expected_samples = (total_frames // step)
         
-        print(f"Processing video: {self.video_path}")
-        print(f"Native FPS: {fps:.2f}")
-        print(f"Sample FPS: {self.sample_fps} (1 frame every {1.0/self.sample_fps:.1f} seconds)")
-        print(f"Total frames in video: {total_frames}")
-        print(f"Expected duration: {total_frames/fps/60:.2f} minutes")
-        print(f"Expected sampled frames: ~{expected_samples}")
-        print(f"Processing speed-up: ~{step}x faster")
-        print(f"Run directory: {self.run_dir}")
+        self.logger.info(f"Processing video: {self.video_path}")
+        self.logger.info(f"Native FPS: {fps:.2f}")
+        self.logger.info(f"Sample FPS: {self.sample_fps} (1 frame every {1.0/self.sample_fps:.1f} seconds)")
+        self.logger.info(f"Total frames in video: {total_frames}")
+        self.logger.info(f"Expected duration: {total_frames/fps/60:.2f} minutes")
+        self.logger.info(f"Expected sampled frames: ~{expected_samples}")
+        self.logger.info(f"Processing speed-up: ~{step}x faster")
+        self.logger.info(f"Run directory: {self.run_dir}")
         if self.save_annotated_frames:
             if self.frame_save_interval == 1:
-                print(f"  Saving ALL sampled frames (~{expected_samples} frames) to: {self.frames_dir}")
+                self.logger.info(f"  Saving ALL sampled frames (~{expected_samples} frames) to: {self.frames_dir}")
             else:
-                print(f"  Saving every {self.frame_save_interval}th sampled frame (~{expected_samples//self.frame_save_interval} frames) to: {self.frames_dir}")
+                self.logger.info(f"  Saving every {self.frame_save_interval}th sampled frame (~{expected_samples//self.frame_save_interval} frames) to: {self.frames_dir}")
         else:
-            print("  Annotated frame saving is disabled (faster processing)")
-        print("-" * 60)
+            self.logger.info("  Annotated frame saving is disabled (faster processing)")
+        self.logger.info("-" * 60)
         
         sampled_count = 0
         
@@ -4584,15 +4569,15 @@ class LocopilotActivityMonitor:
                     
                     # Log role identification (only once per detection cycle)
                     if self.consecutive_detections['group_detected'] == 0 and person_roles:
-                        print(f"[{timestamp}] Person roles identified:")
+                        self.logger.debug(f"[{timestamp}] Person roles identified:")
                         for person_idx in sorted(person_roles.keys()):
                             role_info = person_roles[person_idx]
-                            print(f"  Person {person_idx+1}: {role_info['role_name']} (LP score: {role_info['lp_score']}, ALP score: {role_info['alp_score']})")
+                            self.logger.debug(f"  Person {person_idx+1}: {role_info['role_name']} (LP score: {role_info['lp_score']}, ALP score: {role_info['alp_score']})")
                     
                     if deduplicated_count > 2:
                         group_detected_flag = True
                         if self.consecutive_detections['group_detected'] == 0:
-                            print(f"[{timestamp}] Group detected - {deduplicated_count} people (de-duplicated from {len(detections['person'])} raw detections)")
+                            self.logger.info(f"[{timestamp}] Group detected - {deduplicated_count} people (de-duplicated from {len(detections['person'])} raw detections)")
                 else:
                     # No person detected at all
                     detections['deduplicated_person'] = []
@@ -4600,7 +4585,7 @@ class LocopilotActivityMonitor:
                     # DEBUG: Log when no person is detected (will be tracked as activity)
                     if self.consecutive_detections['no_person_detected'] == 0:
                         raw_detections = len(detections['person'])
-                        print(f"[{timestamp}] [DEBUG] NO PERSON detected in frame (raw YOLO detections: {raw_detections})")
+                        self.logger.debug(f"[{timestamp}] NO PERSON detected in frame (raw YOLO detections: {raw_detections})")
                 
                 # STEP 4: *** NEW MULTI-PERSON PROCESSING ***
                 # Process ALL persons individually for ALL activities
@@ -4634,35 +4619,35 @@ class LocopilotActivityMonitor:
                         yaw = head_pose.get('yaw', 0)
                         pitch = head_pose.get('pitch', 0)
                         method = head_pose.get('method', 'unknown')
-                        print(f"[{timestamp}] MIND DIVERSION detected for {role_name} (Person {person_idx+1}) - Yaw={yaw:.1f}°, Pitch={pitch:.1f}° (method: {method})")
+                        self.logger.info(f"[{timestamp}] MIND DIVERSION detected for {role_name} (Person {person_idx+1}) - Yaw={yaw:.1f}°, Pitch={pitch:.1f}° (method: {method})")
                     
                     # Log sleep detection
                     if activities['sleep'] and self.consecutive_detections['sleep'] == 0:
                         sleep_info = debug_info.get('sleep_info', {})
-                        print(f"[{timestamp}] SLEEP detected for {role_name} (Person {person_idx+1}) - pose-based")
+                        self.logger.info(f"[{timestamp}] SLEEP detected for {role_name} (Person {person_idx+1}) - pose-based")
                     
                     # Log microsleep detection
                     if activities['microsleep'] and self.consecutive_detections['microsleep'] == 0:
-                        print(f"[{timestamp}] MICROSLEEP detected for {role_name} (Person {person_idx+1}) - pose-based")
+                        self.logger.info(f"[{timestamp}] MICROSLEEP detected for {role_name} (Person {person_idx+1}) - pose-based")
                     
                     # Log hand gestures
                     if activities['lp_hand_gesture'] and self.consecutive_detections['lp_hand_gesture'] == 0:
                         gesture_debug = debug_info.get('gesture_debug', {})
-                        print(f"[{timestamp}] LP hand gesture detected for {role_name} (Person {person_idx+1}) - {gesture_debug.get('hand_raised', 'unknown')} hand raised")
+                        self.logger.info(f"[{timestamp}] LP hand gesture detected for {role_name} (Person {person_idx+1}) - {gesture_debug.get('hand_raised', 'unknown')} hand raised")
                     
                     if activities['alp_hand_gesture'] and self.consecutive_detections['alp_hand_gesture'] == 0:
                         gesture_debug = debug_info.get('gesture_debug', {})
-                        print(f"[{timestamp}] ALP hand gesture detected for {role_name} (Person {person_idx+1}) - {gesture_debug.get('hand_raised', 'unknown')} hand raised")
+                        self.logger.info(f"[{timestamp}] ALP hand gesture detected for {role_name} (Person {person_idx+1}) - {gesture_debug.get('hand_raised', 'unknown')} hand raised")
                     
                     # Log cell phone, writing, packing
                     if activities['cell_phone'] and self.consecutive_detections['cell_phone'] == 0:
-                        print(f"[{timestamp}] Cell phone ACTIVELY USED by {role_name} (Person {person_idx+1})")
+                        self.logger.info(f"[{timestamp}] Cell phone ACTIVELY USED by {role_name} (Person {person_idx+1})")
                     
                     if activities['writing'] and self.consecutive_detections['writing'] == 0:
-                        print(f"[{timestamp}] WRITING detected for {role_name} (Person {person_idx+1})")
+                        self.logger.info(f"[{timestamp}] WRITING detected for {role_name} (Person {person_idx+1})")
                     
                     if activities.get('packing', False) and self.consecutive_detections.get('packing_bags', 0) == 0:
-                        print(f"[{timestamp}] PACKING detected for {role_name} (Person {person_idx+1})")
+                        self.logger.info(f"[{timestamp}] PACKING detected for {role_name} (Person {person_idx+1})")
                 
                 # Face-based sleep detection (still use EAR as additional signal)
                 if face_results.multi_face_landmarks and ear_value is not None:
@@ -4692,7 +4677,7 @@ class LocopilotActivityMonitor:
                         if cell_phone_detected: reason.append("phone")
                         if writing_detected: reason.append("book")
                         if packing_detected: reason.append("backpack")
-                        print(f"[{timestamp}] Sleep detection OVERRIDDEN - person active ({', '.join(reason)})")
+                        self.logger.debug(f"[{timestamp}] Sleep detection OVERRIDDEN - person active ({', '.join(reason)})")
                     microsleep_detected = False
                     sleep_detected = False
                     # Reset sleep tracking counters
@@ -4733,7 +4718,7 @@ class LocopilotActivityMonitor:
                         cv2.imwrite(frame_path, annotated_frame_for_activity, [cv2.IMWRITE_JPEG_QUALITY, 95])
                             
                     except Exception as e:
-                        print(f"[{timestamp}] Error saving frame {frame_idx}: {e}")
+                        self.logger.error(f"[{timestamp}] Error saving frame {frame_idx}: {e}")
 
                 # CRITICAL: Hand gesture coordination check
                 # Activity Type 8 (LP not exchanging): Triggers when ALP raises hand BUT LP does NOT
@@ -4744,9 +4729,9 @@ class LocopilotActivityMonitor:
 
                 # Debug logging for coordination check
                 if lp_not_coordinating and self.consecutive_detections['lp_hand_gesture'] == 0:
-                    print(f"[{timestamp}] COORDINATION FAILURE: ALP raised hand but LP did NOT respond")
+                    self.logger.info(f"[{timestamp}] COORDINATION FAILURE: ALP raised hand but LP did NOT respond")
                 if alp_not_coordinating and self.consecutive_detections['alp_hand_gesture'] == 0:
-                    print(f"[{timestamp}] COORDINATION FAILURE: LP raised hand but ALP did NOT respond")
+                    self.logger.info(f"[{timestamp}] COORDINATION FAILURE: LP raised hand but ALP did NOT respond")
 
                 # Detect when no person is in frame
                 no_person_detected_flag = (len(detections.get('deduplicated_person', [])) == 0)
@@ -4813,7 +4798,7 @@ class LocopilotActivityMonitor:
                 # Display progress with detection status
                 if sample_idx % 50 == 0:  # Show progress every 50 sampled frames
                     progress = (frame_idx / total_frames) * 100
-                    print(f"Progress: {sample_idx} samples processed (frame {frame_idx}/{total_frames}, {progress:.1f}%)")
+                    self.logger.info(f"Progress: {sample_idx} samples processed (frame {frame_idx}/{total_frames}, {progress:.1f}%)")
                     
                     # Show current detection counts for debugging
                     active_detections = []
@@ -4824,10 +4809,10 @@ class LocopilotActivityMonitor:
                             active_detections.append(f"{act_name}: {status}")
                     
                     if active_detections:
-                        print(f"  Active detections: {', '.join(active_detections)}")
+                        self.logger.debug(f"  Active detections: {', '.join(active_detections)}")
             
             except Exception as e:
-                print(f"\nError processing sample {sample_idx} (frame {frame_idx}): {e}")
+                self.logger.error(f"Error processing sample {sample_idx} (frame {frame_idx}): {e}")
                 continue
             finally:
                 # ✅ MEMORY FIX: Explicitly delete frame after processing to free memory
@@ -4851,18 +4836,18 @@ class LocopilotActivityMonitor:
         # ✅ MEMORY FIX: Force garbage collection
         gc.collect()
         
-        print(f"\n{'=' * 60}")
-        print(f"Processing complete!")
-        print(f"Total frames sampled: {sampled_count}/{total_frames}")
-        print(f"Sampling rate: {self.sample_fps} FPS (1 frame every {1.0/self.sample_fps:.1f} seconds)")
-        print(f"Processing speed-up: ~{step}x faster than full-frame processing")
-        print(f"Evidence clips created: {self.evidence_counter}")
-        print(f"Run directory: {self.run_dir}")
-        print(f"  - Clips: {self.evidence_clips_dir}")
+        self.logger.info("=" * 60)
+        self.logger.info("Processing complete!")
+        self.logger.info(f"Total frames sampled: {sampled_count}/{total_frames}")
+        self.logger.info(f"Sampling rate: {self.sample_fps} FPS (1 frame every {1.0/self.sample_fps:.1f} seconds)")
+        self.logger.info(f"Processing speed-up: ~{step}x faster than full-frame processing")
+        self.logger.info(f"Evidence clips created: {self.evidence_counter}")
+        self.logger.info(f"Run directory: {self.run_dir}")
+        self.logger.info(f"  - Clips: {self.evidence_clips_dir}")
         if self.save_annotated_frames:
-            print(f"  - Frames: {self.frames_dir}")
-        print(f"  - Activities: {os.path.join(self.run_dir, 'activities.json')}")
-        print(f"{'=' * 60}")
+            self.logger.info(f"  - Frames: {self.frames_dir}")
+        self.logger.info(f"  - Activities: {os.path.join(self.run_dir, 'activities.json')}")
+        self.logger.info("=" * 60)
         
         # Generate summary report
         self.generate_summary_report()
@@ -4888,7 +4873,7 @@ class LocopilotActivityMonitor:
             fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
             total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
         
-        print(f"Processing frame range {start_frame}-{end_frame} (worker {os.getpid()})")
+        self.logger.info(f"Processing frame range {start_frame}-{end_frame} (worker {os.getpid()})")
         
         sampled_count = 0
         
@@ -5032,7 +5017,7 @@ class LocopilotActivityMonitor:
                         cv2.imwrite(frame_path, annotated_frame_for_activity, [cv2.IMWRITE_JPEG_QUALITY, 95])
                             
                     except Exception as e:
-                        print(f"[{timestamp}] Error saving frame {frame_idx}: {e}")
+                        self.logger.error(f"[{timestamp}] Error saving frame {frame_idx}: {e}")
 
                 # CRITICAL: Hand gesture coordination check
                 # Activity Type 8 (LP not exchanging): Triggers when ALP raises hand BUT LP does NOT
@@ -5043,9 +5028,9 @@ class LocopilotActivityMonitor:
 
                 # Debug logging for coordination check
                 if lp_not_coordinating and self.consecutive_detections['lp_hand_gesture'] == 0:
-                    print(f"[{timestamp}] COORDINATION FAILURE: ALP raised hand but LP did NOT respond")
+                    self.logger.info(f"[{timestamp}] COORDINATION FAILURE: ALP raised hand but LP did NOT respond")
                 if alp_not_coordinating and self.consecutive_detections['alp_hand_gesture'] == 0:
-                    print(f"[{timestamp}] COORDINATION FAILURE: LP raised hand but ALP did NOT respond")
+                    self.logger.info(f"[{timestamp}] COORDINATION FAILURE: LP raised hand but ALP did NOT respond")
 
                 # Detect when no person is in frame
                 no_person_detected_flag = (len(detections.get('deduplicated_person', [])) == 0)
@@ -5099,7 +5084,7 @@ class LocopilotActivityMonitor:
                             self.grace_counters[activity_name] = 0
             
             except Exception as e:
-                print(f"\nError processing sample {sample_idx} (frame {frame_idx}): {e}")
+                self.logger.error(f"Error processing sample {sample_idx} (frame {frame_idx}): {e}")
                 continue
             finally:
                 # ✅ MEMORY FIX: Explicitly delete frame after processing to free memory
@@ -5125,7 +5110,7 @@ class LocopilotActivityMonitor:
         # ✅ MEMORY FIX: Force garbage collection
         gc.collect()
         
-        print(f"Frame range {start_frame}-{end_frame} completed: {len(self.all_activities)} activities")
+        self.logger.info(f"Frame range {start_frame}-{end_frame} completed: {len(self.all_activities)} activities")
         
         # Return detected activities (without generating summary reports)
         return self.all_activities
@@ -5170,9 +5155,9 @@ class LocopilotActivityMonitor:
             # Force garbage collection
             gc.collect()
             
-            print("✅ Cleanup completed: Models closed, buffers cleared")
+            self.logger.info("Cleanup completed: Models closed, buffers cleared")
         except Exception as e:
-            print(f"⚠️ Warning during cleanup: {e}")
+            self.logger.warning(f"Warning during cleanup: {e}")
     
     def __del__(self):
         """
@@ -5190,10 +5175,10 @@ class LocopilotActivityMonitor:
         with open(activities_json_path, 'w') as f:
             json.dump(self.all_activities, f, indent=2)
         
-        print(f"\nActivities JSON saved: {activities_json_path}")
-        print(f"Total activities detected: {len(self.all_activities)}")
+        self.logger.info(f"Activities JSON saved: {activities_json_path}")
+        self.logger.info(f"Total activities detected: {len(self.all_activities)}")
         
-        # Count and print activity breakdown
+        # Count and log activity breakdown
         activities_by_type = {}
         for activity in self.all_activities:
             activity_type = activity['des']
@@ -5201,11 +5186,11 @@ class LocopilotActivityMonitor:
                 activities_by_type[activity_type] = 0
             activities_by_type[activity_type] += 1
         
-        # Print activity breakdown
+        # Log activity breakdown
         if activities_by_type:
-            print("\nActivity Breakdown:")
+            self.logger.info("Activity Breakdown:")
             for activity_type, count in activities_by_type.items():
-                print(f"  - {activity_type}: {count}")
+                self.logger.info(f"  - {activity_type}: {count}")
 
 
 # Usage example

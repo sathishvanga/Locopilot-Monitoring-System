@@ -2,10 +2,51 @@
 Gunicorn configuration for production deployment
 
 This configuration uses multiprocessing for high-performance video processing.
+Logging is configured to use file-only output for clean terminal operation.
 """
 
 import multiprocessing
 import os
+import logging
+from logging.handlers import TimedRotatingFileHandler
+
+
+# Setup gunicorn logger (file-only output)
+def _setup_gunicorn_logger():
+    """
+    Setup a file-only logger for gunicorn lifecycle events.
+    Console logging is disabled for clean terminal output.
+    """
+    log_dir = os.getenv("LOG_DIR", "logs")
+    os.makedirs(log_dir, exist_ok=True)
+    
+    logger = logging.getLogger("gunicorn.config")
+    logger.setLevel(logging.INFO)
+    
+    # Only add handler if not already present
+    if not logger.handlers:
+        file_handler = TimedRotatingFileHandler(
+            filename=os.path.join(log_dir, "LocopilotMonitoring.log"),
+            when="midnight",
+            interval=1,
+            backupCount=4,
+            encoding="utf-8",
+            utc=True,
+        )
+        file_handler.setLevel(logging.DEBUG)
+        
+        formatter = logging.Formatter(
+            '%(asctime)s,%(msecs)03d [N/A] [N/A] [N/A] [N/A] [%(levelname)s] [%(name)s] [N/A N/A] %(message)s',
+            datefmt='%Y-%m-%d %H:%M:%S'
+        )
+        file_handler.setFormatter(formatter)
+        logger.addHandler(file_handler)
+    
+    return logger
+
+
+# Initialize logger
+logger = _setup_gunicorn_logger()
 
 
 # Worker configuration
@@ -25,8 +66,8 @@ else:
 
 threads = 1
 worker_class = "uvicorn.workers.UvicornWorker"
-print(f" [gunicorn_config.py] CPU count: {cpu_count}")
-print(f" [gunicorn_config.py] Workers: {workers} (optimized for {'production' if cpu_count >= 12 else 'development'})")
+logger.info(f"[gunicorn_config.py] CPU count: {cpu_count}")
+logger.info(f"[gunicorn_config.py] Workers: {workers} (optimized for {'production' if cpu_count >= 12 else 'development'})")
 
 # Application preloading
 preload_app = True
@@ -45,9 +86,9 @@ max_requests_jitter = 10
 # Binding
 bind = "0.0.0.0:8000"
 
-# Logging
-accesslog = "-"  # Log to stdout
-errorlog = "-"   # Log to stderr
+# Logging - direct to file only
+accesslog = os.path.join(os.getenv("LOG_DIR", "logs"), "gunicorn_access.log")
+errorlog = os.path.join(os.getenv("LOG_DIR", "logs"), "gunicorn_error.log")
 loglevel = "info"
 access_log_format = '%(h)s %(l)s %(u)s %(t)s "%(r)s" %(s)s %(b)s "%(f)s" "%(a)s" %(D)s'
 
@@ -65,34 +106,34 @@ def on_starting(server):
     """
     Called just before the master process is initialized
     """
-    print("=" * 60)
-    print("Starting Locopilot Monitoring System")
-    print(f"Workers: {workers}")
-    print(f"Threads per worker: {threads}")
-    print(f"Timeout: {timeout}s")
-    print(f"Bind: {bind}")
-    print("=" * 60)
+    logger.info("=" * 60)
+    logger.info("Starting Locopilot Monitoring System")
+    logger.info(f"Workers: {workers}")
+    logger.info(f"Threads per worker: {threads}")
+    logger.info(f"Timeout: {timeout}s")
+    logger.info(f"Bind: {bind}")
+    logger.info("=" * 60)
 
 
 def on_reload(server):
     """
     Called when the server is reloaded
     """
-    print("Server reloading...")
+    logger.info("Server reloading...")
 
 
 def worker_int(worker):
     """
     Called when a worker receives the SIGINT or SIGQUIT signal
     """
-    print(f"Worker {worker.pid} received interrupt signal")
+    logger.warning(f"Worker {worker.pid} received interrupt signal")
 
 
 def worker_abort(worker):
     """
     Called when a worker receives the SIGABRT signal
     """
-    print(f"Worker {worker.pid} aborted")
+    logger.warning(f"Worker {worker.pid} aborted")
 
 
 def pre_fork(server, worker):
@@ -106,36 +147,35 @@ def post_fork(server, worker):
     """
     Called after a worker has been forked
     """
-    print(f"Worker spawned (pid: {worker.pid})")
+    logger.info(f"Worker spawned (pid: {worker.pid})")
 
 
 def pre_exec(server):
     """
     Called before a new master process is forked
     """
-    print("Forking new master process")
+    logger.info("Forking new master process")
 
 
 def when_ready(server):
     """
     Called just after the server is started
     """
-    print("=" * 60)
-    print("Locopilot Monitoring System ready to accept requests")
-    print(f"Listening on {bind}")
-    print("=" * 60)
+    logger.info("=" * 60)
+    logger.info("Locopilot Monitoring System ready to accept requests")
+    logger.info(f"Listening on {bind}")
+    logger.info("=" * 60)
 
 
 def worker_exit(server, worker):
     """
     Called just after a worker has been exited
     """
-    print(f"Worker {worker.pid} exited")
+    logger.info(f"Worker {worker.pid} exited")
 
 
 def nworkers_changed(server, new_value, old_value):
     """
     Called when the number of workers changes
     """
-    print(f"Number of workers changed from {old_value} to {new_value}")
-
+    logger.info(f"Number of workers changed from {old_value} to {new_value}")
