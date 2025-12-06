@@ -360,6 +360,14 @@ def process_frame_range(
         # Frames are only saved when save_clips=True AND save_annotated_frames config is True
         save_frames = save_clips and settings.save_annotated_frames
 
+        # DEBUG: Log frame saving configuration (using print for immediate stderr output)
+        print(f"[DEBUG] Worker {worker_id} frame saving config: save_clips={save_clips}, "
+              f"save_annotated_frames={settings.save_annotated_frames}, "
+              f"save_frames={save_frames}, frame_save_interval={settings.frame_save_interval}", flush=True)
+        logger.info(f"Worker {worker_id} frame saving config: save_clips={save_clips}, "
+                   f"settings.save_annotated_frames={settings.save_annotated_frames}, "
+                   f"save_frames={save_frames}, frame_save_interval={settings.frame_save_interval}")
+
         # Always create monitor with run directory to save clips/images
         # Clips and images are essential for UI, so we always create the directory
         if run_dir:
@@ -373,6 +381,12 @@ def process_frame_range(
                 run_dir=run_dir,  # Use shared run directory
                 create_run_dir=False  # Don't create new directory
             )
+
+            # DEBUG: Log monitor initialization
+            print(f"[DEBUG] Worker {worker_id} monitor initialized: frames_dir={monitor.frames_dir}, "
+                  f"save_annotated_frames={monitor.save_annotated_frames}", flush=True)
+            logger.info(f"Worker {worker_id} monitor initialized: frames_dir={monitor.frames_dir}, "
+                       f"save_annotated_frames={monitor.save_annotated_frames}")
         else:
             # No run directory provided - should not happen in normal operation
             raise ValueError("run_dir must be provided to save evidence clips and images")

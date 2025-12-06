@@ -5251,7 +5251,11 @@ class LocopilotActivityMonitor:
                         print(f"  Active detections: {', '.join(active_detections)}")
             
             except Exception as e:
-                print(f"\nError processing sample {sample_idx} (frame {frame_idx}): {e}")
+                import traceback
+                print(f"\n[ERROR] Error processing sample {sample_idx} (frame {frame_idx}): {e}", flush=True)
+                print(f"[ERROR] Exception type: {type(e).__name__}", flush=True)
+                print(f"[ERROR] Traceback:\n{traceback.format_exc()}", flush=True)
+                self.logger.error(f"Error processing sample {sample_idx} (frame {frame_idx}): {e}", exc_info=True)
                 continue
             finally:
                 # ✅ MEMORY FIX: Explicitly delete frame after processing to free memory
@@ -5294,15 +5298,15 @@ class LocopilotActivityMonitor:
     def process_video_range(self, start_frame: int, end_frame: int, save_clips: bool = False) -> list:
         """
         Process a specific frame range (for multiprocessing support)
-        
+
         This method processes only frames within the specified range and returns
         detected activities without saving clips/images to disk (activities in memory only).
-        
+
         Args:
             start_frame: Starting frame index (inclusive)
             end_frame: Ending frame index (exclusive)
             save_clips: Whether to save video clips and images (default: False for multiprocessing)
-            
+
         Returns:
             List of detected activities in this range
         """
@@ -5311,8 +5315,9 @@ class LocopilotActivityMonitor:
         with video_capture_context(self.video_path) as cap:
             fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
             total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-        
-        print(f"Processing frame range {start_frame}-{end_frame} (worker {os.getpid()})")
+
+        print(f"[DEBUG] Worker {os.getpid()}: Processing frame range {start_frame}-{end_frame}, "
+              f"save_annotated_frames={self.save_annotated_frames}, frames_dir={self.frames_dir}", flush=True)
 
         sampled_count = 0
 
@@ -5366,6 +5371,11 @@ class LocopilotActivityMonitor:
         # Process frames from either source
         for sample_idx, timestamp_sec, frame, frame_idx in frame_iterator:
             sampled_count += 1
+
+            # DEBUG: Log first frame processing
+            if sample_idx == 0:
+                print(f"[DEBUG] Worker {os.getpid()}: Processing first frame - sample_idx={sample_idx}, "
+                      f"save_annotated_frames={self.save_annotated_frames}, frames_dir={self.frames_dir}", flush=True)
 
             # TIER 3 OPTIMIZATION: Motion-based frame skipping
             # Calculate motion BEFORE expensive processing to potentially skip this frame
@@ -5512,8 +5522,15 @@ class LocopilotActivityMonitor:
                 )
                 
                 # Save annotated frames periodically if enabled (in process_video_range for multiprocessing)
+                # DEBUG: Log frame saving conditions at first frame
+                if sample_idx == 0:
+                    print(f"[DEBUG] Worker {os.getpid()}: Frame saving check - save_annotated_frames={self.save_annotated_frames}, "
+                          f"frames_dir={self.frames_dir}, frame_save_interval={self.frame_save_interval}", flush=True)
+                    self.logger.info(f"Worker {os.getpid()}: Frame saving check - save_annotated_frames={self.save_annotated_frames}, "
+                                    f"frames_dir={self.frames_dir}, frame_save_interval={self.frame_save_interval}")
+
                 if (
-                    self.save_annotated_frames 
+                    self.save_annotated_frames
                     and self.frames_dir is not None
                     and sample_idx % self.frame_save_interval == 0
                 ):
@@ -5521,15 +5538,21 @@ class LocopilotActivityMonitor:
                         # Save frame with unique filename
                         frame_filename = f"frame_{frame_idx:08d}.jpg"
                         frame_path = os.path.join(self.frames_dir, frame_filename)
-                        
+
                         # Ensure directory exists (for multiprocessing safety)
                         os.makedirs(self.frames_dir, exist_ok=True)
-                        
+
                         # Save with high quality
                         cv2.imwrite(frame_path, annotated_frame_for_activity, [cv2.IMWRITE_JPEG_QUALITY, 95])
-                            
+
+                        # DEBUG: Log successful frame save
+                        if sample_idx == 0:
+                            print(f"[DEBUG] Worker {os.getpid()}: Successfully saved first frame to {frame_path}", flush=True)
+                            self.logger.info(f"Worker {os.getpid()}: Successfully saved first frame to {frame_path}")
+
                     except Exception as e:
-                        print(f"[{timestamp}] Error saving frame {frame_idx}: {e}")
+                        print(f"[{timestamp}] Error saving frame {frame_idx}: {e}", flush=True)
+                        self.logger.error(f"Worker {os.getpid()}: Error saving frame {frame_idx}: {e}", exc_info=True)
 
                 # CRITICAL: Hand gesture coordination check
                 # Activity Type 8 (LP not exchanging): Triggers when ALP raises hand BUT LP does NOT
@@ -5596,7 +5619,11 @@ class LocopilotActivityMonitor:
                             self.grace_counters[activity_name] = 0
             
             except Exception as e:
-                print(f"\nError processing sample {sample_idx} (frame {frame_idx}): {e}")
+                import traceback
+                print(f"\n[ERROR] Error processing sample {sample_idx} (frame {frame_idx}): {e}", flush=True)
+                print(f"[ERROR] Exception type: {type(e).__name__}", flush=True)
+                print(f"[ERROR] Traceback:\n{traceback.format_exc()}", flush=True)
+                self.logger.error(f"Error processing sample {sample_idx} (frame {frame_idx}): {e}", exc_info=True)
                 continue
             finally:
                 # ✅ MEMORY FIX: Explicitly delete frame after processing to free memory
