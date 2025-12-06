@@ -77,7 +77,7 @@ def _setup_module_logger(logger_name: str, level=logging.INFO) -> logging.Logger
     logger = logging.getLogger(logger_name)
     if not logger.handlers:
         # Create logs directory if it doesn't exist
-        log_dir = 'logs'
+        log_dir = os.getenv("LOG_DIR", "logs")
         os.makedirs(log_dir, exist_ok=True)
         
         # File handler only - no console output
@@ -4729,9 +4729,9 @@ class LocopilotActivityMonitor:
 
                 # Debug logging for coordination check
                 if lp_not_coordinating and self.consecutive_detections['lp_hand_gesture'] == 0:
-                    self.logger.info(f"[{timestamp}] COORDINATION FAILURE: ALP raised hand but LP did NOT respond")
+                    self.logger.info(f"[{timestamp}] [Frame {frame_idx}] COORDINATION FAILURE: ALP raised hand but LP did NOT respond")
                 if alp_not_coordinating and self.consecutive_detections['alp_hand_gesture'] == 0:
-                    self.logger.info(f"[{timestamp}] COORDINATION FAILURE: LP raised hand but ALP did NOT respond")
+                    self.logger.info(f"[{timestamp}] [Frame {frame_idx}] COORDINATION FAILURE: LP raised hand but ALP did NOT respond")
 
                 # Detect when no person is in frame
                 no_person_detected_flag = (len(detections.get('deduplicated_person', [])) == 0)
@@ -5028,9 +5028,9 @@ class LocopilotActivityMonitor:
 
                 # Debug logging for coordination check
                 if lp_not_coordinating and self.consecutive_detections['lp_hand_gesture'] == 0:
-                    self.logger.info(f"[{timestamp}] COORDINATION FAILURE: ALP raised hand but LP did NOT respond")
+                    self.logger.info(f"[{timestamp}] [Frame {frame_idx}] COORDINATION FAILURE: ALP raised hand but LP did NOT respond")
                 if alp_not_coordinating and self.consecutive_detections['alp_hand_gesture'] == 0:
-                    self.logger.info(f"[{timestamp}] COORDINATION FAILURE: LP raised hand but ALP did NOT respond")
+                    self.logger.info(f"[{timestamp}] [Frame {frame_idx}] COORDINATION FAILURE: LP raised hand but ALP did NOT respond")
 
                 # Detect when no person is in frame
                 no_person_detected_flag = (len(detections.get('deduplicated_person', [])) == 0)
