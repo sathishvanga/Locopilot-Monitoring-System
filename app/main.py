@@ -53,6 +53,28 @@ async def periodic_cleanup():
             logger.error(f"Cleanup task error: {e}", exc_info=True)
 
 
+def print_startup_banner():
+    """Print startup banner to console for user visibility"""
+    banner = f"""
+╔══════════════════════════════════════════════════════════════╗
+║           🚂 LOCOPILOT MONITORING SYSTEM                     ║
+╠══════════════════════════════════════════════════════════════╣
+║  Version:     {settings.app_version:<46} ║
+║  Environment: {'Development' if settings.debug else 'Production':<46} ║
+║  Host:        {settings.host}:{settings.port:<40} ║
+╠══════════════════════════════════════════════════════════════╣
+║  📁 Output Dir:  {settings.output_dir:<42} ║
+║  📤 Upload Dir:  {settings.upload_dir:<42} ║
+║  🎬 Sample FPS:  {str(settings.sample_fps):<42} ║
+║  🔧 YOLO Model:  {settings.yolo_weights:<42} ║
+╠══════════════════════════════════════════════════════════════╣
+║  📚 API Docs:    http://{settings.host}:{settings.port}/docs{' ' * (36 - len(str(settings.port)))} ║
+║  ❤️  Health:     http://{settings.host}:{settings.port}/health{' ' * (34 - len(str(settings.port)))} ║
+╚══════════════════════════════════════════════════════════════╝
+"""
+    print(banner)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """
@@ -61,7 +83,13 @@ async def lifespan(app: FastAPI):
     Handles startup and shutdown events for resource initialization
     and cleanup.
     """
-    # Startup
+    # Startup - Console banner for user visibility
+    print_startup_banner()
+    print("✅ Application started successfully!")
+    print(f"📝 Logs are being written to: {settings.log_dir}/LocopilotMonitoring.log")
+    print("-" * 64)
+    
+    # Detailed logging to file
     logger.info("=" * 60)
     logger.info(f"Starting {settings.app_name} v{settings.app_version}")
     logger.info(f"Environment: {'Development' if settings.debug else 'Production'}")
@@ -83,6 +111,7 @@ async def lifespan(app: FastAPI):
     yield
 
     # Shutdown
+    print("\n⏹️  Shutting down application...")
     logger.info("Shutting down application...")
 
     # Cancel cleanup task
@@ -102,6 +131,7 @@ async def lifespan(app: FastAPI):
         )
 
     logger.info("Shutdown complete")
+    print("✅ Shutdown complete. Goodbye!")
 
 
 # Create FastAPI application

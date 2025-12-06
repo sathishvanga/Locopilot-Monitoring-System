@@ -38,10 +38,10 @@ class MultiprocessingConfig:
     opencv_threads: int = int(os.getenv("OPENCV_THREADS", "3"))  # OpenCV thread count per worker
     disable_opencv_opencl: bool = True  # Disable OpenCV OpenCL
     
-    # Model preloading settings
+    # Model preloading settings - YOLO11 (latest, better accuracy, faster)
     preload_models: bool = True  # Preload models in worker initializer
-    yolo_model_path: str = "yolov8m.pt"  # YOLOv8m for object detection
-    yolo_pose_model_path: str = "yolov8m-pose.pt"  # YOLOv8m-Pose for body pose estimation
+    yolo_model_path: str = "yolo11m.pt"  # YOLO11m for object detection
+    yolo_pose_model_path: str = "yolo11m-pose.pt"  # YOLO11m-Pose for body pose estimation
     model_cache_dir: Optional[str] = None  # Model cache directory
     
     # Progress settings

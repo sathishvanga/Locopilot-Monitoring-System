@@ -67,9 +67,9 @@ class Settings(BaseSettings):
     mp_max_workers: Optional[int] = None  # None = auto-detect (uses min(CPU count, max_workers_cap))
     mp_max_workers_cap: int = 12  # Maximum number of workers (11 cores + slight oversubscription)
     
-    # Model settings
-    yolo_weights: str = os.getenv("YOLO_WEIGHTS_PRELOAD", "yolov8m.pt")  # YOLOv8m for faster CPU
-    yolo_pose_weights: str = os.getenv("YOLO_POSE_WEIGHTS", "yolov8m-pose.pt")  # YOLOv8m-pose for multi-person pose
+    # Model settings - YOLO11 (latest, better accuracy, faster, fewer parameters)
+    yolo_weights: str = os.getenv("YOLO_WEIGHTS_PRELOAD", "yolo11m.pt")  # YOLO11m for object detection
+    yolo_pose_weights: str = os.getenv("YOLO_POSE_WEIGHTS", "yolo11m-pose.pt")  # YOLO11m-pose for multi-person pose
     yolo_pose_confidence: float = float(os.getenv("YOLO_POSE_CONFIDENCE", "0.45"))  # Pose detection confidence
     preload_ocr: bool = bool(int(os.getenv("PRELOAD_OCR", "0")))
     

@@ -1,11 +1,13 @@
 """
-YOLOv8-Pose Adapter Module
+YOLO Pose Adapter Module
 
-This module provides a MediaPipe-compatible interface for YOLOv8-Pose results,
-enabling seamless migration from MediaPipe Pose to YOLOv8-Pose while maintaining
+This module provides a MediaPipe-compatible interface for YOLO-Pose results,
+enabling seamless migration from MediaPipe Pose to YOLO-Pose while maintaining
 backward compatibility with existing activity detection logic.
 
-YOLOv8-Pose provides 17 keypoints (COCO format):
+Supports YOLO11-Pose (recommended) and YOLOv8-Pose models.
+
+YOLO-Pose provides 17 keypoints (COCO format):
     0: nose, 1: left_eye, 2: right_eye, 3: left_ear, 4: right_ear
     5: left_shoulder, 6: right_shoulder, 7: left_elbow, 8: right_elbow
     9: left_wrist, 10: right_wrist, 11: left_hip, 12: right_hip
@@ -106,7 +108,7 @@ class YoloLandmark:
     Attributes:
         x: Normalized X coordinate (0-1)
         y: Normalized Y coordinate (0-1)
-        z: Depth coordinate (always 0 for YOLOv8-Pose)
+        z: Depth coordinate (always 0 for YOLO-Pose)
         visibility: Confidence score (0-1)
     """
 
@@ -128,7 +130,7 @@ class YoloPoseLandmarks:
     """
 
     def __init__(self, yolo_keypoints, frame_shape):
-        """Initialize landmarks from YOLOv8-Pose keypoints.
+        """Initialize landmarks from YOLO-Pose keypoints.
 
         Args:
             yolo_keypoints: YOLO keypoints object with .xy and .conf attributes
@@ -157,7 +159,7 @@ class YoloPoseLandmarks:
                 landmark = YoloLandmark(
                     x=float(norm_x),
                     y=float(norm_y),
-                    z=0.0,  # YOLOv8-Pose doesn't provide Z depth
+                    z=0.0,  # YOLO-Pose doesn't provide Z depth
                     visibility=float(conf[i])
                 )
                 self.landmark.append(landmark)
@@ -175,13 +177,13 @@ class YoloPoseLandmarks:
 
 
 class YoloPoseAdapter:
-    """Adapter class to convert YOLOv8-Pose keypoints to MediaPipe-like landmark format.
+    """Adapter class to convert YOLO-Pose keypoints to MediaPipe-like landmark format.
 
     This enables backward compatibility with existing activity detection logic
-    that was written for MediaPipe Pose.
+    that was written for MediaPipe Pose. Supports YOLO11-Pose and YOLOv8-Pose.
 
     Example:
-        adapter = YoloPoseAdapter(model_path='yolov8m-pose.pt')
+        adapter = YoloPoseAdapter(model_path='yolo11m-pose.pt')
         results = adapter.process(frame)
 
         for person_idx, person_data in results.items():
@@ -190,12 +192,12 @@ class YoloPoseAdapter:
             # Nose at (nose.x, nose.y) with confidence nose.visibility
     """
 
-    def __init__(self, model_path: str = 'yolov8m-pose.pt', conf_threshold: float = 0.45, 
+    def __init__(self, model_path: str = 'yolo11m-pose.pt', conf_threshold: float = 0.45, 
                  preloaded_model: 'YOLO' = None):
-        """Initialize YOLOv8-Pose model.
+        """Initialize YOLO-Pose model.
 
         Args:
-            model_path: Path to YOLOv8-Pose weights file
+            model_path: Path to YOLO-Pose weights file (yolo11m-pose.pt or yolov8m-pose.pt)
             conf_threshold: Minimum confidence threshold for detections
             preloaded_model: Optional pre-loaded YOLO model (for worker reuse)
         """
@@ -203,7 +205,7 @@ class YoloPoseAdapter:
             # Use pre-loaded model (avoids expensive model loading)
             self.model = preloaded_model
         else:
-            logger.info(f"Loading YOLOv8-Pose model: {model_path}")
+            logger.info(f"Loading YOLO-Pose model: {model_path}")
             self.model = YOLO(model_path)
         self.conf_threshold = conf_threshold
         self.keypoint_indices = YOLO_KEYPOINT_INDICES

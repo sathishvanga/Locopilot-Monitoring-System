@@ -195,13 +195,13 @@ class LocopilotActivityMonitor:
                 raise ValueError("preloaded_models must contain 'yolo' and 'yolo_pose'")
         else:
             # Load models fresh (slow path - for standalone use)
-            self.logger.info("Loading YOLO model...")
-            self.yolo_model = YOLO('yolov8m.pt')
+            self.logger.info("Loading YOLO11 model...")
+            self.yolo_model = YOLO('yolo11m.pt')
 
-            # YOLOv8-Pose for body pose estimation (replaces MediaPipe Pose)
-            self.logger.info("Loading YOLOv8-Pose model...")
+            # YOLO11-Pose for body pose estimation (replaces MediaPipe Pose)
+            self.logger.info("Loading YOLO11-Pose model...")
             from app.services.yolo_pose_adapter import YoloPoseAdapter
-            self.yolo_pose = YoloPoseAdapter(model_path='yolov8m-pose.pt', conf_threshold=0.45)
+            self.yolo_pose = YoloPoseAdapter(model_path='yolo11m-pose.pt', conf_threshold=0.45)
 
             self.logger.info("Initializing MediaPipe FaceMesh...")
             # Keep MediaPipe references for backward compatibility with landmark constants
@@ -283,8 +283,8 @@ class LocopilotActivityMonitor:
             },
             'writing': {
                 'min_duration': 0.0,          # NO minimum duration - any detection creates activity
-                'required_consecutive': 3,    # 3 samples @ 0.5fps = 6 seconds - INCREASED to reduce false positives
-                'margin': 100,                # Hand-to-book proximity for book detection method (100px)
+                'required_consecutive': 1,    # 1 sample - detect immediately when book+hand seen (was 3)
+                'margin': 150,                # Hand-to-book proximity - INCREASED from 100 to 150 for better capture
                 'grace_frames': 8,            # Allow 8 samples (~16s) gap to group nearby detections
                 # NOTE: Pose-based detection (wrist proximity + head down) uses separate internal
                 #       threshold of 200px for wrist distance, validated in detect_writing_by_wrist_proximity()
@@ -929,8 +929,9 @@ class LocopilotActivityMonitor:
             eye_y = (left_eye.y + right_eye.y) / 2
 
             # Head is looking down when nose is significantly below eye line
-            # Using normalized coordinates (0-1), so 0.02 = ~2% of frame height
-            HEAD_DOWN_THRESHOLD = 0.02
+            # Using normalized coordinates (0-1), so 0.01 = ~1% of frame height
+            # REDUCED from 0.02 to 0.01 to better capture slight head tilt while reading/writing
+            HEAD_DOWN_THRESHOLD = 0.01
             return nose.y > eye_y + HEAD_DOWN_THRESHOLD
 
         except Exception as e:
@@ -1001,10 +1002,10 @@ class LocopilotActivityMonitor:
                 'consecutive_frames': 0
             }
 
-        # Configurable thresholds (MODERATE to balance detection vs false positives)
-        MAX_WRIST_DISTANCE = 200  # pixels - increased from 150 to 200 for more natural writing positions
-        MIN_DURATION = 4.0  # seconds - sustained writing posture requirement
-        REQUIRED_CONSECUTIVE = 3  # frames @ 0.5fps = 6 seconds total
+        # Configurable thresholds (RELAXED to better capture writing activity)
+        MAX_WRIST_DISTANCE = 250  # pixels - INCREASED from 200 to 250 for more natural writing positions
+        MIN_DURATION = 2.0  # seconds - REDUCED from 4.0 for faster detection
+        REQUIRED_CONSECUTIVE = 2  # frames @ 0.5fps = 4 seconds total (REDUCED from 3)
 
         person_tracking = self.wrist_proximity_tracking[person_idx]
 
@@ -3421,9 +3422,9 @@ class LocopilotActivityMonitor:
                     left_hand_coords = (int(left_hand.x * w), int(left_hand.y * h))
 
                     hand_margin = self.activity_thresholds['writing']['margin']
-                    # Use moderate margin for book-to-person association since book is typically in lap area
+                    # Use larger margin for book-to-person association since book is typically in lap area
                     # (below the person's detected bounding box which mainly covers upper body)
-                    person_book_margin = 150  # Reduced from 250 to 150 - stricter association to reduce false positives
+                    person_book_margin = 250  # INCREASED from 150 to 250 - books in lap area extend beyond person bbox
                     for book_bbox in detections['book']:
                         # Check if book is in this person's region (use large margin for lap area)
                         book_in_person_region = self.bbox_overlap_with_margin(book_bbox, bbox, person_book_margin)
