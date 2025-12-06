@@ -59,7 +59,7 @@ class ActivityDetectionService:
             'microsleep': 'eyes_closed_5s_or_pose_indicators',
             'sleep': 'eyes_closed_30s_or_pose_indicators',
             'writing': 'hand_near_book',
-            'packing_bags': 'hand_near_backpack',
+            'packing_bags': 'wrist_inside_backpack_bbox_or_hand_near_backpack',
             'group_detected': 'more_than_2_deduplicated_persons',
             'lp_hand_gesture': 'lp_hand_raised_gesture_detected',
             'alp_hand_gesture': 'alp_hand_raised_gesture_detected',

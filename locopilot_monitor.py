@@ -257,11 +257,12 @@ class LocopilotActivityMonitor:
         self.activity_thresholds = {
             'packing_bags': {
                 'min_duration': 0.0,          # NO minimum duration - any detection creates activity
-                'required_consecutive': 2,    # REDUCED from 3 to 2 samples @ 0.5fps = 4 seconds (faster detection)
-                'margin': 50,                 # INCREASED from 25 to 50px - more lenient hand proximity
-                'region_margin': 150,         # INCREASED from 100 to 150px - wider region overlap
+                'required_consecutive': 1,    # REDUCED to 1 - immediate detection when wrist inside backpack bbox
+                'margin': 50,                 # Hand proximity margin in pixels
+                'region_margin': 150,         # Region overlap margin for person-backpack association
                 'grace_frames': 5,            # Allow 5 samples (~10s) gap to group nearby detections
-                'sustained_proximity_seconds': 4.0  # NEW: If hand near backpack for 4+ seconds, detect as packing
+                'wrist_inside_margin': 40,    # NEW: Margin for wrist-inside-bbox check (40px tolerance)
+                'sustained_proximity_seconds': 4.0  # If hand near backpack for 4+ seconds, detect as packing
             },
             'writing': {
                 'min_duration': 0.0,          # NO minimum duration - any detection creates activity
@@ -421,7 +422,7 @@ class LocopilotActivityMonitor:
             'microsleep': 'eyes_closed_5s_or_pose_indicators',
             'sleep': 'eyes_closed_30s_or_pose_indicators',
             'writing': 'hand_near_book_or_wrist_proximity',
-            'packing_bags': 'hand_near_backpack',
+            'packing_bags': 'wrist_inside_backpack_bbox_or_hand_near_backpack',
             'group_detected': 'more_than_2_deduplicated_persons',
             'lp_hand_gesture': 'lp_hand_raised_gesture_detected',
             'alp_hand_gesture': 'alp_hand_raised_gesture_detected',
@@ -2048,6 +2049,44 @@ class LocopilotActivityMonitor:
         return (x1 - margin <= hx <= x2 + margin and
                 y1 - margin <= hy <= y2 + margin)
 
+    def is_wrist_inside_backpack(self, wrist_coords, backpack_bbox, margin=30):
+        """Check if wrist keypoint is inside or very close to backpack bounding box.
+        
+        SIMPLIFIED PACKING DETECTION: If wrist is inside/near backpack bbox → Packing detected!
+        
+        This is based on the observation that when a person is handling/packing a bag,
+        their wrist keypoints will be inside or very close to the bag's bounding box.
+        
+        Args:
+            wrist_coords: (x, y) coordinates of wrist keypoint
+            backpack_bbox: [x1, y1, x2, y2] bounding box of backpack/bag
+            margin: additional margin around bbox (default 30px for tight detection)
+            
+        Returns:
+            tuple: (is_inside, distance_to_center)
+                - is_inside: True if wrist is inside/near backpack bbox
+                - distance_to_center: Distance from wrist to backpack center (for confidence)
+        """
+        if wrist_coords is None or backpack_bbox is None:
+            return False, float('inf')
+        
+        wx, wy = wrist_coords
+        x1, y1, x2, y2 = backpack_bbox[:4]
+        
+        # Calculate backpack center
+        center_x = (x1 + x2) / 2
+        center_y = (y1 + y2) / 2
+        
+        # Calculate distance to center
+        import math
+        distance = math.sqrt((wx - center_x) ** 2 + (wy - center_y) ** 2)
+        
+        # Check if wrist is inside bbox (with margin)
+        is_inside = (x1 - margin <= wx <= x2 + margin and
+                     y1 - margin <= wy <= y2 + margin)
+        
+        return is_inside, distance
+
     # NOTE: detect_pose_per_person removed - replaced by YOLOv8-Pose
     # NOTE: translate_pose_landmarks removed - not needed with YOLOv8-Pose (native multi-person)
 
@@ -3545,7 +3584,12 @@ class LocopilotActivityMonitor:
                     region_margin = self.activity_thresholds['packing_bags'].get('region_margin', 100)
                     proximity_margin = self.activity_thresholds['packing_bags']['margin']
 
+                    # ============ SIMPLIFIED PACKING DETECTION ============
+                    # Core logic: If wrist is inside/near backpack bbox → Packing detected!
+                    # This is simpler and more direct than motion analysis.
                     packing_motion_analysis = None
+                    packing_detected_simple = False
+                    
                     for backpack_bbox in detections['backpack']:
                         # Check if backpack is in this person's region (wider margin)
                         backpack_in_person_region = self.bbox_overlap_with_margin(
@@ -3553,7 +3597,48 @@ class LocopilotActivityMonitor:
                         )
 
                         if backpack_in_person_region:
-                            # Check if hand is near backpack (stricter margin)
+                            # ===== SIMPLIFIED CHECK: Is wrist INSIDE backpack bbox? =====
+                            # This directly detects if hand is interacting with the bag
+                            right_inside, right_dist = self.is_wrist_inside_backpack(
+                                right_hand_coords, backpack_bbox, margin=40  # 40px margin for tolerance
+                            )
+                            left_inside, left_dist = self.is_wrist_inside_backpack(
+                                left_hand_coords, backpack_bbox, margin=40
+                            )
+                            
+                            wrist_inside_backpack = right_inside or left_inside
+                            closest_distance = min(right_dist, left_dist)
+                            
+                            # Store debug info
+                            person_debug_info['packing_wrist_check'] = {
+                                'right_wrist_inside': right_inside,
+                                'left_wrist_inside': left_inside,
+                                'right_dist': right_dist,
+                                'left_dist': left_dist,
+                                'closest_distance': closest_distance,
+                                'backpack_bbox': list(backpack_bbox[:4])
+                            }
+                            
+                            # ===== PRIMARY DETECTION: Wrist inside backpack bbox =====
+                            if wrist_inside_backpack:
+                                packing_detected_simple = True
+                                self.logger.info(f"PACKING DETECTED (SIMPLE): Wrist inside backpack bbox! "
+                                               f"Right: {right_inside} ({right_dist:.0f}px), "
+                                               f"Left: {left_inside} ({left_dist:.0f}px)")
+                                
+                                # Trigger packing detection immediately
+                                should_trigger = self.update_per_person_detection(
+                                    person_idx, 'packing_bags', True, timestamp_sec
+                                )
+                                person_activities['packing'] = should_trigger
+                                
+                                # Update temporal history for hand gesture suppression
+                                if person_idx not in self.recent_person_activities:
+                                    self.recent_person_activities[person_idx] = {}
+                                self.recent_person_activities[person_idx]['packing'] = timestamp_sec
+                                break
+                            
+                            # ===== FALLBACK: Hand near backpack with motion analysis =====
                             hand_near_backpack = (
                                 self.check_hand_object_interaction(right_hand_coords, backpack_bbox, proximity_margin) or
                                 self.check_hand_object_interaction(left_hand_coords, backpack_bbox, proximity_margin)
@@ -3568,14 +3653,12 @@ class LocopilotActivityMonitor:
                                 # Store motion analysis in debug info
                                 person_debug_info['packing_motion'] = packing_motion_analysis
 
-                                # IMPROVED: Trigger if motion analysis confirms packing pattern OR sustained proximity
-                                # This handles cases where person is consistently near backpack (simpler packing activity)
+                                # Trigger if motion analysis confirms packing pattern OR sustained proximity
                                 motion_confirmed = packing_motion_analysis['packing_motion_detected']
                                 sustained_proximity = packing_motion_analysis.get('sustained_proximity', False) and \
                                                      packing_motion_analysis.get('sustained_proximity_time', False)
                                 
                                 if motion_confirmed or sustained_proximity:
-                                    # Use per-person temporal filtering (now 2 frame requirement after threshold change)
                                     should_trigger = self.update_per_person_detection(
                                         person_idx, 'packing_bags', True, timestamp_sec
                                     )
@@ -3585,7 +3668,7 @@ class LocopilotActivityMonitor:
                                         self.recent_person_activities[person_idx] = {}
                                     self.recent_person_activities[person_idx]['packing'] = timestamp_sec
                                 else:
-                                    # Hand is near but no packing motion - reset counter to prevent false positives
+                                    # Hand is near but no packing motion - reset counter
                                     should_trigger = self.update_per_person_detection(
                                         person_idx, 'packing_bags', False, timestamp_sec
                                     )
