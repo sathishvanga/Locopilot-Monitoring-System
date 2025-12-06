@@ -39,9 +39,10 @@ class MultiprocessingConfig:
     disable_opencv_opencl: bool = True  # Disable OpenCV OpenCL
     
     # Model preloading settings - YOLO11 (latest, better accuracy, faster)
+    # Configurable via environment variables: YOLO_WEIGHTS_PRELOAD, YOLO_POSE_WEIGHTS
     preload_models: bool = True  # Preload models in worker initializer
-    yolo_model_path: str = "yolo11m.pt"  # YOLO11m for object detection
-    yolo_pose_model_path: str = "yolo11m-pose.pt"  # YOLO11m-Pose for body pose estimation
+    yolo_model_path: str = os.getenv("YOLO_WEIGHTS_PRELOAD", "yolo11m.pt")  # YOLO model for object detection
+    yolo_pose_model_path: str = os.getenv("YOLO_POSE_WEIGHTS", "yolo11m-pose.pt")  # YOLO-Pose for body pose estimation
     model_cache_dir: Optional[str] = None  # Model cache directory
     
     # Progress settings

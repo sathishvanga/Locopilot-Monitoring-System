@@ -181,9 +181,13 @@ class YoloPoseAdapter:
 
     This enables backward compatibility with existing activity detection logic
     that was written for MediaPipe Pose. Supports YOLO11-Pose and YOLOv8-Pose.
+    
+    Model can be configured via YOLO_POSE_WEIGHTS environment variable.
 
     Example:
-        adapter = YoloPoseAdapter(model_path='yolo11m-pose.pt')
+        adapter = YoloPoseAdapter()  # Uses YOLO_POSE_WEIGHTS env var or default
+        # OR specify explicitly:
+        adapter = YoloPoseAdapter(model_path='yolo11n-pose.pt')
         results = adapter.process(frame)
 
         for person_idx, person_data in results.items():
@@ -192,15 +196,20 @@ class YoloPoseAdapter:
             # Nose at (nose.x, nose.y) with confidence nose.visibility
     """
 
-    def __init__(self, model_path: str = 'yolo11m-pose.pt', conf_threshold: float = 0.45, 
+    def __init__(self, model_path: str = None, conf_threshold: float = 0.45, 
                  preloaded_model: 'YOLO' = None):
         """Initialize YOLO-Pose model.
 
         Args:
-            model_path: Path to YOLO-Pose weights file (yolo11m-pose.pt or yolov8m-pose.pt)
+            model_path: Path to YOLO-Pose weights file. If None, reads from 
+                       YOLO_POSE_WEIGHTS environment variable (default: yolo11m-pose.pt)
             conf_threshold: Minimum confidence threshold for detections
             preloaded_model: Optional pre-loaded YOLO model (for worker reuse)
         """
+        # Get model path from config if not provided
+        if model_path is None:
+            model_path = os.getenv("YOLO_POSE_WEIGHTS", "yolo11m-pose.pt")
+        
         if preloaded_model is not None:
             # Use pre-loaded model (avoids expensive model loading)
             self.model = preloaded_model

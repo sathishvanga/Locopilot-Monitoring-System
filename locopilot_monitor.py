@@ -195,13 +195,19 @@ class LocopilotActivityMonitor:
                 raise ValueError("preloaded_models must contain 'yolo' and 'yolo_pose'")
         else:
             # Load models fresh (slow path - for standalone use)
-            self.logger.info("Loading YOLO11 model...")
-            self.yolo_model = YOLO('yolo11m.pt')
+            # Get model paths from config (configurable via environment variables)
+            settings = get_settings()
+            yolo_weights = settings.yolo_weights if settings else 'yolo11m.pt'
+            yolo_pose_weights = settings.yolo_pose_weights if settings else 'yolo11m-pose.pt'
+            yolo_pose_conf = settings.yolo_pose_confidence if settings else 0.45
+            
+            self.logger.info(f"Loading YOLO model: {yolo_weights}")
+            self.yolo_model = YOLO(yolo_weights)
 
-            # YOLO11-Pose for body pose estimation (replaces MediaPipe Pose)
-            self.logger.info("Loading YOLO11-Pose model...")
+            # YOLO-Pose for body pose estimation (replaces MediaPipe Pose)
+            self.logger.info(f"Loading YOLO-Pose model: {yolo_pose_weights}")
             from app.services.yolo_pose_adapter import YoloPoseAdapter
-            self.yolo_pose = YoloPoseAdapter(model_path='yolo11m-pose.pt', conf_threshold=0.45)
+            self.yolo_pose = YoloPoseAdapter(model_path=yolo_pose_weights, conf_threshold=yolo_pose_conf)
 
             self.logger.info("Initializing MediaPipe FaceMesh...")
             # Keep MediaPipe references for backward compatibility with landmark constants
