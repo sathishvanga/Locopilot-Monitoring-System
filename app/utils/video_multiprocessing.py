@@ -87,7 +87,7 @@ def worker_initializer(config: MultiprocessingConfig):
     - Prevent Qt/GUI initialization (Windows compatibility)
     - Set thread counts for Torch and OpenCV
     - Disable OpenCV OpenCL
-    - Preload heavy models (YOLO, MediaPipe)
+    - Preload heavy models (YOLO, YOLOv8-Pose, MediaPipe FaceMesh, Preprocessing Service)
     - Set environment variables
     
     Args:
@@ -117,26 +117,29 @@ def worker_initializer(config: MultiprocessingConfig):
         logger.info(f"Worker {os.getpid()} initialized: torch_threads={config.torch_threads}, "
                    f"opencv_threads={config.opencv_threads}, opencl_disabled={config.disable_opencv_opencl}")
         
-        # Preload models if enabled
+        # Preload models if enabled (ONCE per worker - significant performance improvement)
         if config.preload_models:
             from ultralytics import YOLO
             import mediapipe as mp
+            from app.services.yolo_pose_adapter import YoloPoseAdapter
             
+            # 1. Load YOLO object detection model
             logger.info(f"Worker {os.getpid()} loading YOLO model: {config.yolo_model_path}")
             yolo_model = YOLO(config.yolo_model_path)
             
-            logger.info(f"Worker {os.getpid()} initializing MediaPipe")
-            mp_pose = mp.solutions.pose
-            mp_face_mesh = mp.solutions.face_mesh
-            
-            pose = mp_pose.Pose(
-                static_image_mode=True,        # Treat each frame independently (not video tracking)
-                model_complexity=1,             # TEMPORARILY using 1 (full model) - change to 2 after fixing SSL
-                min_detection_confidence=0.45, # Balanced: strict enough to filter bad poses, lenient for background people
-                min_tracking_confidence=0.45,  # Balanced: allows detection of partially occluded people
-                smooth_landmarks=False          # Disable temporal smoothing (we handle this separately)
+            # 2. Load YOLOv8-Pose model for body pose estimation
+            yolo_pose_model_path = config.yolo_pose_model_path
+            logger.info(f"Worker {os.getpid()} loading YOLOv8-Pose model: {yolo_pose_model_path}")
+            yolo_pose_raw = YOLO(yolo_pose_model_path)
+            yolo_pose = YoloPoseAdapter(
+                model_path=yolo_pose_model_path,
+                conf_threshold=0.45,
+                preloaded_model=yolo_pose_raw
             )
             
+            # 3. Initialize MediaPipe FaceMesh (for Eye Aspect Ratio detection)
+            logger.info(f"Worker {os.getpid()} initializing MediaPipe FaceMesh")
+            mp_face_mesh = mp.solutions.face_mesh
             face_mesh = mp_face_mesh.FaceMesh(
                 max_num_faces=2,
                 refine_landmarks=True,
@@ -144,15 +147,38 @@ def worker_initializer(config: MultiprocessingConfig):
                 min_tracking_confidence=0.5
             )
             
+            # 4. Initialize Image Preprocessing Service
+            preprocessing_service = None
+            try:
+                from app.services.image_preprocessing_service import ImagePreprocessingService
+                preprocessing_config = {
+                    'enable_image_preprocessing': settings.enable_image_preprocessing,
+                    'use_clahe': settings.use_clahe,
+                    'use_gamma_correction': settings.use_gamma_correction,
+                    'use_unsharp_masking': settings.use_unsharp_masking,
+                    'use_noise_reduction': settings.use_noise_reduction,
+                    'adaptive_preprocessing': settings.adaptive_preprocessing,
+                    'clahe_clip_limit': settings.clahe_clip_limit,
+                    'clahe_tile_grid_size': settings.clahe_tile_grid_size,
+                    'gamma_value': settings.gamma_value,
+                    'unsharp_strength': settings.unsharp_strength,
+                    'unsharp_radius': settings.unsharp_radius,
+                    'noise_reduction_kernel': settings.noise_reduction_kernel
+                }
+                preprocessing_service = ImagePreprocessingService(config=preprocessing_config)
+                logger.info(f"Worker {os.getpid()} preprocessing service initialized")
+            except Exception as e:
+                logger.warning(f"Worker {os.getpid()} failed to init preprocessing: {e}")
+            
             _worker_models = {
                 'yolo': yolo_model,
-                'pose': pose,
+                'yolo_pose': yolo_pose,
                 'face_mesh': face_mesh,
-                'mp_pose': mp_pose,
-                'mp_face_mesh': mp_face_mesh
+                'mp_face_mesh': mp_face_mesh,
+                'preprocessing_service': preprocessing_service
             }
             
-            logger.info(f"Worker {os.getpid()} models loaded successfully")
+            logger.info(f"Worker {os.getpid()} all models loaded successfully (YOLO, YOLOv8-Pose, FaceMesh)")
         
         _worker_config = config
         
@@ -307,6 +333,9 @@ def process_frame_range(
     This function runs in a worker process and processes frames within
     the assigned range independently. Clips and images can be saved if requested.
     
+    ✅ PERFORMANCE: Uses pre-loaded models from _worker_models (initialized once per worker)
+    instead of loading models for each task. This significantly reduces processing time.
+    
     Args:
         video_path: Path to video file
         frame_range: Frame range to process
@@ -323,6 +352,8 @@ def process_frame_range(
     Returns:
         Dictionary with detected activities and metadata
     """
+    global _worker_models
+    
     try:
         from locopilot_monitor import LocopilotActivityMonitor
         
@@ -337,6 +368,11 @@ def process_frame_range(
         # Frames are only saved when save_clips=True AND save_annotated_frames config is True
         save_frames = save_clips and settings.save_annotated_frames
 
+        # ✅ PERFORMANCE: Use pre-loaded models if available (significantly faster)
+        preloaded = _worker_models if _worker_models is not None else None
+        if preloaded:
+            logger.debug(f"Worker {worker_id} using pre-loaded models (fast path)")
+
         # Always create monitor with run directory to save clips/images
         # Clips and images are essential for UI, so we always create the directory
         if run_dir:
@@ -348,7 +384,8 @@ def process_frame_range(
                 frame_save_interval=settings.frame_save_interval,
                 sample_fps=sample_fps,
                 run_dir=run_dir,  # Use shared run directory
-                create_run_dir=False  # Don't create new directory
+                create_run_dir=False,  # Don't create new directory
+                preloaded_models=preloaded  # ✅ Pass pre-loaded models
             )
         else:
             # No run directory provided - should not happen in normal operation

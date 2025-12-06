@@ -105,7 +105,21 @@ def video_capture_context(video_path):
 
 
 class LocopilotActivityMonitor:
-    def __init__(self, video_path, output_dir="evidence", save_annotated_frames=False, frame_save_interval=1, sample_fps=1.0, run_dir=None, create_run_dir=True):
+    def __init__(self, video_path, output_dir="evidence", save_annotated_frames=False, frame_save_interval=1, sample_fps=1.0, run_dir=None, create_run_dir=True, preloaded_models=None):
+        """Initialize Locopilot Activity Monitor.
+        
+        Args:
+            video_path: Path to video file
+            output_dir: Base output directory for evidence
+            save_annotated_frames: Whether to save annotated frames
+            frame_save_interval: Save 1 frame every N sampled frames
+            sample_fps: Frame sampling rate (e.g., 0.5 = 1 frame every 2 seconds)
+            run_dir: Run directory for saving clips (for multiprocessing)
+            create_run_dir: Whether to create new run directory
+            preloaded_models: Optional dict of pre-loaded models from worker pool
+                Keys: 'yolo', 'yolo_pose', 'face_mesh', 'mp_face_mesh', 'preprocessing_service'
+                When provided, skips expensive model loading (significant performance gain)
+        """
         self.video_path = video_path
         self.output_dir = output_dir
         
@@ -172,66 +186,84 @@ class LocopilotActivityMonitor:
             self.evidence_clips_dir = None
             self.frames_dir = None
         
-        # Initialize models
-        print("Loading YOLO model...")
-
-        # Use YOLOv8n (nano) for faster CPU inference - 3-5x faster than YOLOv8m
-        # Trade-off: Slightly lower accuracy, but much better for CPU-only deployment
-        self.yolo_model = YOLO('yolov8m.pt')
-
-        # YOLOv8-Pose for body pose estimation (replaces MediaPipe Pose)
-        # Benefits: Native multi-person detection, works better with side/back views
-        print("Loading YOLOv8-Pose model...")
-        from app.services.yolo_pose_adapter import YoloPoseAdapter, YOLO_KEYPOINT_INDICES, get_keypoint_by_name
-        self.yolo_pose = YoloPoseAdapter(model_path='yolov8m-pose.pt', conf_threshold=0.45)
+        # Import adapter utilities (needed regardless of preloaded models)
+        from app.services.yolo_pose_adapter import YOLO_KEYPOINT_INDICES, get_keypoint_by_name
         self.yolo_keypoint_indices = YOLO_KEYPOINT_INDICES
         self._get_keypoint_by_name = get_keypoint_by_name
+        
+        # Initialize models - either use preloaded or load fresh
+        if preloaded_models is not None:
+            # ✅ PERFORMANCE: Use pre-loaded models from worker pool (fast path)
+            self.yolo_model = preloaded_models.get('yolo')
+            self.yolo_pose = preloaded_models.get('yolo_pose')
+            self.face_mesh = preloaded_models.get('face_mesh')
+            self.mp_face_mesh = preloaded_models.get('mp_face_mesh')
+            self.preprocessing_service = preloaded_models.get('preprocessing_service')
+            
+            # Keep MediaPipe references for backward compatibility
+            self.mp_pose = mp.solutions.pose
+            self.mp_drawing = mp.solutions.drawing_utils
+            self.mp_drawing_styles = mp.solutions.drawing_styles
+            
+            # Validate required models
+            if self.yolo_model is None or self.yolo_pose is None:
+                raise ValueError("preloaded_models must contain 'yolo' and 'yolo_pose'")
+        else:
+            # Load models fresh (slow path - for standalone use)
+            print("Loading YOLO model...")
+            self.yolo_model = YOLO('yolov8m.pt')
 
-        print("Initializing MediaPipe FaceMesh...")
-        # Keep MediaPipe references for backward compatibility with landmark constants
-        self.mp_pose = mp.solutions.pose  # Keep for PoseLandmark constants (used in legacy code)
-        self.mp_face_mesh = mp.solutions.face_mesh
-        self.mp_drawing = mp.solutions.drawing_utils
-        self.mp_drawing_styles = mp.solutions.drawing_styles
+            # YOLOv8-Pose for body pose estimation (replaces MediaPipe Pose)
+            print("Loading YOLOv8-Pose model...")
+            from app.services.yolo_pose_adapter import YoloPoseAdapter
+            self.yolo_pose = YoloPoseAdapter(model_path='yolov8m-pose.pt', conf_threshold=0.45)
 
-        # NOTE: MediaPipe Pose is replaced by YOLOv8-Pose for better multi-person support
-        # and improved detection from side/back camera views
-        # Face mesh is kept for Eye Aspect Ratio (EAR) calculation - no YOLO equivalent
-        self.face_mesh = self.mp_face_mesh.FaceMesh(
-            max_num_faces=2,  # Track up to 2 faces (both loco pilots)
-            refine_landmarks=True,
-            min_detection_confidence=0.5,
-            min_tracking_confidence=0.5
-        )
+            print("Initializing MediaPipe FaceMesh...")
+            # Keep MediaPipe references for backward compatibility with landmark constants
+            self.mp_pose = mp.solutions.pose
+            self.mp_face_mesh = mp.solutions.face_mesh
+            self.mp_drawing = mp.solutions.drawing_utils
+            self.mp_drawing_styles = mp.solutions.drawing_styles
+
+            # Face mesh for Eye Aspect Ratio (EAR) calculation
+            self.face_mesh = self.mp_face_mesh.FaceMesh(
+                max_num_faces=2,
+                refine_landmarks=True,
+                min_detection_confidence=0.5,
+                min_tracking_confidence=0.5
+            )
+
+            # Initialize image preprocessing service
+            if ImagePreprocessingService is not None and get_settings is not None:
+                try:
+                    settings = get_settings()
+                    preprocessing_config = {
+                        'enable_image_preprocessing': settings.enable_image_preprocessing,
+                        'use_clahe': settings.use_clahe,
+                        'use_gamma_correction': settings.use_gamma_correction,
+                        'use_unsharp_masking': settings.use_unsharp_masking,
+                        'use_noise_reduction': settings.use_noise_reduction,
+                        'adaptive_preprocessing': settings.adaptive_preprocessing,
+                        'clahe_clip_limit': settings.clahe_clip_limit,
+                        'clahe_tile_grid_size': settings.clahe_tile_grid_size,
+                        'gamma_value': settings.gamma_value,
+                        'unsharp_strength': settings.unsharp_strength,
+                        'unsharp_radius': settings.unsharp_radius,
+                        'noise_reduction_kernel': settings.noise_reduction_kernel
+                    }
+                    self.preprocessing_service = ImagePreprocessingService(config=preprocessing_config)
+                    print("Image preprocessing service initialized")
+                except Exception as e:
+                    print(f"Warning: Failed to initialize image preprocessing service: {e}")
+                    self.preprocessing_service = None
+            else:
+                self.preprocessing_service = None
 
         # Cell phone detection confidence threshold (configurable)
         self.cell_phone_confidence = float(os.getenv("CELL_PHONE_CONFIDENCE", "0.45"))
         
-        # Initialize image preprocessing service for MediaPipe enhancement
-        if ImagePreprocessingService is not None and get_settings is not None:
-            try:
-                settings = get_settings()
-                preprocessing_config = {
-                    'enable_image_preprocessing': settings.enable_image_preprocessing,
-                    'use_clahe': settings.use_clahe,
-                    'use_gamma_correction': settings.use_gamma_correction,
-                    'use_unsharp_masking': settings.use_unsharp_masking,
-                    'use_noise_reduction': settings.use_noise_reduction,
-                    'adaptive_preprocessing': settings.adaptive_preprocessing,
-                    'clahe_clip_limit': settings.clahe_clip_limit,
-                    'clahe_tile_grid_size': settings.clahe_tile_grid_size,
-                    'gamma_value': settings.gamma_value,
-                    'unsharp_strength': settings.unsharp_strength,
-                    'unsharp_radius': settings.unsharp_radius,
-                    'noise_reduction_kernel': settings.noise_reduction_kernel
-                }
-                self.preprocessing_service = ImagePreprocessingService(config=preprocessing_config)
-                print("Image preprocessing service initialized")
-            except Exception as e:
-                print(f"Warning: Failed to initialize image preprocessing service: {e}")
-                self.preprocessing_service = None
-        else:
-            self.preprocessing_service = None
+        # Track if models were pre-loaded (don't close them in cleanup)
+        self._models_preloaded = preloaded_models is not None
 
         # Activity tracking with temporal filtering
         self.activities = {
@@ -5104,22 +5136,32 @@ class LocopilotActivityMonitor:
 
         This method mirrors POC_2's MediaPipeService.close() pattern.
         Call this after processing to free GPU/CPU resources.
+        
+        NOTE: If models were pre-loaded (worker pool), they are NOT closed
+        since they are shared across tasks in the same worker.
         """
         try:
-            # Close YOLOv8-Pose model
-            if hasattr(self, 'yolo_pose') and self.yolo_pose is not None:
-                self.yolo_pose = None
+            # Only close models if they were loaded fresh (not pre-loaded from worker pool)
+            if not getattr(self, '_models_preloaded', False):
+                # Close YOLOv8-Pose model
+                if hasattr(self, 'yolo_pose') and self.yolo_pose is not None:
+                    self.yolo_pose = None
 
-            # Close MediaPipe FaceMesh (still used for EAR calculation)
-            if hasattr(self, 'face_mesh') and self.face_mesh is not None:
-                self.face_mesh.close()
+                # Close MediaPipe FaceMesh (still used for EAR calculation)
+                if hasattr(self, 'face_mesh') and self.face_mesh is not None:
+                    self.face_mesh.close()
+                    self.face_mesh = None
+            else:
+                # Pre-loaded models: just clear references (don't close shared models)
+                self.yolo_pose = None
+                self.yolo_model = None
                 self.face_mesh = None
             
-            # Clear frame buffers
+            # Clear frame buffers (always)
             if hasattr(self, 'frame_buffer'):
                 self.frame_buffer.clear()
             
-            # Clear activity frames
+            # Clear activity frames (always)
             if hasattr(self, 'activities'):
                 for activity_name in self.activities:
                     if 'frames' in self.activities[activity_name]:

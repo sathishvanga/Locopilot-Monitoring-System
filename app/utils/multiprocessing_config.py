@@ -40,7 +40,8 @@ class MultiprocessingConfig:
     
     # Model preloading settings
     preload_models: bool = True  # Preload models in worker initializer
-    yolo_model_path: str = "yolov8m.pt"  # YOLOv8m for faster CPU inference
+    yolo_model_path: str = "yolov8m.pt"  # YOLOv8m for object detection
+    yolo_pose_model_path: str = "yolov8m-pose.pt"  # YOLOv8m-Pose for body pose estimation
     model_cache_dir: Optional[str] = None  # Model cache directory
     
     # Progress settings

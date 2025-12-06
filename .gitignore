@@ -14,3 +14,4 @@ desktop_app/build_config/dist/
 *.spec
 *.pyc
 logs/
+logs/LocopilotMonitoring.log

@@ -160,15 +160,21 @@ class YoloPoseAdapter:
             print(f"Nose at ({nose.x}, {nose.y}) with confidence {nose.visibility}")
     """
 
-    def __init__(self, model_path: str = 'yolov8m-pose.pt', conf_threshold: float = 0.45):
+    def __init__(self, model_path: str = 'yolov8m-pose.pt', conf_threshold: float = 0.45, 
+                 preloaded_model: 'YOLO' = None):
         """Initialize YOLOv8-Pose model.
 
         Args:
             model_path: Path to YOLOv8-Pose weights file
             conf_threshold: Minimum confidence threshold for detections
+            preloaded_model: Optional pre-loaded YOLO model (for worker reuse)
         """
-        print(f"Loading YOLOv8-Pose model: {model_path}")
-        self.model = YOLO(model_path)
+        if preloaded_model is not None:
+            # Use pre-loaded model (avoids expensive model loading)
+            self.model = preloaded_model
+        else:
+            print(f"Loading YOLOv8-Pose model: {model_path}")
+            self.model = YOLO(model_path)
         self.conf_threshold = conf_threshold
         self.keypoint_indices = YOLO_KEYPOINT_INDICES
 
