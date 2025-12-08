@@ -187,7 +187,7 @@ class YoloPoseAdapter:
     Example:
         adapter = YoloPoseAdapter()  # Uses YOLO_POSE_WEIGHTS env var or default
         # OR specify explicitly:
-        adapter = YoloPoseAdapter(model_path='yolo11n-pose.pt')
+        adapter = YoloPoseAdapter(model_path='yolo11m-pose.pt')
         results = adapter.process(frame)
 
         for person_idx, person_data in results.items():
