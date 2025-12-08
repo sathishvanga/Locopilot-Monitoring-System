@@ -6,9 +6,13 @@ A production-ready API for video processing and activity detection.
 
 import os
 
-# Suppress PyTorch/YOLO warnings BEFORE any imports
-os.environ.setdefault('OMP_NUM_THREADS', '1')
-os.environ.setdefault('MKL_NUM_THREADS', '1')
+# Thread configuration for CPU inference optimization
+# Allow worker processes to set optimal thread counts
+# Conservative default of 2, worker initializer will override based on actual worker count
+default_threads = 2  # Safe default, workers will set optimal value
+os.environ.setdefault('OMP_NUM_THREADS', str(default_threads))
+os.environ.setdefault('MKL_NUM_THREADS', str(default_threads))
+os.environ.setdefault('OPENBLAS_NUM_THREADS', str(default_threads))
 os.environ.setdefault('TORCH_CPP_LOG_LEVEL', 'ERROR')
 
 import asyncio

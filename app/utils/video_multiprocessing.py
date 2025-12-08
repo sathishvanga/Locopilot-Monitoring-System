@@ -126,11 +126,21 @@ def worker_initializer(config: MultiprocessingConfig):
             # 1. Load YOLO object detection model
             logger.info(f"Worker {os.getpid()} loading YOLO model: {config.yolo_model_path}")
             yolo_model = YOLO(config.yolo_model_path)
-            
+
+            # Phase 3.5 Quick Win A: Fuse Conv+BatchNorm layers for faster inference (15-20% speedup)
+            if hasattr(yolo_model.model, 'fuse'):
+                yolo_model.fuse()
+                logger.info(f"Worker {os.getpid()} YOLO model layers fused for optimized inference")
+
             # 2. Load YOLOv8-Pose model for body pose estimation
             yolo_pose_model_path = config.yolo_pose_model_path
             logger.info(f"Worker {os.getpid()} loading YOLOv8-Pose model: {yolo_pose_model_path}")
             yolo_pose_raw = YOLO(yolo_pose_model_path)
+
+            # Fuse pose model layers as well
+            if hasattr(yolo_pose_raw.model, 'fuse'):
+                yolo_pose_raw.fuse()
+                logger.info(f"Worker {os.getpid()} YOLO-Pose model layers fused")
             yolo_pose = YoloPoseAdapter(
                 model_path=yolo_pose_model_path,
                 conf_threshold=0.45,
