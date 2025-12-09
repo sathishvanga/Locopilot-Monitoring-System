@@ -214,8 +214,10 @@ class YoloPoseAdapter:
             # Use pre-loaded model (avoids expensive model loading)
             self.model = preloaded_model
         else:
-            logger.info(f"Loading YOLO-Pose model: {model_path}")
-            self.model = YOLO(model_path)
+            from app.services.inference_backend import create_inference_backend
+            backend = os.getenv("INFERENCE_BACKEND", "auto")
+            logger.info(f"Loading YOLO-Pose model: {model_path} (backend={backend})")
+            self.model = create_inference_backend(model_path, backend)
         self.conf_threshold = conf_threshold
         self.keypoint_indices = YOLO_KEYPOINT_INDICES
 

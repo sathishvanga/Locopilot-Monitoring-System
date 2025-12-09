@@ -82,20 +82,26 @@ class ProcessingState:
 def worker_initializer(config: MultiprocessingConfig):
     """
     Initialize worker process with models and configurations
-    
+
     This function runs once per worker process at startup to:
+    - Load environment variables from .env file
     - Prevent Qt/GUI initialization (Windows compatibility)
     - Set thread counts for Torch and OpenCV
     - Disable OpenCV OpenCL
     - Preload heavy models (YOLO, YOLOv8-Pose, MediaPipe FaceMesh, Preprocessing Service)
     - Set environment variables
-    
+
     Args:
         config: Multiprocessing configuration
     """
     global _worker_models, _worker_config
-    
+
     try:
+        # ✅ CRITICAL: Load .env file in worker process
+        # Multiprocessing with 'spawn' creates fresh processes that don't inherit parent env vars
+        from dotenv import load_dotenv
+        load_dotenv(override=False)  # Load .env but don't override existing vars
+
         # ✅ WINDOWS FIX: Prevent Qt/GUI windows from opening in worker processes
         # Set this FIRST before any imports that might trigger Qt initialization
         os.environ['QT_QPA_PLATFORM'] = 'offscreen'
@@ -122,27 +128,71 @@ def worker_initializer(config: MultiprocessingConfig):
             from ultralytics import YOLO
             import mediapipe as mp
             from app.services.yolo_pose_adapter import YoloPoseAdapter
-            
-            # 1. Load YOLO object detection model
-            logger.info(f"Worker {os.getpid()} loading YOLO model: {config.yolo_model_path}")
-            yolo_model = YOLO(config.yolo_model_path)
+            from app.services.inference_backend import create_inference_backend
+
+            # Validate OpenVINO models if enabled
+            if config.enable_openvino and config.inference_backend in ['auto', 'openvino']:
+                detection_model = os.getenv('YOLO_WEIGHTS_OPENVINO', 'yolo11s_openvino_model/yolo11s.xml')
+                pose_model = os.getenv('YOLO_POSE_WEIGHTS_OPENVINO', 'yolo11s-pose_openvino_model/yolo11s-pose.xml')
+
+                logger.info(f"Worker {os.getpid()} checking OpenVINO models...")
+                logger.info(f"  Detection model: {detection_model} (exists: {os.path.exists(detection_model)})")
+                logger.info(f"  Pose model: {pose_model} (exists: {os.path.exists(pose_model)})")
+
+                if not os.path.exists(detection_model) and not os.path.exists(pose_model):
+                    logger.warning(f"Worker {os.getpid()} OpenVINO models not found, will use PyTorch fallback")
+
+            # 1. Load YOLO object detection model (with OpenVINO support)
+            # Re-read model path from environment (after .env was loaded above)
+            # This overrides the config object which was created before .env was loaded
+            if config.enable_openvino and config.inference_backend in ['auto', 'openvino']:
+                openvino_path = os.getenv('YOLO_WEIGHTS_OPENVINO', 'yolo11s_openvino_model/yolo11s.xml')
+                # Check if the actual .xml file exists (not just directory)
+                if os.path.exists(openvino_path):
+                    model_path = openvino_path
+                    logger.info(f"Worker {os.getpid()} using OpenVINO model: {model_path}")
+                else:
+                    # Fallback to PyTorch with explicit warning
+                    model_path = os.getenv('YOLO_WEIGHTS_PRELOAD', config.yolo_model_path)
+                    logger.warning(f"Worker {os.getpid()} OpenVINO model not found at {openvino_path}, falling back to PyTorch: {model_path}")
+            else:
+                # PyTorch mode - re-read from environment
+                model_path = os.getenv('YOLO_WEIGHTS_PRELOAD', config.yolo_model_path)
+
+            logger.info(f"Worker {os.getpid()} loading YOLO model: {model_path}")
+            yolo_model = create_inference_backend(model_path, config.inference_backend)
 
             # Phase 3.5 Quick Win A: Fuse Conv+BatchNorm layers for faster inference (15-20% speedup)
-            if hasattr(yolo_model.model, 'fuse'):
+            # Note: OpenVINO models are already optimized, fuse() is a no-op
+            if hasattr(yolo_model, 'model') and hasattr(yolo_model.model, 'fuse'):
                 yolo_model.fuse()
                 logger.info(f"Worker {os.getpid()} YOLO model layers fused for optimized inference")
 
-            # 2. Load YOLOv8-Pose model for body pose estimation
-            yolo_pose_model_path = config.yolo_pose_model_path
-            logger.info(f"Worker {os.getpid()} loading YOLOv8-Pose model: {yolo_pose_model_path}")
-            yolo_pose_raw = YOLO(yolo_pose_model_path)
+            # 2. Load YOLOv8-Pose model for body pose estimation (with OpenVINO support)
+            # Re-read model path from environment (after .env was loaded above)
+            if config.enable_openvino and config.inference_backend in ['auto', 'openvino']:
+                openvino_pose_path = os.getenv('YOLO_POSE_WEIGHTS_OPENVINO', 'yolo11s-pose_openvino_model/yolo11s-pose.xml')
+                # Check if the actual .xml file exists (not just directory)
+                if os.path.exists(openvino_pose_path):
+                    pose_model_path = openvino_pose_path
+                    logger.info(f"Worker {os.getpid()} using OpenVINO pose model: {pose_model_path}")
+                else:
+                    # Fallback to PyTorch with explicit warning
+                    pose_model_path = os.getenv('YOLO_POSE_WEIGHTS', config.yolo_pose_model_path)
+                    logger.warning(f"Worker {os.getpid()} OpenVINO pose model not found at {openvino_pose_path}, falling back to PyTorch: {pose_model_path}")
+            else:
+                # PyTorch mode - re-read from environment
+                pose_model_path = os.getenv('YOLO_POSE_WEIGHTS', config.yolo_pose_model_path)
 
-            # Fuse pose model layers as well
-            if hasattr(yolo_pose_raw.model, 'fuse'):
+            logger.info(f"Worker {os.getpid()} loading YOLOv8-Pose model: {pose_model_path}")
+            yolo_pose_raw = create_inference_backend(pose_model_path, config.inference_backend)
+
+            # Fuse pose model layers as well (no-op for OpenVINO)
+            if hasattr(yolo_pose_raw, 'model') and hasattr(yolo_pose_raw.model, 'fuse'):
                 yolo_pose_raw.fuse()
                 logger.info(f"Worker {os.getpid()} YOLO-Pose model layers fused")
             yolo_pose = YoloPoseAdapter(
-                model_path=yolo_pose_model_path,
+                model_path=pose_model_path,
                 conf_threshold=0.45,
                 preloaded_model=yolo_pose_raw
             )

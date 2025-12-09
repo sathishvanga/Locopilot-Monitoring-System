@@ -205,11 +205,14 @@ class LocopilotActivityMonitor:
             yolo_pose_weights = settings.yolo_pose_weights if settings else 'yolo11m-pose.pt'
             yolo_pose_conf = settings.yolo_pose_confidence if settings else 0.45
             
-            self.logger.info(f"Loading YOLO model: {yolo_weights}")
-            self.yolo_model = YOLO(yolo_weights)
+            from app.services.inference_backend import create_inference_backend
+            backend = os.getenv("INFERENCE_BACKEND", "auto")
+            self.logger.info(f"Loading YOLO model: {yolo_weights} (backend={backend})")
+            self.yolo_model = create_inference_backend(yolo_weights, backend)
 
             # Phase 3.5 Quick Win A: Fuse Conv+BatchNorm layers for faster inference (15-20% speedup)
-            if hasattr(self.yolo_model.model, 'fuse'):
+            # Note: OpenVINO models are already optimized, fuse() is a no-op
+            if hasattr(self.yolo_model, 'model') and hasattr(self.yolo_model.model, 'fuse'):
                 self.yolo_model.fuse()
                 self.logger.info("YOLO model layers fused for optimized inference")
 

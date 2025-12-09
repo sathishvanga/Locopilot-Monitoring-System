@@ -44,6 +44,10 @@ class MultiprocessingConfig:
     yolo_model_path: str = os.getenv("YOLO_WEIGHTS_PRELOAD", "yolo11m.pt")  # YOLO model for object detection
     yolo_pose_model_path: str = os.getenv("YOLO_POSE_WEIGHTS", "yolo11m-pose.pt")  # YOLO-Pose for body pose estimation
     model_cache_dir: Optional[str] = None  # Model cache directory
+
+    # OpenVINO settings (CPU inference optimization)
+    enable_openvino: bool = bool(int(os.getenv("ENABLE_OPENVINO", "1")))
+    inference_backend: str = os.getenv("INFERENCE_BACKEND", "auto")  # auto, pytorch, or openvino
     
     # Progress settings
     enable_progress_tracking: bool = True  # Enable progress updates
@@ -91,7 +95,11 @@ class MultiprocessingConfig:
         os.environ['OPENBLAS_NUM_THREADS'] = str(threads_per_worker)
         os.environ['VECLIB_MAXIMUM_THREADS'] = str(threads_per_worker)
         os.environ['NUMEXPR_NUM_THREADS'] = str(threads_per_worker)
-        
+
+        # Set OpenVINO threading (matches PyTorch threading for consistency)
+        if self.enable_openvino:
+            os.environ['OV_CPU_THREADS_NUM'] = str(threads_per_worker)
+
         # Set OpenCV settings
         if self.disable_opencv_opencl:
             os.environ['OPENCV_OPENCL_DEVICE'] = 'disabled'

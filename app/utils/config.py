@@ -85,6 +85,13 @@ class Settings(BaseSettings):
     yolo_imgsz: int = int(os.getenv("YOLO_IMGSZ", "416"))  # Model input size (416=2.4x fewer pixels than 640)
     yolo_device: str = os.getenv("YOLO_DEVICE", "cpu")  # Explicit CPU device
 
+    # OpenVINO settings (2-3x CPU inference speedup)
+    enable_openvino: bool = bool(int(os.getenv("ENABLE_OPENVINO", "1")))
+    inference_backend: str = os.getenv("INFERENCE_BACKEND", "auto")  # auto, pytorch, or openvino
+    openvino_device: str = os.getenv("OPENVINO_DEVICE", "CPU")  # CPU, GPU, or AUTO
+    yolo_weights_openvino: str = os.getenv("YOLO_WEIGHTS_OPENVINO", "yolo11s_openvino_model/yolo11s.xml")
+    yolo_pose_weights_openvino: str = os.getenv("YOLO_POSE_WEIGHTS_OPENVINO", "yolo11s-pose_openvino_model/yolo11s-pose.xml")
+
     preload_ocr: bool = bool(int(os.getenv("PRELOAD_OCR", "0")))
     
     # Logging settings
