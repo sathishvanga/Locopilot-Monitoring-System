@@ -1,0 +1,5 @@
+Server details 
+
+ssh -p 7291 root@103.195.244.66                     
+
+SSH_PASS='Login@123@@@' 
