@@ -33,7 +33,7 @@ fi
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
-echo -e "${YELLOW}[1/4] Syncing files to server...${NC}"
+echo -e "${YELLOW}[1/5] Syncing files to server...${NC}"
 sshpass -p "$SERVER_PASS" rsync -avz --progress \
     --exclude 'venv' \
     --exclude '.venv' \
@@ -54,19 +54,25 @@ sshpass -p "$SERVER_PASS" rsync -avz --progress \
     "$SERVER_USER@$SERVER_IP:$REMOTE_PATH/"
 
 echo ""
-echo -e "${YELLOW}[2/4] Updating environment configuration...${NC}"
+echo -e "${YELLOW}[2/5] Updating environment configuration...${NC}"
 sshpass -p "$SERVER_PASS" ssh -p "$SERVER_PORT" -o StrictHostKeyChecking=no \
     "$SERVER_USER@$SERVER_IP" \
     "cp $REMOTE_PATH/.env.production $REMOTE_PATH/.env"
 
 echo ""
-echo -e "${YELLOW}[3/4] Restarting service...${NC}"
+echo -e "${YELLOW}[3/5] Installing Python dependencies...${NC}"
+sshpass -p "$SERVER_PASS" ssh -p "$SERVER_PORT" -o StrictHostKeyChecking=no \
+    "$SERVER_USER@$SERVER_IP" \
+    "cd $REMOTE_PATH && source venv/bin/activate && pip install -r requirements.txt -q"
+
+echo ""
+echo -e "${YELLOW}[4/5] Restarting service...${NC}"
 sshpass -p "$SERVER_PASS" ssh -p "$SERVER_PORT" -o StrictHostKeyChecking=no \
     "$SERVER_USER@$SERVER_IP" \
     "systemctl restart locopilot"
 
 echo ""
-echo -e "${YELLOW}[4/4] Verifying deployment...${NC}"
+echo -e "${YELLOW}[5/5] Verifying deployment...${NC}"
 sleep 5
 
 # Check service status

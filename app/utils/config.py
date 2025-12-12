@@ -114,6 +114,13 @@ class Settings(BaseSettings):
     upload_session_timeout: int = 3600  # 1 hour in seconds
     max_upload_sessions: int = 100  # Prevent memory exhaustion
     chunks_cleanup_interval: int = 300  # 5 minutes
+
+    # MinIO settings for video downloads
+    minio_endpoint: str = os.getenv("MINIO_ENDPOINT", "mind.snikbtel.uk:9000")
+    minio_access_key: str = os.getenv("MINIO_ACCESS_KEY", "admin")
+    minio_secret_key: str = os.getenv("MINIO_SECRET_KEY", "login123")
+    minio_secure: bool = bool(int(os.getenv("MINIO_SECURE", "1")))
+    minio_bucket: str = os.getenv("MINIO_BUCKET", "cvss")
     
     # Image preprocessing settings (for MediaPipe detection enhancement)
     enable_image_preprocessing: bool = bool(int(os.getenv("ENABLE_IMAGE_PREPROCESSING", "1")))  # Enable by default

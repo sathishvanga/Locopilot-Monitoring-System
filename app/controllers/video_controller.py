@@ -20,6 +20,7 @@ from ..services.video_processing_service import VideoProcessingService
 from ..services.s3_upload_service import get_s3_upload_service
 from ..services.external_api_service import get_external_api_service
 from ..services.chunked_upload_service import get_chunked_upload_service
+from ..services.minio_service import get_minio_service
 from ..utils.logger import get_logger
 from ..utils.config import get_settings
 
@@ -32,10 +33,11 @@ router = APIRouter(prefix="/api", tags=["video"])
 video_processing_service = VideoProcessingService()
 s3_upload_service = get_s3_upload_service()
 chunked_upload_service = get_chunked_upload_service()
+# Note: minio_service is initialized lazily via get_minio_service() when needed
 
 
 @router.post(
-    "/jobs",
+    "/video/analyze",
     response_model=VideoProcessingResponse,
     responses={
         200: {"description": "Video processed successfully"},
@@ -45,9 +47,10 @@ chunked_upload_service = get_chunked_upload_service()
     summary="Process uploaded video",
     description="""
     Upload and process a video file for activity detection.
-    
-    The endpoint accepts:
-    - video: Video file (multipart/form-data)
+
+    The endpoint accepts EITHER a video file OR a video URL from MinIO:
+    - video: Video file (multipart/form-data) - optional if videoUrl provided
+    - videoUrl: MinIO URL to download video from (e.g., https://mind.snikbtel.uk:9000/cvss/video.mp4)
     - tripId: Unique trip identifier (required)
     - lpCrewName: LP crew member name (optional)
     - lpCrewId: LP crew member ID (optional)
@@ -56,7 +59,7 @@ chunked_upload_service = get_chunked_upload_service()
     - useMockDetection: Use mock detection for testing (optional, default: false)
     - useMultiprocessing: Enable parallel processing (optional, default: from config)
     - saveClips: Save annotated frames for debugging (optional, default: false). Clips and images are always saved for UI evidence.
-    
+
     Returns:
     - Processing results with detected activities
     - Path to activities.json file
@@ -65,7 +68,8 @@ chunked_upload_service = get_chunked_upload_service()
 )
 async def process_video(
     background_tasks: BackgroundTasks,
-    video: UploadFile = File(..., description="Video file to process"),
+    video: Optional[UploadFile] = File(default=None, description="Video file to process (optional if videoUrl provided)"),
+    videoUrl: Optional[str] = Form(default=None, description="MinIO URL to download video from (e.g., https://mind.snikbtel.uk:9000/cvss/video.mp4)"),
     tripId: str = Form(..., description="Unique trip identifier"),
     lpCrewName: Optional[str] = Form(default=None, description="Loco Pilot crew member name"),
     lpCrewId: Optional[str] = Form(default=None, description="Loco Pilot crew member ID"),
@@ -77,15 +81,16 @@ async def process_video(
 ):
     """
     Process uploaded video and detect activities
-    
-    This endpoint handles video upload, validation, processing, and activity detection.
-    The video is saved temporarily, processed, and then optionally cleaned up.
+
+    This endpoint handles video upload or MinIO download, validation, processing,
+    and activity detection. The video is saved temporarily, processed, and then cleaned up.
     """
     video_path = None
-    
+    video_filename = None
+
     try:
         logger.info(f"📥 Received video processing request for trip: {tripId}")
-        
+
         # Validate tripId
         if not tripId or not tripId.strip():
             logger.warning(f"⚠️ Invalid request: tripId is empty")
@@ -93,10 +98,21 @@ async def process_video(
                 status_code=400,
                 detail="tripId is required and cannot be empty"
             )
-        
+
+        # Validate that either video OR videoUrl is provided (not both, not neither)
+        has_video = video is not None and video.filename
+        has_url = videoUrl is not None and videoUrl.strip()
+
+        if not has_video and not has_url:
+            logger.warning(f"⚠️ Invalid request: Neither video file nor videoUrl provided")
+            raise HTTPException(
+                status_code=400,
+                detail="Either 'video' file or 'videoUrl' must be provided"
+            )
+
         # Build crew members dictionary
         crew_members = {}
-        
+
         # Add LP crew if provided
         if lpCrewName and lpCrewId:
             if lpCrewName.strip() and lpCrewId.strip():
@@ -106,7 +122,7 @@ async def process_video(
                     'role': 'LP'
                 }
                 logger.info(f"LP Crew: {lpCrewName} ({lpCrewId})")
-        
+
         # Add ALP crew if provided
         if alpCrewName and alpCrewId:
             if alpCrewName.strip() and alpCrewId.strip():
@@ -116,29 +132,47 @@ async def process_video(
                     'role': 'ALP'
                 }
                 logger.info(f"ALP Crew: {alpCrewName} ({alpCrewId})")
-        
-        # Read video content
-        video_content = await video.read()
-        file_size = len(video_content)
-        
-        logger.info(f"📹 Uploaded video: {video.filename} ({file_size / (1024*1024):.2f} MB)")
-        
-        # Validate video file
-        is_valid, error_message = video_processing_service.validate_video_file(
-            filename=video.filename,
-            file_size=file_size
-        )
-        
-        if not is_valid:
-            logger.warning(f"⚠️ Video validation failed: {error_message}")
-            raise HTTPException(status_code=400, detail=error_message)
-        
-        # Save uploaded video
-        video_path = await video_processing_service.save_uploaded_video(
-            file_content=video_content,
-            filename=video.filename,
-            trip_id=tripId
-        )
+
+        # Get video either from upload or MinIO URL
+        if has_url:
+            # Download video from MinIO
+            logger.info(f"📥 Downloading video from MinIO: {videoUrl}")
+            try:
+                minio_svc = get_minio_service()
+                video_path = minio_svc.download_video(videoUrl, tripId)
+                video_filename = os.path.basename(video_path)
+                file_size = os.path.getsize(video_path)
+                logger.info(f"📹 Downloaded video: {video_filename} ({file_size / (1024*1024):.2f} MB)")
+            except Exception as e:
+                logger.error(f"❌ Failed to download video from MinIO: {e}")
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Failed to download video from MinIO: {str(e)}"
+                )
+        else:
+            # Read video content from upload
+            video_content = await video.read()
+            file_size = len(video_content)
+            video_filename = video.filename
+
+            logger.info(f"📹 Uploaded video: {video_filename} ({file_size / (1024*1024):.2f} MB)")
+
+            # Validate video file
+            is_valid, error_message = video_processing_service.validate_video_file(
+                filename=video_filename,
+                file_size=file_size
+            )
+
+            if not is_valid:
+                logger.warning(f"⚠️ Video validation failed: {error_message}")
+                raise HTTPException(status_code=400, detail=error_message)
+
+            # Save uploaded video
+            video_path = await video_processing_service.save_uploaded_video(
+                file_content=video_content,
+                filename=video_filename,
+                trip_id=tripId
+            )
         
         # Determine multiprocessing setting
         # Priority: request parameter > config setting > default (False)
