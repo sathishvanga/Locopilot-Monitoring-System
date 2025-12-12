@@ -101,7 +101,12 @@ async def process_video(
 
         # Validate that either video OR videoUrl is provided (not both, not neither)
         has_video = video is not None and video.filename
-        has_url = videoUrl is not None and videoUrl.strip()
+        # Validate URL: must be non-empty and look like a valid URL (starts with http/https)
+        has_url = (
+            videoUrl is not None
+            and videoUrl.strip()
+            and videoUrl.strip().lower().startswith(('http://', 'https://'))
+        )
 
         if not has_video and not has_url:
             logger.warning(f"⚠️ Invalid request: Neither video file nor videoUrl provided")
