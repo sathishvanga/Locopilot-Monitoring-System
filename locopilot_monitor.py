@@ -4990,9 +4990,11 @@ class LocopilotActivityMonitor:
             total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
         
         self.logger.info(f"Processing frame range {start_frame}-{end_frame} (worker {os.getpid()})")
-        
+
         sampled_count = 0
-        
+        timestamp_sec = 0  # Initialize to handle empty frame ranges
+        frame_idx = start_frame  # Initialize to handle empty frame ranges
+
         # Use the frame sampling generator with range limits
         for sample_idx, timestamp_sec, frame, frame_idx in self.sample_video_frames(
             self.video_path, start_frame=start_frame, end_frame=end_frame

@@ -107,7 +107,7 @@ class Settings(BaseSettings):
     cvvr_api_token: Optional[str] = os.getenv("CVVR_API_TOKEN", None)
     cvvr_api_timeout: int = int(os.getenv("CVVR_API_TIMEOUT", "30"))
     cvvr_api_enabled: bool = bool(int(os.getenv("CVVR_API_ENABLED", "1")))  # Enable by default
-    host_url: str = os.getenv("HOST_URL", "https://celebxmedia.info")  # URL for building fileUrl
+    host_url: str = os.getenv("HOST_URL", "http://103.195.244.66:8000")  # URL for building fileUrl
 
     # Chunked upload settings
     chunk_size: int = 8 * 1024 * 1024  # Fixed 8 MB chunk size
