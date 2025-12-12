@@ -5216,22 +5216,29 @@ class LocopilotActivityMonitor:
                     del annotated_frame_for_activity
                 if 'rgb_frame' in locals():
                     del rgb_frame
-        
+
+        # Guard against empty frame ranges where timestamp_sec/frame_idx may not be set
+        if sampled_count == 0:
+            timestamp_sec = start_frame / fps if fps > 0 else 0.0
+            frame_idx = start_frame
+            self.logger.warning(f"No frames sampled in range {start_frame}-{end_frame}, skipping activity finalization")
+            return self.all_activities
+
         # End any remaining active activities
         final_timestamp = str(timedelta(seconds=timestamp_sec))
         for activity_name in self.activities:
             if self.activities[activity_name]['active']:
                 self.end_activity(activity_name, final_timestamp, fps, frame_idx, 1, save_clips=save_clips)
-        
+
         # ✅ MEMORY FIX: Clear frame buffers and activity frames to free memory
         self.frame_buffer.clear()
         for activity_name in self.activities:
             if 'frames' in self.activities[activity_name]:
                 self.activities[activity_name]['frames'].clear()
-        
+
         # ✅ MEMORY FIX: Force garbage collection
         gc.collect()
-        
+
         self.logger.info(f"Frame range {start_frame}-{end_frame} completed: {len(self.all_activities)} activities")
         
         # Return detected activities (without generating summary reports)
