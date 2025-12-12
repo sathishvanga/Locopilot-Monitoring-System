@@ -3,3 +3,24 @@ Server details
 ssh -p 7291 root@103.195.244.66                     
 
 SSH_PASS='Login@123@@@' 
+
+
+
+Summary:
+  - Files transferred to /opt/poc2/
+  - Python 3.12 virtual environment created with all dependencies
+  - Systemd service locopilot enabled for auto-start
+  - Firewall configured to allow port 8000
+
+  Useful Commands:
+  # SSH into server
+  ssh -p 7291 root@103.195.244.66
+
+  # Check service status
+  systemctl status locopilot
+
+  # View logs
+  tail -f /opt/poc2/logs/LocopilotMonitoring.log
+
+  # Restart service
+  systemctl restart locopilot
