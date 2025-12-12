@@ -8,7 +8,7 @@ import os
 import tempfile
 import urllib3
 from typing import Optional, Tuple
-from urllib.parse import urlparse
+from urllib.parse import urlparse, unquote
 from functools import lru_cache
 
 from minio import Minio
@@ -73,7 +73,7 @@ class MinioService:
                 raise ValueError(f"Invalid MinIO URL - missing object key: {url}")
 
             bucket = parts[0]
-            object_key = parts[1]
+            object_key = unquote(parts[1])  # Decode URL-encoded characters (e.g., %20 -> space)
 
             if not bucket or not object_key:
                 raise ValueError(f"Invalid MinIO URL - empty bucket or key: {url}")
