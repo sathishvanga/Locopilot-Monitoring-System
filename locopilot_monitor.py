@@ -4564,7 +4564,50 @@ class LocopilotActivityMonitor:
             self.grace_counters[activity_name] = 0
             
             self.evidence_counter += 1
-    
+
+    def _reencode_to_h264(self, input_path: str) -> bool:
+        """Re-encode video to H.264 for browser compatibility.
+
+        OpenCV's mp4v codec (MPEG-4 Part 2) doesn't play in browsers.
+        This re-encodes to H.264 which has universal browser support.
+
+        Args:
+            input_path: Path to the video file to re-encode
+
+        Returns:
+            True if re-encoding succeeded, False otherwise
+        """
+        import subprocess
+        temp_path = input_path + ".temp.mp4"
+        try:
+            result = subprocess.run([
+                'ffmpeg', '-y', '-i', input_path,
+                '-c:v', 'libx264', '-preset', 'fast',
+                '-crf', '23', '-pix_fmt', 'yuv420p',
+                '-loglevel', 'error',
+                temp_path
+            ], capture_output=True, timeout=120)
+            if result.returncode == 0 and os.path.exists(temp_path):
+                os.replace(temp_path, input_path)
+                self.logger.debug(f"Re-encoded to H.264: {input_path}")
+                return True
+            else:
+                stderr = result.stderr.decode() if result.stderr else ""
+                self.logger.warning(f"H.264 re-encoding failed (code {result.returncode}): {stderr}")
+        except FileNotFoundError:
+            self.logger.warning("ffmpeg not found - videos will use mp4v codec (may not play in browsers)")
+        except subprocess.TimeoutExpired:
+            self.logger.warning(f"H.264 re-encoding timed out for: {input_path}")
+        except Exception as e:
+            self.logger.warning(f"H.264 re-encoding failed: {e}")
+        finally:
+            if os.path.exists(temp_path):
+                try:
+                    os.remove(temp_path)
+                except:
+                    pass
+        return False
+
     def save_video_clip(self, frames, output_path, fps):
         """Save frames as video clip at sample FPS for full-duration playback.
         
@@ -4586,9 +4629,13 @@ class LocopilotActivityMonitor:
         
         for frame in frames:
             out.write(frame)
-        
+
         out.release()
-    
+
+        # Re-encode to H.264 for browser compatibility
+        # (mp4v codec from OpenCV doesn't play in browsers)
+        self._reencode_to_h264(output_path)
+
     def process_video(self):
         """Main video processing loop - SAMPLES FRAMES AT SPECIFIED RATE"""
         # Get video metadata
