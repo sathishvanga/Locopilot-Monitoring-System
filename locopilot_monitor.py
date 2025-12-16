@@ -4581,7 +4581,7 @@ class LocopilotActivityMonitor:
         temp_path = input_path + ".temp.mp4"
         try:
             result = subprocess.run([
-                'ffmpeg', '-y', '-i', input_path,
+                '/usr/bin/ffmpeg', '-y', '-i', input_path,
                 '-c:v', 'libx264', '-preset', 'fast',
                 '-crf', '23', '-pix_fmt', 'yuv420p',
                 '-movflags', '+faststart',
