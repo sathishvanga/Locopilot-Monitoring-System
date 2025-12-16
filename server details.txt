@@ -24,3 +24,7 @@ Summary:
 
   # Restart service
   systemctl restart locopilot
+
+
+
+  ./deploy.sh      

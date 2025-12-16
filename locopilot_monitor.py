@@ -4584,6 +4584,7 @@ class LocopilotActivityMonitor:
                 'ffmpeg', '-y', '-i', input_path,
                 '-c:v', 'libx264', '-preset', 'fast',
                 '-crf', '23', '-pix_fmt', 'yuv420p',
+                '-movflags', '+faststart',
                 '-loglevel', 'error',
                 temp_path
             ], capture_output=True, timeout=120)
