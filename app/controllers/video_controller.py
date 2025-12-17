@@ -200,19 +200,44 @@ async def process_video(
             use_multiprocessing=use_mp,
             save_clips=saveClips
         )
-        
+
         # Schedule cleanup of uploaded video after processing (production mode)
         background_tasks.add_task(
             video_processing_service.cleanup_uploaded_video,
             video_path
         )
-        
+
+        # Transform activities to violations format (same format as external API POST)
+        external_api_service = get_external_api_service()
+        activities = result.get('activities', [])
+        run_directory = result.get('runDirectory', '')
+        run_id = os.path.basename(run_directory) if run_directory else ''
+        host_url = settings.host_url
+
+        # Ensure activityClip has full path for URL building
+        clips_dir = os.path.join(run_directory, 'clips') if run_directory else ''
+        for activity in activities:
+            clip_name = activity.get('activityClip', '')
+            if clip_name and not os.path.isabs(clip_name) and clips_dir:
+                activity['activityClip'] = os.path.join(clips_dir, clip_name)
+
+        violations = external_api_service._transform_events_to_violations(
+            trip_id=tripId,
+            events=activities,
+            job_id=run_id,
+            host_url=host_url
+        )
+
+        # Replace activities with violations in result
+        result['violations'] = violations
+        result.pop('activities', None)
+
         logger.info(
             f"✅ Successfully processed video for trip {tripId} - "
-            f"Activities: {result.get('activitiesCount', 0)}, "
+            f"Violations: {result.get('activitiesCount', 0)}, "
             f"Time: {result.get('processingTime', 0):.2f}s"
         )
-        
+
         return VideoProcessingResponse(**result)
         
     except HTTPException:
@@ -1022,9 +1047,34 @@ async def finalize_chunked_upload(
             video_path
         )
 
+        # Transform activities to violations format (same format as external API POST)
+        external_api_service = get_external_api_service()
+        activities = result.get('activities', [])
+        run_directory = result.get('runDirectory', '')
+        run_id = os.path.basename(run_directory) if run_directory else ''
+        host_url = settings.host_url
+
+        # Ensure activityClip has full path for URL building
+        clips_dir = os.path.join(run_directory, 'clips') if run_directory else ''
+        for activity in activities:
+            clip_name = activity.get('activityClip', '')
+            if clip_name and not os.path.isabs(clip_name) and clips_dir:
+                activity['activityClip'] = os.path.join(clips_dir, clip_name)
+
+        violations = external_api_service._transform_events_to_violations(
+            trip_id=session.trip_id,
+            events=activities,
+            job_id=run_id,
+            host_url=host_url
+        )
+
+        # Replace activities with violations in result
+        result['violations'] = violations
+        result.pop('activities', None)
+
         logger.info(
             f"✅ Chunked upload complete - Trip: {session.trip_id}, "
-            f"Activities: {result.get('activitiesCount', 0)}, "
+            f"Violations: {result.get('activitiesCount', 0)}, "
             f"Time: {result.get('processingTime', 0):.2f}s"
         )
 

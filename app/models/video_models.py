@@ -7,6 +7,54 @@ from pydantic import BaseModel, Field, validator
 from .activity_models import ActivityModel
 
 
+class ViolationModel(BaseModel):
+    """
+    Model for violation data - matches the format posted to external CVVR API
+    """
+
+    tripId: str = Field(..., description="Trip identifier")
+    type: int = Field(..., description="Activity type code (1=phone, 2=smoking, etc.)")
+    startTime: str = Field(..., description="Violation start time in HH:mm:ss format")
+    endTime: str = Field(..., description="Violation end time in HH:mm:ss format")
+    clipDuration: str = Field(..., description="Duration of the clip in HH:mm:ss format")
+    remarks: str = Field(default="Violation detected during trip processing", description="Remarks about the violation")
+    reason: str = Field(default="Automated detection", description="Reason for the violation")
+    description: str = Field(..., description="Description of the activity detected")
+    objectTypes: str = Field(..., description="Type of object detected (phone, cigarette, etc.)")
+    fileName: str = Field(..., description="Original video filename")
+    fileDuration: str = Field(..., description="Total video duration in HH:mm:ss format")
+    crewName: str = Field(..., description="Crew member name")
+    fileType: int = Field(default=2, description="File type (2 = video)")
+    fileUrl: str = Field(default="", description="URL to the evidence clip (S3 or local)")
+    createdDate: str = Field(..., description="ISO timestamp when violation was created")
+    createdBy: str = Field(default="system", description="Creator of the violation record")
+    status: int = Field(default=1, description="Status (1 = active/complete)")
+
+    class Config:
+        """Pydantic configuration"""
+        json_schema_extra = {
+            "example": {
+                "tripId": "TRIP-2024-001234",
+                "type": 1,
+                "startTime": "00:02:15",
+                "endTime": "00:02:45",
+                "clipDuration": "00:00:30",
+                "remarks": "Violation detected during trip processing",
+                "reason": "Automated detection",
+                "description": "Phone usage detected",
+                "objectTypes": "phone",
+                "fileName": "video_20241217_143022.mp4",
+                "fileDuration": "00:15:30",
+                "crewName": "John Doe",
+                "fileType": 2,
+                "fileUrl": "https://bucket.s3.amazonaws.com/clips/clip.mp4",
+                "createdDate": "2024-12-17T14:35:22",
+                "createdBy": "system",
+                "status": 1
+            }
+        }
+
+
 class CrewMember(BaseModel):
     """
     Model for individual crew member information
@@ -93,10 +141,11 @@ class VideoUploadRequest(BaseModel):
 class VideoProcessingResponse(BaseModel):
     """
     Response model for video processing endpoint
-    
-    Contains processing status, metadata, and all detected activities.
+
+    Contains processing status, metadata, and all detected violations.
+    Returns the same format that gets posted to external CVVR API.
     """
-    
+
     status: str = Field(
         ...,
         description="Processing status (success, error, processing)"
@@ -123,17 +172,17 @@ class VideoProcessingResponse(BaseModel):
     )
     activitiesCount: int = Field(
         ...,
-        description="Total number of activities detected"
+        description="Total number of violations detected"
     )
-    activities: List[ActivityModel] = Field(
+    violations: List[ViolationModel] = Field(
         default_factory=list,
-        description="List of all detected activities"
+        description="List of all detected violations (same format as external API)"
     )
     processingTime: Optional[float] = Field(
         None,
         description="Total processing time in seconds"
     )
-    
+
     class Config:
         """Pydantic configuration"""
         json_schema_extra = {
@@ -144,8 +193,22 @@ class VideoProcessingResponse(BaseModel):
                 "videoFilename": "uploaded_video.mp4",
                 "runDirectory": "/path/to/locopilot_evidence/run_20251110_143045",
                 "activitiesJsonPath": "/path/to/locopilot_evidence/run_20251110_143045/activities.json",
-                "activitiesCount": 5,
-                "activities": [],
+                "activitiesCount": 2,
+                "violations": [
+                    {
+                        "tripId": "TRIP-20251110-001",
+                        "type": 1,
+                        "startTime": "00:02:15",
+                        "endTime": "00:02:45",
+                        "clipDuration": "00:00:30",
+                        "description": "Phone usage detected",
+                        "objectTypes": "phone",
+                        "fileName": "video.mp4",
+                        "fileDuration": "00:15:30",
+                        "crewName": "John Doe",
+                        "fileUrl": "https://bucket.s3.amazonaws.com/clips/clip.mp4"
+                    }
+                ],
                 "processingTime": 45.67
             }
         }

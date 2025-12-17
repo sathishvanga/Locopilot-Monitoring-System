@@ -321,6 +321,53 @@ class ExternalAPIService:
         logger.info(f"🔄 [external_api] Transformed {len(violations)} events to violations")
         return violations
     
+    def _calculate_clip_duration(self, start_time: str, end_time: str) -> str:
+        """
+        Calculate clip duration from start and end time
+
+        Args:
+            start_time: Start time in HH:mm:ss format OR seconds (e.g., "6.00")
+            end_time: End time in HH:mm:ss format OR seconds (e.g., "12.00")
+
+        Returns:
+            Duration in HH:mm:ss format
+        """
+        try:
+            # Parse time strings to seconds
+            def time_to_seconds(time_str: str) -> float:
+                time_str = str(time_str).strip()
+
+                # Check if it's in HH:mm:ss or mm:ss format
+                if ":" in time_str:
+                    parts = time_str.split(":")
+                    if len(parts) == 3:
+                        h, m, s = float(parts[0]), float(parts[1]), float(parts[2])
+                        return h * 3600 + m * 60 + s
+                    elif len(parts) == 2:
+                        m, s = float(parts[0]), float(parts[1])
+                        return m * 60 + s
+                    else:
+                        return float(parts[0])
+                else:
+                    # It's already in seconds format (e.g., "6.00", "12.00")
+                    return float(time_str)
+
+            start_seconds = time_to_seconds(start_time)
+            end_seconds = time_to_seconds(end_time)
+
+            # Calculate duration
+            duration_seconds = int(max(0, end_seconds - start_seconds))
+
+            # Convert back to HH:mm:ss format
+            hours = duration_seconds // 3600
+            minutes = (duration_seconds % 3600) // 60
+            seconds = duration_seconds % 60
+
+            return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+        except Exception as e:
+            logger.warning(f"⚠️ [external_api] Failed to calculate clip duration: {e}")
+            return "00:00:00"
+
     def _event_to_violation(
         self,
         event: Dict[str, Any],
@@ -331,14 +378,14 @@ class ExternalAPIService:
     ) -> Optional[Dict[str, Any]]:
         """
         Convert a single event to violation payload
-        
+
         Args:
             event: Internal activity event
             trip_id: Trip identifier
             job_id: Job/run identifier (optional)
             host_url: Host URL for building fileUrl (deprecated - use video_s3_url)
             video_s3_url: S3 URL of the uploaded video (preferred for fileUrl)
-            
+
         Returns:
             Violation payload dict or None if transformation fails
         """
@@ -353,6 +400,9 @@ class ExternalAPIService:
             file_duration = event.get("fileDuration", "00:00:00")
             crew_name = event.get("crewName", "Unknown")
             activity_clip = event.get("activityClip", "")
+
+            # Calculate clip duration from start and end time
+            clip_duration = self._calculate_clip_duration(start_time, end_time)
             
             # Determine fileUrl - prefer S3 URL, fallback to local backend URL
             file_url = ""
@@ -378,6 +428,7 @@ class ExternalAPIService:
                 "type": activity_type,
                 "startTime": start_time,
                 "endTime": end_time,
+                "clipDuration": clip_duration,
                 "remarks": "Violation detected during trip processing",
                 "reason": "Automated detection",
                 "description": description,
