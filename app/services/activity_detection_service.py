@@ -344,7 +344,8 @@ class ActivityDetectionService:
             chunk_duration_seconds=settings.mp_chunk_duration,  # Use config value (default 10.0s)
             max_workers=None,  # Auto-detect
             max_workers_cap=settings.mp_max_workers_cap,  # Use config value (default 8)
-            preload_models=True
+            preload_models=True,
+            yolo_device=settings.yolo_device,  # GPU device (0 for GPU, cpu for CPU)
         )
         
         # Create orchestrator (use shared global pool to mimic POC_2 behavior)

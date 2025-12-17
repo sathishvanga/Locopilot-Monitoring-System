@@ -99,6 +99,7 @@ proc_name = "locopilot-monitor"
 raw_env = [
     "YOLO_WEIGHTS_PRELOAD=yolo11m.pt",  # YOLOv8m (medium) for faster CPU inference
     "PRELOAD_OCR=1",
+    f"YOLO_DEVICE={os.getenv('YOLO_DEVICE', 'cpu')}",  # Pass GPU device to workers
 ]
 
 # Worker lifecycle hooks

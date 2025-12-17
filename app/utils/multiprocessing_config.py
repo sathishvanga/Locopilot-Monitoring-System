@@ -43,6 +43,7 @@ class MultiprocessingConfig:
     preload_models: bool = True  # Preload models in worker initializer
     yolo_model_path: str = os.getenv("YOLO_WEIGHTS_PRELOAD", "yolo11m.pt")  # YOLO model for object detection
     yolo_pose_model_path: str = os.getenv("YOLO_POSE_WEIGHTS", "yolo11m-pose.pt")  # YOLO-Pose for body pose estimation
+    yolo_device: str = os.getenv("YOLO_DEVICE", "cpu")  # Device for YOLO inference (cpu, cuda:0, 0)
     model_cache_dir: Optional[str] = None  # Model cache directory
     
     # Progress settings

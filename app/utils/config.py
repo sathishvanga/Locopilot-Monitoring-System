@@ -83,7 +83,7 @@ class Settings(BaseSettings):
 
     # Phase 2: Inference optimization settings (1.5-1.8x speedup with 416)
     yolo_imgsz: int = int(os.getenv("YOLO_IMGSZ", "416"))  # Model input size (416=2.4x fewer pixels than 640)
-    yolo_device: str = os.getenv("YOLO_DEVICE", "cpu")  # Explicit CPU device
+    yolo_device: str = "cpu"  # Device for YOLO inference (cpu, 0 for GPU)
 
     preload_ocr: bool = bool(int(os.getenv("PRELOAD_OCR", "0")))
     

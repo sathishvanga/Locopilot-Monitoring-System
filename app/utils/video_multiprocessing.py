@@ -127,6 +127,13 @@ def worker_initializer(config: MultiprocessingConfig):
             logger.info(f"Worker {os.getpid()} loading YOLO model: {config.yolo_model_path}")
             yolo_model = YOLO(config.yolo_model_path)
 
+            # Move model to GPU if configured
+            if config.yolo_device and config.yolo_device != 'cpu':
+                # Convert numeric string to int (e.g., "0" -> 0 for GPU device)
+                device = int(config.yolo_device) if config.yolo_device.isdigit() else config.yolo_device
+                yolo_model.to(device)
+                logger.info(f"Worker {os.getpid()} YOLO moved to device: {device}")
+
             # Phase 3.5 Quick Win A: Fuse Conv+BatchNorm layers for faster inference (15-20% speedup)
             if hasattr(yolo_model.model, 'fuse'):
                 yolo_model.fuse()
@@ -136,6 +143,13 @@ def worker_initializer(config: MultiprocessingConfig):
             yolo_pose_model_path = config.yolo_pose_model_path
             logger.info(f"Worker {os.getpid()} loading YOLOv8-Pose model: {yolo_pose_model_path}")
             yolo_pose_raw = YOLO(yolo_pose_model_path)
+
+            # Move pose model to GPU if configured
+            if config.yolo_device and config.yolo_device != 'cpu':
+                # Convert numeric string to int (e.g., "0" -> 0 for GPU device)
+                device = int(config.yolo_device) if config.yolo_device.isdigit() else config.yolo_device
+                yolo_pose_raw.to(device)
+                logger.info(f"Worker {os.getpid()} YOLO-Pose moved to device: {device}")
 
             # Fuse pose model layers as well
             if hasattr(yolo_pose_raw.model, 'fuse'):
