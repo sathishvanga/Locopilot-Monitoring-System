@@ -429,7 +429,7 @@ class ExternalAPIService:
                 "startTime": start_time,
                 "endTime": end_time,
                 "clipDuration": clip_duration,
-                "remarks": "Violation detected during trip processing",
+                "remarks": "",
                 "reason": "Automated detection",
                 "description": description,
                 "objectTypes": object_type,
@@ -441,6 +441,7 @@ class ExternalAPIService:
                 "createdDate": datetime.now().strftime("%Y-%m-%dT%H:%M:%S"),
                 "createdBy": "system",
                 "status": 1,  # Default status (1 = active/complete)
+                "roleType": event.get("crewRole", 1),  # 1 = LP, 2 = ALP
             }
             
             return payload

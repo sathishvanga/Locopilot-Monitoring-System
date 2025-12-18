@@ -17,7 +17,7 @@ class ViolationModel(BaseModel):
     startTime: str = Field(..., description="Violation start time in HH:mm:ss format")
     endTime: str = Field(..., description="Violation end time in HH:mm:ss format")
     clipDuration: str = Field(..., description="Duration of the clip in HH:mm:ss format")
-    remarks: str = Field(default="Violation detected during trip processing", description="Remarks about the violation")
+    remarks: str = Field(default="", description="Remarks about the violation")
     reason: str = Field(default="Automated detection", description="Reason for the violation")
     description: str = Field(..., description="Description of the activity detected")
     objectTypes: str = Field(..., description="Type of object detected (phone, cigarette, etc.)")
@@ -29,6 +29,7 @@ class ViolationModel(BaseModel):
     createdDate: str = Field(..., description="ISO timestamp when violation was created")
     createdBy: str = Field(default="system", description="Creator of the violation record")
     status: int = Field(default=1, description="Status (1 = active/complete)")
+    roleType: int = Field(default=1, description="Role type (1 = LP, 2 = ALP)")
 
     class Config:
         """Pydantic configuration"""
@@ -39,7 +40,7 @@ class ViolationModel(BaseModel):
                 "startTime": "00:02:15",
                 "endTime": "00:02:45",
                 "clipDuration": "00:00:30",
-                "remarks": "Violation detected during trip processing",
+                "remarks": "",
                 "reason": "Automated detection",
                 "description": "Phone usage detected",
                 "objectTypes": "phone",
@@ -50,7 +51,8 @@ class ViolationModel(BaseModel):
                 "fileUrl": "https://bucket.s3.amazonaws.com/clips/clip.mp4",
                 "createdDate": "2024-12-17T14:35:22",
                 "createdBy": "system",
-                "status": 1
+                "status": 1,
+                "roleType": 1
             }
         }
 

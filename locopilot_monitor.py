@@ -11,6 +11,7 @@ import logging
 import gc
 import contextlib
 import sys
+import subprocess
 
 # Add app directory to path for importing preprocessing service
 script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -4459,11 +4460,15 @@ class LocopilotActivityMonitor:
             # Always save clips/images (for UI evidence), regardless of save_clips flag
             # The save_clips flag now only controls whether frames are saved
             if self.evidence_clips_dir:
-                # Save video clip at sample FPS for full-duration playback
-                # This creates clips with real-time duration instead of fast-motion
-                # Example: 13 frames @ 0.5 FPS = 26 seconds (not 0.43 seconds @ 30 FPS)
-                self.save_video_clip(activity['frames'], clip_path, self.sample_fps)
-                
+                # Extract video segment directly from source for smooth playback
+                # This preserves original frame rate instead of reconstructing from sampled frames
+                self.extract_video_segment(
+                    self.video_path,
+                    clip_path,
+                    activity_start_seconds,
+                    activity_end_seconds
+                )
+
                 # Save activity image (middle frame of the activity)
                 if len(activity['frames']) > 0:
                     middle_frame_idx = len(activity['frames']) // 2
@@ -4636,6 +4641,62 @@ class LocopilotActivityMonitor:
         # Re-encode to H.264 for browser compatibility
         # (mp4v codec from OpenCV doesn't play in browsers)
         self._reencode_to_h264(output_path)
+
+    def extract_video_segment(self, source_video, output_path, start_seconds, end_seconds):
+        """Extract video segment directly from source using ffmpeg for smooth playback.
+
+        This method extracts the original video segment instead of reconstructing from
+        sampled frames, resulting in smooth playback at the original frame rate.
+
+        Args:
+            source_video: Path to the source video file
+            output_path: Path to save the extracted clip
+            start_seconds: Start time in seconds
+            end_seconds: End time in seconds
+        """
+        try:
+            duration = end_seconds - start_seconds
+            if duration <= 0:
+                self.logger.warning(f"Invalid duration for clip extraction: {duration}")
+                return False
+
+            # Use ffmpeg to extract the segment directly from source video
+            # -ss before -i for fast seeking, -t for duration
+            # -c:v libx264 for H.264 encoding (browser compatible)
+            # -movflags +faststart for web streaming optimization
+            ffmpeg_path = os.environ.get('FFMPEG_PATH', 'ffmpeg')  # Use system PATH
+            cmd = [
+                ffmpeg_path, '-y',
+                '-ss', str(start_seconds),
+                '-i', source_video,
+                '-t', str(duration),
+                '-c:v', 'libx264',
+                '-preset', 'fast',
+                '-crf', '23',
+                '-an',  # No audio needed for evidence clips
+                '-movflags', '+faststart',
+                output_path
+            ]
+
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                timeout=120
+            )
+
+            if result.returncode == 0 and os.path.exists(output_path):
+                self.logger.debug(f"Extracted video segment: {start_seconds:.2f}s - {end_seconds:.2f}s -> {output_path}")
+                return True
+            else:
+                self.logger.warning(f"ffmpeg extraction failed: {result.stderr.decode()[:200]}")
+                return False
+
+        except subprocess.TimeoutExpired:
+            self.logger.warning(f"Video segment extraction timed out for: {output_path}")
+            return False
+        except Exception as e:
+            self.logger.warning(f"Video segment extraction failed: {e}")
+            return False
 
     def process_video(self):
         """Main video processing loop - SAMPLES FRAMES AT SPECIFIED RATE"""
@@ -4930,8 +4991,8 @@ class LocopilotActivityMonitor:
                             
                             # Continue recording frames ONLY when activity is actively detected
                             if self.activities[activity_name]['active']:
-                                # Store annotated frame (with pose landmarks + YOLO boxes) instead of raw frame
-                                self.activities[activity_name]['frames'].append(annotated_frame_for_activity.copy())
+                                # Store raw frame (without annotations) for clean evidence clips
+                                self.activities[activity_name]['frames'].append(frame.copy())
                                 self.activities[activity_name]['last_frame_count'] = frame_idx
                                 self.activities[activity_name]['last_detected_frame'] = frame_idx  # Track last actual detection
                                 # Update person roles (in case they change during activity)
@@ -5231,8 +5292,8 @@ class LocopilotActivityMonitor:
                                 self.start_activity(activity_name, timestamp, fps, frame_idx, person_roles=person_roles)
                             
                             if self.activities[activity_name]['active']:
-                                # Store annotated frame (with pose landmarks + YOLO boxes) instead of raw frame
-                                self.activities[activity_name]['frames'].append(annotated_frame_for_activity.copy())
+                                # Store raw frame (without annotations) for clean evidence clips
+                                self.activities[activity_name]['frames'].append(frame.copy())
                                 self.activities[activity_name]['last_frame_count'] = frame_idx
                                 self.activities[activity_name]['last_detected_frame'] = frame_idx
                                 # Update person roles (in case they change during activity)
@@ -5242,7 +5303,7 @@ class LocopilotActivityMonitor:
                         if self.consecutive_detections[activity_name] > 0 or self.activities[activity_name]['active']:
                             self.grace_counters[activity_name] += 1
                             grace_frames = self.activity_thresholds[activity_name]['grace_frames']
-                            
+
                             if self.grace_counters[activity_name] <= grace_frames:
                                 pass
                             else:
