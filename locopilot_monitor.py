@@ -308,18 +308,18 @@ class LocopilotActivityMonitor:
                 'sustained_proximity_seconds': 4.0  # If hand near backpack for 4+ seconds, detect as packing
             },
             'writing': {
-                'min_duration': 0.0,          # NO minimum duration - any detection creates activity
-                'required_consecutive': 1,    # 1 sample - detect immediately when book+hand seen (was 3)
-                'margin': 150,                # Hand-to-book proximity - INCREASED from 100 to 150 for better capture
-                'grace_frames': 8,            # Allow 8 samples (~16s) gap to group nearby detections
+                'min_duration': 0.1,          # NO minimum duration - any detection creates activity
+                'required_consecutive': 2,    # 1 sample - detect immediately when book+hand seen (was 3)
+                'margin': 180,                # Hand-to-book proximity - INCREASED from 100 to 150 for better capture
+                'grace_frames': 10,            # Allow 10 samples (~20s) gap to group nearby detections
                 # NOTE: Pose-based detection (wrist proximity + head down) uses separate internal
                 #       threshold of 200px for wrist distance, validated in detect_writing_by_wrist_proximity()
             },
             'cell_phone': {
-                'min_duration': 0.0,          # NO minimum duration - any detection creates activity
-                'required_consecutive': 1,    # Just 1 sample detection required
-                'margin': 200,                # MAXIMUM proximity (increased from 150 to 200) for detecting phone near hand/ear/shoulder
-                'grace_frames': 8             # Allow 8 samples (~16s) gap to group nearby detections into same activity
+                'min_duration': 0.1,          # NO minimum duration - any detection creates activity
+                'required_consecutive': 2,    # Just 1 sample detection required
+                'margin': 180,                # MAXIMUM proximity (increased from 150 to 200) for detecting phone near hand/ear/shoulder
+                'grace_frames': 8         # Allow 10 samples (~20s) gap to group nearby detections into same activity
             },
             'microsleep': {
                 'min_duration': 3.0,          # Must last 3 seconds minimum (reduced from 5.0 for early detection)
@@ -1317,7 +1317,7 @@ class LocopilotActivityMonitor:
 
         aspect_ratio_rules = {
             'cell phone': {
-                'min_ratio': 0.3,   # Portrait: ~0.45 (9:20)
+                'min_ratio': 0.4,   # Portrait: ~0.45 (9:20) - tightened from 0.3
                 'max_ratio': 2.0,   # Landscape: ~1.78 (16:9)
                 'min_size': 30      # Minimum dimension (pixels)
             },
@@ -1402,13 +1402,13 @@ class LocopilotActivityMonitor:
                     # Log all bag detections for debugging
                     if conf > 0.25:  # Log even low-confidence detections
                         self.logger.debug(f"BAG DETECTED: {class_name} conf={conf:.2f} bbox={xyxy}")
-                    if conf > 0.4:
+                    if conf > 0.55:
                         # All bag types go into 'backpack' list for unified packing detection
                         detections['backpack'].append(xyxy)
                         self.logger.info(f"BAG ADDED: {class_name} conf={conf:.2f}")
                 # OPTION 3: Re-enable book detection in full frame with moderate confidence
                 # But only if book is within reasonable distance of a person
-                elif class_name == 'book' and conf > 0.2:  # Increased from 0.2 to 0.35 to reduce false positives
+                elif class_name == 'book' and conf > 0.4:  # Increased to 0.4 to reduce false positives
                     # Check if book is near any detected person
                     if len(person_boxes) > 0:
                         book_near_person = False
