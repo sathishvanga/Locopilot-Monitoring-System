@@ -4,6 +4,9 @@ import numpy as np
 import time as time_module  # Renamed to avoid any potential shadowing issues
 from datetime import datetime, timedelta
 from collections import deque
+from dataclasses import dataclass, field
+from enum import Enum
+from typing import Deque, Dict, Optional
 import mediapipe as mp
 from ultralytics import YOLO
 import os
@@ -100,6 +103,117 @@ def _setup_module_logger(logger_name: str, level=logging.INFO) -> logging.Logger
 # Module-level loggers (file-only output)
 gesture_logger = _setup_module_logger('HandGestureDetection')
 monitor_logger = _setup_module_logger('LocopilotMonitor')
+
+
+# =============================================================================
+# MAJORITY VOTING SYSTEM FOR ACTIVITY CONFIRMATION
+# =============================================================================
+# Instead of requiring N consecutive positive detections, majority voting
+# uses a sliding window approach: if M out of N frames are positive, confirm.
+# This is more robust to brief detection gaps and intermittent detections.
+# =============================================================================
+
+class VotingState(Enum):
+    """States for the activity voting state machine"""
+    IDLE = "idle"           # No recent detections, not voting
+    VOTING = "voting"       # First detection seen, collecting votes
+    CONFIRMED = "confirmed" # Majority reached, activity confirmed
+
+
+@dataclass
+class ActivityVotingWindow:
+    """
+    Sliding window for majority voting on activity detection.
+
+    Instead of requiring consecutive detections, this tracks a window of
+    recent frames and confirms activity when a majority are positive.
+
+    Example: window_size=5, min_positive=3
+    - Frames: [True, True, False, True, True] -> 4/5 positive -> CONFIRMED
+    - Frames: [True, False, False, True, False] -> 2/5 positive -> not confirmed
+    """
+    window_size: int
+    min_positive: int
+    detection_history: Deque[bool] = field(default_factory=deque)
+    state: VotingState = VotingState.IDLE
+    grace_counter: int = 0
+    first_detection_frame: Optional[int] = None
+
+    def __post_init__(self):
+        """Initialize the detection history deque with proper maxlen"""
+        self.detection_history = deque(maxlen=self.window_size)
+
+    def add_detection(self, detected: bool, frame_idx: int = 0) -> bool:
+        """
+        Add a detection result to the sliding window.
+
+        Args:
+            detected: Whether activity was detected in this frame
+            frame_idx: Current frame index (for tracking)
+
+        Returns:
+            bool: True if activity is now confirmed (majority reached)
+        """
+        # Add to sliding window (automatically removes oldest if full)
+        self.detection_history.append(detected)
+
+        if detected:
+            self.grace_counter = 0  # Reset grace on positive detection
+
+            # Start voting window on first detection
+            if self.state == VotingState.IDLE:
+                self.state = VotingState.VOTING
+                self.first_detection_frame = frame_idx
+
+        # Calculate current vote count
+        positive_count = sum(self.detection_history)
+
+        # Check for majority confirmation
+        if positive_count >= self.min_positive:
+            self.state = VotingState.CONFIRMED
+            return True
+
+        # If already confirmed, stay confirmed until grace expires
+        return self.state == VotingState.CONFIRMED
+
+    def check_grace(self, grace_frames: int) -> bool:
+        """
+        Check if still within grace period after no detection.
+
+        Args:
+            grace_frames: Maximum grace frames allowed
+
+        Returns:
+            bool: True if activity should continue (within grace period)
+        """
+        if self.state == VotingState.CONFIRMED:
+            self.grace_counter += 1
+
+            if self.grace_counter <= grace_frames:
+                return True  # Still in grace period
+            else:
+                # Grace period expired - reset
+                self.reset()
+                return False
+
+        return False
+
+    def is_confirmed(self) -> bool:
+        """Check if activity is currently confirmed"""
+        return self.state == VotingState.CONFIRMED
+
+    def get_vote_summary(self) -> str:
+        """Get a summary string of current voting status"""
+        positive = sum(self.detection_history)
+        total = len(self.detection_history)
+        return f"{positive}/{total} (need {self.min_positive}/{self.window_size})"
+
+    def reset(self):
+        """Reset the voting window to idle state"""
+        self.detection_history.clear()
+        self.state = VotingState.IDLE
+        self.grace_counter = 0
+        self.first_detection_frame = None
 
 
 @contextlib.contextmanager
@@ -263,7 +377,7 @@ class LocopilotActivityMonitor:
                 self.preprocessing_service = None
 
         # Cell phone detection confidence threshold (configurable)
-        self.cell_phone_confidence = float(os.getenv("CELL_PHONE_CONFIDENCE", "0.45"))
+        self.cell_phone_confidence = float(os.getenv("CELL_PHONE_CONFIDENCE", "0.35"))
 
         # Phase 2: Load inference optimization settings (1.5-1.8x speedup)
         self.yolo_imgsz = settings.yolo_imgsz if settings else 416
@@ -364,34 +478,97 @@ class LocopilotActivityMonitor:
                 'grace_frames': 5             # Allow 5 samples (~10s) gap for temporary detection failures (increased from 2)
             }
         }
-        
-        # Consecutive detection counters for temporal filtering
-        self.consecutive_detections = {
-            'microsleep': 0,
-            'sleep': 0,
-            'cell_phone': 0,
-            'writing': 0,
-            'packing_bags': 0,
-            'group_detected': 0,
-            'lp_hand_gesture': 0,
-            'alp_hand_gesture': 0,
-            'mind_diversion': 0,
-            'no_person_detected': 0
+
+        # =============================================================================
+        # MAJORITY VOTING CONFIGURATION
+        # =============================================================================
+        # Instead of requiring N consecutive detections, use sliding window voting.
+        # Activity is confirmed when min_positive out of window_size frames are positive.
+        # This is more robust to brief detection gaps and intermittent detections.
+        # =============================================================================
+        self.voting_config = {
+            'cell_phone': {
+                'window_size': 5,     # 5 frames = 10 seconds window @ 0.5 FPS
+                'min_positive': 2,    # Need 2/5 positive (40%) to confirm
+                'grace_frames': 8,    # Allow 8 frames (~16s) gap
+                'min_duration': 0.1,
+                'margin': 180,
+            },
+            'writing': {
+                'window_size': 5,
+                'min_positive': 2,    # Need 2/5 positive (40%) to confirm
+                'grace_frames': 10,
+                'min_duration': 0.1,
+                'margin': 180,
+            },
+            'sleep': {
+                'window_size': 7,     # Longer window for sleep (14 seconds)
+                'min_positive': 3,    # Need 3/7 positive (~43%) to confirm
+                'grace_frames': 10,
+                'min_duration': 20.0,
+                'margin': None,
+            },
+            'microsleep': {
+                'window_size': 4,     # 4 frames = 8 seconds window
+                'min_positive': 2,    # Need 2/4 positive (50%) to confirm
+                'grace_frames': 10,
+                'min_duration': 3.0,
+                'margin': None,
+            },
+            'packing_bags': {
+                'window_size': 3,     # Quick detection (6 seconds)
+                'min_positive': 1,    # Need 1/3 positive (33%) to confirm
+                'grace_frames': 5,
+                'min_duration': 0.0,
+                'margin': 50,
+                'region_margin': 150,
+                'wrist_inside_margin': 40,
+                'sustained_proximity_seconds': 4.0,
+            },
+            'group_detected': {
+                'window_size': 5,
+                'min_positive': 2,    # Need 2/5 positive (40%) to confirm
+                'grace_frames': 8,
+                'min_duration': 0.0,
+                'margin': None,
+            },
+            'lp_hand_gesture': {
+                'window_size': 4,
+                'min_positive': 2,
+                'grace_frames': 5,
+                'min_duration': 0.0,
+                'margin': None,
+            },
+            'alp_hand_gesture': {
+                'window_size': 4,
+                'min_positive': 2,
+                'grace_frames': 5,
+                'min_duration': 0.0,
+                'margin': None,
+            },
+            'mind_diversion': {
+                'window_size': 4,
+                'min_positive': 2,
+                'grace_frames': 5,
+                'min_duration': 0.0,
+                'margin': None,
+            },
+            'no_person_detected': {
+                'window_size': 6,     # 12 seconds window
+                'min_positive': 3,    # Need 3/6 positive (50%) to confirm
+                'grace_frames': 5,
+                'min_duration': 10.0,
+                'margin': None,
+            },
         }
-        
-        # Grace period counters - allows brief interruptions without resetting
-        self.grace_counters = {
-            'microsleep': 0,
-            'sleep': 0,
-            'cell_phone': 0,
-            'writing': 0,
-            'packing_bags': 0,
-            'group_detected': 0,
-            'lp_hand_gesture': 0,
-            'alp_hand_gesture': 0,
-            'mind_diversion': 0,
-            'no_person_detected': 0
-        }
+
+        # Initialize voting windows for each activity (replaces consecutive_detections/grace_counters)
+        self.voting_windows: Dict[str, ActivityVotingWindow] = {}
+        for activity_name, config in self.voting_config.items():
+            self.voting_windows[activity_name] = ActivityVotingWindow(
+                window_size=config['window_size'],
+                min_positive=config['min_positive']
+            )
         
         # Buffer for pre-activity frames (5 seconds before at sampled rate)
         # Calculate buffer size based on sample_fps: 5 seconds * sample_fps
@@ -3471,7 +3648,9 @@ class LocopilotActivityMonitor:
                     # DEBUG: Log when cell phones are detected
                     import logging
                     debug_logger = logging.getLogger('locopilot_monitor')
-                    if self.consecutive_detections.get('cell_phone', 0) == 0:
+                    # Log on first detection (voting window in IDLE state)
+                    voting_window = self.voting_windows.get('cell_phone')
+                    if voting_window and voting_window.state == VotingState.IDLE:
                         debug_logger.info(f"[DEBUG CELL PHONE] {len(detections['cell_phone'])} phone(s) detected in frame")
                     right_hand = self.get_keypoint(translated_landmarks, 'right_wrist')
                     left_hand = self.get_keypoint(translated_landmarks, 'left_wrist')
@@ -4422,8 +4601,9 @@ class LocopilotActivityMonitor:
                 self.logger.debug(f"[{timestamp}] Activity '{activity_name}' too short ({actual_clip_duration:.2f}s < {min_duration}s) - discarded")
                 activity['frames'] = []
                 activity['duration'] = 0
-                self.consecutive_detections[activity_name] = 0
-                self.grace_counters[activity_name] = 0
+                # Reset voting window for this activity
+                if activity_name in self.voting_windows:
+                    self.voting_windows[activity_name].reset()
                 return
             
             start_time_str = activity['start_time']
@@ -4565,8 +4745,9 @@ class LocopilotActivityMonitor:
             
             activity['frames'] = []
             activity['duration'] = 0
-            self.consecutive_detections[activity_name] = 0
-            self.grace_counters[activity_name] = 0
+            # Reset voting window for this activity
+            if activity_name in self.voting_windows:
+                self.voting_windows[activity_name].reset()
             
             self.evidence_counter += 1
 
@@ -4789,22 +4970,22 @@ class LocopilotActivityMonitor:
                     person_roles = self.identify_person_roles(frame, deduplicated_persons, detections)
                     
                     # Log role identification (only once per detection cycle)
-                    if self.consecutive_detections['group_detected'] == 0 and person_roles:
+                    if self.voting_windows['group_detected'].state == VotingState.IDLE and person_roles:
                         self.logger.debug(f"[{timestamp}] Person roles identified:")
                         for person_idx in sorted(person_roles.keys()):
                             role_info = person_roles[person_idx]
                             self.logger.debug(f"  Person {person_idx+1}: {role_info['role_name']} (LP score: {role_info['lp_score']}, ALP score: {role_info['alp_score']})")
-                    
+
                     if deduplicated_count > 2:
                         group_detected_flag = True
-                        if self.consecutive_detections['group_detected'] == 0:
+                        if self.voting_windows['group_detected'].state == VotingState.IDLE:
                             self.logger.info(f"[{timestamp}] Group detected - {deduplicated_count} people (de-duplicated from {len(detections['person'])} raw detections)")
                 else:
                     # No person detected at all
                     detections['deduplicated_person'] = []
                     person_roles = {}
                     # DEBUG: Log when no person is detected (will be tracked as activity)
-                    if self.consecutive_detections['no_person_detected'] == 0:
+                    if self.voting_windows['no_person_detected'].state == VotingState.IDLE:
                         raw_detections = len(detections['person'])
                         self.logger.debug(f"[{timestamp}] NO PERSON detected in frame (raw YOLO detections: {raw_detections})")
                 
@@ -4835,39 +5016,39 @@ class LocopilotActivityMonitor:
                     debug_info = person_data['debug_info']
                     
                     # Log mind diversion
-                    if activities.get('mind_diversion', False) and self.consecutive_detections.get('mind_diversion', 0) == 0:
+                    if activities.get('mind_diversion', False) and self.voting_windows['mind_diversion'].state == VotingState.IDLE:
                         head_pose = debug_info.get('head_pose', {})
                         yaw = head_pose.get('yaw', 0)
                         pitch = head_pose.get('pitch', 0)
                         method = head_pose.get('method', 'unknown')
                         self.logger.info(f"[{timestamp}] MIND DIVERSION detected for {role_name} (Person {person_idx+1}) - Yaw={yaw:.1f}°, Pitch={pitch:.1f}° (method: {method})")
-                    
+
                     # Log sleep detection
-                    if activities['sleep'] and self.consecutive_detections['sleep'] == 0:
+                    if activities['sleep'] and self.voting_windows['sleep'].state == VotingState.IDLE:
                         sleep_info = debug_info.get('sleep_info', {})
                         self.logger.info(f"[{timestamp}] SLEEP detected for {role_name} (Person {person_idx+1}) - pose-based")
-                    
+
                     # Log microsleep detection
-                    if activities['microsleep'] and self.consecutive_detections['microsleep'] == 0:
+                    if activities['microsleep'] and self.voting_windows['microsleep'].state == VotingState.IDLE:
                         self.logger.info(f"[{timestamp}] MICROSLEEP detected for {role_name} (Person {person_idx+1}) - pose-based")
-                    
+
                     # Log hand gestures
-                    if activities['lp_hand_gesture'] and self.consecutive_detections['lp_hand_gesture'] == 0:
+                    if activities['lp_hand_gesture'] and self.voting_windows['lp_hand_gesture'].state == VotingState.IDLE:
                         gesture_debug = debug_info.get('gesture_debug', {})
                         self.logger.info(f"[{timestamp}] LP hand gesture detected for {role_name} (Person {person_idx+1}) - {gesture_debug.get('hand_raised', 'unknown')} hand raised")
-                    
-                    if activities['alp_hand_gesture'] and self.consecutive_detections['alp_hand_gesture'] == 0:
+
+                    if activities['alp_hand_gesture'] and self.voting_windows['alp_hand_gesture'].state == VotingState.IDLE:
                         gesture_debug = debug_info.get('gesture_debug', {})
                         self.logger.info(f"[{timestamp}] ALP hand gesture detected for {role_name} (Person {person_idx+1}) - {gesture_debug.get('hand_raised', 'unknown')} hand raised")
-                    
+
                     # Log cell phone, writing, packing
-                    if activities['cell_phone'] and self.consecutive_detections['cell_phone'] == 0:
+                    if activities['cell_phone'] and self.voting_windows['cell_phone'].state == VotingState.IDLE:
                         self.logger.info(f"[{timestamp}] Cell phone ACTIVELY USED by {role_name} (Person {person_idx+1})")
-                    
-                    if activities['writing'] and self.consecutive_detections['writing'] == 0:
+
+                    if activities['writing'] and self.voting_windows['writing'].state == VotingState.IDLE:
                         self.logger.info(f"[{timestamp}] WRITING detected for {role_name} (Person {person_idx+1})")
-                    
-                    if activities.get('packing', False) and self.consecutive_detections.get('packing_bags', 0) == 0:
+
+                    if activities.get('packing', False) and self.voting_windows['packing_bags'].state == VotingState.IDLE:
                         self.logger.info(f"[{timestamp}] PACKING detected for {role_name} (Person {person_idx+1})")
                 
                 # Face-based sleep detection (still use EAR as additional signal)
@@ -4953,9 +5134,9 @@ class LocopilotActivityMonitor:
                 )
 
                 # Debug logging for coordination check
-                if lp_not_coordinating and self.consecutive_detections['lp_hand_gesture'] == 0:
+                if lp_not_coordinating and self.voting_windows['lp_hand_gesture'].state == VotingState.IDLE:
                     self.logger.info(f"[{timestamp}] [Frame {frame_idx}] COORDINATION FAILURE: ALP raised hand but LP did NOT respond")
-                if alp_not_coordinating and self.consecutive_detections['alp_hand_gesture'] == 0:
+                if alp_not_coordinating and self.voting_windows['alp_hand_gesture'].state == VotingState.IDLE:
                     self.logger.info(f"[{timestamp}] [Frame {frame_idx}] COORDINATION FAILURE: LP raised hand but ALP did NOT respond")
 
                 # Detect when no person is in frame
@@ -4975,66 +5156,58 @@ class LocopilotActivityMonitor:
                     'no_person_detected': no_person_detected_flag
                 }
 
+                # =====================================================================
+                # MAJORITY VOTING TEMPORAL FILTERING
+                # =====================================================================
+                # Instead of requiring N consecutive detections, we use sliding window
+                # voting: if M out of N frames are positive, confirm the activity.
+                # This is more robust to brief detection gaps and false negatives.
+                # =====================================================================
                 for activity_name, detected in activities_map.items():
+                    config = self.voting_config[activity_name]
+                    voting_window = self.voting_windows[activity_name]
+
                     if detected:
-                        # Activity detected - increment consecutive counter and reset grace period
-                        self.consecutive_detections[activity_name] += 1
-                        self.grace_counters[activity_name] = 0  # Reset grace period
-                        
-                        # Only start recording after required consecutive frames threshold is met
-                        required_consecutive = self.activity_thresholds[activity_name]['required_consecutive']
-                        
-                        if self.consecutive_detections[activity_name] >= required_consecutive:
-                            # Start activity if not already active
+                        # Add positive detection to voting window
+                        is_confirmed = voting_window.add_detection(True, frame_idx)
+
+                        if is_confirmed:
+                            # Majority confirmed - start/continue activity
                             if not self.activities[activity_name]['active']:
                                 self.start_activity(activity_name, timestamp, fps, frame_idx, person_roles=person_roles)
-                            
-                            # Continue recording frames ONLY when activity is actively detected
+
+                            # Record frame when activity is active and detected
                             if self.activities[activity_name]['active']:
-                                # Store raw frame (without annotations) for clean evidence clips
                                 self.activities[activity_name]['frames'].append(frame.copy())
                                 self.activities[activity_name]['last_frame_count'] = frame_idx
-                                self.activities[activity_name]['last_detected_frame'] = frame_idx  # Track last actual detection
-                                # Update person roles (in case they change during activity)
+                                self.activities[activity_name]['last_detected_frame'] = frame_idx
                                 if person_roles:
                                     self.activities[activity_name]['person_roles'] = person_roles
                     else:
-                        # Activity not detected - use grace period before resetting
-                        if self.consecutive_detections[activity_name] > 0 or self.activities[activity_name]['active']:
-                            # Increment grace counter
-                            self.grace_counters[activity_name] += 1
-                            grace_frames = self.activity_thresholds[activity_name]['grace_frames']
-                            
-                            # If still within grace period, keep activity alive but DON'T add frames
-                            if self.grace_counters[activity_name] <= grace_frames:
-                                # Still in grace period - keep activity active but don't record frames
-                                # This allows brief interruptions without ending the activity
-                                pass
-                            else:
-                                # Grace period exceeded - end activity and reset counters
-                                if self.activities[activity_name]['active']:
-                                    self.end_activity(activity_name, timestamp, fps, frame_idx, people_count)
-                                self.consecutive_detections[activity_name] = 0
-                                self.grace_counters[activity_name] = 0
-                        else:
-                            # Reset grace counter if nothing is being tracked
-                            self.grace_counters[activity_name] = 0
-                
-                # Display progress with detection status
+                        # Add negative detection to voting window
+                        voting_window.add_detection(False, frame_idx)
+
+                        if self.activities[activity_name]['active']:
+                            # Activity was active - check grace period
+                            still_in_grace = voting_window.check_grace(config['grace_frames'])
+                            if not still_in_grace:
+                                # Grace expired - end activity
+                                self.end_activity(activity_name, timestamp, fps, frame_idx, people_count)
+
+                # Display progress with voting status
                 if sample_idx % 50 == 0:  # Show progress every 50 sampled frames
                     progress = (frame_idx / total_frames) * 100
                     self.logger.info(f"Progress: {sample_idx} samples processed (frame {frame_idx}/{total_frames}, {progress:.1f}%)")
-                    
-                    # Show current detection counts for debugging
+
+                    # Show current voting status for debugging
                     active_detections = []
-                    for act_name, count in self.consecutive_detections.items():
-                        if count > 0:
-                            threshold = self.activity_thresholds[act_name]['required_consecutive']
-                            status = "RECORDING" if self.activities[act_name]['active'] else f"building {count}/{threshold}"
+                    for act_name, voting_window in self.voting_windows.items():
+                        if voting_window.state != VotingState.IDLE:
+                            status = "ACTIVE" if self.activities[act_name]['active'] else f"voting {voting_window.get_vote_summary()}"
                             active_detections.append(f"{act_name}: {status}")
-                    
+
                     if active_detections:
-                        self.logger.debug(f"  Active detections: {', '.join(active_detections)}")
+                        self.logger.debug(f"  Voting status: {', '.join(active_detections)}")
             
             except Exception as e:
                 self.logger.error(f"Error processing sample {sample_idx} (frame {frame_idx}): {e}")
@@ -5258,9 +5431,9 @@ class LocopilotActivityMonitor:
                 )
 
                 # Debug logging for coordination check
-                if lp_not_coordinating and self.consecutive_detections['lp_hand_gesture'] == 0:
+                if lp_not_coordinating and self.voting_windows['lp_hand_gesture'].state == VotingState.IDLE:
                     self.logger.info(f"[{timestamp}] [Frame {frame_idx}] COORDINATION FAILURE: ALP raised hand but LP did NOT respond")
-                if alp_not_coordinating and self.consecutive_detections['alp_hand_gesture'] == 0:
+                if alp_not_coordinating and self.voting_windows['alp_hand_gesture'].state == VotingState.IDLE:
                     self.logger.info(f"[{timestamp}] [Frame {frame_idx}] COORDINATION FAILURE: LP raised hand but ALP did NOT respond")
 
                 # Detect when no person is in frame
@@ -5280,39 +5453,39 @@ class LocopilotActivityMonitor:
                     'no_person_detected': no_person_detected_flag
                 }
 
+                # =====================================================================
+                # MAJORITY VOTING TEMPORAL FILTERING (multiprocessing)
+                # =====================================================================
                 for activity_name, detected in activities_map.items():
+                    config = self.voting_config[activity_name]
+                    voting_window = self.voting_windows[activity_name]
+
                     if detected:
-                        self.consecutive_detections[activity_name] += 1
-                        self.grace_counters[activity_name] = 0
-                        
-                        required_consecutive = self.activity_thresholds[activity_name]['required_consecutive']
-                        
-                        if self.consecutive_detections[activity_name] >= required_consecutive:
+                        # Add positive detection to voting window
+                        is_confirmed = voting_window.add_detection(True, frame_idx)
+
+                        if is_confirmed:
+                            # Majority confirmed - start/continue activity
                             if not self.activities[activity_name]['active']:
                                 self.start_activity(activity_name, timestamp, fps, frame_idx, person_roles=person_roles)
-                            
+
+                            # Record frame when activity is active and detected
                             if self.activities[activity_name]['active']:
-                                # Store raw frame (without annotations) for clean evidence clips
                                 self.activities[activity_name]['frames'].append(frame.copy())
                                 self.activities[activity_name]['last_frame_count'] = frame_idx
                                 self.activities[activity_name]['last_detected_frame'] = frame_idx
-                                # Update person roles (in case they change during activity)
                                 if person_roles:
                                     self.activities[activity_name]['person_roles'] = person_roles
                     else:
-                        if self.consecutive_detections[activity_name] > 0 or self.activities[activity_name]['active']:
-                            self.grace_counters[activity_name] += 1
-                            grace_frames = self.activity_thresholds[activity_name]['grace_frames']
+                        # Add negative detection to voting window
+                        voting_window.add_detection(False, frame_idx)
 
-                            if self.grace_counters[activity_name] <= grace_frames:
-                                pass
-                            else:
-                                if self.activities[activity_name]['active']:
-                                    self.end_activity(activity_name, timestamp, fps, frame_idx, people_count, save_clips=save_clips)
-                                self.consecutive_detections[activity_name] = 0
-                                self.grace_counters[activity_name] = 0
-                        else:
-                            self.grace_counters[activity_name] = 0
+                        if self.activities[activity_name]['active']:
+                            # Activity was active - check grace period
+                            still_in_grace = voting_window.check_grace(config['grace_frames'])
+                            if not still_in_grace:
+                                # Grace expired - end activity
+                                self.end_activity(activity_name, timestamp, fps, frame_idx, people_count, save_clips=save_clips)
             
             except Exception as e:
                 self.logger.error(f"Error processing sample {sample_idx} (frame {frame_idx}): {e}")
