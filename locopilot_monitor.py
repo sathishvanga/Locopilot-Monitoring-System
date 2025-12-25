@@ -300,7 +300,7 @@ class LocopilotActivityMonitor:
         self.activity_thresholds = {
             'packing_bags': {
                 'min_duration': 0.0,          # NO minimum duration - any detection creates activity
-                'required_consecutive': 1,    # REDUCED to 1 - immediate detection when wrist inside backpack bbox
+                'required_consecutive': 1,    # Immediate detection when wrist inside backpack bbox
                 'margin': 50,                 # Hand proximity margin in pixels
                 'region_margin': 150,         # Region overlap margin for person-backpack association
                 'grace_frames': 5,            # Allow 5 samples (~10s) gap to group nearby detections
@@ -317,9 +317,9 @@ class LocopilotActivityMonitor:
             },
             'cell_phone': {
                 'min_duration': 0.1,          # NO minimum duration - any detection creates activity
-                'required_consecutive': 2,    # Just 1 sample detection required
-                'margin': 180,                # MAXIMUM proximity (increased from 150 to 200) for detecting phone near hand/ear/shoulder
-                'grace_frames': 8         # Allow 10 samples (~20s) gap to group nearby detections into same activity
+                'required_consecutive': 2,    # LOWERED: Instant detection on first frame
+                'margin': 180,                # MAXIMUM proximity for detecting phone near hand/ear/shoulder
+                'grace_frames': 8             # Allow 8 samples (~16s) gap to group nearby detections
             },
             'microsleep': {
                 'min_duration': 3.0,          # Must last 3 seconds minimum (reduced from 5.0 for early detection)
@@ -1400,12 +1400,24 @@ class LocopilotActivityMonitor:
                     person_boxes.append(xyxy)
                 elif class_name in ['backpack', 'handbag', 'suitcase']:
                     # Log all bag detections for debugging
-                    if conf > 0.25:  # Log even low-confidence detections
+                    if conf > 0.25:
                         self.logger.debug(f"BAG DETECTED: {class_name} conf={conf:.2f} bbox={xyxy}")
-                    if conf > 0.55:
-                        # All bag types go into 'backpack' list for unified packing detection
-                        detections['backpack'].append(xyxy)
-                        self.logger.info(f"BAG ADDED: {class_name} conf={conf:.2f}")
+                    if conf > 0.75:  # INCREASED to reduce false positives (seats as backpacks)
+                        # Validate aspect ratio and size to filter out seats/equipment
+                        bag_width = xyxy[2] - xyxy[0]
+                        bag_height = xyxy[3] - xyxy[1]
+                        aspect_ratio = bag_width / bag_height if bag_height > 0 else 999
+                        bag_area = bag_width * bag_height
+
+                        # Filter: backpacks are typically taller than wide (aspect ratio < 1.2)
+                        # Train seats are wide (aspect ratio > 1.2)
+                        # Also filter very large detections (> 100000 px area = ~316x316)
+                        # And filter very small detections (< 5000 px area = ~70x70)
+                        if aspect_ratio < 1.2 and 5000 < bag_area < 100000:
+                            detections['backpack'].append(xyxy)
+                            self.logger.info(f"BAG ADDED: {class_name} conf={conf:.2f} aspect={aspect_ratio:.2f} area={bag_area:.0f}")
+                        else:
+                            self.logger.debug(f"BAG REJECTED: {class_name} conf={conf:.2f} aspect={aspect_ratio:.2f} area={bag_area:.0f} (filtered)")
                 # OPTION 3: Re-enable book detection in full frame with moderate confidence
                 # But only if book is within reasonable distance of a person
                 elif class_name == 'book' and conf > 0.4:  # Increased to 0.4 to reduce false positives
@@ -2066,23 +2078,34 @@ class LocopilotActivityMonitor:
             # Writing
             if activities.get('writing'):
                 alert_text = f"! {role_name}: WRITING"
-                cv2.putText(annotated_frame, alert_text, (10, y_offset), 
+                cv2.putText(annotated_frame, alert_text, (10, y_offset),
                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2, cv2.LINE_AA)
                 y_offset += 25
-            
-            # Hand gestures
-            if activities.get('lp_hand_gesture'):
-                alert_text = f"! {role_name}: LP HAND GESTURE"
-                cv2.putText(annotated_frame, alert_text, (10, y_offset), 
-                           cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 0), 2, cv2.LINE_AA)
-                y_offset += 25
-            
-            if activities.get('alp_hand_gesture'):
-                alert_text = f"! {role_name}: ALP HAND GESTURE"
-                cv2.putText(annotated_frame, alert_text, (10, y_offset), 
-                           cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 165, 0), 2, cv2.LINE_AA)
-                y_offset += 25
-        
+
+        # Hand gesture alerts - only show if NOT coordinated (one raised but not the other)
+        # Check if BOTH LP and ALP raised hands across all persons
+        any_lp_gesture = any(p.get('activities', {}).get('lp_hand_gesture', False) for p in persons_data.values())
+        any_alp_gesture = any(p.get('activities', {}).get('alp_hand_gesture', False) for p in persons_data.values())
+        both_raised = any_lp_gesture and any_alp_gesture
+
+        # Only show hand gesture alerts if it's a coordination failure (one raised, other didn't)
+        if not both_raised:
+            for person_idx, person_data in persons_data.items():
+                activities = person_data.get('activities', {})
+                role_name = person_data.get('role_name', 'Unknown')
+
+                if activities.get('lp_hand_gesture'):
+                    alert_text = f"! {role_name}: LP HAND GESTURE (ALP not responding)"
+                    cv2.putText(annotated_frame, alert_text, (10, y_offset),
+                               cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 0), 2, cv2.LINE_AA)
+                    y_offset += 25
+
+                if activities.get('alp_hand_gesture'):
+                    alert_text = f"! {role_name}: ALP HAND GESTURE (LP not responding)"
+                    cv2.putText(annotated_frame, alert_text, (10, y_offset),
+                               cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 165, 0), 2, cv2.LINE_AA)
+                    y_offset += 25
+
         return annotated_frame
     
     def check_hand_object_interaction(self, hand_coords, object_bbox, margin=50):
