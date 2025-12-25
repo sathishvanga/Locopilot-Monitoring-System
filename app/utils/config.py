@@ -157,6 +157,12 @@ class Settings(BaseSettings):
     unsharp_radius: int = int(os.getenv("UNSHARP_RADIUS", "1"))
     noise_reduction_kernel: int = int(os.getenv("NOISE_REDUCTION_KERNEL", "3"))
 
+    # Activity aggregation settings
+    # Merge consecutive activities of same type/role within time window
+    activity_merge_window_seconds: float = float(os.getenv("ACTIVITY_MERGE_WINDOW_SECONDS", "60.0"))
+    activity_merge_enabled: bool = bool(int(os.getenv("ACTIVITY_MERGE_ENABLED", "1")))
+    activity_preserve_raw: bool = bool(int(os.getenv("ACTIVITY_PRESERVE_RAW", "0")))
+
 
 @lru_cache()
 def get_settings() -> Settings:

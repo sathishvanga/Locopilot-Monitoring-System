@@ -724,7 +724,12 @@ class VideoMultiprocessingOrchestrator:
         
         # Sort activities by start time
         all_activities.sort(key=lambda x: float(x.get('activityStartTime', 0)))
-        
+
+        # Aggregate consecutive activities of same type/role
+        from ..services.activity_aggregation_service import get_activity_aggregation_service
+        aggregation_service = get_activity_aggregation_service()
+        all_activities, _ = aggregation_service.aggregate_activities(all_activities, run_dir)
+
         processing_time = time.time() - start_time
         
         logger.info(f"Parallel processing completed in {processing_time:.2f}s: "

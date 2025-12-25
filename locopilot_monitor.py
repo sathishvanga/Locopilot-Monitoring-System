@@ -309,15 +309,15 @@ class LocopilotActivityMonitor:
             },
             'writing': {
                 'min_duration': 0.1,          # NO minimum duration - any detection creates activity
-                'required_consecutive': 2,    # 1 sample - detect immediately when book+hand seen (was 3)
+                'required_consecutive': 1,    # Instant detection when book+hand seen
                 'margin': 180,                # Hand-to-book proximity - INCREASED from 100 to 150 for better capture
                 'grace_frames': 10,            # Allow 10 samples (~20s) gap to group nearby detections
                 # NOTE: Pose-based detection (wrist proximity + head down) uses separate internal
-                #       threshold of 200px for wrist distance, validated in detect_writing_by_wrist_proximity()
+                #       threshold in detect_writing_by_wrist_proximity()
             },
             'cell_phone': {
                 'min_duration': 0.1,          # NO minimum duration - any detection creates activity
-                'required_consecutive': 2,    # LOWERED: Instant detection on first frame
+                'required_consecutive': 1,    # Instant detection on first frame
                 'margin': 180,                # MAXIMUM proximity for detecting phone near hand/ear/shoulder
                 'grace_frames': 8             # Allow 8 samples (~16s) gap to group nearby detections
             },
@@ -341,13 +341,13 @@ class LocopilotActivityMonitor:
             },
             'lp_hand_gesture': {
                 'min_duration': 0.0,          # NO minimum duration - any coordination failure creates activity
-                'required_consecutive': 2,    # INCREASED to 2 samples @ 0.5fps = 4 seconds (reduced false positives with improved landmarks)
+                'required_consecutive': 1,    # Instant detection on first frame
                 'margin': None,               # N/A for hand gesture detection
                 'grace_frames': 5             # Allow 5 samples (~10s) gap to handle multiple raises
             },
             'alp_hand_gesture': {
                 'min_duration': 0.0,          # NO minimum duration - any coordination failure creates activity
-                'required_consecutive': 2,    # INCREASED to 2 samples @ 0.5fps = 4 seconds (reduced false positives with improved landmarks)
+                'required_consecutive': 1,    # Instant detection on first frame
                 'margin': None,               # N/A for hand gesture detection
                 'grace_frames': 5             # Allow 5 samples (~10s) gap to handle multiple raises
             },
@@ -1029,9 +1029,9 @@ class LocopilotActivityMonitor:
             }
 
         # Configurable thresholds (RELAXED to better capture writing activity)
-        MAX_WRIST_DISTANCE = 250  # pixels - INCREASED from 200 to 250 for more natural writing positions
-        MIN_DURATION = 2.0  # seconds - REDUCED from 4.0 for faster detection
-        REQUIRED_CONSECUTIVE = 2  # frames @ 0.5fps = 4 seconds total (REDUCED from 3)
+        MAX_WRIST_DISTANCE = 300  # pixels - reduced to 300 for more accurate detection
+        MIN_DURATION = 1.0  # seconds - REDUCED from 2.0 for faster detection
+        REQUIRED_CONSECUTIVE = 2  # frames @ 0.5fps = 4 seconds total (reduced from 3)
 
         person_tracking = self.wrist_proximity_tracking[person_idx]
 

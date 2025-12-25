@@ -286,10 +286,18 @@ class ActivityDetectionService:
         
         # Get activities before cleanup
         activities = monitor.all_activities.copy()
-        
+
+        # Get run_dir for aggregation (may be from monitor if not provided)
+        actual_run_dir = run_dir or getattr(monitor, 'run_dir', None)
+
         # ✅ MEMORY FIX: Explicit cleanup (closes MediaPipe, clears buffers, forces GC)
         monitor.cleanup()
-        
+
+        # Aggregate consecutive activities of same type/role
+        from .activity_aggregation_service import get_activity_aggregation_service
+        aggregation_service = get_activity_aggregation_service()
+        activities, _ = aggregation_service.aggregate_activities(activities, actual_run_dir)
+
         # Return detected activities
         logger.info(f"Single-process detection found {len(activities)} activities")
         return activities
@@ -371,7 +379,12 @@ class ActivityDetectionService:
             
             # ✅ MEMORY FIX: Force garbage collection after processing
             gc.collect()
-            
+
+            # Aggregate consecutive activities of same type/role
+            from .activity_aggregation_service import get_activity_aggregation_service
+            aggregation_service = get_activity_aggregation_service()
+            activities, _ = aggregation_service.aggregate_activities(activities, run_dir)
+
             logger.info(f"Multi-process detection found {len(activities)} activities "
                        f"(clips {'generated' if save_clips else 'not generated'})")
             return activities
