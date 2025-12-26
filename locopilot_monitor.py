@@ -18,10 +18,11 @@ script_dir = os.path.dirname(os.path.abspath(__file__))
 if script_dir not in sys.path:
     sys.path.insert(0, script_dir)
 
-# Import preprocessing service and config
+# Import preprocessing service, config, and voting service
 try:
     from app.services.image_preprocessing_service import ImagePreprocessingService
     from app.utils.config import get_settings
+    from app.services.activity_voting_service import get_activity_voting_service
 except ImportError:
     # Fallback: try importing as module
     try:
@@ -50,9 +51,23 @@ except ImportError:
                 get_settings = None
         else:
             get_settings = None
+
+        # Load voting service
+        voting_path = os.path.join(script_dir, 'app', 'services', 'activity_voting_service.py')
+        if os.path.exists(voting_path):
+            spec = importlib.util.spec_from_file_location("activity_voting_service", voting_path)
+            if spec and spec.loader:
+                voting_module = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(voting_module)
+                get_activity_voting_service = voting_module.get_activity_voting_service
+            else:
+                get_activity_voting_service = None
+        else:
+            get_activity_voting_service = None
     except Exception:
         ImagePreprocessingService = None
         get_settings = None
+        get_activity_voting_service = None
 
 # ✅ WINDOWS FIX: Prevent Qt/GUI initialization in worker processes
 # If running in a worker process (detected by QT_QPA_PLATFORM=offscreen),
@@ -293,7 +308,18 @@ class LocopilotActivityMonitor:
 
         # Hand gesture coordination temporal window
         # Suppress coordination failure alerts if both LP and ALP raised hands within this window
-        self.hand_gesture_coordination_window = float(os.getenv('HAND_GESTURE_COORDINATION_WINDOW', '5.0'))
+        # INCREASED from 5.0 to 8.0 to allow more time for coordination response
+        self.hand_gesture_coordination_window = float(os.getenv('HAND_GESTURE_COORDINATION_WINDOW', '8.0'))
+
+        # FIX 2.1: Initialize activity voting service for false positive reduction
+        # Voting requires N out of M frames to confirm an activity
+        self.voting_enabled = os.getenv('ACTIVITY_VOTING_ENABLED', 'true').lower() == 'true'
+        if self.voting_enabled and get_activity_voting_service is not None:
+            self.voting_service = get_activity_voting_service()
+            self.logger.info("Activity voting service ENABLED")
+        else:
+            self.voting_service = None
+            self.logger.info("Activity voting service DISABLED")
 
         # Activity thresholds: minimum duration and required consecutive frames before recording starts
         # OPTIMIZED FOR 0.5 FPS SAMPLING (1 frame every 2 seconds)
@@ -335,25 +361,27 @@ class LocopilotActivityMonitor:
             },
             'group_detected': {
                 'min_duration': 0.0,          # NO minimum duration - any detection creates activity
-                'required_consecutive': 3,    # 3 samples @ 0.5fps = 6 seconds - INCREASED for temporal consistency
+                'required_consecutive': 5,    # 5 samples @ 0.5fps = 10 seconds - INCREASED to reduce false positives
                 'margin': None,               # N/A for person count detection
-                'grace_frames': 8             # Allow 8 samples (~16s) gap
+                'grace_frames': 8,            # Allow 8 samples (~16s) gap
+                'min_person_confidence': 0.5, # NEW: Minimum confidence for person detection
+                'min_bbox_area': 10000        # NEW: Minimum bbox area (100x100) to filter partial detections
             },
             'lp_hand_gesture': {
                 'min_duration': 0.0,          # NO minimum duration - any coordination failure creates activity
-                'required_consecutive': 1,    # Instant detection on first frame
+                'required_consecutive': 1,    # Instant detection - voting provides temporal filtering
                 'margin': None,               # N/A for hand gesture detection
                 'grace_frames': 5             # Allow 5 samples (~10s) gap to handle multiple raises
             },
             'alp_hand_gesture': {
                 'min_duration': 0.0,          # NO minimum duration - any coordination failure creates activity
-                'required_consecutive': 1,    # Instant detection on first frame
+                'required_consecutive': 1,    # Instant detection - voting provides temporal filtering
                 'margin': None,               # N/A for hand gesture detection
                 'grace_frames': 5             # Allow 5 samples (~10s) gap to handle multiple raises
             },
             'mind_diversion': {
                 'min_duration': 0.0,          # NO minimum duration - any detection creates activity
-                'required_consecutive': 2,    # 2 samples @ 0.5fps = 4 seconds (reduced from 3)
+                'required_consecutive': 4,    # 4 samples @ 0.5fps = 8 seconds - INCREASED to reduce false positives
                 'margin': None,               # N/A for head pose detection
                 'grace_frames': 5             # Allow 5 samples (~10s) gap
             },
@@ -1396,8 +1424,17 @@ class LocopilotActivityMonitor:
                 class_name = self.yolo_model.names[cls]
                 # Detect person and bag types (backpack, handbag, suitcase) from full frame
                 if class_name == 'person' and conf > 0.5:
-                    detections['person'].append(xyxy)
-                    person_boxes.append(xyxy)
+                    # NEW: Filter by minimum bbox area to exclude partial/small detections
+                    person_width = xyxy[2] - xyxy[0]
+                    person_height = xyxy[3] - xyxy[1]
+                    person_area = person_width * person_height
+                    min_person_area = self.activity_thresholds['group_detected'].get('min_bbox_area', 10000)
+
+                    if person_area >= min_person_area:
+                        detections['person'].append(xyxy)
+                        person_boxes.append(xyxy)
+                    else:
+                        self.logger.debug(f"PERSON FILTERED: conf={conf:.2f} area={person_area:.0f} (below min {min_person_area})")
                 elif class_name in ['backpack', 'handbag', 'suitcase']:
                     # Log all bag detections for debugging
                     if conf > 0.25:
@@ -3467,7 +3504,19 @@ class LocopilotActivityMonitor:
                     debug_logger.info(f"[MULTI-PERSON ROI] Person {person_idx} ({person_data.get('role', 'UNKNOWN')}): Found {len(person_detections['cell_phone'])} cell phone(s)")
                 
                 # ============ ACTIVITY DETECTION FOR THIS PERSON ============
-                
+
+                # ============ PRE-CHECK: WRITING POSTURE INDICATORS ============
+                # FIX 1.1: Check for writing posture BEFORE mind diversion detection
+                # If person is in writing posture, suppress mind diversion early
+                # Writing posture = wrists close together + head looking down (reading/writing logbook)
+                writing_posture_detected = False
+                wrist_distance = self.calculate_wrist_distance(translated_landmarks, frame.shape)
+                head_looking_down = self.detect_head_looking_down(translated_landmarks)
+
+                if wrist_distance is not None and wrist_distance < 300 and head_looking_down:
+                    writing_posture_detected = True
+                    self.logger.debug(f"Person {person_idx}: WRITING POSTURE detected (wrists={wrist_distance:.0f}px, head_down=True) - will suppress mind_diversion")
+
                 # 1. MIND DIVERSION DETECTION
                 head_pose_info = self.calculate_head_pose_angles(
                     translated_landmarks,
@@ -3475,10 +3524,16 @@ class LocopilotActivityMonitor:
                     frame.shape
                 )
                 person_debug_info['head_pose'] = head_pose_info
-                person_activities['mind_diversion'] = head_pose_info.get('detected', False)
-                
-                # NOTE: Mind diversion book suppression moved to AFTER writing detection
-                # This allows us to check both book presence AND writing activity
+
+                # FIX 1.1: Suppress mind diversion if writing posture detected
+                if writing_posture_detected:
+                    person_activities['mind_diversion'] = False
+                    person_debug_info['mind_diversion_suppressed'] = 'writing_posture_detected'
+                    self.logger.debug(f"Person {person_idx}: Mind diversion SUPPRESSED due to writing posture")
+                else:
+                    person_activities['mind_diversion'] = head_pose_info.get('detected', False)
+
+                # NOTE: Additional mind diversion suppression runs AFTER writing detection (below)
                 
                 # 2. SLEEP / MICROSLEEP DETECTION (pose-based)
                 pose_sleep_detected, pose_microsleep_detected, pose_sleep_info = self.detect_pose_based_sleep(
@@ -3681,7 +3736,15 @@ class LocopilotActivityMonitor:
 
                 # 5. PACKING DETECTION (check if hand near backpack in THIS person's region)
                 # MOVED BEFORE HAND GESTURE: Need to detect this first for context-aware filtering
-                if len(detections['backpack']) > 0:
+                # FIX 1.2: MUTUAL EXCLUSION - Skip packing if writing posture or writing activity detected
+                # When LP is writing in logbook, hands may be near a bag but should NOT trigger packing
+                packing_suppressed_by_writing = False
+                if writing_posture_detected or person_activities.get('writing', False):
+                    packing_suppressed_by_writing = True
+                    person_debug_info['packing_suppressed'] = 'writing_activity_detected'
+                    self.logger.debug(f"Person {person_idx}: PACKING SUPPRESSED - writing posture/activity detected")
+
+                if len(detections['backpack']) > 0 and not packing_suppressed_by_writing:
                     right_hand = self.get_keypoint(translated_landmarks, 'right_wrist')
                     left_hand = self.get_keypoint(translated_landmarks, 'left_wrist')
 
@@ -4799,8 +4862,8 @@ class LocopilotActivityMonitor:
                 
                 if len(detections['person']) > 0:
                     # De-duplicate person boxes to get accurate count
-                    # Increased IOU threshold from 0.3 to 0.5 to better filter duplicate detections
-                    deduplicated_persons = self.deduplicate_person_boxes(detections['person'], iou_threshold=0.5)
+                    # CHANGED: IOU threshold to 0.4 for more aggressive deduplication to reduce false positives
+                    deduplicated_persons = self.deduplicate_person_boxes(detections['person'], iou_threshold=0.4)
                     
                     # Store deduplicated boxes in detections for visualization
                     # NOTE: Removed pose validation as it was filtering out legitimate people
@@ -4997,6 +5060,48 @@ class LocopilotActivityMonitor:
                     'mind_diversion': mind_diversion_detected,
                     'no_person_detected': no_person_detected_flag
                 }
+
+                # FIX 2.1: Apply voting filter to reduce false positives
+                # Voting requires N out of M frames to confirm an activity
+                if self.voting_service is not None:
+                    voted_activities_map = {}
+                    for activity_name, raw_detected in activities_map.items():
+                        # Cast vote and get confirmed status
+                        # Global voting for group_detected, per-person voting for others
+                        if activity_name == 'group_detected':
+                            confirmed = self.voting_service.vote(activity_name, raw_detected, person_idx=None)
+                        else:
+                            # Use first person index for voting (simplification)
+                            first_person_idx = list(persons_data.keys())[0] if persons_data else 0
+                            confirmed = self.voting_service.vote(activity_name, raw_detected, person_idx=first_person_idx)
+
+                        voted_activities_map[activity_name] = confirmed
+
+                        # Log when voting changes detection result
+                        if raw_detected and not confirmed:
+                            self.logger.debug(f"VOTING: {activity_name} detected but not yet confirmed (building votes)")
+                        elif not raw_detected and confirmed:
+                            self.logger.debug(f"VOTING: {activity_name} confirmed via voting even without current detection")
+
+                    activities_map = voted_activities_map
+
+                # FIX 3.2: Apply Activity Priority Matrix for conflict resolution
+                # Higher-priority activities suppress conflicting lower-priority ones
+                if get_settings is not None:
+                    try:
+                        settings = get_settings()
+                        priority_matrix = settings.activity_priority_matrix
+
+                        for primary_activity, suppressed_activities in priority_matrix.items():
+                            if activities_map.get(primary_activity, False):
+                                for suppressed in suppressed_activities:
+                                    if activities_map.get(suppressed, False):
+                                        activities_map[suppressed] = False
+                                        self.logger.debug(
+                                            f"PRIORITY: {suppressed} SUPPRESSED by {primary_activity}"
+                                        )
+                    except Exception as e:
+                        self.logger.debug(f"Could not apply priority matrix: {e}")
 
                 for activity_name, detected in activities_map.items():
                     if detected:

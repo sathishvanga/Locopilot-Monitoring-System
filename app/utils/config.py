@@ -163,6 +163,63 @@ class Settings(BaseSettings):
     activity_merge_enabled: bool = bool(int(os.getenv("ACTIVITY_MERGE_ENABLED", "1")))
     activity_preserve_raw: bool = bool(int(os.getenv("ACTIVITY_PRESERVE_RAW", "0")))
 
+    # FIX 2.1: Activity voting settings for false positive reduction
+    # Voting requires N out of M frames to confirm an activity
+    activity_voting_enabled: bool = bool(int(os.getenv("ACTIVITY_VOTING_ENABLED", "1")))
+
+    # FIX 3.2: Activity Priority Matrix - defines which activities suppress others
+    # Format: primary_activity -> list of activities to suppress when primary is detected
+    # This centralized configuration prevents conflicting detections
+    @property
+    def activity_priority_matrix(self) -> dict:
+        """
+        Activity Priority Matrix for conflict resolution.
+
+        When a higher-priority activity is detected, lower-priority conflicting
+        activities are suppressed to reduce false positives.
+
+        Returns:
+            dict: Mapping of activity -> list of activities it suppresses
+        """
+        return {
+            # Writing suppresses mind_diversion and packing_bags
+            # (LP legitimately looking down at logbook should not be flagged)
+            'writing': ['mind_diversion', 'packing_bags'],
+
+            # Cell phone suppresses writing (not reading a book, using phone)
+            'cell_phone': ['writing'],
+
+            # Packing bags suppresses writing (hands in bag, not writing)
+            'packing_bags': ['writing'],
+
+            # Sleep suppresses all active behaviors
+            # (sleeping person can't be using phone, writing, etc.)
+            'sleep': ['writing', 'cell_phone', 'packing_bags', 'mind_diversion'],
+
+            # Microsleep suppresses mind_diversion (drowsy, not distracted)
+            'microsleep': ['mind_diversion'],
+        }
+
+    # Activity threshold overrides from environment
+    # These can be used to tune thresholds without code changes
+    activity_threshold_group_required_consecutive: int = int(os.getenv(
+        "ACTIVITY_THRESHOLD_GROUP_REQUIRED_CONSECUTIVE", "5"
+    ))
+    activity_threshold_mind_diversion_required_consecutive: int = int(os.getenv(
+        "ACTIVITY_THRESHOLD_MIND_DIVERSION_REQUIRED_CONSECUTIVE", "4"
+    ))
+    activity_threshold_lp_hand_gesture_required_consecutive: int = int(os.getenv(
+        "ACTIVITY_THRESHOLD_LP_HAND_GESTURE_REQUIRED_CONSECUTIVE", "1"
+    ))
+    activity_threshold_alp_hand_gesture_required_consecutive: int = int(os.getenv(
+        "ACTIVITY_THRESHOLD_ALP_HAND_GESTURE_REQUIRED_CONSECUTIVE", "1"
+    ))
+
+    # Hand gesture coordination window (seconds)
+    hand_gesture_coordination_window: float = float(os.getenv(
+        "HAND_GESTURE_COORDINATION_WINDOW", "8.0"
+    ))
+
 
 @lru_cache()
 def get_settings() -> Settings:
