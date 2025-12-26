@@ -3,10 +3,14 @@ Activity Aggregation Service - Merges consecutive activities of the same type/ro
 
 This service reduces noise for reviewers by aggregating multiple detections of the
 same activity (e.g., "packing bags" across 500 frames) into a single violation report.
+
+When activities are merged, a new evidence clip is generated covering the full
+merged duration (from earliest start to latest end).
 """
 
 import os
 import json
+import subprocess
 from typing import List, Dict, Any, Tuple, Optional
 
 from ..utils.logger import get_logger
@@ -37,6 +41,7 @@ class ActivityAggregationService:
         self.merge_window = self.settings.activity_merge_window_seconds
         self.enabled = self.settings.activity_merge_enabled
         self.preserve_raw = self.settings.activity_preserve_raw
+        self._current_run_dir = None  # Set during aggregation for clip generation
         logger.info(
             f"Activity aggregation service initialized - "
             f"Enabled: {self.enabled}, Merge window: {self.merge_window}s, "
@@ -60,6 +65,9 @@ class ActivityAggregationService:
         """
         if not self.enabled or not activities:
             return activities, None
+
+        # Store run_dir for clip generation in _merge_group
+        self._current_run_dir = run_dir
 
         # Ensure activities are sorted by start time
         sorted_activities = sorted(
@@ -149,8 +157,8 @@ class ActivityAggregationService:
         Strategy:
         - Start time: earliest
         - End time: latest
-        - Image: from longest segment
-        - Clip: from longest segment
+        - Image: from longest segment (middle frame)
+        - Clip: NEW full-span clip covering entire merged duration
         """
         if len(group) == 1:
             return group[0]
@@ -159,7 +167,7 @@ class ActivityAggregationService:
         earliest_start = min(float(a.get('activityStartTime', 0)) for a in group)
         latest_end = max(float(a.get('activityEndTime', 0)) for a in group)
 
-        # Find longest segment for representative image and clip
+        # Find longest segment for representative image
         longest_segment = max(
             group,
             key=lambda a: float(a.get('activityEndTime', 0)) - float(a.get('activityStartTime', 0))
@@ -172,9 +180,27 @@ class ActivityAggregationService:
         merged['activityStartTime'] = f"{earliest_start:.2f}"
         merged['activityEndTime'] = f"{latest_end:.2f}"
 
-        # Use longest segment's image and clip as representative
+        # Use longest segment's image as representative
         merged['activityImage'] = longest_segment.get('activityImage')
-        merged['activityClip'] = longest_segment.get('activityClip')
+
+        # Generate NEW full-span clip covering entire merged duration
+        merged_clip_path = self._generate_merged_clip(
+            video_path=group[0].get('fileUrl'),
+            start_seconds=earliest_start,
+            end_seconds=latest_end,
+            activity_type=merged.get('objectType', 'activity'),
+            original_clip_path=longest_segment.get('activityClip')
+        )
+
+        if merged_clip_path:
+            merged['activityClip'] = merged_clip_path
+            logger.info(
+                f"Generated full-span clip for merged activity: "
+                f"{earliest_start:.2f}s - {latest_end:.2f}s ({latest_end - earliest_start:.1f}s duration)"
+            )
+        else:
+            # Fallback to longest segment's clip if generation fails
+            merged['activityClip'] = longest_segment.get('activityClip')
 
         # Add aggregation metadata
         merged['_aggregated'] = True
@@ -198,6 +224,105 @@ class ActivityAggregationService:
         )
 
         return merged
+
+    def _generate_merged_clip(
+        self,
+        video_path: str,
+        start_seconds: float,
+        end_seconds: float,
+        activity_type: str,
+        original_clip_path: str
+    ) -> Optional[str]:
+        """
+        Generate a video clip covering the full merged duration using ffmpeg.
+
+        Args:
+            video_path: Path to source video file
+            start_seconds: Start time in seconds
+            end_seconds: End time in seconds
+            activity_type: Activity type for filename
+            original_clip_path: Path to original clip (used for output directory)
+
+        Returns:
+            Path to generated clip, or None if generation fails
+        """
+        if not video_path or not os.path.exists(video_path):
+            logger.warning(f"Source video not found: {video_path}")
+            return None
+
+        if not original_clip_path:
+            logger.warning("No original clip path provided for output directory")
+            return None
+
+        duration = end_seconds - start_seconds
+        if duration <= 0:
+            logger.warning(f"Invalid duration for merged clip: {duration}")
+            return None
+
+        try:
+            # Determine output directory from original clip path
+            output_dir = os.path.dirname(original_clip_path)
+            if not output_dir or not os.path.exists(output_dir):
+                # Fallback to run_dir/clips
+                if self._current_run_dir:
+                    output_dir = os.path.join(self._current_run_dir, 'clips')
+                    os.makedirs(output_dir, exist_ok=True)
+                else:
+                    logger.warning("No output directory available for merged clip")
+                    return None
+
+            # Generate unique filename for merged clip
+            video_basename = os.path.splitext(os.path.basename(video_path))[0]
+            safe_activity_type = activity_type.replace(' ', '_').replace('/', '_')
+            clip_filename = f"{video_basename}_{safe_activity_type}_merged_{int(start_seconds)}s-{int(end_seconds)}s.mp4"
+            output_path = os.path.join(output_dir, clip_filename)
+
+            # Use ffmpeg to extract the full-span segment
+            ffmpeg_path = os.environ.get('FFMPEG_PATH', 'ffmpeg')
+            cmd = [
+                ffmpeg_path,
+                '-y',  # Overwrite output
+                '-ss', str(start_seconds),  # Start time (before -i for fast seeking)
+                '-i', video_path,  # Input video
+                '-t', str(duration),  # Duration
+                '-c:v', 'libx264',  # H.264 codec for browser compatibility
+                '-preset', 'fast',  # Fast encoding
+                '-crf', '23',  # Quality (lower = better, 23 is default)
+                '-c:a', 'aac',  # AAC audio codec
+                '-movflags', '+faststart',  # Web streaming optimization
+                output_path
+            ]
+
+            logger.debug(f"Generating merged clip: {' '.join(cmd)}")
+
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=120  # 2 minute timeout
+            )
+
+            if result.returncode != 0:
+                logger.error(f"ffmpeg failed: {result.stderr}")
+                return None
+
+            if os.path.exists(output_path):
+                file_size = os.path.getsize(output_path)
+                logger.info(
+                    f"Merged clip generated: {clip_filename} "
+                    f"({duration:.1f}s, {file_size / 1024:.1f} KB)"
+                )
+                return output_path
+            else:
+                logger.error(f"Merged clip not created: {output_path}")
+                return None
+
+        except subprocess.TimeoutExpired:
+            logger.error(f"ffmpeg timed out generating merged clip")
+            return None
+        except Exception as e:
+            logger.error(f"Failed to generate merged clip: {e}")
+            return None
 
     def _save_raw_activities(
         self,
