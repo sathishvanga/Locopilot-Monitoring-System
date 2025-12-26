@@ -273,18 +273,23 @@ class LocopilotActivityMonitor:
         self._models_preloaded = preloaded_models is not None
 
         # Activity tracking with temporal filtering
+        # detection_votes: tracks per-frame detection status for voting validation
         self.activities = {
-            'microsleep': {'active': False, 'start_time': None, 'frames': [], 'duration': 0},
-            'sleep': {'active': False, 'start_time': None, 'frames': [], 'duration': 0},
-            'cell_phone': {'active': False, 'start_time': None, 'frames': [], 'duration': 0},
-            'writing': {'active': False, 'start_time': None, 'frames': [], 'duration': 0},
-            'packing_bags': {'active': False, 'start_time': None, 'frames': [], 'duration': 0},
-            'group_detected': {'active': False, 'start_time': None, 'frames': [], 'duration': 0},
-            'lp_hand_gesture': {'active': False, 'start_time': None, 'frames': [], 'duration': 0},
-            'alp_hand_gesture': {'active': False, 'start_time': None, 'frames': [], 'duration': 0},
-            'mind_diversion': {'active': False, 'start_time': None, 'frames': [], 'duration': 0},
-            'no_person_detected': {'active': False, 'start_time': None, 'frames': [], 'duration': 0}
+            'microsleep': {'active': False, 'start_time': None, 'frames': [], 'detection_votes': [], 'duration': 0},
+            'sleep': {'active': False, 'start_time': None, 'frames': [], 'detection_votes': [], 'duration': 0},
+            'cell_phone': {'active': False, 'start_time': None, 'frames': [], 'detection_votes': [], 'duration': 0},
+            'writing': {'active': False, 'start_time': None, 'frames': [], 'detection_votes': [], 'duration': 0},
+            'packing_bags': {'active': False, 'start_time': None, 'frames': [], 'detection_votes': [], 'duration': 0},
+            'group_detected': {'active': False, 'start_time': None, 'frames': [], 'detection_votes': [], 'duration': 0},
+            'lp_hand_gesture': {'active': False, 'start_time': None, 'frames': [], 'detection_votes': [], 'duration': 0},
+            'alp_hand_gesture': {'active': False, 'start_time': None, 'frames': [], 'detection_votes': [], 'duration': 0},
+            'mind_diversion': {'active': False, 'start_time': None, 'frames': [], 'detection_votes': [], 'duration': 0},
+            'no_person_detected': {'active': False, 'start_time': None, 'frames': [], 'detection_votes': [], 'duration': 0}
         }
+
+        # Voting configuration for false positive reduction
+        self.voting_enabled = settings.voting_enabled if settings else True
+        self.voting_threshold = settings.voting_threshold if settings else 0.8
         
         # TEMPORAL SUPPRESSION: Track recent activities per person for gesture suppression
         # Format: {person_idx: {'writing': last_timestamp, 'packing': last_timestamp, 'cell_phone': last_timestamp}}
@@ -600,7 +605,163 @@ class LocopilotActivityMonitor:
                 sampled_idx += 1
             
             self.logger.debug(f"[Frame Sampling] Completed sampling, total samples: {sampled_idx}")
-        
+
+    def validate_detection_with_voting(self, video_path, center_timestamp, activity_type, detections_cache=None):
+        """
+        Validate a detection by checking the next 10 consecutive frames after detection.
+
+        When an activity is detected at a sampled frame, this method checks the next
+        10 frames at native FPS to confirm the activity is real (not a false positive).
+
+        Args:
+            video_path: Path to video file
+            center_timestamp: Timestamp (seconds) where activity was detected
+            activity_type: Type of activity to validate ('cell_phone', 'writing', etc.)
+            detections_cache: Optional pre-computed detections to avoid re-running YOLO
+
+        Returns:
+            tuple: (is_valid, detection_rate, positive_count, total_count)
+        """
+        if not self.voting_enabled:
+            return True, 1.0, 1, 1
+
+        # Number of consecutive frames to check after detection
+        frames_to_check = 10
+
+        try:
+            with video_capture_context(video_path) as cap:
+                if not cap.isOpened():
+                    self.logger.warning(f"Cannot open video for voting validation: {video_path}")
+                    return True, 1.0, 1, 1  # Fallback to valid
+
+                native_fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
+                total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+
+                # Calculate frame range: check next 10 frames after detection
+                center_frame = int(center_timestamp * native_fps)
+                start_frame = center_frame + 1  # Start from the frame after detection
+                end_frame = min(start_frame + frames_to_check, total_frames)
+
+                # Check every frame (no sampling)
+                vote_sample_step = 1
+
+                positive_votes = 0
+                total_votes = 0
+
+                for frame_idx in range(start_frame, end_frame, vote_sample_step):
+                    cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
+                    ret, frame = cap.read()
+
+                    if not ret:
+                        continue
+
+                    total_votes += 1
+                    is_detected = False
+
+                    # Object-based activities: Use YOLO detection
+                    if activity_type in ['cell_phone', 'writing', 'packing_bags', 'group_detected', 'no_person_detected']:
+                        frame_detections = self.detect_objects(frame, None, use_pose_guided=False)
+
+                        if activity_type == 'cell_phone':
+                            is_detected = len(frame_detections.get('cell_phone', [])) > 0
+                        elif activity_type == 'writing':
+                            is_detected = len(frame_detections.get('book', [])) > 0
+                        elif activity_type == 'packing_bags':
+                            is_detected = len(frame_detections.get('backpack', [])) > 0
+                        elif activity_type == 'group_detected':
+                            persons = frame_detections.get('person', [])
+                            is_detected = len(persons) > 2
+                        elif activity_type == 'no_person_detected':
+                            persons = frame_detections.get('person', [])
+                            is_detected = len(persons) == 0
+
+                    # Face-based activities: Use MediaPipe FaceMesh for EAR
+                    elif activity_type in ['microsleep', 'sleep']:
+                        if self.face_mesh is not None:
+                            frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                            face_results = self.face_mesh.process(frame_rgb)
+                            if face_results and face_results.multi_face_landmarks:
+                                for face_landmarks in face_results.multi_face_landmarks:
+                                    ear = self.calculate_eye_aspect_ratio(face_landmarks.landmark)
+                                    if ear < 0.2:  # Eyes closed threshold
+                                        is_detected = True
+                                        break
+
+                    # Pose-based activities: Use YOLO-Pose for body landmarks
+                    elif activity_type == 'mind_diversion':
+                        if self.yolo_pose_model is not None:
+                            pose_results = self.yolo_pose_model(frame, verbose=False)
+                            if pose_results and len(pose_results) > 0:
+                                for result in pose_results:
+                                    if hasattr(result, 'keypoints') and result.keypoints is not None:
+                                        keypoints = result.keypoints.data
+                                        if keypoints.shape[0] > 0:
+                                            kp = keypoints[0]  # First person
+                                            # Check head tilt (nose, shoulders)
+                                            if len(kp) >= 6:  # Need at least nose and shoulders
+                                                nose = kp[0][:2] if kp[0][2] > 0.3 else None
+                                                left_shoulder = kp[5][:2] if kp[5][2] > 0.3 else None
+                                                right_shoulder = kp[6][:2] if kp[6][2] > 0.3 else None
+                                                if nose is not None and left_shoulder is not None and right_shoulder is not None:
+                                                    # Calculate head tilt
+                                                    shoulder_center_x = (left_shoulder[0] + right_shoulder[0]) / 2
+                                                    head_offset = abs(nose[0] - shoulder_center_x)
+                                                    shoulder_width = abs(right_shoulder[0] - left_shoulder[0])
+                                                    if shoulder_width > 0:
+                                                        tilt_ratio = head_offset / shoulder_width
+                                                        if tilt_ratio > 0.3:  # Head significantly off-center
+                                                            is_detected = True
+                                                            break
+
+                    # Hand gesture activities: Use YOLO-Pose for hand positions
+                    elif activity_type in ['lp_hand_gesture', 'alp_hand_gesture']:
+                        if self.yolo_pose_model is not None:
+                            pose_results = self.yolo_pose_model(frame, verbose=False)
+                            if pose_results and len(pose_results) > 0:
+                                for result in pose_results:
+                                    if hasattr(result, 'keypoints') and result.keypoints is not None:
+                                        keypoints = result.keypoints.data
+                                        if keypoints.shape[0] > 0:
+                                            kp = keypoints[0]  # First person
+                                            # Check if wrist is above shoulder (hand raised)
+                                            if len(kp) >= 10:
+                                                left_wrist = kp[9][:2] if kp[9][2] > 0.3 else None
+                                                right_wrist = kp[10][:2] if kp[10][2] > 0.3 else None
+                                                left_shoulder = kp[5][:2] if kp[5][2] > 0.3 else None
+                                                right_shoulder = kp[6][:2] if kp[6][2] > 0.3 else None
+
+                                                # Check left hand raised
+                                                if left_wrist is not None and left_shoulder is not None:
+                                                    if left_wrist[1] < left_shoulder[1]:  # Y is inverted (0 at top)
+                                                        is_detected = True
+                                                        break
+                                                # Check right hand raised
+                                                if right_wrist is not None and right_shoulder is not None:
+                                                    if right_wrist[1] < right_shoulder[1]:
+                                                        is_detected = True
+                                                        break
+
+                    if is_detected:
+                        positive_votes += 1
+
+                if total_votes == 0:
+                    return True, 1.0, 1, 1  # No frames to check, assume valid
+
+                detection_rate = positive_votes / total_votes
+                is_valid = detection_rate >= self.voting_threshold
+
+                self.logger.info(
+                    f"VOTING for '{activity_type}' at {center_timestamp:.2f}s: "
+                    f"{positive_votes}/{total_votes} = {detection_rate:.1%} "
+                    f"({'PASS' if is_valid else 'FAIL'})"
+                )
+
+                return is_valid, detection_rate, positive_votes, total_votes
+
+        except Exception as e:
+            self.logger.warning(f"Voting validation failed: {e}")
+            return True, 1.0, 1, 1  # Fallback to valid on error
+
     def calculate_eye_aspect_ratio(self, landmarks):
         """Calculate Eye Aspect Ratio (EAR) for drowsiness detection"""
         try:
@@ -3764,7 +3925,8 @@ class LocopilotActivityMonitor:
                                     person_idx, 'packing_bags', True, timestamp_sec
                                 )
                                 person_activities['packing'] = should_trigger
-                                
+                                self.logger.info(f"PACKING update_per_person_detection: person={person_idx}, should_trigger={should_trigger}")
+
                                 # Update temporal history for hand gesture suppression
                                 if person_idx not in self.recent_person_activities:
                                     self.recent_person_activities[person_idx] = {}
@@ -4421,6 +4583,8 @@ class LocopilotActivityMonitor:
             self.activities[activity_name]['start_frame_count'] = frame_count
             self.activities[activity_name]['last_frame_count'] = frame_count
             self.activities[activity_name]['frames'] = list(self.frame_buffer)
+            # Initialize detection_votes: False for pre-activity buffer frames (context only)
+            self.activities[activity_name]['detection_votes'] = [False] * len(self.frame_buffer)
             self.activities[activity_name]['duration'] = 0
             self.activities[activity_name]['person_roles'] = person_roles if person_roles else {}
             self.logger.info(f"[{timestamp}] Activity started: {activity_name}")
@@ -4444,11 +4608,37 @@ class LocopilotActivityMonitor:
             if actual_clip_duration < min_duration:
                 self.logger.debug(f"[{timestamp}] Activity '{activity_name}' too short ({actual_clip_duration:.2f}s < {min_duration}s) - discarded")
                 activity['frames'] = []
+                activity['detection_votes'] = []
                 activity['duration'] = 0
                 self.consecutive_detections[activity_name] = 0
                 self.grace_counters[activity_name] = 0
                 return
-            
+
+            # Voting-based validation: check if enough frames have positive detections
+            if self.voting_enabled:
+                detection_votes = activity.get('detection_votes', [])
+                if detection_votes:
+                    positive_votes = sum(detection_votes)
+                    total_votes = len(detection_votes)
+                    detection_rate = positive_votes / total_votes if total_votes > 0 else 0
+
+                    if detection_rate < self.voting_threshold:
+                        self.logger.info(
+                            f"[{timestamp}] Activity '{activity_name}' failed voting validation "
+                            f"({positive_votes}/{total_votes} = {detection_rate:.1%} < {self.voting_threshold:.0%}) - discarded"
+                        )
+                        activity['frames'] = []
+                        activity['detection_votes'] = []
+                        activity['duration'] = 0
+                        self.consecutive_detections[activity_name] = 0
+                        self.grace_counters[activity_name] = 0
+                        return
+                    else:
+                        self.logger.debug(
+                            f"[{timestamp}] Activity '{activity_name}' passed voting validation "
+                            f"({positive_votes}/{total_votes} = {detection_rate:.1%})"
+                        )
+
             start_time_str = activity['start_time']
             
             # Parse activity start time in seconds
@@ -4585,12 +4775,13 @@ class LocopilotActivityMonitor:
             self.logger.debug(f"  Min Duration Threshold: {min_duration}s | Required Consecutive: {self.activity_thresholds[activity_name]['required_consecutive']} frames")
             self.logger.info(f"  Evidence saved: {clip_filename}")
             self.logger.info(f"  Activity image: {image_filename}")
-            
+
             activity['frames'] = []
+            activity['detection_votes'] = []
             activity['duration'] = 0
             self.consecutive_detections[activity_name] = 0
             self.grace_counters[activity_name] = 0
-            
+
             self.evidence_counter += 1
 
     def _reencode_to_h264(self, input_path: str) -> bool:
@@ -4997,25 +5188,54 @@ class LocopilotActivityMonitor:
                     'mind_diversion': mind_diversion_detected,
                     'no_person_detected': no_person_detected_flag
                 }
+                # Log all activities detection status
+                detected_activities = [k for k, v in activities_map.items() if v]
+                if detected_activities:
+                    self.logger.info(f"[{timestamp}] ACTIVITIES DETECTED: {detected_activities}")
 
                 for activity_name, detected in activities_map.items():
                     if detected:
                         # Activity detected - increment consecutive counter and reset grace period
                         self.consecutive_detections[activity_name] += 1
                         self.grace_counters[activity_name] = 0  # Reset grace period
-                        
+                        # Log all activity processing
+                        self.logger.info(f"[{timestamp}] ACTIVITY '{activity_name}': consecutive={self.consecutive_detections[activity_name]}, active={self.activities[activity_name]['active']}")
+
                         # Only start recording after required consecutive frames threshold is met
                         required_consecutive = self.activity_thresholds[activity_name]['required_consecutive']
                         
                         if self.consecutive_detections[activity_name] >= required_consecutive:
                             # Start activity if not already active
                             if not self.activities[activity_name]['active']:
+                                # VOTING VALIDATION: Before starting activity, validate with multi-frame voting
+                                is_valid, detection_rate, pos_votes, total_votes = self.validate_detection_with_voting(
+                                    self.video_path, timestamp_sec, activity_name
+                                )
+
+                                if not is_valid:
+                                    # Voting failed - this is likely a false positive
+                                    self.logger.info(
+                                        f"[{timestamp}] Activity '{activity_name}' REJECTED by voting: "
+                                        f"{pos_votes}/{total_votes} = {detection_rate:.1%} < {self.voting_threshold:.0%}"
+                                    )
+                                    # Reset counters to prevent repeated validation attempts
+                                    self.consecutive_detections[activity_name] = 0
+                                    self.grace_counters[activity_name] = 0
+                                    continue  # Skip this activity, don't start it
+
+                                # Voting passed - start the activity
+                                self.logger.info(
+                                    f"[{timestamp}] Activity '{activity_name}' CONFIRMED by voting: "
+                                    f"{pos_votes}/{total_votes} = {detection_rate:.1%}"
+                                )
                                 self.start_activity(activity_name, timestamp, fps, frame_idx, person_roles=person_roles)
-                            
+
                             # Continue recording frames ONLY when activity is actively detected
                             if self.activities[activity_name]['active']:
                                 # Store raw frame (without annotations) for clean evidence clips
                                 self.activities[activity_name]['frames'].append(frame.copy())
+                                # Track detection vote: True since activity was detected in this frame
+                                self.activities[activity_name]['detection_votes'].append(True)
                                 self.activities[activity_name]['last_frame_count'] = frame_idx
                                 self.activities[activity_name]['last_detected_frame'] = frame_idx  # Track last actual detection
                                 # Update person roles (in case they change during activity)
@@ -5080,7 +5300,9 @@ class LocopilotActivityMonitor:
         for activity_name in self.activities:
             if 'frames' in self.activities[activity_name]:
                 self.activities[activity_name]['frames'].clear()
-        
+            if 'detection_votes' in self.activities[activity_name]:
+                self.activities[activity_name]['detection_votes'].clear()
+
         # ✅ MEMORY FIX: Force garbage collection
         gc.collect()
         
@@ -5302,21 +5524,50 @@ class LocopilotActivityMonitor:
                     'mind_diversion': mind_diversion_detected,
                     'no_person_detected': no_person_detected_flag
                 }
+                # Log all activities detection status
+                detected_activities = [k for k, v in activities_map.items() if v]
+                if detected_activities:
+                    self.logger.info(f"[{timestamp}] ACTIVITIES DETECTED: {detected_activities}")
 
                 for activity_name, detected in activities_map.items():
                     if detected:
                         self.consecutive_detections[activity_name] += 1
                         self.grace_counters[activity_name] = 0
-                        
+                        # Log all activity processing
+                        self.logger.info(f"[{timestamp}] ACTIVITY '{activity_name}': consecutive={self.consecutive_detections[activity_name]}, active={self.activities[activity_name]['active']}")
+
                         required_consecutive = self.activity_thresholds[activity_name]['required_consecutive']
-                        
+
                         if self.consecutive_detections[activity_name] >= required_consecutive:
                             if not self.activities[activity_name]['active']:
+                                # VOTING VALIDATION: Before starting activity, validate with multi-frame voting
+                                is_valid, detection_rate, pos_votes, total_votes = self.validate_detection_with_voting(
+                                    self.video_path, timestamp_sec, activity_name
+                                )
+
+                                if not is_valid:
+                                    # Voting failed - this is likely a false positive
+                                    self.logger.info(
+                                        f"[{timestamp}] Activity '{activity_name}' REJECTED by voting: "
+                                        f"{pos_votes}/{total_votes} = {detection_rate:.1%} < {self.voting_threshold:.0%}"
+                                    )
+                                    # Reset counters to prevent repeated validation attempts
+                                    self.consecutive_detections[activity_name] = 0
+                                    self.grace_counters[activity_name] = 0
+                                    continue  # Skip this activity, don't start it
+
+                                # Voting passed - start the activity
+                                self.logger.info(
+                                    f"[{timestamp}] Activity '{activity_name}' CONFIRMED by voting: "
+                                    f"{pos_votes}/{total_votes} = {detection_rate:.1%}"
+                                )
                                 self.start_activity(activity_name, timestamp, fps, frame_idx, person_roles=person_roles)
-                            
+
                             if self.activities[activity_name]['active']:
                                 # Store raw frame (without annotations) for clean evidence clips
                                 self.activities[activity_name]['frames'].append(frame.copy())
+                                # Track detection vote: True since activity was detected in this frame
+                                self.activities[activity_name]['detection_votes'].append(True)
                                 self.activities[activity_name]['last_frame_count'] = frame_idx
                                 self.activities[activity_name]['last_detected_frame'] = frame_idx
                                 # Update person roles (in case they change during activity)
@@ -5367,6 +5618,8 @@ class LocopilotActivityMonitor:
         for activity_name in self.activities:
             if 'frames' in self.activities[activity_name]:
                 self.activities[activity_name]['frames'].clear()
+            if 'detection_votes' in self.activities[activity_name]:
+                self.activities[activity_name]['detection_votes'].clear()
 
         # ✅ MEMORY FIX: Force garbage collection
         gc.collect()
@@ -5407,12 +5660,14 @@ class LocopilotActivityMonitor:
             if hasattr(self, 'frame_buffer'):
                 self.frame_buffer.clear()
             
-            # Clear activity frames (always)
+            # Clear activity frames and detection votes (always)
             if hasattr(self, 'activities'):
                 for activity_name in self.activities:
                     if 'frames' in self.activities[activity_name]:
                         self.activities[activity_name]['frames'].clear()
-            
+                    if 'detection_votes' in self.activities[activity_name]:
+                        self.activities[activity_name]['detection_votes'].clear()
+
             # Force garbage collection
             gc.collect()
             

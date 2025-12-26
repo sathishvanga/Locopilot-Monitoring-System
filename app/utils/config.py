@@ -163,6 +163,11 @@ class Settings(BaseSettings):
     activity_merge_enabled: bool = bool(int(os.getenv("ACTIVITY_MERGE_ENABLED", "1")))
     activity_preserve_raw: bool = bool(int(os.getenv("ACTIVITY_PRESERVE_RAW", "0")))
 
+    # Voting-based activity validation settings
+    # Validates activities by checking percentage of frames with positive detections
+    voting_enabled: bool = bool(int(os.getenv("VOTING_ENABLED", "1")))
+    voting_threshold: float = float(os.getenv("VOTING_THRESHOLD", "0.8"))  # 80% of frames must have positive detection
+
 
 @lru_cache()
 def get_settings() -> Settings:
