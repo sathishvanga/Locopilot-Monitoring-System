@@ -76,7 +76,7 @@ class Settings(BaseSettings):
     mp_max_workers: Optional[int] = None  # None = auto-detect (uses min(CPU count, max_workers_cap))
     mp_max_workers_cap: int = 12  # Maximum number of workers (11 cores + slight oversubscription)
     
-    # Model settings - YOLO11 (latest, better accuracy, faster, fewer parameters)
+    # Model settings - YOLO11m for object detection (medium model, balanced speed/accuracy)
     yolo_weights: str = os.getenv("YOLO_WEIGHTS_PRELOAD", "yolo11m.pt")  # YOLO11m for object detection
     yolo_pose_weights: str = os.getenv("YOLO_POSE_WEIGHTS", "yolo11m-pose.pt")  # YOLO11m-pose for multi-person pose
     yolo_pose_confidence: float = float(os.getenv("YOLO_POSE_CONFIDENCE", "0.45"))  # Pose detection confidence
@@ -162,6 +162,13 @@ class Settings(BaseSettings):
     activity_merge_window_seconds: float = float(os.getenv("ACTIVITY_MERGE_WINDOW_SECONDS", "60.0"))
     activity_merge_enabled: bool = bool(int(os.getenv("ACTIVITY_MERGE_ENABLED", "1")))
     activity_preserve_raw: bool = bool(int(os.getenv("ACTIVITY_PRESERVE_RAW", "0")))
+
+    # Voting mechanism settings for activity confirmation
+    # When activity detected on sampled frame, extract burst frames and require majority vote
+    voting_enabled: bool = bool(int(os.getenv("VOTING_ENABLED", "1")))
+    voting_burst_frames: int = int(os.getenv("VOTING_BURST_FRAMES", "10"))  # Number of consecutive native frames
+    voting_threshold: int = int(os.getenv("VOTING_THRESHOLD", "3"))  # Lowered from 6 to 3 for better detection sensitivity
+    voting_gpu_batch_enabled: bool = bool(int(os.getenv("VOTING_GPU_BATCH_ENABLED", "0")))  # GPU batching for YOLO
 
 
 @lru_cache()

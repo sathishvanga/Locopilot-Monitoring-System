@@ -201,8 +201,8 @@ class YoloPoseAdapter:
         """Initialize YOLO-Pose model.
 
         Args:
-            model_path: Path to YOLO-Pose weights file. If None, reads from 
-                       YOLO_POSE_WEIGHTS environment variable (default: yolo11m-pose.pt)
+            model_path: Path to YOLO-Pose weights file. If None, reads from
+                       YOLO_POSE_WEIGHTS environment variable (default: yolo11l-pose.pt)
             conf_threshold: Minimum confidence threshold for detections
             preloaded_model: Optional pre-loaded YOLO model (for worker reuse)
         """

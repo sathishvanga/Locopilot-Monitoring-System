@@ -116,6 +116,255 @@ def video_capture_context(video_path):
             cap.release()
 
 
+class ActivityVotingEngine:
+    """Handles majority-vote confirmation for activity detections.
+
+    When an activity is detected on a sampled frame, this engine:
+    1. Extracts consecutive native frames from the detection point
+    2. Runs the appropriate detection method on each frame
+    3. Requires threshold positive detections to confirm the activity
+    """
+
+    # Detection method categories
+    OBJECT_BASED = ['cell_phone', 'writing', 'packing_bags']  # YOLO object detection
+    FACE_BASED = ['microsleep', 'sleep']  # MediaPipe FaceMesh + EAR
+    POSE_BASED = ['lp_hand_gesture', 'alp_hand_gesture', 'mind_diversion']  # YOLO-Pose
+    COUNT_BASED = ['group_detected', 'no_person_detected']  # Person count
+
+    ALL_ACTIVITIES = OBJECT_BASED + FACE_BASED + POSE_BASED + COUNT_BASED
+
+    def __init__(self, monitor, config: dict):
+        """Initialize voting engine.
+
+        Args:
+            monitor: LocopilotActivityMonitor instance
+            config: Dictionary with voting configuration
+        """
+        self.monitor = monitor
+        self.config = config
+        self.burst_frames = config.get('voting_burst_frames', 10)
+        self.threshold = config.get('voting_threshold', 6)
+        self.gpu_batch_enabled = config.get('voting_gpu_batch_enabled', False)
+        self.logger = monitor.logger
+
+    def confirm_detection(self, activity_name: str, trigger_frame_idx: int, detection_context: dict):
+        """Run voting confirmation for an activity detection.
+
+        Args:
+            activity_name: Name of the activity to confirm
+            trigger_frame_idx: Frame index where initial detection occurred
+            detection_context: Context from initial detection (person_roles, detections, etc.)
+
+        Returns:
+            Tuple of (confirmed: bool, vote_details: dict)
+        """
+        # Extract burst frames
+        burst_frames = self.monitor.extract_burst_frames(trigger_frame_idx, self.burst_frames)
+
+        if len(burst_frames) < self.threshold:
+            self.logger.warning(
+                f"[VOTING] Insufficient burst frames for {activity_name}: "
+                f"{len(burst_frames)}/{self.burst_frames}"
+            )
+            return False, {'error': 'insufficient_frames', 'extracted': len(burst_frames)}
+
+        # Run detection on burst frames
+        votes = self._run_activity_detection(activity_name, burst_frames, detection_context)
+
+        # Calculate result
+        positive_votes = sum(votes)
+        confirmed = positive_votes >= self.threshold
+
+        vote_details = {
+            'activity': activity_name,
+            'trigger_frame': trigger_frame_idx,
+            'total_frames': len(burst_frames),
+            'positive_votes': positive_votes,
+            'threshold': self.threshold,
+            'confirmed': confirmed,
+            'votes': votes
+        }
+
+        self.logger.info(
+            f"[VOTING] {activity_name}: {positive_votes}/{len(burst_frames)} "
+            f"(threshold: {self.threshold}) -> {'CONFIRMED' if confirmed else 'REJECTED'}"
+        )
+
+        return confirmed, vote_details
+
+    def _run_activity_detection(self, activity_name: str, burst_frames: list, detection_context: dict) -> list:
+        """Run activity-specific detection on burst frames.
+
+        Dispatches to appropriate detection method based on activity type.
+        """
+        if activity_name in self.OBJECT_BASED:
+            return self._detect_object_activity(activity_name, burst_frames, detection_context)
+        elif activity_name in self.FACE_BASED:
+            return self._detect_face_activity(activity_name, burst_frames, detection_context)
+        elif activity_name in self.POSE_BASED:
+            return self._detect_pose_activity(activity_name, burst_frames, detection_context)
+        elif activity_name in self.COUNT_BASED:
+            return self._detect_count_activity(activity_name, burst_frames, detection_context)
+        else:
+            self.logger.warning(f"[VOTING] Unknown activity type: {activity_name}")
+            return [False] * len(burst_frames)
+
+    def _detect_object_activity(self, activity_name: str, burst_frames: list, detection_context: dict) -> list:
+        """Detect object-based activities (cell_phone, writing, packing_bags)."""
+        votes = []
+
+        for frame_idx, timestamp, frame in burst_frames:
+            try:
+                # Run YOLO detection
+                detections = self.monitor.detect_objects(frame, None, use_pose_guided=False)
+
+                # Get person roles from context or re-detect
+                person_roles = detection_context.get('person_roles', {})
+
+                # Deduplicate persons for proper role detection
+                if len(detections.get('person', [])) > 0:
+                    deduplicated = self.monitor.deduplicate_person_boxes(
+                        detections['person'], iou_threshold=0.5
+                    )
+                    detections['deduplicated_person'] = deduplicated
+                    # Re-identify person roles for this frame
+                    person_roles = self.monitor.identify_person_roles(frame, deduplicated, detections)
+
+                # Run multi-person activity detection
+                multi_person_results = self.monitor.process_all_persons_activities(
+                    frame, detections, person_roles, timestamp, None, frame_idx
+                )
+
+                # Check if activity was detected
+                aggregated = multi_person_results.get('aggregated', {})
+
+                # Map activity names to aggregated result keys
+                key_map = {
+                    'cell_phone': 'cell_phone_detected',
+                    'writing': 'writing_detected',
+                    'packing_bags': 'packing_detected'
+                }
+
+                detected = aggregated.get(key_map.get(activity_name, f'{activity_name}_detected'), False)
+                votes.append(detected)
+
+            except Exception as e:
+                self.logger.error(f"[VOTING] Error detecting {activity_name} on frame {frame_idx}: {e}")
+                votes.append(False)
+
+        return votes
+
+    def _detect_face_activity(self, activity_name: str, burst_frames: list, detection_context: dict) -> list:
+        """Detect face-based activities (microsleep, sleep) using MediaPipe + EAR."""
+        votes = []
+
+        for frame_idx, timestamp, frame in burst_frames:
+            try:
+                # Run MediaPipe FaceMesh
+                rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                face_results = self.monitor.face_mesh.process(rgb_frame)
+
+                detected = False
+                if face_results.multi_face_landmarks:
+                    ear_values = []
+                    for face_landmarks in face_results.multi_face_landmarks:
+                        ear = self.monitor.calculate_eye_aspect_ratio(face_landmarks.landmark)
+                        if ear is not None:
+                            ear_values.append(ear)
+
+                    if ear_values:
+                        min_ear = min(ear_values)
+                        # Use EAR threshold for microsleep/sleep detection
+                        if activity_name == 'microsleep':
+                            detected = min_ear < 0.2  # Eyes closed threshold
+                        elif activity_name == 'sleep':
+                            detected = min_ear < 0.15  # More severe closure for sleep
+
+                votes.append(detected)
+
+            except Exception as e:
+                self.logger.error(f"[VOTING] Error detecting {activity_name} on frame {frame_idx}: {e}")
+                votes.append(False)
+
+        return votes
+
+    def _detect_pose_activity(self, activity_name: str, burst_frames: list, detection_context: dict) -> list:
+        """Detect pose-based activities (hand_gesture, mind_diversion) using YOLO-Pose."""
+        votes = []
+
+        for frame_idx, timestamp, frame in burst_frames:
+            try:
+                # Run YOLO detection first
+                detections = self.monitor.detect_objects(frame, None, use_pose_guided=False)
+
+                # Deduplicate persons and identify roles
+                person_roles = {}
+                if len(detections.get('person', [])) > 0:
+                    deduplicated = self.monitor.deduplicate_person_boxes(
+                        detections['person'], iou_threshold=0.5
+                    )
+                    detections['deduplicated_person'] = deduplicated
+                    person_roles = self.monitor.identify_person_roles(frame, deduplicated, detections)
+
+                # Run multi-person activity detection
+                multi_person_results = self.monitor.process_all_persons_activities(
+                    frame, detections, person_roles, timestamp, None, frame_idx
+                )
+
+                # Check if activity was detected
+                aggregated = multi_person_results.get('aggregated', {})
+
+                # Map activity names to aggregated result keys
+                key_map = {
+                    'lp_hand_gesture': 'lp_hand_gesture_failure',
+                    'alp_hand_gesture': 'alp_hand_gesture_failure',
+                    'mind_diversion': 'mind_diversion_detected'
+                }
+
+                detected = aggregated.get(key_map.get(activity_name), False)
+                votes.append(detected)
+
+            except Exception as e:
+                self.logger.error(f"[VOTING] Error detecting {activity_name} on frame {frame_idx}: {e}")
+                votes.append(False)
+
+        return votes
+
+    def _detect_count_activity(self, activity_name: str, burst_frames: list, detection_context: dict) -> list:
+        """Detect count-based activities (group_detected, no_person_detected)."""
+        votes = []
+
+        for frame_idx, timestamp, frame in burst_frames:
+            try:
+                # Run YOLO detection
+                detections = self.monitor.detect_objects(frame, None, use_pose_guided=False)
+
+                # Deduplicate persons
+                if len(detections.get('person', [])) > 0:
+                    deduplicated = self.monitor.deduplicate_person_boxes(
+                        detections['person'], iou_threshold=0.5
+                    )
+                else:
+                    deduplicated = []
+
+                person_count = len(deduplicated)
+
+                if activity_name == 'group_detected':
+                    detected = person_count > 2
+                elif activity_name == 'no_person_detected':
+                    detected = person_count == 0
+                else:
+                    detected = False
+
+                votes.append(detected)
+
+            except Exception as e:
+                self.logger.error(f"[VOTING] Error detecting {activity_name} on frame {frame_idx}: {e}")
+                votes.append(False)
+
+        return votes
+
+
 class LocopilotActivityMonitor:
     def __init__(self, video_path, output_dir="evidence", save_annotated_frames=False, frame_save_interval=1, sample_fps=1.0, run_dir=None, create_run_dir=True, preloaded_models=None):
         """Initialize Locopilot Activity Monitor.
@@ -481,9 +730,27 @@ class LocopilotActivityMonitor:
         
         # Crew members mapping: role (LP/ALP) -> {name, id, role}
         self.crew_members = {}  # Will be populated from API input
-        
+
         # Store all activities for final JSON array output
         self.all_activities = []
+
+        # Initialize voting engine for activity confirmation
+        # When enabled, requires majority vote across burst frames to confirm detections
+        self.voting_enabled = settings.voting_enabled if settings else False
+        if self.voting_enabled:
+            voting_config = {
+                'voting_burst_frames': settings.voting_burst_frames if settings else 10,
+                'voting_threshold': settings.voting_threshold if settings else 6,
+                'voting_gpu_batch_enabled': settings.voting_gpu_batch_enabled if settings else False,
+            }
+            self.voting_engine = ActivityVotingEngine(self, voting_config)
+            self.logger.info(
+                f"Voting engine initialized: {voting_config['voting_burst_frames']} burst frames, "
+                f"threshold {voting_config['voting_threshold']}/10"
+            )
+        else:
+            self.voting_engine = None
+            self.logger.info("Voting mechanism disabled")
 
     def get_keypoint(self, landmarks, keypoint_name):
         """Get a keypoint from landmarks by name (works with both YOLO and MediaPipe formats).
@@ -600,7 +867,53 @@ class LocopilotActivityMonitor:
                 sampled_idx += 1
             
             self.logger.debug(f"[Frame Sampling] Completed sampling, total samples: {sampled_idx}")
-        
+
+    def extract_burst_frames(self, frame_index: int, num_frames: int = 10):
+        """Extract consecutive native frames for voting confirmation.
+
+        Uses efficient OpenCV seek to extract frames starting from the detection point.
+        For a 30fps video, extracts frames N, N+1, N+2, ... N+(num_frames-1).
+
+        Args:
+            frame_index: Starting frame index (the detection point)
+            num_frames: Number of consecutive frames to extract (default: 10)
+
+        Returns:
+            List of tuples: [(frame_index, timestamp_seconds, frame_bgr), ...]
+            Empty list if extraction fails
+        """
+        frames = []
+
+        with video_capture_context(self.video_path) as cap:
+            if not cap.isOpened():
+                self.logger.error(f"[VOTING] Failed to open video for burst extraction: {self.video_path}")
+                return frames
+
+            native_fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
+            total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+
+            # Clamp end frame to video bounds
+            end_frame = min(frame_index + num_frames, total_frames)
+
+            # Seek to starting frame
+            cap.set(cv2.CAP_PROP_POS_FRAMES, frame_index)
+
+            for i in range(num_frames):
+                current_frame_idx = frame_index + i
+                if current_frame_idx >= total_frames:
+                    break
+
+                ret, frame = cap.read()
+                if not ret:
+                    self.logger.warning(f"[VOTING] Failed to read frame {current_frame_idx} during burst extraction")
+                    break
+
+                timestamp = current_frame_idx / native_fps
+                frames.append((current_frame_idx, timestamp, frame))
+
+        self.logger.debug(f"[VOTING] Extracted {len(frames)}/{num_frames} burst frames starting at frame {frame_index}")
+        return frames
+
     def calculate_eye_aspect_ratio(self, landmarks):
         """Calculate Eye Aspect Ratio (EAR) for drowsiness detection"""
         try:
@@ -5000,18 +5313,40 @@ class LocopilotActivityMonitor:
 
                 for activity_name, detected in activities_map.items():
                     if detected:
-                        # Activity detected - increment consecutive counter and reset grace period
+                        # VOTING MECHANISM: Confirm detection with burst frame voting
+                        # Only vote on first detection (when consecutive_detections is 0)
+                        # Once an activity is being tracked, continue without re-voting
+                        if self.voting_enabled and self.voting_engine is not None:
+                            if self.consecutive_detections[activity_name] == 0:
+                                # First detection - run voting confirmation
+                                detection_context = {
+                                    'person_roles': person_roles,
+                                    'timestamp': timestamp_sec
+                                }
+                                confirmed, vote_details = self.voting_engine.confirm_detection(
+                                    activity_name, frame_idx, detection_context
+                                )
+                                if not confirmed:
+                                    # Voting rejected - skip this detection
+                                    self.logger.debug(
+                                        f"[{timestamp}] Activity '{activity_name}' rejected by voting "
+                                        f"({vote_details.get('positive_votes', 0)}/{vote_details.get('total_frames', 0)})"
+                                    )
+                                    continue  # Skip to next activity
+
+                        # Activity detected (and voting confirmed if enabled)
+                        # Increment consecutive counter and reset grace period
                         self.consecutive_detections[activity_name] += 1
                         self.grace_counters[activity_name] = 0  # Reset grace period
-                        
+
                         # Only start recording after required consecutive frames threshold is met
                         required_consecutive = self.activity_thresholds[activity_name]['required_consecutive']
-                        
+
                         if self.consecutive_detections[activity_name] >= required_consecutive:
                             # Start activity if not already active
                             if not self.activities[activity_name]['active']:
                                 self.start_activity(activity_name, timestamp, fps, frame_idx, person_roles=person_roles)
-                            
+
                             # Continue recording frames ONLY when activity is actively detected
                             if self.activities[activity_name]['active']:
                                 # Store raw frame (without annotations) for clean evidence clips
@@ -5305,15 +5640,37 @@ class LocopilotActivityMonitor:
 
                 for activity_name, detected in activities_map.items():
                     if detected:
+                        # VOTING MECHANISM: Confirm detection with burst frame voting
+                        # Only vote on first detection (when consecutive_detections is 0)
+                        # Once an activity is being tracked, continue without re-voting
+                        if self.voting_enabled and self.voting_engine is not None:
+                            if self.consecutive_detections[activity_name] == 0:
+                                # First detection - run voting confirmation
+                                detection_context = {
+                                    'person_roles': person_roles,
+                                    'timestamp': timestamp_sec
+                                }
+                                confirmed, vote_details = self.voting_engine.confirm_detection(
+                                    activity_name, frame_idx, detection_context
+                                )
+                                if not confirmed:
+                                    # Voting rejected - skip this detection
+                                    self.logger.debug(
+                                        f"[{timestamp}] Activity '{activity_name}' rejected by voting "
+                                        f"({vote_details.get('positive_votes', 0)}/{vote_details.get('total_frames', 0)})"
+                                    )
+                                    continue  # Skip to next activity
+
+                        # Activity detected (and voting confirmed if enabled)
                         self.consecutive_detections[activity_name] += 1
                         self.grace_counters[activity_name] = 0
-                        
+
                         required_consecutive = self.activity_thresholds[activity_name]['required_consecutive']
-                        
+
                         if self.consecutive_detections[activity_name] >= required_consecutive:
                             if not self.activities[activity_name]['active']:
                                 self.start_activity(activity_name, timestamp, fps, frame_idx, person_roles=person_roles)
-                            
+
                             if self.activities[activity_name]['active']:
                                 # Store raw frame (without annotations) for clean evidence clips
                                 self.activities[activity_name]['frames'].append(frame.copy())

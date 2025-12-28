@@ -50,6 +50,7 @@ sshpass -p "$SERVER_PASS" rsync -avz --progress \
     --exclude '.claude' \
     --exclude 'build' \
     --exclude 'dist' \
+    --exclude '*.pt' \
     --delete \
     -e "ssh -p $SERVER_PORT -o StrictHostKeyChecking=no" \
     "$SCRIPT_DIR/" \
@@ -89,9 +90,13 @@ User=root
 WorkingDirectory=/opt/poc2
 Environment=PATH=/opt/poc2/venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 Environment=YOLO_DEVICE=0
-Environment=MP_MAX_WORKERS_CAP=2
+Environment=MP_MAX_WORKERS_CAP=4
 Environment=TORCH_THREADS=1
 Environment=OPENCV_THREADS=2
+Environment=YOLO_WEIGHTS_PRELOAD=yolo11m.pt
+Environment=YOLO_POSE_WEIGHTS=yolo11m-pose.pt
+Environment=VOTING_THRESHOLD=3
+EnvironmentFile=/opt/poc2/.env
 ExecStart=/opt/poc2/venv/bin/gunicorn -c gunicorn_config.py app.main:app
 Restart=always
 RestartSec=10
@@ -136,7 +141,7 @@ if [ "$STATUS" = "active" ]; then
         echo ""
         echo "Application URL: http://$SERVER_IP:8000"
         echo "Health Check:    http://$SERVER_IP:8000/health"
-        echo "GPU Workers:     2 (MP_MAX_WORKERS_CAP)"
+        echo "GPU Workers:     4 (MP_MAX_WORKERS_CAP)"
     else
         echo -e "${YELLOW}Warning: Health check did not return expected response${NC}"
         echo "Response: $HEALTH"
