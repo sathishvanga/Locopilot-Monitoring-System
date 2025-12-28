@@ -15,3 +15,4 @@ desktop_app/build_config/dist/
 *.pyc
 logs/
 logs/LocopilotMonitoring.log
+voting_debug_frames/

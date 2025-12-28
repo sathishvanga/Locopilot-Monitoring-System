@@ -18,10 +18,11 @@ script_dir = os.path.dirname(os.path.abspath(__file__))
 if script_dir not in sys.path:
     sys.path.insert(0, script_dir)
 
-# Import preprocessing service and config
+# Import preprocessing service, config, and voting service
 try:
     from app.services.image_preprocessing_service import ImagePreprocessingService
     from app.utils.config import get_settings
+    from app.services.voting_verification_service import VotingVerificationService
 except ImportError:
     # Fallback: try importing as module
     try:
@@ -53,6 +54,14 @@ except ImportError:
     except Exception:
         ImagePreprocessingService = None
         get_settings = None
+        VotingVerificationService = None
+
+# Import VotingVerificationService separately (may not exist in fallback path)
+try:
+    if 'VotingVerificationService' not in dir():
+        from app.services.voting_verification_service import VotingVerificationService
+except ImportError:
+    VotingVerificationService = None
 
 # ✅ WINDOWS FIX: Prevent Qt/GUI initialization in worker processes
 # If running in a worker process (detected by QT_QPA_PLATFORM=offscreen),
@@ -481,9 +490,26 @@ class LocopilotActivityMonitor:
         
         # Crew members mapping: role (LP/ALP) -> {name, id, role}
         self.crew_members = {}  # Will be populated from API input
-        
+
         # Store all activities for final JSON array output
         self.all_activities = []
+
+        # Initialize voting verification service for multi-frame voting
+        # This reduces false positives by verifying detections across multiple native frames
+        self.current_video_path = video_path  # Track current video for voting
+        if VotingVerificationService is not None:
+            try:
+                self.voting_service = VotingVerificationService(
+                    yolo_model=self.yolo_model,
+                    yolo_pose_model=self.yolo_pose
+                )
+                self.logger.info("VotingVerificationService initialized successfully")
+            except Exception as e:
+                self.logger.warning(f"Failed to initialize VotingVerificationService: {e}")
+                self.voting_service = None
+        else:
+            self.voting_service = None
+            self.logger.info("VotingVerificationService not available - voting disabled")
 
     def get_keypoint(self, landmarks, keypoint_name):
         """Get a keypoint from landmarks by name (works with both YOLO and MediaPipe formats).
@@ -3475,8 +3501,25 @@ class LocopilotActivityMonitor:
                     frame.shape
                 )
                 person_debug_info['head_pose'] = head_pose_info
-                person_activities['mind_diversion'] = head_pose_info.get('detected', False)
-                
+                mind_diversion_detected = head_pose_info.get('detected', False)
+
+                # Stage 2: Voting verification for mind_diversion (if enabled)
+                if mind_diversion_detected and self.voting_service is not None:
+                    is_confirmed, vote_details = self.voting_service.verify_activity(
+                        video_path=self.current_video_path,
+                        timestamp_sec=timestamp_sec,
+                        activity_type='mind_diversion',
+                        person_bbox=list(bbox)
+                    )
+                    if is_confirmed:
+                        person_activities['mind_diversion'] = True
+                        self.logger.info(f"[VOTING] mind_diversion CONFIRMED: {vote_details.get('vote_breakdown', [])}")
+                    else:
+                        self.logger.info(f"[VOTING] mind_diversion REJECTED: {vote_details.get('vote_breakdown', [])}")
+                        person_activities['mind_diversion'] = False
+                else:
+                    person_activities['mind_diversion'] = mind_diversion_detected
+
                 # NOTE: Mind diversion book suppression moved to AFTER writing detection
                 # This allows us to check both book presence AND writing activity
                 
@@ -3519,7 +3562,23 @@ class LocopilotActivityMonitor:
                                 should_trigger = self.update_per_person_detection(
                                     person_idx, 'cell_phone', True, timestamp_sec
                                 )
-                                person_activities['cell_phone'] = should_trigger
+
+                                # Stage 2: Voting verification (if enabled)
+                                if should_trigger and self.voting_service is not None:
+                                    is_confirmed, vote_details = self.voting_service.verify_activity(
+                                        video_path=self.current_video_path,
+                                        timestamp_sec=timestamp_sec,
+                                        activity_type='cell_phone',
+                                        person_bbox=list(bbox)
+                                    )
+                                    if is_confirmed:
+                                        person_activities['cell_phone'] = True
+                                        self.logger.info(f"[VOTING] cell_phone CONFIRMED: {vote_details.get('vote_breakdown', [])}")
+                                    else:
+                                        self.logger.info(f"[VOTING] cell_phone REJECTED: {vote_details.get('vote_breakdown', [])}")
+                                        person_activities['cell_phone'] = False
+                                else:
+                                    person_activities['cell_phone'] = should_trigger
                                 break
                 
                 # 4. WRITING DETECTION (check if hand near book OR wrist proximity heuristic)
@@ -3570,7 +3629,23 @@ class LocopilotActivityMonitor:
                 should_trigger = self.update_per_person_detection(
                     person_idx, 'writing', writing_detected_raw, timestamp_sec
                 )
-                person_activities['writing'] = should_trigger
+
+                # Stage 2: Voting verification for writing (if enabled)
+                if should_trigger and self.voting_service is not None:
+                    is_confirmed, vote_details = self.voting_service.verify_activity(
+                        video_path=self.current_video_path,
+                        timestamp_sec=timestamp_sec,
+                        activity_type='writing',
+                        person_bbox=list(bbox)
+                    )
+                    if is_confirmed:
+                        person_activities['writing'] = True
+                        self.logger.info(f"[VOTING] writing CONFIRMED: {vote_details.get('vote_breakdown', [])}")
+                    else:
+                        self.logger.info(f"[VOTING] writing REJECTED: {vote_details.get('vote_breakdown', [])}")
+                        person_activities['writing'] = False
+                else:
+                    person_activities['writing'] = should_trigger
 
                 # Store detection method in debug info for analysis
                 if writing_detected_by_book:
@@ -3758,13 +3833,29 @@ class LocopilotActivityMonitor:
                                 self.logger.info(f"PACKING DETECTED (SIMPLE): Wrist inside backpack bbox! "
                                                f"Right: {right_inside} ({right_dist:.0f}px), "
                                                f"Left: {left_inside} ({left_dist:.0f}px)")
-                                
+
                                 # Trigger packing detection immediately
                                 should_trigger = self.update_per_person_detection(
                                     person_idx, 'packing_bags', True, timestamp_sec
                                 )
-                                person_activities['packing'] = should_trigger
-                                
+
+                                # Stage 2: Voting verification for packing_bags (if enabled)
+                                if should_trigger and self.voting_service is not None:
+                                    is_confirmed, vote_details = self.voting_service.verify_activity(
+                                        video_path=self.current_video_path,
+                                        timestamp_sec=timestamp_sec,
+                                        activity_type='packing_bags',
+                                        person_bbox=list(bbox)
+                                    )
+                                    if is_confirmed:
+                                        person_activities['packing'] = True
+                                        self.logger.info(f"[VOTING] packing_bags CONFIRMED: {vote_details.get('vote_breakdown', [])}")
+                                    else:
+                                        self.logger.info(f"[VOTING] packing_bags REJECTED: {vote_details.get('vote_breakdown', [])}")
+                                        person_activities['packing'] = False
+                                else:
+                                    person_activities['packing'] = should_trigger
+
                                 # Update temporal history for hand gesture suppression
                                 if person_idx not in self.recent_person_activities:
                                     self.recent_person_activities[person_idx] = {}
@@ -3790,12 +3881,28 @@ class LocopilotActivityMonitor:
                                 motion_confirmed = packing_motion_analysis['packing_motion_detected']
                                 sustained_proximity = packing_motion_analysis.get('sustained_proximity', False) and \
                                                      packing_motion_analysis.get('sustained_proximity_time', False)
-                                
+
                                 if motion_confirmed or sustained_proximity:
                                     should_trigger = self.update_per_person_detection(
                                         person_idx, 'packing_bags', True, timestamp_sec
                                     )
-                                    person_activities['packing'] = should_trigger
+
+                                    # Stage 2: Voting verification for packing_bags (if enabled)
+                                    if should_trigger and self.voting_service is not None:
+                                        is_confirmed, vote_details = self.voting_service.verify_activity(
+                                            video_path=self.current_video_path,
+                                            timestamp_sec=timestamp_sec,
+                                            activity_type='packing_bags',
+                                            person_bbox=list(bbox)
+                                        )
+                                        if is_confirmed:
+                                            person_activities['packing'] = True
+                                            self.logger.info(f"[VOTING] packing_bags (motion) CONFIRMED: {vote_details.get('vote_breakdown', [])}")
+                                        else:
+                                            self.logger.info(f"[VOTING] packing_bags (motion) REJECTED: {vote_details.get('vote_breakdown', [])}")
+                                            person_activities['packing'] = False
+                                    else:
+                                        person_activities['packing'] = should_trigger
                                     # UPDATE TEMPORAL HISTORY (for hand gesture suppression)
                                     if person_idx not in self.recent_person_activities:
                                         self.recent_person_activities[person_idx] = {}
@@ -3835,16 +3942,48 @@ class LocopilotActivityMonitor:
                     frame_number=frame_number
                 )
                 person_debug_info['gesture_debug'] = gesture_debug
-                person_activities['lp_hand_gesture'] = lp_gesture
-                person_activities['alp_hand_gesture'] = alp_gesture
+
+                # Stage 2: Voting verification for LP hand gesture (if enabled)
+                if lp_gesture and self.voting_service is not None:
+                    is_confirmed, vote_details = self.voting_service.verify_activity(
+                        video_path=self.current_video_path,
+                        timestamp_sec=timestamp_sec,
+                        activity_type='lp_hand_gesture',
+                        person_bbox=list(bbox)
+                    )
+                    if is_confirmed:
+                        person_activities['lp_hand_gesture'] = True
+                        self.logger.info(f"[VOTING] lp_hand_gesture CONFIRMED: {vote_details.get('vote_breakdown', [])}")
+                    else:
+                        self.logger.info(f"[VOTING] lp_hand_gesture REJECTED: {vote_details.get('vote_breakdown', [])}")
+                        person_activities['lp_hand_gesture'] = False
+                else:
+                    person_activities['lp_hand_gesture'] = lp_gesture
+
+                # Stage 2: Voting verification for ALP hand gesture (if enabled)
+                if alp_gesture and self.voting_service is not None:
+                    is_confirmed, vote_details = self.voting_service.verify_activity(
+                        video_path=self.current_video_path,
+                        timestamp_sec=timestamp_sec,
+                        activity_type='alp_hand_gesture',
+                        person_bbox=list(bbox)
+                    )
+                    if is_confirmed:
+                        person_activities['alp_hand_gesture'] = True
+                        self.logger.info(f"[VOTING] alp_hand_gesture CONFIRMED: {vote_details.get('vote_breakdown', [])}")
+                    else:
+                        self.logger.info(f"[VOTING] alp_hand_gesture REJECTED: {vote_details.get('vote_breakdown', [])}")
+                        person_activities['alp_hand_gesture'] = False
+                else:
+                    person_activities['alp_hand_gesture'] = alp_gesture
 
                 # Track hand raise timestamps for temporal coordination window
-                if lp_gesture:
+                if person_activities['lp_hand_gesture']:
                     if person_idx not in self.recent_person_activities:
                         self.recent_person_activities[person_idx] = {}
                     self.recent_person_activities[person_idx]['lp_hand_raise'] = timestamp_sec
 
-                if alp_gesture:
+                if person_activities['alp_hand_gesture']:
                     if person_idx not in self.recent_person_activities:
                         self.recent_person_activities[person_idx] = {}
                     self.recent_person_activities[person_idx]['alp_hand_raise'] = timestamp_sec
@@ -4819,8 +4958,23 @@ class LocopilotActivityMonitor:
                             self.logger.debug(f"  Person {person_idx+1}: {role_info['role_name']} (LP score: {role_info['lp_score']}, ALP score: {role_info['alp_score']})")
                     
                     if deduplicated_count > 2:
-                        group_detected_flag = True
-                        if self.consecutive_detections['group_detected'] == 0:
+                        # Stage 2: Voting verification for group_detected (if enabled)
+                        if self.voting_service is not None:
+                            is_confirmed, vote_details = self.voting_service.verify_activity(
+                                video_path=self.current_video_path,
+                                timestamp_sec=timestamp_sec,
+                                activity_type='group_detected',
+                                person_bbox=[0, 0, frame.shape[1], frame.shape[0]]  # Full frame for group detection
+                            )
+                            if is_confirmed:
+                                group_detected_flag = True
+                                self.logger.info(f"[VOTING] group_detected CONFIRMED: {vote_details.get('vote_breakdown', [])}")
+                            else:
+                                group_detected_flag = False
+                                self.logger.info(f"[VOTING] group_detected REJECTED: {vote_details.get('vote_breakdown', [])}")
+                        else:
+                            group_detected_flag = True
+                        if group_detected_flag and self.consecutive_detections['group_detected'] == 0:
                             self.logger.info(f"[{timestamp}] Group detected - {deduplicated_count} people (de-duplicated from {len(detections['person'])} raw detections)")
                 else:
                     # No person detected at all
@@ -5181,21 +5335,36 @@ class LocopilotActivityMonitor:
                     person_roles = self.identify_person_roles(frame, deduplicated_persons, detections)
                     
                     if deduplicated_count > 2:
-                        group_detected_flag = True
+                        # Stage 2: Voting verification for group_detected (if enabled)
+                        if self.voting_service is not None:
+                            is_confirmed, vote_details = self.voting_service.verify_activity(
+                                video_path=self.current_video_path,
+                                timestamp_sec=timestamp_sec,
+                                activity_type='group_detected',
+                                person_bbox=[0, 0, frame.shape[1], frame.shape[0]]
+                            )
+                            if is_confirmed:
+                                group_detected_flag = True
+                                self.logger.info(f"[VOTING] group_detected CONFIRMED: {vote_details.get('vote_breakdown', [])}")
+                            else:
+                                group_detected_flag = False
+                                self.logger.info(f"[VOTING] group_detected REJECTED: {vote_details.get('vote_breakdown', [])}")
+                        else:
+                            group_detected_flag = True
                 else:
                     detections['deduplicated_person'] = []
                     person_roles = {}
-                
+
                 # STEP 4: *** NEW MULTI-PERSON PROCESSING ***
                 # Process ALL persons individually for ALL activities
                 multi_person_results = self.process_all_persons_activities(
                     frame, detections, person_roles, timestamp_sec, face_results, frame_idx
                 )
-                
+
                 # Extract aggregated detection flags
                 persons_data = multi_person_results['persons']
                 aggregated = multi_person_results['aggregated']
-                
+
                 # Initialize detection flags from aggregated results
                 microsleep_detected = aggregated['microsleep_detected']
                 sleep_detected = aggregated['sleep_detected']
@@ -5205,7 +5374,7 @@ class LocopilotActivityMonitor:
                 lp_hand_gesture_detected = aggregated['lp_hand_gesture_detected']
                 alp_hand_gesture_detected = aggregated['alp_hand_gesture_detected']
                 mind_diversion_detected = aggregated['mind_diversion_detected']
-                
+
                 # Face-based sleep detection (still use EAR as additional signal)
                 if face_results.multi_face_landmarks and ear_value is not None:
                     if ear_value < 0.2:

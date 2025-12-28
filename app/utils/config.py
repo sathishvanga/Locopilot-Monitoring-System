@@ -163,6 +163,26 @@ class Settings(BaseSettings):
     activity_merge_enabled: bool = bool(int(os.getenv("ACTIVITY_MERGE_ENABLED", "1")))
     activity_preserve_raw: bool = bool(int(os.getenv("ACTIVITY_PRESERVE_RAW", "0")))
 
+    # Voting verification settings
+    # Two-stage detection: when activity detected, verify with multiple native frames
+    voting_enabled: bool = bool(int(os.getenv("VOTING_ENABLED", "1")))
+    voting_num_frames: int = int(os.getenv("VOTING_NUM_FRAMES", "10"))
+    voting_frame_spread_ms: int = int(os.getenv("VOTING_FRAME_SPREAD_MS", "400"))  # 400ms window at 25fps
+
+    # Per-activity voting thresholds (percentage of frames required for confirmation)
+    # Default 50% (5/10 frames must detect the activity)
+    voting_threshold_cell_phone: float = float(os.getenv("VOTING_THRESHOLD_CELL_PHONE", "0.5"))
+    voting_threshold_writing: float = float(os.getenv("VOTING_THRESHOLD_WRITING", "0.5"))
+    voting_threshold_packing_bags: float = float(os.getenv("VOTING_THRESHOLD_PACKING_BAGS", "0.5"))
+    voting_threshold_lp_hand_gesture: float = float(os.getenv("VOTING_THRESHOLD_LP_GESTURE", "0.5"))
+    voting_threshold_alp_hand_gesture: float = float(os.getenv("VOTING_THRESHOLD_ALP_GESTURE", "0.5"))
+    voting_threshold_mind_diversion: float = float(os.getenv("VOTING_THRESHOLD_MIND_DIVERSION", "0.5"))
+    voting_threshold_group_detected: float = float(os.getenv("VOTING_THRESHOLD_GROUP", "0.5"))
+
+    # Voting debug settings - save annotated frames for troubleshooting
+    voting_save_debug_frames: bool = bool(int(os.getenv("VOTING_SAVE_DEBUG_FRAMES", "1")))  # Enable by default
+    voting_debug_frames_dir: str = os.getenv("VOTING_DEBUG_FRAMES_DIR", "voting_debug_frames")
+
 
 @lru_cache()
 def get_settings() -> Settings:
