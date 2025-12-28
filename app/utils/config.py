@@ -163,10 +163,40 @@ class Settings(BaseSettings):
     activity_merge_enabled: bool = bool(int(os.getenv("ACTIVITY_MERGE_ENABLED", "1")))
     activity_preserve_raw: bool = bool(int(os.getenv("ACTIVITY_PRESERVE_RAW", "0")))
 
-    # Voting-based activity validation settings
+    # Voting-based activity validation settings (DEPRECATED - use burst verification)
     # Validates activities by checking percentage of frames with positive detections
-    voting_enabled: bool = bool(int(os.getenv("VOTING_ENABLED", "1")))
+    voting_enabled: bool = bool(int(os.getenv("VOTING_ENABLED", "0")))  # Disabled, replaced by burst verification
     voting_threshold: float = float(os.getenv("VOTING_THRESHOLD", "0.8"))  # 80% of frames must have positive detection
+
+    # Burst Verification Settings (replaces sliding window voting)
+    # When activity detected on sampled frame, verify using N consecutive native frames
+    # Confirms only if threshold detections are met (e.g., 6+ out of 10 native frames)
+    burst_verification_enabled: bool = bool(int(os.getenv("BURST_VERIFICATION_ENABLED", "1")))
+    burst_verification_frames: int = int(os.getenv("BURST_VERIFICATION_FRAMES", "10"))  # Native frames to check
+    burst_confirmation_threshold: int = int(os.getenv("BURST_CONFIRMATION_THRESHOLD", "6"))  # Min detections needed
+
+    # Per-activity burst verification overrides
+    # Format: activity_type -> {'frames': N, 'threshold': M}
+    @property
+    def burst_config_overrides(self) -> dict:
+        """
+        Per-activity burst verification configuration overrides.
+
+        Returns:
+            dict: Mapping of activity_type -> {'frames': N, 'threshold': M}
+        """
+        return {
+            'microsleep': {'frames': 5, 'threshold': 3},      # Faster for safety
+            'sleep': {'frames': 8, 'threshold': 5},           # Slightly faster for safety
+            'cell_phone': {'frames': 10, 'threshold': 4},     # LOWERED from 6 to 4 (40%)
+            'writing': {'frames': 10, 'threshold': 4},        # LOWERED from 6 to 4 (40%)
+            'packing_bags': {'frames': 10, 'threshold': 4},   # LOWERED from 6 to 4 (40%)
+            'mind_diversion': {'frames': 10, 'threshold': 5}, # LOWERED from 7 to 5 (50%)
+            'group_detected': {'frames': 10, 'threshold': 7}, # Stricter
+            'lp_hand_gesture': {'frames': 5, 'threshold': 3}, # Fast for gestures
+            'alp_hand_gesture': {'frames': 5, 'threshold': 3},# Fast for gestures
+            'no_person_detected': {'frames': 10, 'threshold': 7},  # Stricter
+        }
 
 
 @lru_cache()

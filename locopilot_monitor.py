@@ -18,10 +18,11 @@ script_dir = os.path.dirname(os.path.abspath(__file__))
 if script_dir not in sys.path:
     sys.path.insert(0, script_dir)
 
-# Import preprocessing service and config
+# Import preprocessing service, config, and burst verification service
 try:
     from app.services.image_preprocessing_service import ImagePreprocessingService
     from app.utils.config import get_settings
+    from app.services.burst_verification_service import get_burst_verification_service
 except ImportError:
     # Fallback: try importing as module
     try:
@@ -50,9 +51,22 @@ except ImportError:
                 get_settings = None
         else:
             get_settings = None
+        # Load burst verification service
+        burst_path = os.path.join(script_dir, 'app', 'services', 'burst_verification_service.py')
+        if os.path.exists(burst_path):
+            spec = importlib.util.spec_from_file_location("burst_verification_service", burst_path)
+            if spec and spec.loader:
+                burst_module = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(burst_module)
+                get_burst_verification_service = burst_module.get_burst_verification_service
+            else:
+                get_burst_verification_service = None
+        else:
+            get_burst_verification_service = None
     except Exception:
         ImagePreprocessingService = None
         get_settings = None
+        get_burst_verification_service = None
 
 # ✅ WINDOWS FIX: Prevent Qt/GUI initialization in worker processes
 # If running in a worker process (detected by QT_QPA_PLATFORM=offscreen),
@@ -287,9 +301,30 @@ class LocopilotActivityMonitor:
             'no_person_detected': {'active': False, 'start_time': None, 'frames': [], 'detection_votes': [], 'duration': 0}
         }
 
-        # Voting configuration for false positive reduction
-        self.voting_enabled = settings.voting_enabled if settings else True
-        self.voting_threshold = settings.voting_threshold if settings else 0.8
+        # Burst Verification configuration for false positive reduction
+        # Replaces the old sliding window voting with native frame verification
+        self.burst_verification_enabled = settings.burst_verification_enabled if settings else True
+        self.burst_verification_frames = settings.burst_verification_frames if settings else 10
+        self.burst_confirmation_threshold = settings.burst_confirmation_threshold if settings else 6
+
+        # DOUBLE-FILTERING: Both burst verification AND voting validation enabled
+        # Activity must pass: (1) Burst: 40% of native frames, (2) Voting: 40% of sampled frames
+        # This stricter approach helps reduce false positives
+        self.voting_enabled = True  # Re-enabled for stricter false positive filtering
+        self.voting_threshold = 0.4  # 40% threshold - matches burst verification
+
+        # Initialize burst verification service for state management
+        if self.burst_verification_enabled and get_burst_verification_service is not None:
+            burst_config = {
+                'verification_frames': self.burst_verification_frames,
+                'confirmation_threshold': self.burst_confirmation_threshold,
+                'activity_overrides': settings.burst_config_overrides if settings else {}
+            }
+            self.burst_service = get_burst_verification_service(burst_config)
+            self.logger.info(f"Burst verification service ENABLED ({self.burst_confirmation_threshold}/{self.burst_verification_frames} threshold)")
+        else:
+            self.burst_service = None
+            self.logger.info("Burst verification service DISABLED")
         
         # TEMPORAL SUPPRESSION: Track recent activities per person for gesture suppression
         # Format: {person_idx: {'writing': last_timestamp, 'packing': last_timestamp, 'cell_phone': last_timestamp}}
@@ -606,18 +641,21 @@ class LocopilotActivityMonitor:
             
             self.logger.debug(f"[Frame Sampling] Completed sampling, total samples: {sampled_idx}")
 
-    def validate_detection_with_voting(self, video_path, center_timestamp, activity_type, detections_cache=None):
+    def validate_detection_with_voting(self, video_path, center_timestamp, activity_type, detections_cache=None, person_idx=0):
         """
-        Validate a detection by checking the next 10 consecutive frames after detection.
+        Validate a detection by checking consecutive native frames after detection.
 
-        When an activity is detected at a sampled frame, this method checks the next
-        10 frames at native FPS to confirm the activity is real (not a false positive).
+        When an activity is detected at a sampled frame, this method checks N native
+        frames to confirm the activity is real (not a false positive).
+
+        Uses per-activity configuration from burst_service for frames and threshold.
 
         Args:
             video_path: Path to video file
             center_timestamp: Timestamp (seconds) where activity was detected
             activity_type: Type of activity to validate ('cell_phone', 'writing', etc.)
             detections_cache: Optional pre-computed detections to avoid re-running YOLO
+            person_idx: Person index for per-person state management
 
         Returns:
             tuple: (is_valid, detection_rate, positive_count, total_count)
@@ -625,8 +663,19 @@ class LocopilotActivityMonitor:
         if not self.voting_enabled:
             return True, 1.0, 1, 1
 
-        # Number of consecutive frames to check after detection
-        frames_to_check = 10
+        # Check if activity is already confirmed (skip re-verification)
+        if self.burst_service is not None and self.burst_service.is_activity_confirmed(activity_type, person_idx):
+            self.logger.debug(f"BURST: '{activity_type}' already confirmed, skipping verification")
+            return True, 1.0, 1, 1
+
+        # Get per-activity configuration from burst service
+        if self.burst_service is not None:
+            config = self.burst_service.get_config(activity_type)
+            frames_to_check = config.frames
+            threshold_ratio = config.threshold / config.frames if config.frames > 0 else 0.6
+        else:
+            frames_to_check = self.burst_verification_frames
+            threshold_ratio = self.voting_threshold
 
         try:
             with video_capture_context(video_path) as cap:
@@ -748,18 +797,27 @@ class LocopilotActivityMonitor:
                     return True, 1.0, 1, 1  # No frames to check, assume valid
 
                 detection_rate = positive_votes / total_votes
-                is_valid = detection_rate >= self.voting_threshold
+                is_valid = detection_rate >= threshold_ratio
+
+                # Update burst service state based on validation result
+                if self.burst_service is not None:
+                    if is_valid:
+                        # Mark activity as confirmed in burst service
+                        state = self.burst_service.get_state(activity_type, person_idx)
+                        from app.services.burst_verification_service import VerificationStatus
+                        state.status = VerificationStatus.CONFIRMED
+                        state.confirmation_frame = int(center_timestamp * (cap.get(cv2.CAP_PROP_FPS) or 30.0))
 
                 self.logger.info(
-                    f"VOTING for '{activity_type}' at {center_timestamp:.2f}s: "
+                    f"BURST VERIFICATION for '{activity_type}' at {center_timestamp:.2f}s: "
                     f"{positive_votes}/{total_votes} = {detection_rate:.1%} "
-                    f"({'PASS' if is_valid else 'FAIL'})"
+                    f"(threshold: {threshold_ratio:.0%}) - {'PASS' if is_valid else 'FAIL'}"
                 )
 
                 return is_valid, detection_rate, positive_votes, total_votes
 
         except Exception as e:
-            self.logger.warning(f"Voting validation failed: {e}")
+            self.logger.warning(f"Burst verification failed: {e}")
             return True, 1.0, 1, 1  # Fallback to valid on error
 
     def calculate_eye_aspect_ratio(self, landmarks):
@@ -2780,7 +2838,84 @@ class LocopilotActivityMonitor:
                         'right_dist_to_backpack': right_dist,
                         'left_dist_to_backpack': left_dist
                     }
-        
+
+        # ==================================================================================
+        # FALSE POSITIVE FILTER #3: HAND-TO-FACE PROXIMITY (DRINKING/EATING)
+        # ==================================================================================
+        # Suppress gesture if hand is too close to face (likely drinking/eating, not signaling)
+        # Uses nose landmark as face reference point
+        # ==================================================================================
+        DRINKING_PROXIMITY_THRESHOLD = 150  # pixels - hand within 150px of nose = drinking
+
+        right_wrist_nose_dist = ((right_wrist_coords[0] - nose_coords[0])**2 +
+                                 (right_wrist_coords[1] - nose_coords[1])**2)**0.5
+
+        if right_wrist_nose_dist < DRINKING_PROXIMITY_THRESHOLD:
+            frame_info = f"[Frame {frame_number}] " if frame_number is not None else ""
+            gesture_logger.debug(f"{frame_info}GESTURE SUPPRESSED - Person {matched_person_idx} ({matched_role}) - "
+                               f"hand near face (drinking/eating), dist={right_wrist_nose_dist:.0f}px")
+            return False, False, {
+                'suppressed': True,
+                'reason': 'Hand near face (drinking/eating posture)',
+                'matched_person_idx': matched_person_idx,
+                'matched_role': matched_role,
+                'wrist_nose_dist': right_wrist_nose_dist
+            }
+
+        # ==================================================================================
+        # FALSE POSITIVE FILTER #4: ARMS CROSSED / HANDS-ON-CHEST DETECTION
+        # ==================================================================================
+        # Suppress gesture if right hand is crossing body midline to the left side
+        # This indicates a relaxed posture (arms crossed), not a signaling gesture
+        # ==================================================================================
+        torso_width = abs(right_shoulder_coords[0] - left_shoulder_coords[0])
+        body_center_x = (right_shoulder_coords[0] + left_shoulder_coords[0]) / 2
+
+        # Right hand crossed to left side of body center (with 10% margin)
+        right_hand_crossed = right_wrist_coords[0] < (body_center_x - torso_width * 0.1)
+
+        if right_hand_crossed:
+            frame_info = f"[Frame {frame_number}] " if frame_number is not None else ""
+            gesture_logger.debug(f"{frame_info}GESTURE SUPPRESSED - Person {matched_person_idx} ({matched_role}) - "
+                               f"arms crossed posture (right hand at x={right_wrist_coords[0]:.0f}, body_center={body_center_x:.0f})")
+            return False, False, {
+                'suppressed': True,
+                'reason': 'Arms crossed posture detected',
+                'matched_person_idx': matched_person_idx,
+                'matched_role': matched_role,
+                'right_wrist_x': right_wrist_coords[0],
+                'body_center_x': body_center_x
+            }
+
+        # ==================================================================================
+        # FALSE POSITIVE FILTER #5: FRAME EDGE DETECTION (WALL/FIXTURE HOLDING)
+        # ==================================================================================
+        # Suppress gesture if hand is at frame edge (likely holding wall/fixture)
+        # This is common when operators hold onto handles or rails on the left/right side
+        # ==================================================================================
+        FRAME_EDGE_MARGIN = 0.08  # 8% of frame width (reduced to detect more edge gestures)
+
+        frame_left_edge = w * FRAME_EDGE_MARGIN
+        frame_right_edge = w * (1 - FRAME_EDGE_MARGIN)
+
+        # Check if RIGHT hand (the only one we detect) is at frame edge
+        right_hand_at_left_edge = right_wrist_coords[0] < frame_left_edge
+        right_hand_at_right_edge = right_wrist_coords[0] > frame_right_edge
+
+        if right_hand_at_left_edge or right_hand_at_right_edge:
+            frame_info = f"[Frame {frame_number}] " if frame_number is not None else ""
+            edge = "left" if right_hand_at_left_edge else "right"
+            gesture_logger.debug(f"{frame_info}GESTURE SUPPRESSED - Person {matched_person_idx} ({matched_role}) - "
+                               f"hand at {edge} frame edge (holding wall/fixture), x={right_wrist_coords[0]:.0f}")
+            return False, False, {
+                'suppressed': True,
+                'reason': f'Hand at frame edge (holding wall/fixture)',
+                'matched_person_idx': matched_person_idx,
+                'matched_role': matched_role,
+                'at_left_edge': right_hand_at_left_edge,
+                'at_right_edge': right_hand_at_right_edge
+            }
+
         # ==================================================================================
         # ROBUST HAND GESTURE DETECTION LOGIC
         # ==================================================================================
@@ -2897,7 +3032,7 @@ class LocopilotActivityMonitor:
 
             # RELAXED: Allow arm close to body (drinking/eating position)
             # >20px minimal extension (hand not completely against body)
-            right_arm_extension > 20 and
+            right_arm_extension > 40 and  # INCREASED from 20 to reduce false positives
 
             # Allow elbow to be below shoulder (natural drinking/eating position)
             (right_elbow_coords[1] < right_shoulder_coords[1] + 150) and
@@ -2932,7 +3067,7 @@ class LocopilotActivityMonitor:
 
             # RELAXED: Allow arm close to body (drinking/eating position)
             # >20px minimal extension (hand not completely against body)
-            left_arm_extension > 20 and
+            left_arm_extension > 40 and  # INCREASED from 20 (not used - RIGHT hand only)
 
             # Allow elbow to be below shoulder (natural drinking/eating position)
             (left_elbow_coords[1] < left_shoulder_coords[1] + 150) and
@@ -2948,7 +3083,9 @@ class LocopilotActivityMonitor:
         )
         
         # Either hand raised counts as gesture
-        hand_gesture_detected = right_hand_raised or left_hand_raised
+        # RIGHT HAND ONLY - Left hand is typically used for controls/holding fixtures
+        # This reduces false positives from wall holding, control operations, etc.
+        hand_gesture_detected = right_hand_raised
         
         # COMPREHENSIVE DEBUG LOGGING for all checks
         frame_info = f"[Frame {frame_number}]" if frame_number is not None else ""
@@ -3005,8 +3142,25 @@ class LocopilotActivityMonitor:
                 f"Rapid raise: {rapid_raise}"
             )
 
+            # ==================================================================================
+            # MANDATORY VELOCITY CHECK - Require rapid upward movement for gesture detection
+            # ==================================================================================
+            # Static hand positions should NOT trigger gestures (eliminates wall holding,
+            # sustained drinking, arms crossed, etc.)
+            # Only rapid hand raises (signaling gestures) should be detected
+            # ==================================================================================
             if not rapid_raise:
-                gesture_logger.debug(f"[VELOCITY] No rapid raise - may be control operation")
+                frame_info = f"[Frame {frame_number}] " if frame_number is not None else ""
+                gesture_logger.debug(f"{frame_info}GESTURE SUPPRESSED - Person {matched_person_idx} ({matched_role}) - "
+                                   f"no rapid hand movement (static position)")
+                return False, False, {
+                    'suppressed': True,
+                    'reason': 'No rapid hand movement detected (static position)',
+                    'matched_person_idx': matched_person_idx,
+                    'matched_role': matched_role,
+                    'right_velocity': velocity_analysis.get('right_velocity', 0),
+                    'right_trajectory': velocity_analysis.get('right_trajectory', 'unknown')
+                }
 
         # Return result based on the MATCHED person's role
         if matched_role == 'LP':
@@ -3772,7 +3926,7 @@ class LocopilotActivityMonitor:
                         y1_expanded = max(0, int(lap_y1))
                         x2_expanded = min(w, int(x2 + margin))
                         y2_expanded = min(h, int(y2 + margin))
-                        
+
                         # Run YOLO with very low confidence to catch white papers/documents
                         lap_region = frame[y1_expanded:y2_expanded, x1_expanded:x2_expanded]
                         if lap_region.size > 0:
@@ -3791,7 +3945,41 @@ class LocopilotActivityMonitor:
                                         break
                             except Exception:
                                 pass
-                    
+
+                    # Reason 4: Check if person is HOLDING any object (hands near detected objects)
+                    # Mind diversion only valid when hands are EMPTY (not engaged with any object)
+                    if suppress_reason is None:
+                        try:
+                            right_wrist = self.get_keypoint(translated_landmarks, 'right_wrist')
+                            left_wrist = self.get_keypoint(translated_landmarks, 'left_wrist')
+
+                            hand_region_radius = 150  # pixels - radius around wrist to check for objects
+                            objects_to_check = ['book', 'cell_phone', 'bottle', 'cup', 'remote']
+
+                            for obj_type in objects_to_check:
+                                for obj_bbox in detections.get(obj_type, []):
+                                    # Get object center
+                                    obj_center_x = (obj_bbox[0] + obj_bbox[2]) / 2
+                                    obj_center_y = (obj_bbox[1] + obj_bbox[3]) / 2
+
+                                    # Check distance from each wrist
+                                    for wrist, wrist_name in [(right_wrist, 'right'), (left_wrist, 'left')]:
+                                        if wrist.visibility > 0.3:
+                                            wrist_x = int(wrist.x * w)
+                                            wrist_y = int(wrist.y * h)
+                                            distance = ((wrist_x - obj_center_x)**2 + (wrist_y - obj_center_y)**2)**0.5
+
+                                            if distance < hand_region_radius:
+                                                suppress_reason = f'holding_{obj_type}'
+                                                self.logger.debug(f"Mind diversion suppressed: {wrist_name} hand near {obj_type} (dist={distance:.0f}px)")
+                                                break
+                                    if suppress_reason:
+                                        break
+                                if suppress_reason:
+                                    break
+                        except Exception as e:
+                            self.logger.debug(f"Error checking hand-object proximity: {e}")
+
                     # Apply suppression if any reason found
                     if suppress_reason:
                         person_activities['mind_diversion'] = False
@@ -4322,249 +4510,57 @@ class LocopilotActivityMonitor:
         return keep_boxes
 
     def identify_person_roles(self, frame, person_boxes, detections):
-        """Identify LP (Loco Pilot) and ALP (Assistant Loco Pilot) based on objects near each person.
-        
-        Logic:
-        - For each person, detect objects in front using YOLO
-        - lp_score = monitors + keyboards + cell_phone + panel-like boxes
-        - alp_score = book + empty_desk (approximated by lack of control objects)
-        - LP = person with higher lp_score
-        - ALP = the other person
-        - Third person = "Supervisor", "Trainee", or "Visitor"
-        
+        """Identify LP (Loco Pilot) and ALP (Assistant Loco Pilot) based on position in frame.
+
+        SIMPLIFIED STATIC ASSIGNMENT (2024-12-27):
+        - RIGHT side of frame = LP (Loco Pilot) - operates controls
+        - LEFT side of frame = ALP (Assistant Loco Pilot)
+
+        This replaces the previous ML-based scoring system for more reliable role assignment.
+
         Args:
             frame: Current video frame
             person_boxes: List of de-duplicated person bounding boxes [[x1, y1, x2, y2], ...]
-            detections: Dictionary of all detected objects from YOLO
-            
+            detections: Dictionary of all detected objects from YOLO (unused in static mode)
+
         Returns:
             Dictionary mapping person index to role info: {
-                0: {'role': 'LP', 'lp_score': 5, 'alp_score': 1, 'bbox': [x1, y1, x2, y2]},
-                1: {'role': 'ALP', 'lp_score': 2, 'alp_score': 4, 'bbox': [x1, y1, x2, y2]},
+                0: {'role': 'LP', 'bbox': [x1, y1, x2, y2], ...},
+                1: {'role': 'ALP', 'bbox': [x1, y1, x2, y2], ...},
                 ...
             }
         """
         if len(person_boxes) == 0:
             return {}
-        
-        # Phase 3: Check if we can reuse cached full-frame detection (avoid redundant inference)
-        cache_age = time_module.time() - getattr(self, '_cached_frame_time', 0)
-        if (hasattr(self, '_cached_frame_objects') and
-            hasattr(self, '_cached_frame_time') and
-            cache_age < 0.1):  # Cache valid for 100ms only
-            # Reuse cached results instead of re-running inference
-            yolo_results = self._cached_frame_objects
-        else:
-            # Cache miss or stale - run full-frame YOLO detection
-            # Look for: tv/monitor, keyboard, mouse, laptop, book, backpack, cell phone
-            yolo_results = self.yolo_model(frame, verbose=False, conf=0.3,
-                                            imgsz=self.yolo_imgsz, device=self.yolo_device)
-        
-        # Collect all detected objects with their class names
-        all_objects = []
-        for r in yolo_results:
-            boxes = r.boxes
-            for box in boxes:
-                cls = int(box.cls[0])
-                conf = float(box.conf[0])
-                xyxy = box.xyxy[0].cpu().numpy()
-                class_name = self.yolo_model.names[cls]
-                
-                all_objects.append({
-                    'class': class_name,
-                    'confidence': conf,
-                    'bbox': [float(xyxy[0]), float(xyxy[1]), float(xyxy[2]), float(xyxy[3])]
-                })
-        
-        # For each person, calculate scores based on nearby objects
-        person_scores = []
-        
+
+        h, w = frame.shape[:2]
+        frame_center_x = w / 2
+
+        person_roles = {}
+
         for person_idx, person_bbox in enumerate(person_boxes):
             px1, py1, px2, py2 = person_bbox
             person_center_x = (px1 + px2) / 2
-            person_width = px2 - px1
-            person_height = py2 - py1
-            
-            # Define "in front of person" as region ahead of them
-            # Assuming people face the camera/controls, "in front" is area below person's upper body
-            # and within reasonable horizontal distance
-            search_margin = person_width * 1.5  # Search 1.5x person width on each side
-            search_x1 = person_center_x - search_margin
-            search_x2 = person_center_x + search_margin
-            search_y1 = py1 + (person_height * 0.3)  # Start from chest level
-            search_y2 = py2 + (person_height * 0.5)  # Extend below person (desk/console area)
-            
-            # Count relevant objects in search region
-            lp_objects = {
-                'tv': 0,
-                'laptop': 0, 
-                'keyboard': 0,
-                'mouse': 0,
-                'cell phone': 0,
-                'remote': 0  # Can act as control panel
-            }
-            
-            alp_objects = {
-                'book': 0,
-                'notebook': 0,
-                'backpack': 0
-            }
-            
-            nearby_objects = []
-            
-            for obj in all_objects:
-                obj_bbox = obj['bbox']
-                ox1, oy1, ox2, oy2 = obj_bbox
-                obj_center_x = (ox1 + ox2) / 2
-                obj_center_y = (oy1 + oy2) / 2
-                
-                # Check if object is in the search region
-                if (search_x1 <= obj_center_x <= search_x2 and 
-                    search_y1 <= obj_center_y <= search_y2):
-                    nearby_objects.append(obj)
-                    
-                    # Count LP-related objects
-                    obj_class = obj['class']
-                    if obj_class in lp_objects:
-                        lp_objects[obj_class] += 1
-                    
-                    # Count ALP-related objects
-                    if obj_class in alp_objects:
-                        alp_objects[obj_class] += 1
-            
-            # Calculate scores
-            lp_score = (
-                lp_objects['tv'] * 3 +  # Monitors are strong indicators
-                lp_objects['laptop'] * 2 +
-                lp_objects['keyboard'] * 2 +
-                lp_objects['mouse'] * 1 +
-                lp_objects['cell phone'] * 1 +
-                lp_objects['remote'] * 2  # Control panels/remotes
-            )
-            
-            alp_score = (
-                alp_objects['book'] * 3 +  # Books/logs are strong indicators
-                alp_objects['notebook'] * 3 +
-                alp_objects['backpack'] * 1
-            )
-            
-            # If no LP objects detected, consider "empty desk" as ALP indicator
-            if lp_score == 0 and alp_score == 0:
-                alp_score = 1  # Slight preference for ALP if nothing detected
-            
-            person_scores.append({
-                'person_idx': person_idx,
-                'bbox': person_bbox,
-                'lp_score': lp_score,
-                'alp_score': alp_score,
-                'lp_objects': lp_objects,
-                'alp_objects': alp_objects,
-                'nearby_objects': nearby_objects
-            })
-        
-        # Assign roles based on scores
-        person_roles = {}
-        
-        if len(person_scores) == 1:
-            # Only one person - default to LP
-            person_roles[0] = {
-                'role': 'LP',
-                'role_name': 'Loco Pilot',
-                'lp_score': person_scores[0]['lp_score'],
-                'alp_score': person_scores[0]['alp_score'],
-                'bbox': person_scores[0]['bbox'],
-                'objects': person_scores[0]['nearby_objects']
-            }
-        
-        elif len(person_scores) == 2:
-            # Two people - assign LP and ALP
-            # Check if scores are meaningful (not both zero)
-            scores_meaningful = any(p['lp_score'] > 0 or p['alp_score'] > 0 for p in person_scores)
 
-            if scores_meaningful:
-                # Use score-based assignment
-                sorted_persons = sorted(person_scores, key=lambda x: x['lp_score'], reverse=True)
+            # Static assignment: RIGHT side = LP, LEFT side = ALP
+            if person_center_x > frame_center_x:
+                role = 'LP'
+                role_name = 'Loco Pilot'
             else:
-                # Fallback: Use spatial position when scores are all zero
-                # In most locomotive cabs:
-                # - LP typically on the LEFT side (when viewed from behind/above)
-                # - ALP typically on the RIGHT side
-                # Sort by X position (leftmost = LP, rightmost = ALP)
-                sorted_persons = sorted(person_scores, key=lambda x: (x['bbox'][0] + x['bbox'][2]) / 2)  # Sort by center_x
-                self.logger.debug("Using spatial heuristic for role assignment (all scores zero)")
+                role = 'ALP'
+                role_name = 'Assistant Loco Pilot'
 
-            # Person with higher lp_score (or leftmost position) is LP
-            person_roles[sorted_persons[0]['person_idx']] = {
-                'role': 'LP',
-                'role_name': 'Loco Pilot',
-                'lp_score': sorted_persons[0]['lp_score'],
-                'alp_score': sorted_persons[0]['alp_score'],
-                'bbox': sorted_persons[0]['bbox'],
-                'objects': sorted_persons[0]['nearby_objects']
+            person_roles[person_idx] = {
+                'role': role,
+                'role_name': role_name,
+                'bbox': list(person_bbox),
+                'lp_score': 0,  # Not used in static mode
+                'alp_score': 0,
+                'objects': []
             }
 
-            # Other person is ALP
-            person_roles[sorted_persons[1]['person_idx']] = {
-                'role': 'ALP',
-                'role_name': 'Assistant Loco Pilot',
-                'lp_score': sorted_persons[1]['lp_score'],
-                'alp_score': sorted_persons[1]['alp_score'],
-                'bbox': sorted_persons[1]['bbox'],
-                'objects': sorted_persons[1]['nearby_objects']
-            }
-        
-        else:
-            # Three or more people
-            # Sort by lp_score (descending)
-            sorted_persons = sorted(person_scores, key=lambda x: x['lp_score'], reverse=True)
-            
-            # First person is LP
-            person_roles[sorted_persons[0]['person_idx']] = {
-                'role': 'LP',
-                'role_name': 'Loco Pilot',
-                'lp_score': sorted_persons[0]['lp_score'],
-                'alp_score': sorted_persons[0]['alp_score'],
-                'bbox': sorted_persons[0]['bbox'],
-                'objects': sorted_persons[0]['nearby_objects']
-            }
-            
-            # Second person is ALP
-            person_roles[sorted_persons[1]['person_idx']] = {
-                'role': 'ALP',
-                'role_name': 'Assistant Loco Pilot',
-                'lp_score': sorted_persons[1]['lp_score'],
-                'alp_score': sorted_persons[1]['alp_score'],
-                'bbox': sorted_persons[1]['bbox'],
-                'objects': sorted_persons[1]['nearby_objects']
-            }
-            
-            # Additional people - assign contextual roles
-            for i in range(2, len(sorted_persons)):
-                person_idx = sorted_persons[i]['person_idx']
-                
-                # Determine role based on context
-                # If they have books/backpacks, likely trainee
-                # If they have control objects, likely supervisor
-                # Otherwise, visitor
-                if sorted_persons[i]['alp_score'] > 0:
-                    role = 'TRAINEE'
-                    role_name = 'Trainee'
-                elif sorted_persons[i]['lp_score'] > 2:
-                    role = 'SUPERVISOR'
-                    role_name = 'Supervisor'
-                else:
-                    role = 'VISITOR'
-                    role_name = 'Visitor'
-                
-                person_roles[person_idx] = {
-                    'role': role,
-                    'role_name': role_name,
-                    'lp_score': sorted_persons[i]['lp_score'],
-                    'alp_score': sorted_persons[i]['alp_score'],
-                    'bbox': sorted_persons[i]['bbox'],
-                    'objects': sorted_persons[i]['nearby_objects']
-                }
-        
+            self.logger.debug(f"Person {person_idx}: center_x={person_center_x:.0f}, frame_center={frame_center_x:.0f} -> {role}")
+
         return person_roles
     
     def start_activity(self, activity_name, timestamp, fps, frame_count, person_roles=None):
@@ -4612,6 +4608,9 @@ class LocopilotActivityMonitor:
                 activity['duration'] = 0
                 self.consecutive_detections[activity_name] = 0
                 self.grace_counters[activity_name] = 0
+                # Reset burst verification state for next detection
+                if self.burst_service is not None:
+                    self.burst_service.reset_activity(activity_name)
                 return
 
             # Voting-based validation: check if enough frames have positive detections
@@ -4632,6 +4631,9 @@ class LocopilotActivityMonitor:
                         activity['duration'] = 0
                         self.consecutive_detections[activity_name] = 0
                         self.grace_counters[activity_name] = 0
+                        # Reset burst verification state for next detection
+                        if self.burst_service is not None:
+                            self.burst_service.reset_activity(activity_name)
                         return
                     else:
                         self.logger.debug(
@@ -4781,6 +4783,9 @@ class LocopilotActivityMonitor:
             activity['duration'] = 0
             self.consecutive_detections[activity_name] = 0
             self.grace_counters[activity_name] = 0
+            # Reset burst verification state for next detection
+            if self.burst_service is not None:
+                self.burst_service.reset_activity(activity_name)
 
             self.evidence_counter += 1
 
@@ -5172,6 +5177,28 @@ class LocopilotActivityMonitor:
                 if alp_not_coordinating and self.consecutive_detections['alp_hand_gesture'] == 0:
                     self.logger.info(f"[{timestamp}] [Frame {frame_idx}] COORDINATION FAILURE: LP raised hand but ALP did NOT respond")
 
+                # SUPPRESS hand gesture coordination failure when the non-responding person shows MIND DIVERSION
+                # Mind diversion (head turned away + looking down) explains why they didn't respond
+                lp_has_mind_diversion = False
+                alp_has_mind_diversion = False
+                for person_idx, person_data in persons_data.items():
+                    role_name = person_data.get('role_name', 'Unknown')
+                    if person_data['activities'].get('mind_diversion', False):
+                        if role_name == 'LP':
+                            lp_has_mind_diversion = True
+                        elif role_name == 'ALP':
+                            alp_has_mind_diversion = True
+
+                # Suppress LP not coordinating if LP has mind diversion
+                if lp_not_coordinating and lp_has_mind_diversion:
+                    self.logger.info(f"[{timestamp}] SUPPRESSING LP hand gesture failure - LP has mind diversion")
+                    lp_not_coordinating = False
+
+                # Suppress ALP not coordinating if ALP has mind diversion
+                if alp_not_coordinating and alp_has_mind_diversion:
+                    self.logger.info(f"[{timestamp}] SUPPRESSING ALP hand gesture failure - ALP has mind diversion")
+                    alp_not_coordinating = False
+
                 # Detect when no person is in frame
                 no_person_detected_flag = (len(detections.get('deduplicated_person', [])) == 0)
 
@@ -5215,17 +5242,20 @@ class LocopilotActivityMonitor:
                                 if not is_valid:
                                     # Voting failed - this is likely a false positive
                                     self.logger.info(
-                                        f"[{timestamp}] Activity '{activity_name}' REJECTED by voting: "
+                                        f"[{timestamp}] Activity '{activity_name}' REJECTED by burst verification: "
                                         f"{pos_votes}/{total_votes} = {detection_rate:.1%} < {self.voting_threshold:.0%}"
                                     )
                                     # Reset counters to prevent repeated validation attempts
                                     self.consecutive_detections[activity_name] = 0
                                     self.grace_counters[activity_name] = 0
+                                    # Reset burst state for next detection attempt
+                                    if self.burst_service is not None:
+                                        self.burst_service.reset_activity(activity_name)
                                     continue  # Skip this activity, don't start it
 
                                 # Voting passed - start the activity
                                 self.logger.info(
-                                    f"[{timestamp}] Activity '{activity_name}' CONFIRMED by voting: "
+                                    f"[{timestamp}] Activity '{activity_name}' CONFIRMED by burst verification: "
                                     f"{pos_votes}/{total_votes} = {detection_rate:.1%}"
                                 )
                                 self.start_activity(activity_name, timestamp, fps, frame_idx, person_roles=person_roles)
@@ -5508,6 +5538,28 @@ class LocopilotActivityMonitor:
                 if alp_not_coordinating and self.consecutive_detections['alp_hand_gesture'] == 0:
                     self.logger.info(f"[{timestamp}] [Frame {frame_idx}] COORDINATION FAILURE: LP raised hand but ALP did NOT respond")
 
+                # SUPPRESS hand gesture coordination failure when the non-responding person shows MIND DIVERSION
+                # Mind diversion (head turned away + looking down) explains why they didn't respond
+                lp_has_mind_diversion = False
+                alp_has_mind_diversion = False
+                for person_idx, person_data in persons_data.items():
+                    role_name = person_data.get('role_name', 'Unknown')
+                    if person_data['activities'].get('mind_diversion', False):
+                        if role_name == 'LP':
+                            lp_has_mind_diversion = True
+                        elif role_name == 'ALP':
+                            alp_has_mind_diversion = True
+
+                # Suppress LP not coordinating if LP has mind diversion
+                if lp_not_coordinating and lp_has_mind_diversion:
+                    self.logger.info(f"[{timestamp}] SUPPRESSING LP hand gesture failure - LP has mind diversion")
+                    lp_not_coordinating = False
+
+                # Suppress ALP not coordinating if ALP has mind diversion
+                if alp_not_coordinating and alp_has_mind_diversion:
+                    self.logger.info(f"[{timestamp}] SUPPRESSING ALP hand gesture failure - ALP has mind diversion")
+                    alp_not_coordinating = False
+
                 # Detect when no person is in frame
                 no_person_detected_flag = (len(detections.get('deduplicated_person', [])) == 0)
 
@@ -5548,17 +5600,20 @@ class LocopilotActivityMonitor:
                                 if not is_valid:
                                     # Voting failed - this is likely a false positive
                                     self.logger.info(
-                                        f"[{timestamp}] Activity '{activity_name}' REJECTED by voting: "
+                                        f"[{timestamp}] Activity '{activity_name}' REJECTED by burst verification: "
                                         f"{pos_votes}/{total_votes} = {detection_rate:.1%} < {self.voting_threshold:.0%}"
                                     )
                                     # Reset counters to prevent repeated validation attempts
                                     self.consecutive_detections[activity_name] = 0
                                     self.grace_counters[activity_name] = 0
+                                    # Reset burst state for next detection attempt
+                                    if self.burst_service is not None:
+                                        self.burst_service.reset_activity(activity_name)
                                     continue  # Skip this activity, don't start it
 
                                 # Voting passed - start the activity
                                 self.logger.info(
-                                    f"[{timestamp}] Activity '{activity_name}' CONFIRMED by voting: "
+                                    f"[{timestamp}] Activity '{activity_name}' CONFIRMED by burst verification: "
                                     f"{pos_votes}/{total_votes} = {detection_rate:.1%}"
                                 )
                                 self.start_activity(activity_name, timestamp, fps, frame_idx, person_roles=person_roles)
