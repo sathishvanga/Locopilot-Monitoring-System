@@ -63,6 +63,13 @@ try:
 except ImportError:
     VotingVerificationService = None
 
+# Import FrameTimestampService for OCR timestamp extraction
+try:
+    from app.services.frame_timestamp_service import FrameTimestampService, get_frame_timestamp_service
+except ImportError:
+    FrameTimestampService = None
+    get_frame_timestamp_service = None
+
 # ✅ WINDOWS FIX: Prevent Qt/GUI initialization in worker processes
 # If running in a worker process (detected by QT_QPA_PLATFORM=offscreen),
 # ensure no Qt imports happen that could create GUI windows
@@ -274,6 +281,16 @@ class LocopilotActivityMonitor:
         # Cell phone detection confidence threshold (configurable)
         self.cell_phone_confidence = float(os.getenv("CELL_PHONE_CONFIDENCE", "0.45"))
 
+        # Initialize frame timestamp service for OCR timestamp extraction
+        self.frame_timestamp_service = None
+        self._current_ocr_timestamp = None  # Current OCR-extracted timestamp (HH:MM:SS)
+        if get_frame_timestamp_service is not None:
+            try:
+                self.frame_timestamp_service = get_frame_timestamp_service()
+                self.logger.info("Frame timestamp (OCR) service initialized")
+            except Exception as e:
+                self.logger.warning(f"Failed to initialize frame timestamp service: {e}")
+
         # Phase 2: Load inference optimization settings (1.5-1.8x speedup)
         self.yolo_imgsz = settings.yolo_imgsz if settings else 416
         self.yolo_device = settings.yolo_device if settings else 'cpu'
@@ -282,17 +299,18 @@ class LocopilotActivityMonitor:
         self._models_preloaded = preloaded_models is not None
 
         # Activity tracking with temporal filtering
+        # Each activity now also tracks OCR timestamps (ocr_start_time, ocr_end_time) for embedded frame timestamps
         self.activities = {
-            'microsleep': {'active': False, 'start_time': None, 'frames': [], 'duration': 0},
-            'sleep': {'active': False, 'start_time': None, 'frames': [], 'duration': 0},
-            'cell_phone': {'active': False, 'start_time': None, 'frames': [], 'duration': 0},
-            'writing': {'active': False, 'start_time': None, 'frames': [], 'duration': 0},
-            'packing_bags': {'active': False, 'start_time': None, 'frames': [], 'duration': 0},
-            'group_detected': {'active': False, 'start_time': None, 'frames': [], 'duration': 0},
-            'lp_hand_gesture': {'active': False, 'start_time': None, 'frames': [], 'duration': 0},
-            'alp_hand_gesture': {'active': False, 'start_time': None, 'frames': [], 'duration': 0},
-            'mind_diversion': {'active': False, 'start_time': None, 'frames': [], 'duration': 0},
-            'no_person_detected': {'active': False, 'start_time': None, 'frames': [], 'duration': 0}
+            'microsleep': {'active': False, 'start_time': None, 'ocr_start_time': None, 'frames': [], 'duration': 0},
+            'sleep': {'active': False, 'start_time': None, 'ocr_start_time': None, 'frames': [], 'duration': 0},
+            'cell_phone': {'active': False, 'start_time': None, 'ocr_start_time': None, 'frames': [], 'duration': 0},
+            'writing': {'active': False, 'start_time': None, 'ocr_start_time': None, 'frames': [], 'duration': 0},
+            'packing_bags': {'active': False, 'start_time': None, 'ocr_start_time': None, 'frames': [], 'duration': 0},
+            'group_detected': {'active': False, 'start_time': None, 'ocr_start_time': None, 'frames': [], 'duration': 0},
+            'lp_hand_gesture': {'active': False, 'start_time': None, 'ocr_start_time': None, 'frames': [], 'duration': 0},
+            'alp_hand_gesture': {'active': False, 'start_time': None, 'ocr_start_time': None, 'frames': [], 'duration': 0},
+            'mind_diversion': {'active': False, 'start_time': None, 'ocr_start_time': None, 'frames': [], 'duration': 0},
+            'no_person_detected': {'active': False, 'start_time': None, 'ocr_start_time': None, 'frames': [], 'duration': 0}
         }
         
         # TEMPORAL SUPPRESSION: Track recent activities per person for gesture suppression
@@ -4544,42 +4562,53 @@ class LocopilotActivityMonitor:
         
         return person_roles
     
-    def start_activity(self, activity_name, timestamp, fps, frame_count, person_roles=None):
+    def start_activity(self, activity_name, timestamp, fps, frame_count, person_roles=None, ocr_timestamp=None):
         """Start tracking an activity
-        
+
         Args:
             activity_name: Name of the activity
-            timestamp: Timestamp when activity started
+            timestamp: Timestamp when activity started (video playback time)
             fps: Frames per second
             frame_count: Frame count when activity started
             person_roles: Dictionary of person roles (optional)
+            ocr_timestamp: OCR-extracted timestamp from frame (HH:MM:SS format, optional)
         """
         if not self.activities[activity_name]['active']:
             self.activities[activity_name]['active'] = True
             self.activities[activity_name]['start_time'] = timestamp
+            self.activities[activity_name]['ocr_start_time'] = ocr_timestamp or self._current_ocr_timestamp
             self.activities[activity_name]['start_frame_count'] = frame_count
             self.activities[activity_name]['last_frame_count'] = frame_count
             self.activities[activity_name]['frames'] = list(self.frame_buffer)
             self.activities[activity_name]['duration'] = 0
             self.activities[activity_name]['person_roles'] = person_roles if person_roles else {}
-            self.logger.info(f"[{timestamp}] Activity started: {activity_name}")
+
+            # Log with OCR timestamp if available
+            ocr_ts = self.activities[activity_name]['ocr_start_time']
+            if ocr_ts:
+                self.logger.info(f"[{timestamp}] Activity started: {activity_name} (Frame timestamp: {ocr_ts})")
+            else:
+                self.logger.info(f"[{timestamp}] Activity started: {activity_name}")
     
-    def end_activity(self, activity_name, timestamp, fps, frame_count, people_count=1, save_clips=True):
+    def end_activity(self, activity_name, timestamp, fps, frame_count, people_count=1, save_clips=True, ocr_timestamp=None):
         """End tracking an activity and optionally save evidence (only if meets minimum duration)"""
         if self.activities[activity_name]['active']:
             activity = self.activities[activity_name]
             activity['active'] = False
-            
+
+            # Store OCR end timestamp
+            activity['ocr_end_time'] = ocr_timestamp or self._current_ocr_timestamp
+
             start_frame = activity.get('start_frame_count', frame_count)
-            
+
             # Calculate duration based on ACTUAL captured frames, not elapsed time
             # This ensures clip duration matches exactly the activity duration
             total_clip_frames = len(activity['frames'])
             actual_clip_duration = total_clip_frames / self.sample_fps  # Duration in seconds based on captured frames
-            
+
             # Check if activity meets minimum duration threshold
             min_duration = self.activity_thresholds[activity_name]['min_duration']
-            
+
             if actual_clip_duration < min_duration:
                 self.logger.debug(f"[{timestamp}] Activity '{activity_name}' too short ({actual_clip_duration:.2f}s < {min_duration}s) - discarded")
                 activity['frames'] = []
@@ -4587,10 +4616,10 @@ class LocopilotActivityMonitor:
                 self.consecutive_detections[activity_name] = 0
                 self.grace_counters[activity_name] = 0
                 return
-            
+
             start_time_str = activity['start_time']
-            
-            # Parse activity start time in seconds
+
+            # Parse activity start time in seconds (video playback time)
             def time_to_seconds(time_str):
                 """Convert HH:MM:SS.microseconds to seconds"""
                 parts = time_str.split(':')
@@ -4598,10 +4627,24 @@ class LocopilotActivityMonitor:
                 minutes = float(parts[1])
                 seconds = float(parts[2])
                 return hours * 3600 + minutes * 60 + seconds
-            
+
             activity_start_seconds = time_to_seconds(start_time_str)
             # Calculate end time based on actual clip duration, not elapsed time
             activity_end_seconds = activity_start_seconds + actual_clip_duration
+
+            # Calculate OCR timestamps if available
+            ocr_start_time_str = activity.get('ocr_start_time')
+            ocr_end_time_str = activity.get('ocr_end_time')
+
+            # If we have OCR start but not end, calculate end from duration
+            if ocr_start_time_str and not ocr_end_time_str:
+                ocr_start_seconds = time_to_seconds(ocr_start_time_str)
+                ocr_end_seconds = ocr_start_seconds + actual_clip_duration
+                hours = int(ocr_end_seconds // 3600)
+                minutes = int((ocr_end_seconds % 3600) // 60)
+                seconds = int(ocr_end_seconds % 60)
+                ocr_end_time_str = f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+                activity['ocr_end_time'] = ocr_end_time_str
             
             # Generate filenames with composite naming: {video}_{activity}_frame{number}_{counter}
             video_filename = os.path.basename(self.video_path)
@@ -4677,6 +4720,21 @@ class LocopilotActivityMonitor:
             
             # Create JSON data in the required format
             # Store FULL PATHS for clips and images
+            # Use OCR timestamps (embedded frame timestamps) when available, fallback to video playback time
+            ocr_start = activity.get('ocr_start_time')
+            ocr_end = activity.get('ocr_end_time')
+
+            # Determine which timestamps to use for startTime/endTime
+            # Priority: OCR timestamps (actual frame time) > Video playback timestamps
+            if ocr_start and ocr_end:
+                # Use OCR timestamps directly (HH:MM:SS format)
+                final_start_time = ocr_start
+                final_end_time = ocr_end
+            else:
+                # Fallback to video playback timestamps (seconds format)
+                final_start_time = f"{activity_start_seconds:.2f}"
+                final_end_time = f"{activity_end_seconds:.2f}"
+
             json_data = {
                 "tripId": self.trip_id,
                 "activityType": self.activity_type_map[activity_name],
@@ -4684,8 +4742,11 @@ class LocopilotActivityMonitor:
                 "objectType": activity_name.replace('_', ' '),
                 "fileUrl": os.path.abspath(self.video_path),
                 "fileDuration": video_duration_formatted,
-                "activityStartTime": f"{activity_start_seconds:.2f}",
-                "activityEndTime": f"{activity_end_seconds:.2f}",
+                "activityStartTime": final_start_time,
+                "activityEndTime": final_end_time,
+                # Also store video playback timestamps for reference/clip extraction
+                "videoStartTime": f"{activity_start_seconds:.2f}",
+                "videoEndTime": f"{activity_end_seconds:.2f}",
                 "crewName": activity_crew_name,
                 "crewId": activity_crew_id,
                 "crewRole": activity_crew_role,
@@ -4891,14 +4952,24 @@ class LocopilotActivityMonitor:
         
         sampled_count = 0
         
+        # Reset frame timestamp service for new video
+        if self.frame_timestamp_service:
+            self.frame_timestamp_service.reset()
+
         # Use the frame sampling generator
         for sample_idx, timestamp_sec, frame, frame_idx in self.sample_video_frames(self.video_path):
             sampled_count += 1
-            
+
             try:
                 # Convert timestamp to HH:MM:SS format
                 timestamp = str(timedelta(seconds=timestamp_sec))
-                
+
+                # Extract OCR timestamp from frame (embedded timestamp in top-left corner)
+                if self.frame_timestamp_service:
+                    ocr_ts = self.frame_timestamp_service.extract_timestamp(frame, frame_idx)
+                    if ocr_ts:
+                        self._current_ocr_timestamp = ocr_ts
+
                 # Add frame to buffer
                 self.frame_buffer.append(frame.copy())
                 
@@ -5281,16 +5352,26 @@ class LocopilotActivityMonitor:
         timestamp_sec = 0  # Initialize to handle empty frame ranges
         frame_idx = start_frame  # Initialize to handle empty frame ranges
 
+        # Reset frame timestamp service for this range
+        if self.frame_timestamp_service:
+            self.frame_timestamp_service.reset()
+
         # Use the frame sampling generator with range limits
         for sample_idx, timestamp_sec, frame, frame_idx in self.sample_video_frames(
             self.video_path, start_frame=start_frame, end_frame=end_frame
         ):
             sampled_count += 1
-            
+
             try:
                 # Convert timestamp to HH:MM:SS format
                 timestamp = str(timedelta(seconds=timestamp_sec))
-                
+
+                # Extract OCR timestamp from frame (embedded timestamp in top-left corner)
+                if self.frame_timestamp_service:
+                    ocr_ts = self.frame_timestamp_service.extract_timestamp(frame, frame_idx)
+                    if ocr_ts:
+                        self._current_ocr_timestamp = ocr_ts
+
                 # Add frame to buffer
                 self.frame_buffer.append(frame.copy())
                 
