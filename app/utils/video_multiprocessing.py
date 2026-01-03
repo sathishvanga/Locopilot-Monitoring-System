@@ -754,6 +754,11 @@ class VideoMultiprocessingOrchestrator:
         aggregation_service = get_activity_aggregation_service()
         all_activities, _ = aggregation_service.aggregate_activities(all_activities, run_dir)
 
+        # Group overlapping activities of different types into combined records
+        from ..services.concurrent_activity_grouping_service import get_concurrent_grouping_service
+        concurrent_grouping_service = get_concurrent_grouping_service()
+        all_activities = concurrent_grouping_service.group_concurrent_activities(all_activities, run_dir)
+
         processing_time = time.time() - start_time
         
         logger.info(f"Parallel processing completed in {processing_time:.2f}s: "

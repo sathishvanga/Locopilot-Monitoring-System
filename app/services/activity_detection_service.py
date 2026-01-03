@@ -298,6 +298,11 @@ class ActivityDetectionService:
         aggregation_service = get_activity_aggregation_service()
         activities, _ = aggregation_service.aggregate_activities(activities, actual_run_dir)
 
+        # Group overlapping activities of different types into combined records
+        from .concurrent_activity_grouping_service import get_concurrent_grouping_service
+        concurrent_grouping_service = get_concurrent_grouping_service()
+        activities = concurrent_grouping_service.group_concurrent_activities(activities, actual_run_dir)
+
         # Return detected activities
         logger.info(f"Single-process detection found {len(activities)} activities")
         return activities
@@ -384,6 +389,11 @@ class ActivityDetectionService:
             from .activity_aggregation_service import get_activity_aggregation_service
             aggregation_service = get_activity_aggregation_service()
             activities, _ = aggregation_service.aggregate_activities(activities, run_dir)
+
+            # Group overlapping activities of different types into combined records
+            from .concurrent_activity_grouping_service import get_concurrent_grouping_service
+            concurrent_grouping_service = get_concurrent_grouping_service()
+            activities = concurrent_grouping_service.group_concurrent_activities(activities, run_dir)
 
             logger.info(f"Multi-process detection found {len(activities)} activities "
                        f"(clips {'generated' if save_clips else 'not generated'})")

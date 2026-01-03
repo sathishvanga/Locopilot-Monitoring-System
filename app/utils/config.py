@@ -163,6 +163,10 @@ class Settings(BaseSettings):
     activity_merge_enabled: bool = bool(int(os.getenv("ACTIVITY_MERGE_ENABLED", "1")))
     activity_preserve_raw: bool = bool(int(os.getenv("ACTIVITY_PRESERVE_RAW", "0")))
 
+    # Concurrent activity grouping settings
+    # Group overlapping activities of different types into combined records with arrays
+    concurrent_grouping_enabled: bool = bool(int(os.getenv("CONCURRENT_GROUPING_ENABLED", "1")))
+
     # Voting verification settings
     # Two-stage detection: when activity detected, verify with multiple native frames
     voting_enabled: bool = bool(int(os.getenv("VOTING_ENABLED", "1")))

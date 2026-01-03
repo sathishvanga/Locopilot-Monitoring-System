@@ -290,19 +290,19 @@ class ExternalAPIService:
     ) -> List[Dict[str, Any]]:
         """
         Transform internal events to external API violation format
-        
+
         Args:
             trip_id: Trip identifier
             events: List of internal activity events
             job_id: Job/run identifier (optional)
             host_url: Host URL for building fileUrl (deprecated - use video_s3_url)
             video_s3_url: S3 URL of the uploaded video (preferred for fileUrl)
-            
+
         Returns:
             List of violation payloads ready for API
         """
         violations = []
-        
+
         for event in events:
             try:
                 violation = self._event_to_violation(
@@ -317,7 +317,7 @@ class ExternalAPIService:
             except Exception as e:
                 logger.warning(f"⚠️ [external_api] Failed to transform event: {e}")
                 continue
-        
+
         logger.info(f"🔄 [external_api] Transformed {len(violations)} events to violations")
         return violations
     
@@ -390,10 +390,24 @@ class ExternalAPIService:
             Violation payload dict or None if transformation fails
         """
         try:
-            # Extract event data
-            activity_type = event.get("activityType", 1)
-            description = event.get("des", "Unknown activity")
-            object_type = event.get("objectType", "unknown")
+            # Check if this is a combined activity with multiple types
+            activity_types = event.get("activityTypes", [])
+            descriptions = event.get("descriptions", [])
+            object_types_list = event.get("objectTypes", [])
+            is_combined = len(activity_types) > 1
+
+            # Extract event data - use arrays for combined, single values for legacy
+            if is_combined:
+                # Combined activity - use arrays
+                types_value = activity_types
+                descriptions_value = descriptions
+                object_types_value = object_types_list
+            else:
+                # Single activity - use single values (wrapped in array for consistency)
+                types_value = [event.get("activityType", 1)]
+                descriptions_value = [event.get("des", "Unknown activity")]
+                object_types_value = [event.get("objectType", "unknown")]
+
             start_time = event.get("activityStartTime", "0")
             end_time = event.get("activityEndTime", "0")
             filename = event.get("filename", "unknown.mp4")
@@ -403,10 +417,10 @@ class ExternalAPIService:
 
             # Calculate clip duration from start and end time
             clip_duration = self._calculate_clip_duration(start_time, end_time)
-            
+
             # Determine fileUrl - prefer S3 URL, fallback to local backend URL
             file_url = ""
-            
+
             # Priority 1: Use video S3 URL (preferred - this is the uploaded video)
             if video_s3_url:
                 file_url = video_s3_url
@@ -421,18 +435,18 @@ class ExternalAPIService:
                 media_prefix = f"{host_url}/api/jobs/{job_id}/media"
                 file_url = f"{media_prefix}/{clip_name}"
                 logger.debug(f"Using local backend URL for fileUrl: {file_url}")
-            
-            # Build violation payload
+
+            # Build violation payload with arrays
             payload = {
                 "tripId": trip_id,
-                "type": activity_type,
+                "types": types_value,  # Array of activity type codes
                 "startTime": start_time,
                 "endTime": end_time,
                 "clipDuration": clip_duration,
                 "remarks": "",
                 "reason": "Automated detection",
-                "description": description,
-                "objectTypes": object_type,
+                "descriptions": descriptions_value,  # Array of descriptions
+                "objectTypes": object_types_value,  # Array of object types
                 "fileName": filename,
                 "fileDuration": file_duration,
                 "crewName": crew_name,
@@ -443,44 +457,47 @@ class ExternalAPIService:
                 "status": 1,  # Default status (1 = active/complete)
                 "roleType": event.get("crewRole", 1),  # 1 = LP, 2 = ALP
             }
-            
+
             return payload
-        
+
         except Exception as e:
             logger.warning(f"[external_api] Failed to convert event to violation: {e}")
             return None
     
     def _deduplicate_violations(self, violations: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """
-        Deduplicate violations based on tripId, type, and startTime
-        
+        Deduplicate violations based on tripId, types, and startTime
+
         Args:
             violations: List of violation payloads
-            
+
         Returns:
             List of unique violations
         """
         seen = set()
         unique = []
-        
+
         for v in violations:
-            # Create key for deduplication
+            # Create key for deduplication - convert types array to tuple for hashing
+            types_value = v.get("types", [])
+            types_tuple = tuple(types_value) if isinstance(types_value, list) else (types_value,)
+
             key = (
                 v.get("tripId", ""),
-                v.get("type", 0),
+                types_tuple,
                 v.get("startTime", "")
             )
-            
+
             if key not in seen:
                 seen.add(key)
                 unique.append(v)
-        
+
         if len(unique) < len(violations):
             logger.info(
                 f"🔍 [external_api] Deduplicated {len(violations)} violations "
                 f"to {len(unique)} unique violations"
             )
-        
+
         return unique
 
 

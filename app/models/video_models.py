@@ -10,17 +10,19 @@ from .activity_models import ActivityModel
 class ViolationModel(BaseModel):
     """
     Model for violation data - matches the format posted to external CVVR API
+
+    v2: Now uses arrays for types, descriptions, objectTypes to support combined activities
     """
 
     tripId: str = Field(..., description="Trip identifier")
-    type: int = Field(..., description="Activity type code (1=phone, 2=smoking, etc.)")
-    startTime: str = Field(..., description="Violation start time in HH:mm:ss format")
-    endTime: str = Field(..., description="Violation end time in HH:mm:ss format")
+    types: List[int] = Field(..., description="Array of activity type codes")
+    startTime: str = Field(..., description="Violation start time in HH:mm:ss format or seconds")
+    endTime: str = Field(..., description="Violation end time in HH:mm:ss format or seconds")
     clipDuration: str = Field(..., description="Duration of the clip in HH:mm:ss format")
     remarks: str = Field(default="", description="Remarks about the violation")
     reason: str = Field(default="Automated detection", description="Reason for the violation")
-    description: str = Field(..., description="Description of the activity detected")
-    objectTypes: str = Field(..., description="Type of object detected (phone, cigarette, etc.)")
+    descriptions: List[str] = Field(..., description="Array of activity descriptions")
+    objectTypes: List[str] = Field(..., description="Array of detected object types")
     fileName: str = Field(..., description="Original video filename")
     fileDuration: str = Field(..., description="Total video duration in HH:mm:ss format")
     crewName: str = Field(..., description="Crew member name")
@@ -36,14 +38,14 @@ class ViolationModel(BaseModel):
         json_schema_extra = {
             "example": {
                 "tripId": "TRIP-2024-001234",
-                "type": 1,
+                "types": [2, 8],
                 "startTime": "00:02:15",
                 "endTime": "00:02:45",
                 "clipDuration": "00:00:30",
                 "remarks": "",
                 "reason": "Automated detection",
-                "description": "Phone usage detected",
-                "objectTypes": "phone",
+                "descriptions": ["Using mobile phone", "LP not exchanging hand gesture"],
+                "objectTypes": ["cell phone", "lp hand gesture"],
                 "fileName": "video_20241217_143022.mp4",
                 "fileDuration": "00:15:30",
                 "crewName": "John Doe",
