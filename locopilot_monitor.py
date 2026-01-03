@@ -282,12 +282,13 @@ class LocopilotActivityMonitor:
         self.cell_phone_confidence = float(os.getenv("CELL_PHONE_CONFIDENCE", "0.45"))
 
         # Initialize frame timestamp service for OCR timestamp extraction
+        # OCR is performed on-demand when activity starts/ends (not periodically)
         self.frame_timestamp_service = None
-        self._current_ocr_timestamp = None  # Current OCR-extracted timestamp (HH:MM:SS)
+        self._current_frame = None  # Reference to current frame for on-demand OCR
         if get_frame_timestamp_service is not None:
             try:
                 self.frame_timestamp_service = get_frame_timestamp_service()
-                self.logger.info("Frame timestamp (OCR) service initialized")
+                self.logger.info("Frame timestamp (OCR) service initialized - on-demand extraction")
             except Exception as e:
                 self.logger.warning(f"Failed to initialize frame timestamp service: {e}")
 
@@ -4576,7 +4577,34 @@ class LocopilotActivityMonitor:
         if not self.activities[activity_name]['active']:
             self.activities[activity_name]['active'] = True
             self.activities[activity_name]['start_time'] = timestamp
-            self.activities[activity_name]['ocr_start_time'] = ocr_timestamp or self._current_ocr_timestamp
+
+            # Extract OCR timestamp from current frame (on-demand)
+            if ocr_timestamp:
+                ocr_ts = ocr_timestamp
+                self.logger.info(f"[OCR START] Using provided timestamp: {ocr_ts}")
+            elif self.frame_timestamp_service and self._current_frame is not None:
+                try:
+                    self.logger.info(f"[OCR START] Extracting from frame shape={self._current_frame.shape}")
+
+                    # Diagnostic: Check reader initialization
+                    svc = self.frame_timestamp_service
+                    self.logger.info(f"[OCR DEBUG] enabled={svc.enabled}, initialized={svc._initialized}, reader={svc._reader is not None}")
+
+                    ocr_ts = svc.extract_timestamp(self._current_frame)
+
+                    # More diagnostics if extraction failed
+                    if ocr_ts is None:
+                        self.logger.info(f"[OCR DEBUG] After extraction: initialized={svc._initialized}, reader={svc._reader is not None}, last_ts={svc._last_extracted_timestamp}")
+
+                    self.logger.info(f"[OCR START] Extracted: {ocr_ts}")
+                except Exception as e:
+                    self.logger.warning(f"Failed to extract OCR timestamp on activity start: {e}")
+                    ocr_ts = None
+            else:
+                self.logger.info(f"[OCR START] Skipped - service={self.frame_timestamp_service is not None}, frame={self._current_frame is not None}")
+                ocr_ts = None
+
+            self.activities[activity_name]['ocr_start_time'] = ocr_ts
             self.activities[activity_name]['start_frame_count'] = frame_count
             self.activities[activity_name]['last_frame_count'] = frame_count
             self.activities[activity_name]['frames'] = list(self.frame_buffer)
@@ -4584,7 +4612,6 @@ class LocopilotActivityMonitor:
             self.activities[activity_name]['person_roles'] = person_roles if person_roles else {}
 
             # Log with OCR timestamp if available
-            ocr_ts = self.activities[activity_name]['ocr_start_time']
             if ocr_ts:
                 self.logger.info(f"[{timestamp}] Activity started: {activity_name} (Frame timestamp: {ocr_ts})")
             else:
@@ -4596,8 +4623,18 @@ class LocopilotActivityMonitor:
             activity = self.activities[activity_name]
             activity['active'] = False
 
-            # Store OCR end timestamp
-            activity['ocr_end_time'] = ocr_timestamp or self._current_ocr_timestamp
+            # For end timestamp, we calculate from start + duration instead of OCR
+            # This is more reliable because _current_frame may point to a later frame
+            # (OCR on end frame often gives wrong timestamps due to frame timing issues)
+            ocr_ts = None  # Will be calculated from start + duration below
+            if ocr_timestamp:
+                # Only use provided timestamp if explicitly passed
+                ocr_ts = ocr_timestamp
+                self.logger.info(f"[OCR END] Using provided timestamp: {ocr_ts}")
+            else:
+                self.logger.info(f"[OCR END] Will calculate from start + duration (more reliable)")
+
+            activity['ocr_end_time'] = ocr_ts
 
             start_frame = activity.get('start_frame_count', frame_count)
 
@@ -4730,10 +4767,12 @@ class LocopilotActivityMonitor:
                 # Use OCR timestamps directly (HH:MM:SS format)
                 final_start_time = ocr_start
                 final_end_time = ocr_end
+                self.logger.info(f"  Using OCR timestamps: {final_start_time} - {final_end_time}")
             else:
                 # Fallback to video playback timestamps (seconds format)
                 final_start_time = f"{activity_start_seconds:.2f}"
                 final_end_time = f"{activity_end_seconds:.2f}"
+                self.logger.info(f"  Using video timestamps (OCR failed): {final_start_time}s - {final_end_time}s (ocr_start={ocr_start}, ocr_end={ocr_end})")
 
             json_data = {
                 "tripId": self.trip_id,
@@ -4964,11 +5003,9 @@ class LocopilotActivityMonitor:
                 # Convert timestamp to HH:MM:SS format
                 timestamp = str(timedelta(seconds=timestamp_sec))
 
-                # Extract OCR timestamp from frame (embedded timestamp in top-left corner)
-                if self.frame_timestamp_service:
-                    ocr_ts = self.frame_timestamp_service.extract_timestamp(frame, frame_idx)
-                    if ocr_ts:
-                        self._current_ocr_timestamp = ocr_ts
+                # Store current frame reference for on-demand OCR extraction
+                # OCR will be called when activity starts/ends (not periodically)
+                self._current_frame = frame
 
                 # Add frame to buffer
                 self.frame_buffer.append(frame.copy())
@@ -5366,11 +5403,9 @@ class LocopilotActivityMonitor:
                 # Convert timestamp to HH:MM:SS format
                 timestamp = str(timedelta(seconds=timestamp_sec))
 
-                # Extract OCR timestamp from frame (embedded timestamp in top-left corner)
-                if self.frame_timestamp_service:
-                    ocr_ts = self.frame_timestamp_service.extract_timestamp(frame, frame_idx)
-                    if ocr_ts:
-                        self._current_ocr_timestamp = ocr_ts
+                # Store current frame reference for on-demand OCR extraction
+                # OCR will be called when activity starts/ends (not periodically)
+                self._current_frame = frame
 
                 # Add frame to buffer
                 self.frame_buffer.append(frame.copy())

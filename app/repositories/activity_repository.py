@@ -11,6 +11,7 @@ from pathlib import Path
 
 from ..utils.logger import get_logger
 from ..models.activity_models import ActivityModel
+from ..services.activity_aggregation_service import parse_time_to_seconds
 
 
 logger = get_logger(__name__)
@@ -200,8 +201,8 @@ class ActivityRepository:
             
             # Calculate total duration
             try:
-                start_time = float(activity.get("activityStartTime", 0))
-                end_time = float(activity.get("activityEndTime", 0))
+                start_time = parse_time_to_seconds(activity.get("activityStartTime", 0))
+                end_time = parse_time_to_seconds(activity.get("activityEndTime", 0))
                 summary["total_duration"] += (end_time - start_time)
             except (ValueError, TypeError):
                 pass

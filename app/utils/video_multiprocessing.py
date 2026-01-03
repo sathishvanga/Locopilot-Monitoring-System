@@ -722,8 +722,32 @@ class VideoMultiprocessingOrchestrator:
         if self.config.enable_result_persistence:
             self.save_state(run_dir)
         
-        # Sort activities by start time
-        all_activities.sort(key=lambda x: float(x.get('activityStartTime', 0)))
+        # Sort activities by start time (handles both OCR timestamp strings and float seconds)
+        def parse_activity_time(time_val):
+            """Parse activity time - handles HH:MM:SS strings or float seconds"""
+            if time_val is None:
+                return 0.0
+            if isinstance(time_val, (int, float)):
+                return float(time_val)
+            if isinstance(time_val, str):
+                # Try parsing as HH:MM:SS
+                if ':' in time_val:
+                    try:
+                        parts = time_val.split(':')
+                        hours = float(parts[0])
+                        minutes = float(parts[1])
+                        seconds = float(parts[2]) if len(parts) > 2 else 0
+                        return hours * 3600 + minutes * 60 + seconds
+                    except (ValueError, IndexError):
+                        pass
+                # Try parsing as float
+                try:
+                    return float(time_val)
+                except ValueError:
+                    pass
+            return 0.0
+
+        all_activities.sort(key=lambda x: parse_activity_time(x.get('activityStartTime', 0)))
 
         # Aggregate consecutive activities of same type/role
         from ..services.activity_aggregation_service import get_activity_aggregation_service

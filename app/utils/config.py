@@ -184,13 +184,17 @@ class Settings(BaseSettings):
     voting_debug_frames_dir: str = os.getenv("VOTING_DEBUG_FRAMES_DIR", "voting_debug_frames")
 
     # OCR Frame Timestamp Extraction settings
-    # Extract actual timestamps embedded in video frames instead of video playback time
+    # Extract actual timestamps embedded in video frames (top-left corner)
+    # OCR is performed on-demand when activity is confirmed (start/end)
     ocr_timestamp_enabled: bool = bool(int(os.getenv("OCR_TIMESTAMP_ENABLED", "1")))  # Enable by default
     ocr_timestamp_roi_x_start: float = float(os.getenv("OCR_TIMESTAMP_ROI_X_START", "0.0"))  # Left edge (0%)
     ocr_timestamp_roi_x_end: float = float(os.getenv("OCR_TIMESTAMP_ROI_X_END", "0.45"))  # 45% of width
     ocr_timestamp_roi_y_start: float = float(os.getenv("OCR_TIMESTAMP_ROI_Y_START", "0.0"))  # Top edge (0%)
     ocr_timestamp_roi_y_end: float = float(os.getenv("OCR_TIMESTAMP_ROI_Y_END", "0.12"))  # 12% of height
-    ocr_timestamp_sample_interval: int = int(os.getenv("OCR_TIMESTAMP_SAMPLE_INTERVAL", "5"))  # OCR every N frames
+    # OCR preprocessing settings
+    ocr_clahe_clip_limit: float = float(os.getenv("OCR_CLAHE_CLIP_LIMIT", "3.0"))  # CLAHE contrast enhancement
+    ocr_clahe_tile_size: int = int(os.getenv("OCR_CLAHE_TILE_SIZE", "8"))  # CLAHE tile grid size
+    ocr_timestamp_debug: bool = bool(int(os.getenv("OCR_TIMESTAMP_DEBUG", "0")))  # Debug logging for OCR
 
 
 @lru_cache()

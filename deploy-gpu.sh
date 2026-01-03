@@ -87,6 +87,7 @@ After=network.target
 Type=simple
 User=root
 WorkingDirectory=/opt/poc2
+EnvironmentFile=/opt/poc2/.env
 Environment=PATH=/opt/poc2/venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 Environment=YOLO_DEVICE=0
 Environment=MP_MAX_WORKERS_CAP=2

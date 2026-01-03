@@ -11,12 +11,72 @@ merged duration (from earliest start to latest end).
 import os
 import json
 import subprocess
-from typing import List, Dict, Any, Tuple, Optional
+from typing import List, Dict, Any, Tuple, Optional, Union
 
 from ..utils.logger import get_logger
 from ..utils.config import get_settings
 
 logger = get_logger(__name__)
+
+
+def parse_time_to_seconds(time_value: Union[str, int, float, None]) -> float:
+    """
+    Parse a time value to seconds.
+
+    Handles multiple formats:
+    - Numeric (int/float): returned as-is
+    - String numeric: "1234.56" -> 1234.56
+    - Time string: "HH:MM:SS" -> seconds (e.g., "05:55:04" -> 21304)
+    - Time string: "MM:SS" -> seconds (e.g., "55:04" -> 3304)
+    - None or empty: returns 0.0
+
+    Args:
+        time_value: Time value in any supported format
+
+    Returns:
+        Time in seconds as float
+    """
+    if time_value is None:
+        return 0.0
+
+    # Already numeric
+    if isinstance(time_value, (int, float)):
+        return float(time_value)
+
+    # String value
+    if isinstance(time_value, str):
+        time_value = time_value.strip()
+        if not time_value:
+            return 0.0
+
+        # Check if it's a time string (contains colons)
+        if ':' in time_value:
+            try:
+                parts = time_value.split(':')
+                if len(parts) == 3:
+                    # HH:MM:SS format
+                    hours, minutes, seconds = parts
+                    return float(hours) * 3600 + float(minutes) * 60 + float(seconds)
+                elif len(parts) == 2:
+                    # MM:SS format
+                    minutes, seconds = parts
+                    return float(minutes) * 60 + float(seconds)
+                else:
+                    logger.warning(f"Unexpected time format: {time_value}")
+                    return 0.0
+            except (ValueError, TypeError) as e:
+                logger.warning(f"Failed to parse time string '{time_value}': {e}")
+                return 0.0
+        else:
+            # Try to parse as numeric string
+            try:
+                return float(time_value)
+            except ValueError:
+                logger.warning(f"Could not parse time value: {time_value}")
+                return 0.0
+
+    logger.warning(f"Unsupported time value type: {type(time_value)}")
+    return 0.0
 
 
 class ActivityAggregationService:
@@ -72,7 +132,7 @@ class ActivityAggregationService:
         # Ensure activities are sorted by start time
         sorted_activities = sorted(
             activities,
-            key=lambda x: float(x.get('activityStartTime', 0))
+            key=lambda x: parse_time_to_seconds(x.get('activityStartTime', 0))
         )
 
         # Save raw activities if preservation is enabled
@@ -139,8 +199,8 @@ class ActivityAggregationService:
 
         # Check temporal proximity
         try:
-            prev_end = float(prev.get('activityEndTime', 0))
-            curr_start = float(curr.get('activityStartTime', 0))
+            prev_end = parse_time_to_seconds(prev.get('activityEndTime', 0))
+            curr_start = parse_time_to_seconds(curr.get('activityStartTime', 0))
             gap = curr_start - prev_end
 
             # Merge if:
@@ -164,13 +224,13 @@ class ActivityAggregationService:
             return group[0]
 
         # Find earliest start and latest end
-        earliest_start = min(float(a.get('activityStartTime', 0)) for a in group)
-        latest_end = max(float(a.get('activityEndTime', 0)) for a in group)
+        earliest_start = min(parse_time_to_seconds(a.get('activityStartTime', 0)) for a in group)
+        latest_end = max(parse_time_to_seconds(a.get('activityEndTime', 0)) for a in group)
 
         # Find longest segment for representative image
         longest_segment = max(
             group,
-            key=lambda a: float(a.get('activityEndTime', 0)) - float(a.get('activityStartTime', 0))
+            key=lambda a: parse_time_to_seconds(a.get('activityEndTime', 0)) - parse_time_to_seconds(a.get('activityStartTime', 0))
         )
 
         # Create merged activity (copy from first in group)
