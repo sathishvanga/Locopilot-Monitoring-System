@@ -43,13 +43,18 @@ sshpass -p "$SERVER_PASS" rsync -avz --progress \
     --exclude '*.pyc' \
     --exclude '.git' \
     --exclude 'locopilot_evidence' \
+    --exclude 'locopilot_evidence_1' \
+    --exclude 'voting_debug_frames' \
     --exclude 'logs' \
     --exclude '.DS_Store' \
     --exclude '*.log' \
     --exclude 'uploads' \
+    --exclude 'output' \
+    --exclude 'example_data' \
     --exclude '.claude' \
     --exclude 'build' \
     --exclude 'dist' \
+    --exclude 'yolo*.pt' \
     --delete \
     -e "ssh -p $SERVER_PORT -o StrictHostKeyChecking=no" \
     "$SCRIPT_DIR/" \
