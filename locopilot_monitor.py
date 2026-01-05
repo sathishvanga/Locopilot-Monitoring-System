@@ -279,7 +279,8 @@ class LocopilotActivityMonitor:
                 self.preprocessing_service = None
 
         # Cell phone detection confidence threshold (configurable)
-        self.cell_phone_confidence = float(os.getenv("CELL_PHONE_CONFIDENCE", "0.45"))
+        # Lowered from 0.45 to 0.35 to detect phones with partial visibility
+        self.cell_phone_confidence = float(os.getenv("CELL_PHONE_CONFIDENCE", "0.35"))
 
         # Initialize frame timestamp service for OCR timestamp extraction
         # OCR is performed on-demand when activity starts/ends (not periodically)
@@ -317,7 +318,9 @@ class LocopilotActivityMonitor:
         # TEMPORAL SUPPRESSION: Track recent activities per person for gesture suppression
         # Format: {person_idx: {'writing': last_timestamp, 'packing': last_timestamp, 'cell_phone': last_timestamp}}
         self.recent_person_activities = {}
-        self.temporal_suppression_window = 10.0  # Suppress hand gestures for 10 seconds after detecting work activity
+        # Reduced from 10.0 to 5.0 seconds per code review - balanced between blocking false positives
+        # and allowing valid gestures (was initially set to 3.0, adjusted to 5.0)
+        self.temporal_suppression_window = 5.0  # Suppress hand gestures for 5 seconds after detecting work activity
 
         # Hand gesture coordination temporal window
         # Suppress coordination failure alerts if both LP and ALP raised hands within this window
@@ -869,7 +872,8 @@ class LocopilotActivityMonitor:
             left_wrist = self.get_keypoint(landmarks, 'left_wrist')
 
             # Check if wrists are visible enough
-            if right_wrist.visibility < 0.5 or left_wrist.visibility < 0.5:
+            # Lowered from 0.5 to 0.25 to detect wrists that are partially obscured
+            if right_wrist.visibility < 0.25 or left_wrist.visibility < 0.25:
                 return None
 
             # Convert normalized coordinates to pixel coordinates
@@ -1074,7 +1078,8 @@ class LocopilotActivityMonitor:
             }
 
         # Configurable thresholds (RELAXED to better capture writing activity)
-        MAX_WRIST_DISTANCE = 300  # pixels - reduced to 300 for more accurate detection
+        # Increased from 300 to 500 - people write with arms spread wider
+        MAX_WRIST_DISTANCE = 500  # pixels - increased from 300 to capture various writing positions
         MIN_DURATION = 1.0  # seconds - REDUCED from 2.0 for faster detection
         REQUIRED_CONSECUTIVE = 2  # frames @ 0.5fps = 4 seconds total (reduced from 3)
 
@@ -1362,9 +1367,9 @@ class LocopilotActivityMonitor:
 
         aspect_ratio_rules = {
             'cell phone': {
-                'min_ratio': 0.4,   # Portrait: ~0.45 (9:20) - tightened from 0.3
-                'max_ratio': 2.0,   # Landscape: ~1.78 (16:9)
-                'min_size': 30      # Minimum dimension (pixels)
+                'min_ratio': 0.25,  # Portrait phones held at angles (was 0.4 - too strict, adjusted from 0.2)
+                'max_ratio': 2.5,   # Landscape phones at angles (was 2.0, adjusted from 3.0 per review)
+                'min_size': 20      # Small phones in frame (was 30, adjusted from 15 per review)
             },
             'book': {
                 'min_ratio': 0.5,   # Tall book: ~0.7 (A4 portrait)
@@ -2633,8 +2638,9 @@ class LocopilotActivityMonitor:
         # If hand is near a backpack, it's likely packing activity, NOT a signal gesture
         # ==================================================================================
         if backpack_detections and len(backpack_detections) > 0:
-            # Check proximity threshold (pixels) - INCREASED for better detection
-            proximity_threshold = 250  # Hand within 250px of backpack center (increased from 150px)
+            # Check proximity threshold (pixels) - REDUCED to be less aggressive
+            # Was 250px which suppressed too many valid hand gestures
+            proximity_threshold = 100  # Hand within 100px of backpack center (reduced from 250px)
             
             frame_info = f"[Frame {frame_number}] " if frame_number is not None else ""
             gesture_logger.debug(f"{frame_info}GESTURE DEBUG - Checking {len(backpack_detections)} backpack(s) for person {matched_person_idx} ({matched_role})")
@@ -3564,8 +3570,10 @@ class LocopilotActivityMonitor:
                     right_hand_coords = (int(right_hand.x * w), int(right_hand.y * h))
                     left_hand_coords = (int(left_hand.x * w), int(left_hand.y * h))
                     
-                    # STRICTER MARGIN: Reduced from default to ensure phone is really near hand
-                    margin = 100  # Reduced from activity_thresholds margin to be more strict
+                    # RELAXED MARGIN: Increased to detect phones at arm's length
+                    # Was 100px which was too strict - phones can be held further from body
+                    # Adjusted from 200 to 150 per code review to reduce false positives
+                    margin = 150  # Increased from 100 to catch phones at arm's length
                     
                     for phone_bbox in detections['cell_phone']:
                         # Check if phone bbox overlaps with person bbox (with margin)
@@ -4169,10 +4177,13 @@ class LocopilotActivityMonitor:
             result['method'] = 'pose_landmarks'
             
             # DETECTION LOGIC: Mind diversion detected if BOTH conditions met:
-            # 1. Head turned to side > 45 degrees (either direction)
-            # 2. Head looking down > 15 degrees
-            yaw_threshold = 45  # degrees
-            pitch_threshold = 15  # degrees (looking down is positive)
+            # 1. Head turned to side > 65 degrees (either direction) - increased from 55 to reduce false positives
+            #    Looking at controls/track/instruments should NOT trigger mind_diversion
+            # 2. Head looking down > 30 degrees - increased from 25 to allow normal instrument viewing
+            # Note: Operating train controls naturally requires looking at various panels and controls
+            # Only trigger when looking backward (away from track) or head significantly turned away
+            yaw_threshold = 65  # degrees (was 55 - still too sensitive, 60-103 false positives per run)
+            pitch_threshold = 30  # degrees (was 25 - triggered on normal control operation)
             
             if abs(yaw_angle) > yaw_threshold and pitch_angle > pitch_threshold:
                 result['detected'] = True

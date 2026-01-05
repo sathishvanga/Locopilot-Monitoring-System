@@ -174,13 +174,16 @@ class Settings(BaseSettings):
     voting_frame_spread_ms: int = int(os.getenv("VOTING_FRAME_SPREAD_MS", "400"))  # 400ms window at 25fps
 
     # Per-activity voting thresholds (percentage of frames required for confirmation)
-    # Default 50% (5/10 frames must detect the activity)
-    voting_threshold_cell_phone: float = float(os.getenv("VOTING_THRESHOLD_CELL_PHONE", "0.5"))
-    voting_threshold_writing: float = float(os.getenv("VOTING_THRESHOLD_WRITING", "0.5"))
+    # Adjusted thresholds based on testing feedback:
+    # - Cell phone/writing: Lowered to 40% to catch more true positives (was missing detections)
+    #   Adjusted from 30% to 40% per code review (4/10 frames required)
+    # - Mind diversion: Increased to 70% to reduce false positives (was 60-103 false positives per run)
+    voting_threshold_cell_phone: float = float(os.getenv("VOTING_THRESHOLD_CELL_PHONE", "0.4"))
+    voting_threshold_writing: float = float(os.getenv("VOTING_THRESHOLD_WRITING", "0.4"))
     voting_threshold_packing_bags: float = float(os.getenv("VOTING_THRESHOLD_PACKING_BAGS", "0.5"))
     voting_threshold_lp_hand_gesture: float = float(os.getenv("VOTING_THRESHOLD_LP_GESTURE", "0.5"))
     voting_threshold_alp_hand_gesture: float = float(os.getenv("VOTING_THRESHOLD_ALP_GESTURE", "0.5"))
-    voting_threshold_mind_diversion: float = float(os.getenv("VOTING_THRESHOLD_MIND_DIVERSION", "0.5"))
+    voting_threshold_mind_diversion: float = float(os.getenv("VOTING_THRESHOLD_MIND_DIVERSION", "0.7"))
     voting_threshold_group_detected: float = float(os.getenv("VOTING_THRESHOLD_GROUP", "0.5"))
 
     # Voting debug settings - save annotated frames for troubleshooting
