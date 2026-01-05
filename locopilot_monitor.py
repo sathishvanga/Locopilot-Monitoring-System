@@ -4562,7 +4562,31 @@ class LocopilotActivityMonitor:
                 }
         
         return person_roles
-    
+
+    def _parse_timestamp_to_seconds(self, timestamp_str):
+        """Parse HH:MM:SS or H:MM:SS.microseconds timestamp to seconds.
+
+        Args:
+            timestamp_str: Timestamp string in HH:MM:SS format (may include microseconds)
+
+        Returns:
+            float: Time in seconds
+        """
+        if timestamp_str is None:
+            return 0.0
+        if isinstance(timestamp_str, (int, float)):
+            return float(timestamp_str)
+        try:
+            parts = str(timestamp_str).split(':')
+            if len(parts) == 3:
+                hours = float(parts[0])
+                minutes = float(parts[1])
+                seconds = float(parts[2])
+                return hours * 3600 + minutes * 60 + seconds
+        except (ValueError, TypeError):
+            pass
+        return 0.0
+
     def start_activity(self, activity_name, timestamp, fps, frame_count, person_roles=None, ocr_timestamp=None):
         """Start tracking an activity
 
@@ -4610,6 +4634,8 @@ class LocopilotActivityMonitor:
             self.activities[activity_name]['frames'] = list(self.frame_buffer)
             self.activities[activity_name]['duration'] = 0
             self.activities[activity_name]['person_roles'] = person_roles if person_roles else {}
+            # Store start timestamp in seconds for accurate duration calculation
+            self.activities[activity_name]['start_timestamp_seconds'] = self._parse_timestamp_to_seconds(timestamp)
 
             # Log with OCR timestamp if available
             if ocr_ts:
@@ -4638,10 +4664,28 @@ class LocopilotActivityMonitor:
 
             start_frame = activity.get('start_frame_count', frame_count)
 
-            # Calculate duration based on ACTUAL captured frames, not elapsed time
-            # This ensures clip duration matches exactly the activity duration
+            # Calculate duration from actual timestamps (more accurate than frame count)
             total_clip_frames = len(activity['frames'])
-            actual_clip_duration = total_clip_frames / self.sample_fps  # Duration in seconds based on captured frames
+            frame_based_duration = total_clip_frames / self.sample_fps  # Fallback duration
+
+            # Use actual timestamps for duration calculation
+            start_timestamp_seconds = activity.get('start_timestamp_seconds', 0)
+            end_timestamp_seconds = self._parse_timestamp_to_seconds(timestamp)
+            timestamp_based_duration = end_timestamp_seconds - start_timestamp_seconds
+
+            # Use timestamp-based duration if valid, otherwise fallback to frame-based
+            if timestamp_based_duration > 0:
+                actual_clip_duration = timestamp_based_duration
+                # Log warning if there's a significant mismatch
+                if abs(timestamp_based_duration - frame_based_duration) > 5:
+                    self.logger.warning(
+                        f"Duration mismatch for {activity_name}: "
+                        f"timestamp-based={timestamp_based_duration:.2f}s, "
+                        f"frame-based={frame_based_duration:.2f}s"
+                    )
+            else:
+                actual_clip_duration = frame_based_duration
+                self.logger.debug(f"Using frame-based duration: {frame_based_duration:.2f}s (timestamp calculation failed)")
 
             # Check if activity meets minimum duration threshold
             min_duration = self.activity_thresholds[activity_name]['min_duration']
