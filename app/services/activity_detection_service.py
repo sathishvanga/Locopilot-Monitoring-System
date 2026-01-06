@@ -293,11 +293,6 @@ class ActivityDetectionService:
         # ✅ MEMORY FIX: Explicit cleanup (closes MediaPipe, clears buffers, forces GC)
         monitor.cleanup()
 
-        # Aggregate consecutive activities of same type/role
-        from .activity_aggregation_service import get_activity_aggregation_service
-        aggregation_service = get_activity_aggregation_service()
-        activities, _ = aggregation_service.aggregate_activities(activities, actual_run_dir)
-
         # Group overlapping activities of different types into combined records
         from .concurrent_activity_grouping_service import get_concurrent_grouping_service
         concurrent_grouping_service = get_concurrent_grouping_service()
@@ -384,11 +379,6 @@ class ActivityDetectionService:
             
             # ✅ MEMORY FIX: Force garbage collection after processing
             gc.collect()
-
-            # Aggregate consecutive activities of same type/role
-            from .activity_aggregation_service import get_activity_aggregation_service
-            aggregation_service = get_activity_aggregation_service()
-            activities, _ = aggregation_service.aggregate_activities(activities, run_dir)
 
             # Group overlapping activities of different types into combined records
             from .concurrent_activity_grouping_service import get_concurrent_grouping_service

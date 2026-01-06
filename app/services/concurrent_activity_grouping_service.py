@@ -21,7 +21,7 @@ from collections import defaultdict
 
 from ..utils.logger import get_logger
 from ..utils.config import get_settings
-from .activity_aggregation_service import parse_time_to_seconds
+from ..repositories.activity_repository import parse_time_to_seconds
 
 logger = get_logger(__name__)
 

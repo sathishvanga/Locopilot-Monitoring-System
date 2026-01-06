@@ -6,15 +6,56 @@ This repository manages reading and writing activity data to JSON files.
 
 import json
 import os
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Union
 from pathlib import Path
 
 from ..utils.logger import get_logger
 from ..models.activity_models import ActivityModel
-from ..services.activity_aggregation_service import parse_time_to_seconds
 
 
 logger = get_logger(__name__)
+
+
+def parse_time_to_seconds(time_value: Union[str, int, float, None]) -> float:
+    """
+    Parse a time value to seconds.
+
+    Handles multiple formats:
+    - Numeric (int/float): returned as-is
+    - String numeric: "1234.56" -> 1234.56
+    - Time string: "HH:MM:SS" -> seconds
+    - Time string: "MM:SS" -> seconds
+    - None or empty: returns 0.0
+    """
+    if time_value is None:
+        return 0.0
+
+    if isinstance(time_value, (int, float)):
+        return float(time_value)
+
+    if isinstance(time_value, str):
+        time_value = time_value.strip()
+        if not time_value:
+            return 0.0
+
+        if ':' in time_value:
+            try:
+                parts = time_value.split(':')
+                if len(parts) == 3:
+                    hours, minutes, seconds = parts
+                    return float(hours) * 3600 + float(minutes) * 60 + float(seconds)
+                elif len(parts) == 2:
+                    minutes, seconds = parts
+                    return float(minutes) * 60 + float(seconds)
+            except (ValueError, TypeError):
+                return 0.0
+        else:
+            try:
+                return float(time_value)
+            except ValueError:
+                return 0.0
+
+    return 0.0
 
 
 class ActivityRepository:

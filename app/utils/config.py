@@ -109,12 +109,6 @@ class Settings(BaseSettings):
     cvvr_api_enabled: bool = bool(int(os.getenv("CVVR_API_ENABLED", "1")))  # Enable by default
     host_url: str = os.getenv("HOST_URL", "http://103.195.244.66:8000")  # URL for building fileUrl
 
-    # Chunked upload settings
-    chunk_size: int = 8 * 1024 * 1024  # Fixed 8 MB chunk size
-    upload_session_timeout: int = 3600  # 1 hour in seconds
-    max_upload_sessions: int = 100  # Prevent memory exhaustion
-    chunks_cleanup_interval: int = 300  # 5 minutes
-
     # MinIO settings for video downloads
     minio_endpoint: str = os.getenv("MINIO_ENDPOINT", "mind.snikbtel.uk:9000")
     minio_access_key: str = os.getenv("MINIO_ACCESS_KEY", "admin")
@@ -155,12 +149,6 @@ class Settings(BaseSettings):
     unsharp_strength: float = float(os.getenv("UNSHARP_STRENGTH", "1.5"))
     unsharp_radius: int = int(os.getenv("UNSHARP_RADIUS", "1"))
     noise_reduction_kernel: int = int(os.getenv("NOISE_REDUCTION_KERNEL", "3"))
-
-    # Activity aggregation settings
-    # Merge consecutive activities of same type/role within time window
-    activity_merge_window_seconds: float = float(os.getenv("ACTIVITY_MERGE_WINDOW_SECONDS", "60.0"))
-    activity_merge_enabled: bool = bool(int(os.getenv("ACTIVITY_MERGE_ENABLED", "1")))
-    activity_preserve_raw: bool = bool(int(os.getenv("ACTIVITY_PRESERVE_RAW", "0")))
 
     # Concurrent activity grouping settings
     # Group overlapping activities of different types into combined records with arrays

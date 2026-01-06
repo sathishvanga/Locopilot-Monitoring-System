@@ -749,11 +749,6 @@ class VideoMultiprocessingOrchestrator:
 
         all_activities.sort(key=lambda x: parse_activity_time(x.get('activityStartTime', 0)))
 
-        # Aggregate consecutive activities of same type/role
-        from ..services.activity_aggregation_service import get_activity_aggregation_service
-        aggregation_service = get_activity_aggregation_service()
-        all_activities, _ = aggregation_service.aggregate_activities(all_activities, run_dir)
-
         # Group overlapping activities of different types into combined records
         from ..services.concurrent_activity_grouping_service import get_concurrent_grouping_service
         concurrent_grouping_service = get_concurrent_grouping_service()

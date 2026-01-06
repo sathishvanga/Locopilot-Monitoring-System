@@ -28,33 +28,12 @@ from .middleware import LoggingMiddleware
 from .utils.logger import setup_logging, get_logger
 from .utils.config import get_settings
 from .utils.video_multiprocessing import shutdown_shared_pool
-from .services.chunked_upload_service import get_chunked_upload_service
 
 
 # Initialize settings and logging
 settings = get_settings()
 setup_logging(level=settings.log_level)
 logger = get_logger(__name__)
-
-
-async def periodic_cleanup():
-    """
-    Periodically clean up expired upload sessions
-
-    This background task runs every 5 minutes to remove expired
-    chunked upload sessions and their associated chunk files.
-    """
-    chunked_upload_service = get_chunked_upload_service()
-
-    while True:
-        try:
-            await asyncio.sleep(settings.chunks_cleanup_interval)
-            chunked_upload_service.cleanup_expired_sessions()
-        except asyncio.CancelledError:
-            logger.info("Cleanup task cancelled")
-            break
-        except Exception as e:
-            logger.error(f"Cleanup task error: {e}", exc_info=True)
 
 
 def print_startup_banner():
@@ -101,25 +80,13 @@ async def lifespan(app: FastAPI):
     logger.info(f"Upload directory: {settings.upload_dir}")
     logger.info(f"Sample FPS: {settings.sample_fps}")
     logger.info(f"YOLO weights: {settings.yolo_weights}")
-    logger.info(f"Chunked upload enabled - Cleanup interval: {settings.chunks_cleanup_interval}s")
     logger.info("=" * 60)
-
-    # Start background cleanup task for chunked uploads
-    cleanup_task = asyncio.create_task(periodic_cleanup())
-    logger.info("🧹 Started background cleanup task for chunked uploads")
 
     yield
 
     # Shutdown
     print("\n⏹️  Shutting down application...")
     logger.info("Shutting down application...")
-
-    # Cancel cleanup task
-    cleanup_task.cancel()
-    try:
-        await cleanup_task
-    except asyncio.CancelledError:
-        pass
 
     # Ensure shared multiprocessing pool is shut down cleanly
     try:
