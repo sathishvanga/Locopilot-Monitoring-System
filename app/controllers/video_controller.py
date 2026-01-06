@@ -2,9 +2,11 @@
 Video controller - API endpoints for video upload and processing
 
 Handles HTTP requests and responses for video processing operations.
+Includes both synchronous and async job-based endpoints.
 """
 
-from typing import Optional
+import asyncio
+from typing import Optional, Dict, Any
 import os
 
 from fastapi import APIRouter, UploadFile, File, Form, HTTPException, BackgroundTasks, Request, Response
@@ -14,7 +16,18 @@ from ..models.video_models import (
     VideoProcessingResponse,
     VideoProcessingError
 )
+from ..models.job_models import (
+    Job,
+    JobStatus,
+    JobSubmitRequest,
+    JobSubmitResponse,
+    JobStatusResponse,
+    JobResultResponse,
+    QueueStatusResponse,
+    JobCancelResponse
+)
 from ..services.video_processing_service import VideoProcessingService
+from ..services.job_manager import job_manager
 from ..services.s3_upload_service import get_s3_upload_service
 from ..services.external_api_service import get_external_api_service
 from ..services.minio_service import get_minio_service
@@ -703,4 +716,286 @@ async def process_and_upload_video(
         #     except Exception as e:
         #         logger.warning(f"Failed to clean up video: {e}")
         pass
+
+
+# =============================================================================
+# ASYNC JOB-BASED ENDPOINTS
+# =============================================================================
+
+@router.post(
+    "/video/jobs",
+    response_model=JobSubmitResponse,
+    responses={
+        200: {"description": "Job submitted successfully"},
+        400: {"description": "Invalid request"},
+        503: {"description": "Queue is full - try again later"}
+    },
+    summary="Submit async video processing job",
+    description="""
+    Submit a video for asynchronous processing. Returns immediately with a job_id
+    that can be used to track progress and retrieve results.
+
+    This is the async alternative to /video/analyze. Use this for non-blocking
+    video processing where you poll for status/results.
+
+    The job queue has a bounded capacity. When the queue is full, a 503 error
+    is returned (backpressure) - the client should retry after a delay.
+    """
+)
+async def submit_video_job(request: JobSubmitRequest) -> JobSubmitResponse:
+    """
+    Submit a video processing job to the async queue.
+
+    Returns job_id immediately for status polling.
+    """
+    logger.info(f"Received job submission request - video_path={request.video_path}")
+
+    # Validate video path exists
+    if not os.path.exists(request.video_path):
+        logger.warning(f"Video file not found: {request.video_path}")
+        raise HTTPException(
+            status_code=400,
+            detail=f"Video file not found: {request.video_path}"
+        )
+
+    # Check if queue is full before attempting submission
+    if job_manager.is_queue_full:
+        logger.warning("Job queue is full - rejecting submission")
+        raise HTTPException(
+            status_code=503,
+            detail="Job queue is full. Please try again later."
+        )
+
+    try:
+        # Submit job to queue
+        job_id = await job_manager.submit_job(
+            video_path=request.video_path,
+            config=request.config
+        )
+
+        queue_status = job_manager.get_queue_status()
+
+        logger.info(f"Job submitted successfully - job_id={job_id}")
+
+        return JobSubmitResponse(
+            success=True,
+            job_id=job_id,
+            message="Job submitted successfully",
+            queue_position=queue_status["queue_depth"]
+        )
+
+    except asyncio.QueueFull:
+        logger.warning("Queue full during submission attempt")
+        raise HTTPException(
+            status_code=503,
+            detail="Job queue is full. Please try again later."
+        )
+
+
+@router.get(
+    "/video/jobs/{job_id}",
+    response_model=JobStatusResponse,
+    responses={
+        200: {"description": "Job status retrieved successfully"},
+        404: {"description": "Job not found"}
+    },
+    summary="Get job status",
+    description="""
+    Get the current status and progress of a video processing job.
+
+    Poll this endpoint to track job progress. The progress field shows
+    percentage completion (0-100).
+    """
+)
+async def get_job_status(job_id: str) -> JobStatusResponse:
+    """
+    Get status and progress of a video processing job.
+    """
+    logger.info(f"Getting job status - job_id={job_id}")
+
+    job = await job_manager.get_job(job_id)
+
+    if not job:
+        logger.warning(f"Job not found: {job_id}")
+        raise HTTPException(
+            status_code=404,
+            detail=f"Job not found: {job_id}"
+        )
+
+    # Calculate processing time if started
+    processing_time = None
+    if job.started_at:
+        end_time = job.completed_at or job.started_at
+        processing_time = (end_time - job.started_at).total_seconds()
+
+    return JobStatusResponse(
+        success=True,
+        job_id=job.id,
+        status=job.status,
+        progress=job.progress,
+        video_path=job.video_path,
+        config=job.config,
+        error=job.error,
+        created_at=job.created_at,
+        started_at=job.started_at,
+        completed_at=job.completed_at,
+        processing_time_seconds=processing_time
+    )
+
+
+@router.get(
+    "/video/jobs/{job_id}/result",
+    response_model=JobResultResponse,
+    responses={
+        200: {"description": "Job result retrieved successfully"},
+        400: {"description": "Job not completed yet"},
+        404: {"description": "Job not found"}
+    },
+    summary="Get job result",
+    description="""
+    Get the processing results for a completed job.
+
+    This endpoint only returns results for jobs with COMPLETED status.
+    For jobs in other states, use /video/jobs/{job_id} to check status.
+
+    Returns the full activities JSON and processing metadata.
+    """
+)
+async def get_job_result(job_id: str) -> JobResultResponse:
+    """
+    Get results for a completed video processing job.
+    """
+    logger.info(f"Getting job result - job_id={job_id}")
+
+    job = await job_manager.get_job(job_id)
+
+    if not job:
+        logger.warning(f"Job not found: {job_id}")
+        raise HTTPException(
+            status_code=404,
+            detail=f"Job not found: {job_id}"
+        )
+
+    # Check if job is completed
+    if job.status != JobStatus.COMPLETED:
+        status_message = {
+            JobStatus.PENDING: "Job is pending in queue",
+            JobStatus.QUEUED: "Job is waiting in queue",
+            JobStatus.PROCESSING: f"Job is still processing ({job.progress}% complete)",
+            JobStatus.FAILED: f"Job failed: {job.error}",
+            JobStatus.CANCELLED: "Job was cancelled"
+        }
+        raise HTTPException(
+            status_code=400,
+            detail=status_message.get(job.status, f"Job status is {job.status.value}")
+        )
+
+    # Calculate processing time
+    processing_time = None
+    if job.started_at and job.completed_at:
+        processing_time = (job.completed_at - job.started_at).total_seconds()
+
+    return JobResultResponse(
+        success=True,
+        job_id=job.id,
+        status=job.status,
+        result=job.result or {},
+        processing_time_seconds=processing_time
+    )
+
+
+@router.post(
+    "/video/jobs/{job_id}/cancel",
+    response_model=JobCancelResponse,
+    responses={
+        200: {"description": "Job cancellation result"},
+        404: {"description": "Job not found"}
+    },
+    summary="Cancel a job",
+    description="""
+    Cancel a pending or running job.
+
+    Jobs can only be cancelled if they are in PENDING, QUEUED, or PROCESSING
+    status. Already completed, failed, or cancelled jobs cannot be cancelled.
+
+    Note: Cancellation of a PROCESSING job is best-effort - the job may
+    complete before the cancellation takes effect.
+    """
+)
+async def cancel_job(job_id: str) -> JobCancelResponse:
+    """
+    Cancel a video processing job.
+    """
+    logger.info(f"Cancelling job - job_id={job_id}")
+
+    job = await job_manager.get_job(job_id)
+
+    if not job:
+        logger.warning(f"Job not found: {job_id}")
+        raise HTTPException(
+            status_code=404,
+            detail=f"Job not found: {job_id}"
+        )
+
+    previous_status = job.status
+    cancelled = await job_manager.cancel_job(job_id)
+
+    if cancelled:
+        logger.info(f"Job cancelled successfully - job_id={job_id}")
+        return JobCancelResponse(
+            success=True,
+            job_id=job_id,
+            message="Job cancelled successfully",
+            previous_status=previous_status
+        )
+    else:
+        message = f"Cannot cancel job with status: {previous_status.value}"
+        logger.info(f"Job cancellation failed - job_id={job_id}, reason={message}")
+        return JobCancelResponse(
+            success=False,
+            job_id=job_id,
+            message=message,
+            previous_status=previous_status
+        )
+
+
+@router.get(
+    "/video/queue/status",
+    response_model=QueueStatusResponse,
+    responses={
+        200: {"description": "Queue status retrieved successfully"}
+    },
+    summary="Get queue status",
+    description="""
+    Get the current status of the job queue.
+
+    Returns information about:
+    - Queue depth (jobs waiting)
+    - Active jobs (currently processing)
+    - Pending jobs (not yet started)
+    - Completed/failed/cancelled job counts
+    - Queue capacity information
+    """
+)
+async def get_queue_status() -> QueueStatusResponse:
+    """
+    Get current job queue statistics.
+    """
+    logger.info("Getting queue status")
+
+    status = job_manager.get_queue_status()
+
+    return QueueStatusResponse(
+        success=True,
+        queue_depth=status["queue_depth"],
+        active_jobs=status["active_jobs"],
+        pending_jobs=status["pending_jobs"],
+        completed_jobs=status["completed_jobs"],
+        failed_jobs=status["failed_jobs"],
+        cancelled_jobs=status["cancelled_jobs"],
+        total_jobs=status["total_jobs"],
+        max_queue_size=status["max_queue_size"],
+        num_workers=status["num_workers"],
+        queue_full=status["queue_full"]
+    )
 

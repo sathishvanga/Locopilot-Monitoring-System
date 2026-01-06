@@ -86,7 +86,20 @@ class Settings(BaseSettings):
     yolo_imgsz: int = int(os.getenv("YOLO_IMGSZ", "640"))  # Model input size (640 for better small object detection)
     yolo_device: str = "cpu"  # Device for YOLO inference (cpu, 0 for GPU)
 
-    
+    # GPU Settings - Enable GPU acceleration for video processing
+    gpu_enabled: bool = bool(int(os.getenv("GPU_ENABLED", "1")))  # Enable GPU if available
+    gpu_device: str = os.getenv("GPU_DEVICE", "cuda:0")  # CUDA device identifier
+    gpu_memory_fraction: float = float(os.getenv("GPU_MEMORY_FRACTION", "0.85"))  # Max GPU memory to use (85%)
+
+    # Concurrency Settings - Control parallel video processing
+    max_concurrent_videos: int = int(os.getenv("MAX_CONCURRENT_VIDEOS", "3"))  # Max videos processed simultaneously
+    inference_batch_size: int = int(os.getenv("INFERENCE_BATCH_SIZE", "8"))  # Frames per inference batch
+    job_queue_max_size: int = int(os.getenv("JOB_QUEUE_MAX_SIZE", "10"))  # Max pending jobs in queue
+
+    # Memory Management - OOM recovery and CUDA allocator settings
+    pytorch_cuda_alloc_conf: str = os.getenv("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
+    oom_retry_enabled: bool = bool(int(os.getenv("OOM_RETRY_ENABLED", "1")))  # Enable OOM recovery
+
     # Logging settings
     log_level: str = "INFO"
     log_format: str = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
@@ -187,6 +200,13 @@ class Settings(BaseSettings):
     mind_diversion_suppress_with_writing: bool = os.getenv("MIND_DIV_SUPPRESS_WRITING", "true").lower() == "true"
     mind_diversion_writing_grace_seconds: float = float(os.getenv("MIND_DIV_WRITING_GRACE", "5.0"))
     mind_diversion_wrist_distance_threshold: float = float(os.getenv("MIND_DIV_WRIST_DIST", "350"))  # Max wrist distance for writing pose
+
+    # Job Queue Settings - Async video processing queue management
+    # Note: max_concurrent_videos and job_queue_max_size defined in GPU Settings section above
+    job_queue_num_workers: int = int(os.getenv("JOB_QUEUE_NUM_WORKERS", "3"))  # Number of worker tasks processing jobs
+
+    # GPU Memory Management Settings
+    gpu_memory_warning_threshold: float = float(os.getenv("GPU_MEMORY_WARNING_THRESHOLD", "80.0"))  # Percentage
 
 
 @lru_cache()
