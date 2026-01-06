@@ -1550,7 +1550,7 @@ class LocopilotActivityMonitor:
                     # Log all bag detections for debugging
                     if conf > 0.25:
                         self.logger.debug(f"BAG DETECTED: {class_name} conf={conf:.2f} bbox={xyxy}")
-                    if conf > 0.75:  # INCREASED to reduce false positives (seats as backpacks)
+                    if conf > 0.45:  # LOWERED from 0.75 to catch more bags (aspect ratio filter handles false positives)
                         # Validate aspect ratio and size to filter out seats/equipment
                         bag_width = xyxy[2] - xyxy[0]
                         bag_height = xyxy[3] - xyxy[1]
