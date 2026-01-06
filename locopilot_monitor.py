@@ -828,46 +828,63 @@ class LocopilotActivityMonitor:
     
     def calculate_wrist_distance(self, pose_landmarks, frame_shape):
         """Calculate Euclidean distance between left and right wrists.
-        
+        Falls back to elbow distance if wrists are not visible.
+
         Args:
             pose_landmarks: MediaPipe pose landmarks
             frame_shape: Tuple of (height, width) of the frame
-            
+
         Returns:
-            float: Distance in pixels between wrists, or None if wrists not detected
+            tuple: (distance in pixels, source) where source is 'wrist' or 'elbow'
+                   or (None, None) if neither detectable
         """
         if not pose_landmarks:
-            return None
-        
+            return None, None
+
         # Validate pose landmarks before using
         if not self.validate_pose_landmarks(pose_landmarks):
-            return None
-        
+            return None, None
+
         try:
             landmarks = pose_landmarks.landmark
             h, w = frame_shape[:2]
-            
+
             # Get wrist landmarks
             right_wrist = self.get_keypoint(landmarks, 'right_wrist')
             left_wrist = self.get_keypoint(landmarks, 'left_wrist')
 
-            # Check if wrists are visible enough
-            if right_wrist.visibility < 0.5 or left_wrist.visibility < 0.5:
-                return None
+            # Try wrists first (primary method)
+            if right_wrist.visibility >= 0.5 and left_wrist.visibility >= 0.5:
+                # Convert normalized coordinates to pixel coordinates
+                right_wrist_px = (right_wrist.x * w, right_wrist.y * h)
+                left_wrist_px = (left_wrist.x * w, left_wrist.y * h)
 
-            # Convert normalized coordinates to pixel coordinates
-            right_wrist_px = (right_wrist.x * w, right_wrist.y * h)
-            left_wrist_px = (left_wrist.x * w, left_wrist.y * h)
+                # Calculate Euclidean distance
+                distance = np.sqrt(
+                    (right_wrist_px[0] - left_wrist_px[0])**2 +
+                    (right_wrist_px[1] - left_wrist_px[1])**2
+                )
+                return distance, 'wrist'
 
-            # Calculate Euclidean distance
-            distance = np.sqrt(
-                (right_wrist_px[0] - left_wrist_px[0])**2 +
-                (right_wrist_px[1] - left_wrist_px[1])**2
-            )
+            # FALLBACK: Use elbows if wrists not visible
+            # Elbows are typically more visible from overhead camera angles
+            right_elbow = self.get_keypoint(landmarks, 'right_elbow')
+            left_elbow = self.get_keypoint(landmarks, 'left_elbow')
 
-            return distance
+            ELBOW_VISIBILITY_THRESHOLD = 0.4  # Lower threshold since elbows more reliable
+            if right_elbow.visibility >= ELBOW_VISIBILITY_THRESHOLD and left_elbow.visibility >= ELBOW_VISIBILITY_THRESHOLD:
+                right_elbow_px = (right_elbow.x * w, right_elbow.y * h)
+                left_elbow_px = (left_elbow.x * w, left_elbow.y * h)
+                distance = np.sqrt(
+                    (right_elbow_px[0] - left_elbow_px[0])**2 +
+                    (right_elbow_px[1] - left_elbow_px[1])**2
+                )
+                # Return elbow distance (elbows are typically wider apart)
+                return distance, 'elbow'
+
+            return None, None
         except Exception as e:
-            return None
+            return None, None
 
     def detect_writing_posture(self, pose_landmarks, frame_shape):
         """Instantly detect writing posture based on hand position.
@@ -1018,19 +1035,19 @@ class LocopilotActivityMonitor:
             return False
 
     def detect_writing_by_wrist_proximity(self, pose_landmarks, frame_shape, person_idx, timestamp_sec):
-        """Detect writing activity based on wrist proximity + head posture heuristic.
+        """Detect writing activity based on wrist/elbow proximity + head posture heuristic.
 
-        When both wrists are close together AND head is tilted down (typical writing posture)
-        for a sustained duration, it indicates writing activity. This method serves as a fallback
-        when book detection doesn't trigger but person is clearly writing.
+        When both wrists (or elbows as fallback) are close together AND head is tilted down
+        (typical writing posture) for a sustained duration, it indicates writing activity.
+        This method serves as a fallback when book detection doesn't trigger but person is clearly writing.
 
         Required Conditions (both must be true):
-        1. Wrist proximity: Left and right wrists within 200px of each other
+        1. Wrist/Elbow proximity: Left and right wrists within 300px (or elbows within 450px)
         2. Head posture: Head tilted down (nose below eye line)
-        3. Temporal: Sustained for 4+ seconds across 3+ consecutive frames
+        3. Temporal: Sustained for 1+ seconds across 2+ consecutive frames
 
         Args:
-            pose_landmarks: MediaPipe pose landmarks (must include wrist + head keypoints)
+            pose_landmarks: MediaPipe pose landmarks (must include wrist/elbow + head keypoints)
             frame_shape: Tuple of (height, width) of the frame
             person_idx: Index of the person being analyzed
             timestamp_sec: Current timestamp in seconds
@@ -1038,15 +1055,23 @@ class LocopilotActivityMonitor:
         Returns:
             bool: True if writing detected by pose-based heuristic, False otherwise
         """
-        # Calculate distance between wrists
-        wrist_distance = self.calculate_wrist_distance(pose_landmarks, frame_shape)
+        # Calculate distance between wrists (with elbow fallback)
+        distance_result = self.calculate_wrist_distance(pose_landmarks, frame_shape)
 
-        # DEBUG: Log wrist distance calculation
-        if wrist_distance is None:
-            self.logger.debug(f"Person {person_idx}: Wrist distance = None (landmarks missing)")
+        # Handle tuple return (distance, source)
+        if isinstance(distance_result, tuple):
+            distance, source = distance_result
+        else:
+            # Backward compatibility if function returns single value
+            distance = distance_result
+            source = 'wrist' if distance is not None else None
+
+        # DEBUG: Log distance calculation
+        if distance is None:
+            self.logger.debug(f"Person {person_idx}: Wrist/elbow distance = None (landmarks missing)")
             return False
         else:
-            self.logger.debug(f"Person {person_idx}: Wrist distance = {wrist_distance:.1f}px")
+            self.logger.debug(f"Person {person_idx}: {source.capitalize()} distance = {distance:.1f}px")
 
         # Initialize tracking for this person if needed
         if person_idx not in self.wrist_proximity_tracking:
@@ -1056,27 +1081,31 @@ class LocopilotActivityMonitor:
                 'consecutive_frames': 0
             }
 
-        # Configurable thresholds (RELAXED to better capture writing activity)
-        MAX_WRIST_DISTANCE = 300  # pixels - reduced to 300 for more accurate detection
-        MIN_DURATION = 1.0  # seconds - REDUCED from 2.0 for faster detection
-        REQUIRED_CONSECUTIVE = 2  # frames @ 0.5fps = 4 seconds total (reduced from 3)
+        # Configurable thresholds - different for wrist vs elbow
+        MAX_WRIST_DISTANCE = 300  # pixels - wrists close together during writing
+        MAX_ELBOW_DISTANCE = 450  # pixels - elbows typically wider apart during writing
+        MIN_DURATION = 1.0  # seconds - for faster detection
+        REQUIRED_CONSECUTIVE = 2  # frames @ 0.5fps = 4 seconds total
+
+        # Select threshold based on detection source
+        max_distance = MAX_WRIST_DISTANCE if source == 'wrist' else MAX_ELBOW_DISTANCE
 
         person_tracking = self.wrist_proximity_tracking[person_idx]
 
-        # Check if wrists are close enough
-        if wrist_distance <= MAX_WRIST_DISTANCE:
+        # Check if distance is within threshold
+        if distance <= max_distance:
             # NEW: Check if head is looking down (required for writing posture)
             head_looking_down = self.detect_head_looking_down(pose_landmarks)
 
             # DEBUG: Log head state
-            self.logger.debug(f"Person {person_idx}: Head looking down = {head_looking_down}")
+            self.logger.debug(f"Person {person_idx}: Head looking down = {head_looking_down} (source={source})")
 
             if not head_looking_down:
                 # Head not down - reset tracking (not a writing posture)
                 if person_tracking['start_time'] is not None:
                     # Was tracking, now stopped because head is up
                     self.logger.debug(
-                        f"Person {person_idx}: Wrists close ({wrist_distance:.1f}px) but head not down - "
+                        f"Person {person_idx}: {source.capitalize()}s close ({distance:.1f}px) but head not down - "
                         f"resetting writing tracker"
                     )
                 person_tracking['start_time'] = None
@@ -1084,21 +1113,21 @@ class LocopilotActivityMonitor:
                 person_tracking['consecutive_frames'] = 0
                 return False
 
-            # BOTH conditions met: wrists close AND head down
+            # BOTH conditions met: distance close AND head down
             # Update tracking
             if person_tracking['start_time'] is None:
                 # Start new proximity event
                 person_tracking['start_time'] = timestamp_sec
                 person_tracking['consecutive_frames'] = 1
                 self.logger.debug(
-                    f"Person {person_idx}: Writing posture started - wrists={wrist_distance:.1f}px, head=down"
+                    f"Person {person_idx}: Writing posture started ({source}) - dist={distance:.1f}px, head=down"
                 )
             else:
                 # Continue existing proximity event
                 person_tracking['duration'] = timestamp_sec - person_tracking['start_time']
                 person_tracking['consecutive_frames'] += 1
                 self.logger.debug(
-                    f"Person {person_idx}: Writing posture continuing - wrists={wrist_distance:.1f}px, "
+                    f"Person {person_idx}: Writing posture continuing ({source}) - dist={distance:.1f}px, "
                     f"head=down, frames={person_tracking['consecutive_frames']}, "
                     f"duration={person_tracking['duration']:.1f}s"
                 )
@@ -1107,15 +1136,15 @@ class LocopilotActivityMonitor:
             if (person_tracking['consecutive_frames'] >= REQUIRED_CONSECUTIVE and
                 person_tracking['duration'] >= MIN_DURATION):
                 self.logger.info(
-                    f"Person {person_idx}: WRITING CONFIRMED via pose - wrists close + head down for "
+                    f"Person {person_idx}: WRITING CONFIRMED via {source} - distance close + head down for "
                     f"{person_tracking['duration']:.1f}s ({person_tracking['consecutive_frames']} frames)"
                 )
                 return True
         else:
-            # Wrists are too far apart - reset tracking
+            # Distance too far apart - reset tracking
             if person_tracking['start_time'] is not None:
                 self.logger.debug(
-                    f"Person {person_idx}: Writing posture lost - wrists too far ({wrist_distance:.1f}px) - "
+                    f"Person {person_idx}: Writing posture lost - {source}s too far ({distance:.1f}px) - "
                     f"resetting tracker"
                 )
             person_tracking['start_time'] = None
@@ -1123,7 +1152,96 @@ class LocopilotActivityMonitor:
             person_tracking['consecutive_frames'] = 0
 
         return False
-    
+
+    def detect_writing_by_book_and_posture(self, pose_landmarks, person_bbox, book_bboxes, person_idx, timestamp_sec):
+        """Fallback writing detection when wrists are not visible.
+
+        Detects writing based on:
+        1. Book detected in person's region
+        2. Head looking down (reading/writing posture)
+        3. Sustained for minimum duration
+
+        This is a fallback when wrist/elbow detection fails.
+
+        Args:
+            pose_landmarks: Pose landmarks for this person
+            person_bbox: [x1, y1, x2, y2] bounding box of person
+            book_bboxes: List of book bounding boxes detected in frame
+            person_idx: Index of person being analyzed
+            timestamp_sec: Current timestamp in seconds
+
+        Returns:
+            bool: True if writing detected via book+posture, False otherwise
+        """
+        if not book_bboxes or len(book_bboxes) == 0:
+            return False
+
+        # Initialize tracking if needed
+        tracking_key = f"book_posture_{person_idx}"
+        if tracking_key not in self.wrist_proximity_tracking:
+            self.wrist_proximity_tracking[tracking_key] = {
+                'start_time': None,
+                'duration': 0.0,
+                'consecutive_frames': 0
+            }
+
+        person_tracking = self.wrist_proximity_tracking[tracking_key]
+
+        # Check if any book is in person's region
+        person_book_margin = 250  # Same margin used elsewhere
+        book_in_region = False
+        for book_bbox in book_bboxes:
+            if self.bbox_overlap_with_margin(book_bbox, person_bbox, person_book_margin):
+                book_in_region = True
+                break
+
+        if not book_in_region:
+            person_tracking['start_time'] = None
+            person_tracking['duration'] = 0.0
+            person_tracking['consecutive_frames'] = 0
+            return False
+
+        # Check head posture (must be looking down toward book)
+        head_looking_down = self.detect_head_looking_down(pose_landmarks)
+
+        if not head_looking_down:
+            if person_tracking['start_time'] is not None:
+                self.logger.debug(
+                    f"Person {person_idx}: Book in region but head not down - resetting book+posture tracker"
+                )
+            person_tracking['start_time'] = None
+            person_tracking['duration'] = 0.0
+            person_tracking['consecutive_frames'] = 0
+            return False
+
+        # Both conditions met: book in region + head down
+        MIN_DURATION = 2.0  # Require longer duration for this fallback (more confidence needed)
+        REQUIRED_CONSECUTIVE = 2
+
+        if person_tracking['start_time'] is None:
+            person_tracking['start_time'] = timestamp_sec
+            person_tracking['consecutive_frames'] = 1
+            self.logger.debug(
+                f"Person {person_idx}: Book+posture writing started - book in region, head down"
+            )
+        else:
+            person_tracking['duration'] = timestamp_sec - person_tracking['start_time']
+            person_tracking['consecutive_frames'] += 1
+            self.logger.debug(
+                f"Person {person_idx}: Book+posture continuing - frames={person_tracking['consecutive_frames']}, "
+                f"duration={person_tracking['duration']:.1f}s"
+            )
+
+        if (person_tracking['consecutive_frames'] >= REQUIRED_CONSECUTIVE and
+            person_tracking['duration'] >= MIN_DURATION):
+            self.logger.info(
+                f"Person {person_idx}: WRITING CONFIRMED via book+posture fallback - "
+                f"book in region + head down for {person_tracking['duration']:.1f}s"
+            )
+            return True
+
+        return False
+
     def get_roi_around_keypoint(self, keypoint_coords, frame_shape, roi_size=150):
         """Create Region of Interest (ROI) box around a keypoint.
         
@@ -3583,36 +3701,51 @@ class LocopilotActivityMonitor:
                                     person_activities['cell_phone'] = should_trigger
                                 break
                 
-                # 4. WRITING DETECTION (check if hand near book OR wrist proximity heuristic)
+                # 4. WRITING DETECTION (check if hand near book OR wrist/elbow proximity heuristic)
                 # MOVED BEFORE HAND GESTURE: Need to detect this first for context-aware filtering
                 writing_detected_by_book = False
                 writing_detected_by_wrist = False
-                
-                # Method 1: Book detection (existing method)
+                writing_detected_by_book_posture = False  # NEW fallback method
+
+                # Method 1: Book detection (existing method - requires wrists visible)
                 if len(detections['book']) > 0:
                     right_hand = self.get_keypoint(translated_landmarks, 'right_wrist')
                     left_hand = self.get_keypoint(translated_landmarks, 'left_wrist')
 
-                    right_hand_coords = (int(right_hand.x * w), int(right_hand.y * h))
-                    left_hand_coords = (int(left_hand.x * w), int(left_hand.y * h))
+                    # Check if wrists are visible enough for hand-based detection
+                    wrists_visible = (right_hand.visibility >= 0.5 or left_hand.visibility >= 0.5)
 
-                    hand_margin = self.activity_thresholds['writing']['margin']
-                    # Use larger margin for book-to-person association since book is typically in lap area
-                    # (below the person's detected bounding box which mainly covers upper body)
-                    person_book_margin = 250  # INCREASED from 150 to 250 - books in lap area extend beyond person bbox
-                    for book_bbox in detections['book']:
-                        # Check if book is in this person's region (use large margin for lap area)
-                        book_in_person_region = self.bbox_overlap_with_margin(book_bbox, bbox, person_book_margin)
+                    if wrists_visible:
+                        right_hand_coords = (int(right_hand.x * w), int(right_hand.y * h))
+                        left_hand_coords = (int(left_hand.x * w), int(left_hand.y * h))
 
-                        if book_in_person_region:
-                            # Check BOTH hands for interaction with book (use tighter margin)
-                            right_hand_near_book = self.check_hand_object_interaction(right_hand_coords, book_bbox, hand_margin)
-                            left_hand_near_book = self.check_hand_object_interaction(left_hand_coords, book_bbox, hand_margin)
-                            if right_hand_near_book or left_hand_near_book:
-                                writing_detected_by_book = True
-                                break
-                
-                # Method 2: Wrist proximity heuristic (temporal - requires sustained duration)
+                        hand_margin = self.activity_thresholds['writing']['margin']
+                        # Use larger margin for book-to-person association since book is typically in lap area
+                        # (below the person's detected bounding box which mainly covers upper body)
+                        person_book_margin = 250  # INCREASED from 150 to 250 - books in lap area extend beyond person bbox
+                        for book_bbox in detections['book']:
+                            # Check if book is in this person's region (use large margin for lap area)
+                            book_in_person_region = self.bbox_overlap_with_margin(book_bbox, bbox, person_book_margin)
+
+                            if book_in_person_region:
+                                # Check visible hands for interaction with book (use tighter margin)
+                                right_hand_near_book = right_hand.visibility >= 0.5 and self.check_hand_object_interaction(right_hand_coords, book_bbox, hand_margin)
+                                left_hand_near_book = left_hand.visibility >= 0.5 and self.check_hand_object_interaction(left_hand_coords, book_bbox, hand_margin)
+                                if right_hand_near_book or left_hand_near_book:
+                                    writing_detected_by_book = True
+                                    break
+                    else:
+                        # FALLBACK: Wrists not visible, use book + posture detection
+                        self.logger.debug(f"Person {person_idx}: Wrists not visible, trying book+posture fallback")
+                        writing_detected_by_book_posture = self.detect_writing_by_book_and_posture(
+                            translated_landmarks,
+                            bbox,
+                            detections['book'],
+                            person_idx,
+                            timestamp_sec
+                        )
+
+                # Method 2: Wrist/Elbow proximity heuristic (temporal - requires sustained duration)
                 # DEBUG: Log that we're checking writing detection
                 self.logger.debug(f"Person {person_idx}: Calling writing detection (frame {frame_number})")
                 writing_detected_by_wrist = self.detect_writing_by_wrist_proximity(
@@ -3623,10 +3756,11 @@ class LocopilotActivityMonitor:
                 )
                 self.logger.debug(f"Person {person_idx}: Writing detection result = {writing_detected_by_wrist}")
 
-                # Combine the two original detection methods (book detection and wrist proximity)
+                # Combine all detection methods (book+hand, wrist/elbow proximity, book+posture fallback)
                 writing_detected_raw = (
                     writing_detected_by_book or
-                    writing_detected_by_wrist
+                    writing_detected_by_wrist or
+                    writing_detected_by_book_posture  # NEW fallback
                 )
                 should_trigger = self.update_per_person_detection(
                     person_idx, 'writing', writing_detected_raw, timestamp_sec
@@ -3651,9 +3785,11 @@ class LocopilotActivityMonitor:
 
                 # Store detection method in debug info for analysis
                 if writing_detected_by_book:
-                    person_debug_info['writing_method'] = 'book'
+                    person_debug_info['writing_method'] = 'book_hand'
+                elif writing_detected_by_book_posture:
+                    person_debug_info['writing_method'] = 'book_posture_fallback'
                 elif writing_detected_by_wrist:
-                    person_debug_info['writing_method'] = 'pose_based'
+                    person_debug_info['writing_method'] = 'pose_based'  # Could be wrist or elbow
                 else:
                     person_debug_info['writing_method'] = 'none'
                 
