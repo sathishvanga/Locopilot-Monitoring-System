@@ -104,10 +104,6 @@ async def lifespan(app: FastAPI):
     logger.info(f"Chunked upload enabled - Cleanup interval: {settings.chunks_cleanup_interval}s")
     logger.info("=" * 60)
 
-    # Preload models if configured
-    if settings.preload_ocr:
-        logger.info("OCR preloading enabled")
-
     # Start background cleanup task for chunked uploads
     cleanup_task = asyncio.create_task(periodic_cleanup())
     logger.info("🧹 Started background cleanup task for chunked uploads")

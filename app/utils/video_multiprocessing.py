@@ -722,7 +722,7 @@ class VideoMultiprocessingOrchestrator:
         if self.config.enable_result_persistence:
             self.save_state(run_dir)
         
-        # Sort activities by start time (handles both OCR timestamp strings and float seconds)
+        # Sort activities by start time (handles both timestamp strings and float seconds)
         def parse_activity_time(time_val):
             """Parse activity time - handles HH:MM:SS strings or float seconds"""
             if time_val is None:

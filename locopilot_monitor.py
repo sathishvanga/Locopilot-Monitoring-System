@@ -63,12 +63,6 @@ try:
 except ImportError:
     VotingVerificationService = None
 
-# Import FrameTimestampService for OCR timestamp extraction
-try:
-    from app.services.frame_timestamp_service import FrameTimestampService, get_frame_timestamp_service
-except ImportError:
-    FrameTimestampService = None
-    get_frame_timestamp_service = None
 
 # ✅ WINDOWS FIX: Prevent Qt/GUI initialization in worker processes
 # If running in a worker process (detected by QT_QPA_PLATFORM=offscreen),
@@ -280,17 +274,6 @@ class LocopilotActivityMonitor:
 
         # Cell phone detection confidence threshold (configurable)
         self.cell_phone_confidence = float(os.getenv("CELL_PHONE_CONFIDENCE", "0.45"))
-
-        # Initialize frame timestamp service for OCR timestamp extraction
-        # OCR is performed on-demand when activity starts/ends (not periodically)
-        self.frame_timestamp_service = None
-        self._current_frame = None  # Reference to current frame for on-demand OCR
-        if get_frame_timestamp_service is not None:
-            try:
-                self.frame_timestamp_service = get_frame_timestamp_service()
-                self.logger.info("Frame timestamp (OCR) service initialized - on-demand extraction")
-            except Exception as e:
-                self.logger.warning(f"Failed to initialize frame timestamp service: {e}")
 
         # Phase 2: Load inference optimization settings (1.5-1.8x speedup)
         self.yolo_imgsz = settings.yolo_imgsz if settings else 416
@@ -4578,32 +4561,8 @@ class LocopilotActivityMonitor:
             self.activities[activity_name]['active'] = True
             self.activities[activity_name]['start_time'] = timestamp
 
-            # Extract OCR timestamp from current frame (on-demand)
-            if ocr_timestamp:
-                ocr_ts = ocr_timestamp
-                self.logger.info(f"[OCR START] Using provided timestamp: {ocr_ts}")
-            elif self.frame_timestamp_service and self._current_frame is not None:
-                try:
-                    self.logger.info(f"[OCR START] Extracting from frame shape={self._current_frame.shape}")
-
-                    # Diagnostic: Check reader initialization
-                    svc = self.frame_timestamp_service
-                    self.logger.info(f"[OCR DEBUG] enabled={svc.enabled}, initialized={svc._initialized}, reader={svc._reader is not None}")
-
-                    ocr_ts = svc.extract_timestamp(self._current_frame)
-
-                    # More diagnostics if extraction failed
-                    if ocr_ts is None:
-                        self.logger.info(f"[OCR DEBUG] After extraction: initialized={svc._initialized}, reader={svc._reader is not None}, last_ts={svc._last_extracted_timestamp}")
-
-                    self.logger.info(f"[OCR START] Extracted: {ocr_ts}")
-                except Exception as e:
-                    self.logger.warning(f"Failed to extract OCR timestamp on activity start: {e}")
-                    ocr_ts = None
-            else:
-                self.logger.info(f"[OCR START] Skipped - service={self.frame_timestamp_service is not None}, frame={self._current_frame is not None}")
-                ocr_ts = None
-
+            # OCR timestamp (disabled)
+            ocr_ts = ocr_timestamp if ocr_timestamp else None
             self.activities[activity_name]['ocr_start_time'] = ocr_ts
             self.activities[activity_name]['start_frame_count'] = frame_count
             self.activities[activity_name]['last_frame_count'] = frame_count
@@ -4991,10 +4950,6 @@ class LocopilotActivityMonitor:
         
         sampled_count = 0
         
-        # Reset frame timestamp service for new video
-        if self.frame_timestamp_service:
-            self.frame_timestamp_service.reset()
-
         # Use the frame sampling generator
         for sample_idx, timestamp_sec, frame, frame_idx in self.sample_video_frames(self.video_path):
             sampled_count += 1
@@ -5002,10 +4957,6 @@ class LocopilotActivityMonitor:
             try:
                 # Convert timestamp to HH:MM:SS format
                 timestamp = str(timedelta(seconds=timestamp_sec))
-
-                # Store current frame reference for on-demand OCR extraction
-                # OCR will be called when activity starts/ends (not periodically)
-                self._current_frame = frame
 
                 # Add frame to buffer
                 self.frame_buffer.append(frame.copy())
@@ -5389,10 +5340,6 @@ class LocopilotActivityMonitor:
         timestamp_sec = 0  # Initialize to handle empty frame ranges
         frame_idx = start_frame  # Initialize to handle empty frame ranges
 
-        # Reset frame timestamp service for this range
-        if self.frame_timestamp_service:
-            self.frame_timestamp_service.reset()
-
         # Use the frame sampling generator with range limits
         for sample_idx, timestamp_sec, frame, frame_idx in self.sample_video_frames(
             self.video_path, start_frame=start_frame, end_frame=end_frame
@@ -5402,10 +5349,6 @@ class LocopilotActivityMonitor:
             try:
                 # Convert timestamp to HH:MM:SS format
                 timestamp = str(timedelta(seconds=timestamp_sec))
-
-                # Store current frame reference for on-demand OCR extraction
-                # OCR will be called when activity starts/ends (not periodically)
-                self._current_frame = frame
 
                 # Add frame to buffer
                 self.frame_buffer.append(frame.copy())
