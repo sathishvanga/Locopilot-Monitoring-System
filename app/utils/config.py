@@ -174,6 +174,19 @@ class Settings(BaseSettings):
     voting_save_debug_frames: bool = bool(int(os.getenv("VOTING_SAVE_DEBUG_FRAMES", "1")))  # Enable by default
     voting_debug_frames_dir: str = os.getenv("VOTING_DEBUG_FRAMES_DIR", "voting_debug_frames")
 
+    # Mind Diversion Detection Thresholds
+    # Three sub-types: looking_sideways, looking_down_distracted, looking_away_combined
+    mind_diversion_yaw_sideways: float = float(os.getenv("MIND_DIV_YAW_SIDEWAYS", "55"))  # Head turned > 55° for sideways
+    mind_diversion_yaw_combined: float = float(os.getenv("MIND_DIV_YAW_COMBINED", "40"))  # Yaw threshold for combined detection
+    mind_diversion_pitch_down: float = float(os.getenv("MIND_DIV_PITCH_DOWN", "30"))  # Head down > 30° for looking_down
+    mind_diversion_pitch_combined: float = float(os.getenv("MIND_DIV_PITCH_COMBINED", "20"))  # Pitch threshold for combined
+    mind_diversion_yaw_max_for_down: float = float(os.getenv("MIND_DIV_YAW_MAX_DOWN", "40"))  # Max yaw for pure looking_down
+
+    # Mind Diversion Suppression Settings
+    # Suppress false positives when LP is doing legitimate document work
+    mind_diversion_suppress_with_writing: bool = os.getenv("MIND_DIV_SUPPRESS_WRITING", "true").lower() == "true"
+    mind_diversion_writing_grace_seconds: float = float(os.getenv("MIND_DIV_WRITING_GRACE", "5.0"))
+    mind_diversion_wrist_distance_threshold: float = float(os.getenv("MIND_DIV_WRIST_DIST", "350"))  # Max wrist distance for writing pose
 
 
 @lru_cache()

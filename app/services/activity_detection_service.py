@@ -63,8 +63,15 @@ class ActivityDetectionService:
             'group_detected': 'more_than_2_deduplicated_persons',
             'lp_hand_gesture': 'lp_hand_raised_gesture_detected',
             'alp_hand_gesture': 'alp_hand_raised_gesture_detected',
-            'mind_diversion': 'head_turned_side_and_down',
+            'mind_diversion': 'attention_diverted_from_controls',  # Sub-type (looking_sideways, looking_down_distracted, looking_away_combined) in evidence
             'no_person_detected': 'zero_persons_in_frame'
+        }
+
+        # Mind diversion sub-type evidence descriptions
+        self.mind_diversion_sub_types = {
+            'looking_sideways': 'head_turned_sideways_sustained',
+            'looking_down_distracted': 'head_looking_down_sustained',
+            'looking_away_combined': 'head_turned_and_looking_down'
         }
         
         self.settings = get_settings()

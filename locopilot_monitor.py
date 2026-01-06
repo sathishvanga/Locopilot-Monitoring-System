@@ -22,7 +22,7 @@ if script_dir not in sys.path:
 try:
     from app.services.image_preprocessing_service import ImagePreprocessingService
     from app.utils.config import get_settings
-    from app.services.voting_verification_service import VotingVerificationService
+    from app.services.voting_verification_service import VotingVerificationService, ActivityBatchCollector
 except ImportError:
     # Fallback: try importing as module
     try:
@@ -55,13 +55,15 @@ except ImportError:
         ImagePreprocessingService = None
         get_settings = None
         VotingVerificationService = None
+        ActivityBatchCollector = None
 
 # Import VotingVerificationService separately (may not exist in fallback path)
 try:
     if 'VotingVerificationService' not in dir():
-        from app.services.voting_verification_service import VotingVerificationService
+        from app.services.voting_verification_service import VotingVerificationService, ActivityBatchCollector
 except ImportError:
     VotingVerificationService = None
+    ActivityBatchCollector = None
 
 
 # ✅ WINDOWS FIX: Prevent Qt/GUI initialization in worker processes
@@ -480,7 +482,7 @@ class LocopilotActivityMonitor:
             'group_detected': 'more_than_2_deduplicated_persons',
             'lp_hand_gesture': 'lp_hand_raised_gesture_detected',
             'alp_hand_gesture': 'alp_hand_raised_gesture_detected',
-            'mind_diversion': 'head_turned_side_and_down',
+            'mind_diversion': 'attention_diverted_from_controls',  # Sub-type stored in evidence details
             'no_person_detected': 'zero_persons_in_frame'
         }
         
@@ -3587,12 +3589,19 @@ class LocopilotActivityMonitor:
                     'lp_hand_gesture': False,
                     'alp_hand_gesture': False
                 }
-                
+
                 person_debug_info = {
                     'head_pose': {},
                     'sleep_info': {},
                     'gesture_debug': {}
                 }
+
+                # ============ BATCH VOTING VERIFICATION COLLECTOR ============
+                # Collect all activities that need verification for this person
+                # Then verify in batch at the end (single inference pass)
+                voting_collector = None
+                if self.voting_service is not None and ActivityBatchCollector is not None:
+                    voting_collector = ActivityBatchCollector()
                 
                 # ============ PER-PERSON OBJECT DETECTION ============
                 # Run ROI-based object detection around THIS person's hands/body parts
@@ -3623,20 +3632,10 @@ class LocopilotActivityMonitor:
                 person_debug_info['head_pose'] = head_pose_info
                 mind_diversion_detected = head_pose_info.get('detected', False)
 
-                # Stage 2: Voting verification for mind_diversion (if enabled)
-                if mind_diversion_detected and self.voting_service is not None:
-                    is_confirmed, vote_details = self.voting_service.verify_activity(
-                        video_path=self.current_video_path,
-                        timestamp_sec=timestamp_sec,
-                        activity_type='mind_diversion',
-                        person_bbox=list(bbox)
-                    )
-                    if is_confirmed:
-                        person_activities['mind_diversion'] = True
-                        self.logger.info(f"[VOTING] mind_diversion CONFIRMED: {vote_details.get('vote_breakdown', [])}")
-                    else:
-                        self.logger.info(f"[VOTING] mind_diversion REJECTED: {vote_details.get('vote_breakdown', [])}")
-                        person_activities['mind_diversion'] = False
+                # Stage 2: Collect for batch voting verification (if enabled)
+                if mind_diversion_detected and voting_collector is not None:
+                    voting_collector.add('mind_diversion', person_idx, list(bbox))
+                    # Will be verified in batch at end of person processing
                 else:
                     person_activities['mind_diversion'] = mind_diversion_detected
 
@@ -3683,20 +3682,10 @@ class LocopilotActivityMonitor:
                                     person_idx, 'cell_phone', True, timestamp_sec
                                 )
 
-                                # Stage 2: Voting verification (if enabled)
-                                if should_trigger and self.voting_service is not None:
-                                    is_confirmed, vote_details = self.voting_service.verify_activity(
-                                        video_path=self.current_video_path,
-                                        timestamp_sec=timestamp_sec,
-                                        activity_type='cell_phone',
-                                        person_bbox=list(bbox)
-                                    )
-                                    if is_confirmed:
-                                        person_activities['cell_phone'] = True
-                                        self.logger.info(f"[VOTING] cell_phone CONFIRMED: {vote_details.get('vote_breakdown', [])}")
-                                    else:
-                                        self.logger.info(f"[VOTING] cell_phone REJECTED: {vote_details.get('vote_breakdown', [])}")
-                                        person_activities['cell_phone'] = False
+                                # Stage 2: Collect for batch voting verification (if enabled)
+                                if should_trigger and voting_collector is not None:
+                                    voting_collector.add('cell_phone', person_idx, list(bbox))
+                                    # Will be verified in batch at end of person processing
                                 else:
                                     person_activities['cell_phone'] = should_trigger
                                 break
@@ -3766,20 +3755,10 @@ class LocopilotActivityMonitor:
                     person_idx, 'writing', writing_detected_raw, timestamp_sec
                 )
 
-                # Stage 2: Voting verification for writing (if enabled)
-                if should_trigger and self.voting_service is not None:
-                    is_confirmed, vote_details = self.voting_service.verify_activity(
-                        video_path=self.current_video_path,
-                        timestamp_sec=timestamp_sec,
-                        activity_type='writing',
-                        person_bbox=list(bbox)
-                    )
-                    if is_confirmed:
-                        person_activities['writing'] = True
-                        self.logger.info(f"[VOTING] writing CONFIRMED: {vote_details.get('vote_breakdown', [])}")
-                    else:
-                        self.logger.info(f"[VOTING] writing REJECTED: {vote_details.get('vote_breakdown', [])}")
-                        person_activities['writing'] = False
+                # Stage 2: Collect for batch voting verification (if enabled)
+                if should_trigger and voting_collector is not None:
+                    voting_collector.add('writing', person_idx, list(bbox))
+                    # Will be verified in batch at end of person processing
                 else:
                     person_activities['writing'] = should_trigger
 
@@ -3793,61 +3772,29 @@ class LocopilotActivityMonitor:
                 else:
                     person_debug_info['writing_method'] = 'none'
                 
-                # SUPPRESS MIND DIVERSION IF BOOK/WRITING DETECTED (person reading/working with documents)
-                # This runs AFTER writing detection to have complete context
+                # SUPPRESS MIND DIVERSION IF LEGITIMATE WORK ACTIVITY DETECTED
+                # Uses comprehensive suppression logic that checks:
+                # 1. Writing activity detected
+                # 2. Recent writing activity (within grace period)
+                # 3. Book/document present in frame
+                # 4. Hands in writing position (wrists close together, below face)
                 if person_activities['mind_diversion']:
-                    suppress_reason = None
-                    
-                    # Reason 1: Writing activity detected (hand actively near book)
-                    if person_activities['writing']:
-                        suppress_reason = 'writing_detected'
-                    
-                    # Reason 2: Book/document present in person's region (even without hand interaction)
-                    elif len(detections['book']) > 0:
-                        book_in_person_region = False
-                        margin = 150  # Same margin used for book detection
-                        for book_bbox in detections['book']:
-                            if self.bbox_overlap_with_margin(book_bbox, bbox, margin):
-                                book_in_person_region = True
-                                break
-                        
-                        if book_in_person_region:
-                            suppress_reason = 'book_present'
-                    
-                    # Reason 3: Low-confidence book/paper detection for white documents YOLO might miss
-                    if suppress_reason is None:
-                        # Get person's lap/desk region (lower half of person box)
-                        x1, y1, x2, y2 = bbox
-                        lap_y1 = int(y1 + (y2 - y1) * 0.5)  # Focus on lower half where documents typically are
-                        margin = 100
-                        x1_expanded = max(0, int(x1 - margin))
-                        y1_expanded = max(0, int(lap_y1))
-                        x2_expanded = min(w, int(x2 + margin))
-                        y2_expanded = min(h, int(y2 + margin))
-                        
-                        # Run YOLO with very low confidence to catch white papers/documents
-                        lap_region = frame[y1_expanded:y2_expanded, x1_expanded:x2_expanded]
-                        if lap_region.size > 0:
-                            try:
-                                low_conf_results = self.yolo_model(lap_region, verbose=False, conf=0.03,
-                                                                    imgsz=self.yolo_imgsz, device=self.yolo_device)
-                                for r in low_conf_results:
-                                    for box in r.boxes:
-                                        cls = int(box.cls[0])
-                                        class_name = self.yolo_model.names[cls]
-                                        # Check for book or paper/document-like objects
-                                        if class_name in ['book', 'notebook']:
-                                            suppress_reason = 'document_detected_low_conf'
-                                            break
-                                    if suppress_reason:
-                                        break
-                            except Exception:
-                                pass
-                    
-                    # Apply suppression if any reason found
-                    if suppress_reason:
+                    should_suppress, suppress_reason = self.should_suppress_mind_diversion(
+                        person_idx=person_idx,
+                        person_activities=person_activities,
+                        pose_landmarks=translated_landmarks,
+                        detections=detections,
+                        frame_shape=frame.shape,
+                        current_time=timestamp_sec
+                    )
+
+                    if should_suppress:
                         person_activities['mind_diversion'] = False
+                        person_debug_info['head_pose']['suppressed'] = True
                         person_debug_info['head_pose']['suppressed_reason'] = suppress_reason
+                    else:
+                        person_debug_info['head_pose']['suppressed'] = False
+                        person_debug_info['head_pose']['suppressed_reason'] = None
 
                 # Helper method for temporal smoothing of hand positions
                 def _get_smoothed_hand_position(person_idx, hand_side, landmark, w, h, timestamp_sec):
@@ -3977,20 +3924,12 @@ class LocopilotActivityMonitor:
                                     person_idx, 'packing_bags', True, timestamp_sec
                                 )
 
-                                # Stage 2: Voting verification for packing_bags (if enabled)
-                                if should_trigger and self.voting_service is not None:
-                                    is_confirmed, vote_details = self.voting_service.verify_activity(
-                                        video_path=self.current_video_path,
-                                        timestamp_sec=timestamp_sec,
-                                        activity_type='packing_bags',
-                                        person_bbox=list(bbox)
-                                    )
-                                    if is_confirmed:
-                                        person_activities['packing'] = True
-                                        self.logger.info(f"[VOTING] packing_bags CONFIRMED: {vote_details.get('vote_breakdown', [])}")
-                                    else:
-                                        self.logger.info(f"[VOTING] packing_bags REJECTED: {vote_details.get('vote_breakdown', [])}")
-                                        person_activities['packing'] = False
+                                # Stage 2: Collect for batch voting verification (if enabled)
+                                if should_trigger and voting_collector is not None:
+                                    voting_collector.add('packing_bags', person_idx, list(bbox))
+                                    # Will be verified in batch at end of person processing
+                                    # Tentatively set to True, will be updated after batch verification
+                                    person_activities['packing'] = True
                                 else:
                                     person_activities['packing'] = should_trigger
 
@@ -3999,7 +3938,7 @@ class LocopilotActivityMonitor:
                                     self.recent_person_activities[person_idx] = {}
                                 self.recent_person_activities[person_idx]['packing'] = timestamp_sec
                                 break
-                            
+
                             # ===== FALLBACK: Hand near backpack with motion analysis =====
                             hand_near_backpack = (
                                 self.check_hand_object_interaction(right_hand_coords, backpack_bbox, proximity_margin) or
@@ -4025,20 +3964,12 @@ class LocopilotActivityMonitor:
                                         person_idx, 'packing_bags', True, timestamp_sec
                                     )
 
-                                    # Stage 2: Voting verification for packing_bags (if enabled)
-                                    if should_trigger and self.voting_service is not None:
-                                        is_confirmed, vote_details = self.voting_service.verify_activity(
-                                            video_path=self.current_video_path,
-                                            timestamp_sec=timestamp_sec,
-                                            activity_type='packing_bags',
-                                            person_bbox=list(bbox)
-                                        )
-                                        if is_confirmed:
-                                            person_activities['packing'] = True
-                                            self.logger.info(f"[VOTING] packing_bags (motion) CONFIRMED: {vote_details.get('vote_breakdown', [])}")
-                                        else:
-                                            self.logger.info(f"[VOTING] packing_bags (motion) REJECTED: {vote_details.get('vote_breakdown', [])}")
-                                            person_activities['packing'] = False
+                                    # Stage 2: Collect for batch voting verification (if enabled)
+                                    if should_trigger and voting_collector is not None:
+                                        voting_collector.add('packing_bags', person_idx, list(bbox))
+                                        # Will be verified in batch at end of person processing
+                                        # Tentatively set to True, will be updated after batch verification
+                                        person_activities['packing'] = True
                                     else:
                                         person_activities['packing'] = should_trigger
                                     # UPDATE TEMPORAL HISTORY (for hand gesture suppression)
@@ -4081,39 +4012,69 @@ class LocopilotActivityMonitor:
                 )
                 person_debug_info['gesture_debug'] = gesture_debug
 
-                # Stage 2: Voting verification for LP hand gesture (if enabled)
-                if lp_gesture and self.voting_service is not None:
-                    is_confirmed, vote_details = self.voting_service.verify_activity(
-                        video_path=self.current_video_path,
-                        timestamp_sec=timestamp_sec,
-                        activity_type='lp_hand_gesture',
-                        person_bbox=list(bbox)
-                    )
-                    if is_confirmed:
-                        person_activities['lp_hand_gesture'] = True
-                        self.logger.info(f"[VOTING] lp_hand_gesture CONFIRMED: {vote_details.get('vote_breakdown', [])}")
-                    else:
-                        self.logger.info(f"[VOTING] lp_hand_gesture REJECTED: {vote_details.get('vote_breakdown', [])}")
-                        person_activities['lp_hand_gesture'] = False
+                # Stage 2: Collect for batch voting verification (if enabled)
+                if lp_gesture and voting_collector is not None:
+                    voting_collector.add('lp_hand_gesture', person_idx, list(bbox))
+                    # Will be verified in batch at end of person processing
                 else:
                     person_activities['lp_hand_gesture'] = lp_gesture
 
-                # Stage 2: Voting verification for ALP hand gesture (if enabled)
-                if alp_gesture and self.voting_service is not None:
-                    is_confirmed, vote_details = self.voting_service.verify_activity(
-                        video_path=self.current_video_path,
-                        timestamp_sec=timestamp_sec,
-                        activity_type='alp_hand_gesture',
-                        person_bbox=list(bbox)
-                    )
-                    if is_confirmed:
-                        person_activities['alp_hand_gesture'] = True
-                        self.logger.info(f"[VOTING] alp_hand_gesture CONFIRMED: {vote_details.get('vote_breakdown', [])}")
-                    else:
-                        self.logger.info(f"[VOTING] alp_hand_gesture REJECTED: {vote_details.get('vote_breakdown', [])}")
-                        person_activities['alp_hand_gesture'] = False
+                if alp_gesture and voting_collector is not None:
+                    voting_collector.add('alp_hand_gesture', person_idx, list(bbox))
+                    # Will be verified in batch at end of person processing
                 else:
                     person_activities['alp_hand_gesture'] = alp_gesture
+
+                # ============ BATCH VOTING VERIFICATION ============
+                # Verify all collected activities in a single batch (shared inference)
+                if voting_collector is not None and voting_collector.has_activities():
+                    try:
+                        batch_results = self.voting_service.verify_batch(
+                            video_path=self.current_video_path,
+                            timestamp_sec=timestamp_sec,
+                            activities=voting_collector.get_activities()
+                        )
+
+                        # Apply results to person_activities
+                        for activity_key, (is_confirmed, vote_details) in batch_results.items():
+                            # Parse key: 'cell_phone_p0' -> ('cell_phone', 0)
+                            parts = activity_key.rsplit('_p', 1)
+                            if len(parts) == 2:
+                                activity_type = parts[0]
+
+                                # Map activity type to person_activities key
+                                activity_key_map = {
+                                    'mind_diversion': 'mind_diversion',
+                                    'cell_phone': 'cell_phone',
+                                    'writing': 'writing',
+                                    'packing_bags': 'packing',
+                                    'lp_hand_gesture': 'lp_hand_gesture',
+                                    'alp_hand_gesture': 'alp_hand_gesture'
+                                }
+
+                                person_key = activity_key_map.get(activity_type, activity_type)
+                                person_activities[person_key] = is_confirmed
+
+                                # Log result
+                                if is_confirmed:
+                                    self.logger.info(f"[VOTING BATCH] {activity_type} CONFIRMED: {vote_details.get('vote_breakdown', [])}")
+                                else:
+                                    self.logger.info(f"[VOTING BATCH] {activity_type} REJECTED: {vote_details.get('vote_breakdown', [])}")
+                    except Exception as e:
+                        self.logger.error(f"[VOTING BATCH] Error in batch verification: {e}")
+                        # On error, set all collected activities to False (safe default)
+                        for activity in voting_collector.get_activities():
+                            activity_type = activity['type']
+                            activity_key_map = {
+                                'mind_diversion': 'mind_diversion',
+                                'cell_phone': 'cell_phone',
+                                'writing': 'writing',
+                                'packing_bags': 'packing',
+                                'lp_hand_gesture': 'lp_hand_gesture',
+                                'alp_hand_gesture': 'alp_hand_gesture'
+                            }
+                            person_key = activity_key_map.get(activity_type, activity_type)
+                            person_activities[person_key] = False
 
                 # Track hand raise timestamps for temporal coordination window
                 if person_activities['lp_hand_gesture']:
@@ -4215,26 +4176,30 @@ class LocopilotActivityMonitor:
     
     def calculate_head_pose_angles(self, pose_landmarks, face_landmarks, frame_shape):
         """Calculate head pose angles (yaw and pitch) to detect mind diversion.
-        
-        Detects when person turns face to side AND looks down.
-        
+
+        Detects three types of mind diversion:
+        1. looking_sideways - head turned > 55° (configurable)
+        2. looking_away_combined - head turned > 40° AND down > 20°
+        3. looking_down_distracted - head down > 30° (configurable)
+
         Uses both pose landmarks (nose, shoulders) and face mesh landmarks for accuracy.
-        
+
         Args:
             pose_landmarks: MediaPipe pose landmarks
             face_landmarks: MediaPipe face mesh landmarks (can be None)
             frame_shape: (height, width) of frame
-            
+
         Returns:
             dict: {
-                'yaw': float,      # Side turn angle in degrees (-90 to +90)
-                'pitch': float,    # Up/down tilt angle in degrees (-90 to +90)
-                'detected': bool,  # True if mind diversion detected
-                'method': str      # Detection method used
+                'yaw': float,       # Side turn angle in degrees (-90 to +90)
+                'pitch': float,     # Up/down tilt angle in degrees (-90 to +90)
+                'detected': bool,   # True if mind diversion detected
+                'sub_type': str,    # 'looking_sideways'|'looking_down_distracted'|'looking_away_combined'|None
+                'method': str       # Detection method used ('pose_landmarks'|'face_mesh'|'none')
             }
         """
         h, w = frame_shape[:2]
-        result = {'yaw': 0, 'pitch': 0, 'detected': False, 'method': 'none'}
+        result = {'yaw': 0, 'pitch': 0, 'detected': False, 'sub_type': None, 'method': 'none'}
         
         if not pose_landmarks:
             return result
@@ -4286,15 +4251,34 @@ class LocopilotActivityMonitor:
             result['yaw'] = yaw_angle
             result['pitch'] = pitch_angle
             result['method'] = 'pose_landmarks'
-            
-            # DETECTION LOGIC: Mind diversion detected if BOTH conditions met:
-            # 1. Head turned to side > 45 degrees (either direction)
-            # 2. Head looking down > 15 degrees
-            yaw_threshold = 45  # degrees
-            pitch_threshold = 15  # degrees (looking down is positive)
-            
-            if abs(yaw_angle) > yaw_threshold and pitch_angle > pitch_threshold:
+
+            # DETECTION LOGIC: Multi-scenario mind diversion with configurable thresholds
+            # Uses settings from config for all thresholds
+            settings = self.settings
+
+            # Sub-type detection with priority order:
+            # 1. looking_sideways - head turned significantly to side (HIGH CONFIDENCE)
+            # 2. looking_away_combined - head turned AND down (HIGH CONFIDENCE)
+            # 3. looking_down_distracted - only head down, not sideways (MEDIUM CONFIDENCE)
+
+            sub_type = None
+
+            # Scenario 1: looking_sideways (head turned > threshold, regardless of pitch)
+            if abs(yaw_angle) > settings.mind_diversion_yaw_sideways:
+                sub_type = 'looking_sideways'
                 result['detected'] = True
+            # Scenario 2: looking_away_combined (turned AND down)
+            elif (abs(yaw_angle) > settings.mind_diversion_yaw_combined and
+                  pitch_angle > settings.mind_diversion_pitch_combined):
+                sub_type = 'looking_away_combined'
+                result['detected'] = True
+            # Scenario 3: looking_down_distracted (only down, not sideways)
+            elif (pitch_angle > settings.mind_diversion_pitch_down and
+                  abs(yaw_angle) < settings.mind_diversion_yaw_max_for_down):
+                sub_type = 'looking_down_distracted'
+                result['detected'] = True
+
+            result['sub_type'] = sub_type
             
             # Use face mesh if available for more accurate detection
             if face_landmarks and face_landmarks.multi_face_landmarks:
@@ -4340,13 +4324,31 @@ class LocopilotActivityMonitor:
                         result['pitch'] = np.clip(pitch_face, -45, 45)
                     
                     result['method'] = 'face_mesh'
-                    
-                    # Re-evaluate detection with face mesh data
-                    if abs(result['yaw']) > yaw_threshold and result['pitch'] > pitch_threshold:
+
+                    # Re-evaluate detection with face mesh data using new thresholds
+                    yaw_fm = result['yaw']
+                    pitch_fm = result['pitch']
+                    sub_type = None
+
+                    # Scenario 1: looking_sideways
+                    if abs(yaw_fm) > settings.mind_diversion_yaw_sideways:
+                        sub_type = 'looking_sideways'
+                        result['detected'] = True
+                    # Scenario 2: looking_away_combined
+                    elif (abs(yaw_fm) > settings.mind_diversion_yaw_combined and
+                          pitch_fm > settings.mind_diversion_pitch_combined):
+                        sub_type = 'looking_away_combined'
+                        result['detected'] = True
+                    # Scenario 3: looking_down_distracted
+                    elif (pitch_fm > settings.mind_diversion_pitch_down and
+                          abs(yaw_fm) < settings.mind_diversion_yaw_max_for_down):
+                        sub_type = 'looking_down_distracted'
                         result['detected'] = True
                     else:
                         result['detected'] = False
-                        
+
+                    result['sub_type'] = sub_type
+
                 except Exception as e:
                     # If face mesh processing fails, keep pose-based result
                     pass
@@ -4354,8 +4356,72 @@ class LocopilotActivityMonitor:
             return result
             
         except (IndexError, AttributeError, ZeroDivisionError) as e:
-            return {'yaw': 0, 'pitch': 0, 'detected': False, 'method': 'error'}
-    
+            return {'yaw': 0, 'pitch': 0, 'detected': False, 'sub_type': None, 'method': 'error'}
+
+    def should_suppress_mind_diversion(self, person_idx, person_activities, pose_landmarks, detections, frame_shape, current_time=None):
+        """
+        Suppress mind diversion if person is doing legitimate work activity.
+
+        This function checks multiple conditions to prevent false positives when the LP
+        is legitimately working on documents (logbook, papers, etc.).
+
+        Args:
+            person_idx: Index of the person being checked
+            person_activities: Dict of detected activities for this person
+            pose_landmarks: Pose landmarks for the person
+            detections: YOLO detections dict (may contain 'book', etc.)
+            frame_shape: (height, width) of the frame
+            current_time: Current timestamp (optional, for recent activity check)
+
+        Returns:
+            tuple: (should_suppress: bool, reason: str or None)
+        """
+        h, w = frame_shape[:2]
+        settings = self.settings
+
+        # 1. WRITING ACTIVITY SUPPRESSION
+        if settings.mind_diversion_suppress_with_writing:
+            if person_activities.get('writing', False):
+                return True, "suppressed_writing_active"
+
+            # Check recent writing (within grace period)
+            if current_time is not None and hasattr(self, 'recent_person_activities'):
+                writing_timestamp = self.recent_person_activities.get(person_idx, {}).get('writing')
+                if writing_timestamp and (current_time - writing_timestamp) < settings.mind_diversion_writing_grace_seconds:
+                    return True, "suppressed_recent_writing"
+
+        # 2. BOOK DETECTION SUPPRESSION
+        if detections and 'book' in detections and len(detections.get('book', [])) > 0:
+            return True, "suppressed_book_detected"
+
+        # 3. HAND POSITION HEURISTIC (Critical for camera angle)
+        # If both wrists visible and close together in lap area → likely document work
+        if pose_landmarks:
+            try:
+                left_wrist = self.get_keypoint(pose_landmarks, 'left_wrist')
+                right_wrist = self.get_keypoint(pose_landmarks, 'right_wrist')
+                nose = self.get_keypoint(pose_landmarks, 'nose')
+
+                if left_wrist.visibility > 0.3 and right_wrist.visibility > 0.3:
+                    # Calculate wrist positions
+                    left_wrist_coords = np.array([left_wrist.x * w, left_wrist.y * h])
+                    right_wrist_coords = np.array([right_wrist.x * w, right_wrist.y * h])
+                    wrist_distance = np.linalg.norm(left_wrist_coords - right_wrist_coords)
+
+                    # Check if wrists are in "lap area" (below nose, in front of body)
+                    nose_y = nose.y * h
+                    avg_wrist_y = (left_wrist_coords[1] + right_wrist_coords[1]) / 2
+                    wrists_below_face = avg_wrist_y > nose_y
+
+                    # If wrists close together AND below face → writing pose
+                    if wrist_distance < settings.mind_diversion_wrist_distance_threshold and wrists_below_face:
+                        return True, "suppressed_writing_pose_detected"
+            except (AttributeError, IndexError):
+                pass  # Landmarks not available, continue without suppression
+
+        # 4. NO SUPPRESSION - Allow detection
+        return False, None
+
     def calculate_iou(self, bbox1, bbox2):
         """Calculate Intersection over Union (IoU) between two bounding boxes.
         
@@ -5444,8 +5510,25 @@ class LocopilotActivityMonitor:
         if self.save_annotated_frames:
             self.logger.info(f"  - Frames: {self.frames_dir}")
         self.logger.info(f"  - Activities: {os.path.join(self.run_dir, 'activities.json')}")
+
+        # Log voting verification cache statistics
+        if self.voting_service is not None:
+            try:
+                cache_stats = self.voting_service.get_cache_stats()
+                self.logger.info("-" * 40)
+                self.logger.info("[VOTING CACHE STATS]")
+                self.logger.info(f"  Cache hits: {cache_stats.get('hits', 0)}")
+                self.logger.info(f"  Cache misses: {cache_stats.get('misses', 0)}")
+                self.logger.info(f"  Hit rate: {cache_stats.get('hit_rate', 0):.1f}%")
+                self.logger.info(f"  Cache size: {cache_stats.get('size', 0)}/{cache_stats.get('max_size', 0)}")
+                # Clear cache after video processing to free memory
+                self.voting_service.clear_cache()
+                self.logger.info("  Cache cleared for next video")
+            except Exception as e:
+                self.logger.debug(f"Could not get cache stats: {e}")
+
         self.logger.info("=" * 60)
-        
+
         # Generate summary report
         self.generate_summary_report()
     

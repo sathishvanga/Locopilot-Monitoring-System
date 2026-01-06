@@ -7,17 +7,241 @@ This service implements a two-stage detection system:
 
 The voting mechanism significantly reduces false positives by requiring
 a configurable percentage of frames to confirm the detection.
+
+OPTIMIZATION (v2.0):
+- Batch verification: verify_batch() processes multiple activities in one pass
+- LRU caching: Frame extraction and inference results cached by (video_path, timestamp)
+- Reduces O(P x A x V) to O(P x V) by sharing inference across activities at same timestamp
 """
 
 import cv2
 import logging
 import os
 import numpy as np
+import hashlib
+import time
+from collections import OrderedDict
 from datetime import datetime
+from threading import Lock
 from typing import List, Dict, Tuple, Optional, Any
 from logging.handlers import TimedRotatingFileHandler
 
 from ..utils.config import get_settings
+
+
+class LRUCache:
+    """
+    Thread-safe LRU cache for frame extraction and inference results.
+
+    Caches by (video_path, timestamp_key) to avoid redundant video seeking
+    and model inference when multiple activities trigger at the same timestamp.
+    """
+
+    def __init__(self, max_size: int = 32):
+        """
+        Initialize LRU cache.
+
+        Args:
+            max_size: Maximum number of entries to cache (default 32 = ~3.2 seconds of video at 10 frames/verification)
+        """
+        self._cache: OrderedDict = OrderedDict()
+        self._max_size = max_size
+        self._lock = Lock()
+        self._hits = 0
+        self._misses = 0
+
+    def _make_key(self, video_path: str, timestamp_sec: float, num_frames: int) -> str:
+        """Create a cache key from video path and timestamp."""
+        # Round timestamp to nearest 0.1s to handle floating point variations
+        ts_key = round(timestamp_sec, 1)
+        # Use video basename + size + timestamp for key (faster than full path hash)
+        try:
+            video_size = os.path.getsize(video_path)
+        except OSError:
+            video_size = 0
+        video_name = os.path.basename(video_path)
+        return f"{video_name}:{video_size}:{ts_key}:{num_frames}"
+
+    def get(self, video_path: str, timestamp_sec: float, num_frames: int) -> Optional[Dict]:
+        """
+        Get cached entry for (video_path, timestamp).
+
+        Returns:
+            Dict with 'frames', 'detections', 'poses' if cached, None otherwise
+        """
+        key = self._make_key(video_path, timestamp_sec, num_frames)
+        with self._lock:
+            if key in self._cache:
+                # Move to end (most recently used)
+                self._cache.move_to_end(key)
+                self._hits += 1
+                return self._cache[key]
+            self._misses += 1
+            return None
+
+    def put(self, video_path: str, timestamp_sec: float, num_frames: int, data: Dict) -> None:
+        """
+        Cache entry for (video_path, timestamp).
+
+        Args:
+            video_path: Path to video file
+            timestamp_sec: Timestamp in seconds
+            num_frames: Number of frames extracted
+            data: Dict with 'frames', 'detections', 'poses'
+        """
+        key = self._make_key(video_path, timestamp_sec, num_frames)
+        with self._lock:
+            if key in self._cache:
+                # Update existing and move to end
+                self._cache[key] = data
+                self._cache.move_to_end(key)
+            else:
+                # Add new entry
+                self._cache[key] = data
+                # Evict oldest if over capacity
+                while len(self._cache) > self._max_size:
+                    self._cache.popitem(last=False)
+
+    def clear(self) -> None:
+        """Clear all cached entries."""
+        with self._lock:
+            self._cache.clear()
+            self._hits = 0
+            self._misses = 0
+
+    def get_stats(self) -> Dict[str, int]:
+        """Get cache hit/miss statistics."""
+        with self._lock:
+            total = self._hits + self._misses
+            hit_rate = (self._hits / total * 100) if total > 0 else 0
+            return {
+                'hits': self._hits,
+                'misses': self._misses,
+                'total': total,
+                'hit_rate': hit_rate,
+                'size': len(self._cache),
+                'max_size': self._max_size
+            }
+
+
+class ActivityBatchCollector:
+    """
+    Helper class to collect activities for batch verification.
+
+    Use this in locopilot_monitor.py to accumulate all detected activities
+    for a frame/person before calling verify_batch().
+
+    Example Usage:
+        # In frame processing loop
+        collector = ActivityBatchCollector()
+
+        # For each person
+        if cell_phone_detected:
+            collector.add('cell_phone', person_idx, list(bbox))
+        if writing_detected:
+            collector.add('writing', person_idx, list(bbox))
+        if mind_diversion_detected:
+            collector.add('mind_diversion', person_idx, list(bbox))
+
+        # After all detections for this frame
+        if collector.has_activities() and voting_service:
+            results = voting_service.verify_batch(
+                video_path, timestamp_sec, collector.get_activities()
+            )
+            # Apply results to person_activities dict
+            collector.apply_results(results, person_activities_dict)
+    """
+
+    def __init__(self):
+        """Initialize empty activity collector."""
+        self._activities: List[Dict] = []
+
+    def add(
+        self,
+        activity_type: str,
+        person_idx: int,
+        person_bbox: List[float],
+        extra_data: Optional[Dict] = None
+    ) -> None:
+        """
+        Add an activity to the batch.
+
+        Args:
+            activity_type: Type of activity (e.g., 'cell_phone', 'writing')
+            person_idx: Index of the person who triggered the activity
+            person_bbox: Bounding box of the person [x1, y1, x2, y2]
+            extra_data: Optional additional data to store with the activity
+        """
+        activity = {
+            'type': activity_type,
+            'person_idx': person_idx,
+            'person_bbox': person_bbox
+        }
+        if extra_data:
+            activity['extra'] = extra_data
+        self._activities.append(activity)
+
+    def has_activities(self) -> bool:
+        """Check if any activities have been collected."""
+        return len(self._activities) > 0
+
+    def count(self) -> int:
+        """Get number of collected activities."""
+        return len(self._activities)
+
+    def get_activities(self) -> List[Dict]:
+        """Get all collected activities."""
+        return self._activities
+
+    def get_activities_for_person(self, person_idx: int) -> List[Dict]:
+        """Get activities for a specific person."""
+        return [a for a in self._activities if a['person_idx'] == person_idx]
+
+    def clear(self) -> None:
+        """Clear all collected activities."""
+        self._activities = []
+
+    def apply_results(
+        self,
+        results: Dict[str, Tuple[bool, Dict]],
+        person_activities: Dict[int, Dict[str, bool]]
+    ) -> None:
+        """
+        Apply verification results to person_activities dictionary.
+
+        Args:
+            results: Results from verify_batch()
+            person_activities: Dict mapping person_idx to activity dict
+                               e.g., {0: {'cell_phone': False, 'writing': False, ...}}
+        """
+        for activity_key, (is_confirmed, details) in results.items():
+            # Parse key: 'cell_phone_p0' -> ('cell_phone', 0)
+            parts = activity_key.rsplit('_p', 1)
+            if len(parts) == 2:
+                activity_type = parts[0]
+                try:
+                    person_idx = int(parts[1])
+                except ValueError:
+                    continue
+
+                if person_idx in person_activities:
+                    person_activities[person_idx][activity_type] = is_confirmed
+
+    def __len__(self) -> int:
+        """Return number of activities."""
+        return len(self._activities)
+
+    def __repr__(self) -> str:
+        """String representation for debugging."""
+        if not self._activities:
+            return "ActivityBatchCollector(empty)"
+        summary = {}
+        for act in self._activities:
+            key = f"p{act['person_idx']}"
+            if key not in summary:
+                summary[key] = []
+            summary[key].append(act['type'])
+        return f"ActivityBatchCollector({summary})"
 
 
 def _setup_voting_logger():
@@ -83,14 +307,25 @@ class VotingVerificationService:
         self.book_hand_margin = 180   # Hand-to-book proximity
         self.person_book_margin = 250 # Person-to-book region
         self.backpack_wrist_margin = 40  # Wrist inside backpack
-        self.yaw_threshold = 45.0     # Mind diversion yaw
-        self.pitch_threshold = 15.0   # Mind diversion pitch
+
+        # Mind diversion thresholds (now configurable from settings)
+        self.mind_div_yaw_sideways = self.settings.mind_diversion_yaw_sideways
+        self.mind_div_yaw_combined = self.settings.mind_diversion_yaw_combined
+        self.mind_div_pitch_down = self.settings.mind_diversion_pitch_down
+        self.mind_div_pitch_combined = self.settings.mind_diversion_pitch_combined
+        self.mind_div_yaw_max_for_down = self.settings.mind_diversion_yaw_max_for_down
+        self.mind_div_wrist_distance = self.settings.mind_diversion_wrist_distance_threshold
+
+        # OPTIMIZATION: LRU cache for frame extraction and inference results
+        # Cache size of 32 covers ~3 timestamps with room for overlap
+        self._inference_cache = LRUCache(max_size=32)
 
         logger.info("="*60)
-        logger.info("VotingVerificationService initialized")
+        logger.info("VotingVerificationService initialized (v2.0 - Batch Optimized)")
         logger.info(f"  voting_enabled: {self.settings.voting_enabled}")
         logger.info(f"  voting_num_frames: {self.settings.voting_num_frames}")
         logger.info(f"  voting_frame_spread_ms: {self.settings.voting_frame_spread_ms}")
+        logger.info(f"  inference_cache_size: 32")
         logger.info(f"  Thresholds:")
         logger.info(f"    cell_phone: {self.settings.voting_threshold_cell_phone}")
         logger.info(f"    writing: {self.settings.voting_threshold_writing}")
@@ -154,22 +389,43 @@ class VotingVerificationService:
 
         logger.debug(f"[VOTING] {activity_type}: threshold={threshold}, num_frames={num_frames}")
 
-        # Extract native frames
-        frames = self._extract_native_frames(video_path, timestamp_sec, num_frames, activity_type)
+        # OPTIMIZATION: Try to get cached frames and inference results
+        cached_data = self._inference_cache.get(video_path, timestamp_sec, num_frames)
 
-        if len(frames) < num_frames // 2:
-            logger.warning(f"[VOTING] {activity_type}: Only extracted {len(frames)}/{num_frames} frames - BYPASSING")
-            return True, {
-                'method': 'bypass',
-                'reason': 'insufficient_frames',
-                'frames_extracted': len(frames),
-                'frames_required': num_frames
-            }
+        if cached_data is not None:
+            # Cache HIT - reuse existing frames and inference
+            logger.info(f"[VOTING] {activity_type}: CACHE HIT - reusing frames and inference")
+            frames = cached_data['frames']
+            batch_detections = cached_data['detections']
+            batch_poses = cached_data['poses']
+        else:
+            # Cache MISS - extract frames and run inference
+            logger.info(f"[VOTING] {activity_type}: Cache miss - extracting frames and running inference")
 
-        # Run batch detection on all frames
-        logger.info(f"[VOTING] {activity_type}: Running batch detection on {len(frames)} frames...")
-        batch_detections = self._batch_detect_objects(frames, activity_type)
-        batch_poses = self._batch_detect_poses(frames, activity_type)
+            # Extract native frames
+            frames = self._extract_native_frames(video_path, timestamp_sec, num_frames, activity_type)
+
+            if len(frames) < num_frames // 2:
+                logger.warning(f"[VOTING] {activity_type}: Only extracted {len(frames)}/{num_frames} frames - BYPASSING")
+                return True, {
+                    'method': 'bypass',
+                    'reason': 'insufficient_frames',
+                    'frames_extracted': len(frames),
+                    'frames_required': num_frames
+                }
+
+            # Run batch detection on all frames
+            logger.info(f"[VOTING] {activity_type}: Running batch detection on {len(frames)} frames...")
+            batch_detections = self._batch_detect_objects(frames, activity_type)
+            batch_poses = self._batch_detect_poses(frames, activity_type)
+
+            # Cache the results for subsequent activity verifications at same timestamp
+            self._inference_cache.put(video_path, timestamp_sec, num_frames, {
+                'frames': frames,
+                'detections': batch_detections,
+                'poses': batch_poses
+            })
+            logger.debug(f"[VOTING] {activity_type}: Cached inference results")
 
         # Vote on each frame
         votes = []
@@ -237,6 +493,235 @@ class VotingVerificationService:
             'frame_details': frame_details,
             'confidences': confidences
         }
+
+    def verify_batch(
+        self,
+        video_path: str,
+        timestamp_sec: float,
+        activities: List[Dict]
+    ) -> Dict[str, Tuple[bool, Dict]]:
+        """
+        Verify multiple activities at the same timestamp using shared inference.
+
+        This is the OPTIMIZED batch verification method that:
+        1. Extracts frames ONCE for all activities
+        2. Runs YOLO + YOLO-Pose inference ONCE
+        3. Verifies each activity using cached results
+
+        This reduces O(P x A x V) to O(P x V) where:
+        - P = persons
+        - A = activities per person
+        - V = voting frames
+
+        Args:
+            video_path: Path to the source video file
+            timestamp_sec: Timestamp where activities were detected (in seconds)
+            activities: List of activity dicts with format:
+                [
+                    {'type': 'cell_phone', 'person_bbox': [x1,y1,x2,y2], 'person_idx': 0},
+                    {'type': 'writing', 'person_bbox': [x1,y1,x2,y2], 'person_idx': 0},
+                    {'type': 'mind_diversion', 'person_bbox': [x1,y1,x2,y2], 'person_idx': 1},
+                    ...
+                ]
+
+        Returns:
+            Dict mapping activity keys to (is_confirmed, vote_details):
+            {
+                'cell_phone_p0': (True, {...}),
+                'writing_p0': (False, {...}),
+                'mind_diversion_p1': (True, {...}),
+                ...
+            }
+
+        Example Usage:
+            # Collect all activities detected at this timestamp
+            activities_to_verify = []
+            if cell_phone_detected:
+                activities_to_verify.append({
+                    'type': 'cell_phone',
+                    'person_bbox': list(bbox),
+                    'person_idx': person_idx
+                })
+            if writing_detected:
+                activities_to_verify.append({
+                    'type': 'writing',
+                    'person_bbox': list(bbox),
+                    'person_idx': person_idx
+                })
+
+            # Verify all at once
+            if activities_to_verify and self.voting_service:
+                results = self.voting_service.verify_batch(
+                    video_path, timestamp_sec, activities_to_verify
+                )
+                for key, (confirmed, details) in results.items():
+                    activity_type, person_idx = key.rsplit('_p', 1)
+                    # Apply results...
+        """
+        start_time = time.time()
+
+        logger.info("")
+        logger.info("="*70)
+        logger.info(f"[VOTING BATCH] STARTING BATCH VERIFICATION")
+        logger.info(f"[VOTING BATCH] Video: {os.path.basename(video_path)}")
+        logger.info(f"[VOTING BATCH] Timestamp: {timestamp_sec:.2f}s")
+        logger.info(f"[VOTING BATCH] Activities: {len(activities)}")
+        for act in activities:
+            logger.info(f"[VOTING BATCH]   - {act['type']} (person {act.get('person_idx', '?')})")
+        logger.info("="*70)
+
+        # Early exit if no activities or voting disabled
+        if not activities:
+            logger.warning("[VOTING BATCH] No activities to verify")
+            return {}
+
+        if not self.settings.voting_enabled:
+            logger.info("[VOTING BATCH] Voting DISABLED - bypassing all verifications")
+            return {
+                f"{act['type']}_p{act.get('person_idx', 0)}": (True, {'method': 'bypass', 'reason': 'voting_disabled'})
+                for act in activities
+            }
+
+        num_frames = self.settings.voting_num_frames
+        results: Dict[str, Tuple[bool, Dict]] = {}
+
+        # OPTIMIZATION: Check cache first, extract frames and run inference only once
+        cached_data = self._inference_cache.get(video_path, timestamp_sec, num_frames)
+
+        if cached_data is not None:
+            logger.info(f"[VOTING BATCH] CACHE HIT - reusing frames and inference for {len(activities)} activities")
+            frames = cached_data['frames']
+            batch_detections = cached_data['detections']
+            batch_poses = cached_data['poses']
+        else:
+            logger.info(f"[VOTING BATCH] Cache miss - extracting {num_frames} frames and running inference ONCE")
+
+            # Extract frames ONCE
+            frames = self._extract_native_frames(video_path, timestamp_sec, num_frames, "batch")
+
+            if len(frames) < num_frames // 2:
+                logger.warning(f"[VOTING BATCH] Only extracted {len(frames)}/{num_frames} frames - BYPASSING ALL")
+                bypass_details = {
+                    'method': 'bypass',
+                    'reason': 'insufficient_frames',
+                    'frames_extracted': len(frames),
+                    'frames_required': num_frames
+                }
+                return {
+                    f"{act['type']}_p{act.get('person_idx', 0)}": (True, bypass_details)
+                    for act in activities
+                }
+
+            # Run YOLO + YOLO-Pose ONCE
+            logger.info(f"[VOTING BATCH] Running batch YOLO inference on {len(frames)} frames...")
+            batch_detections = self._batch_detect_objects(frames, "batch")
+            batch_poses = self._batch_detect_poses(frames, "batch")
+
+            # Cache for potential future use
+            self._inference_cache.put(video_path, timestamp_sec, num_frames, {
+                'frames': frames,
+                'detections': batch_detections,
+                'poses': batch_poses
+            })
+
+        # Now verify each activity using the SHARED inference results
+        logger.info(f"[VOTING BATCH] Verifying {len(activities)} activities using shared inference...")
+
+        for act in activities:
+            activity_type = act['type']
+            person_bbox = act.get('person_bbox', [])
+            person_idx = act.get('person_idx', 0)
+            activity_key = f"{activity_type}_p{person_idx}"
+
+            # Get threshold for this activity type
+            threshold_attr = f'voting_threshold_{activity_type}'
+            threshold = getattr(self.settings, threshold_attr, 0.5)
+
+            # Vote on each frame
+            votes = []
+            confidences = []
+            frame_details = []
+
+            for i, (frame, detections, poses) in enumerate(zip(frames, batch_detections, batch_poses)):
+                detected, confidence, details = self._verify_frame(
+                    frame, detections, poses, activity_type, person_bbox, i, len(frames)
+                )
+                votes.append(detected)
+                confidences.append(confidence)
+                frame_details.append(details)
+
+            # Calculate voting result
+            positive_votes = sum(votes)
+            vote_ratio = positive_votes / len(votes) if votes else 0
+            is_confirmed = vote_ratio >= threshold
+
+            vote_breakdown = ['Y' if v else 'N' for v in votes]
+
+            logger.info(f"[VOTING BATCH] {activity_key}: {positive_votes}/{len(votes)} "
+                       f"({vote_ratio*100:.0f}%) >= {threshold*100:.0f}% -> "
+                       f"{'CONFIRMED' if is_confirmed else 'REJECTED'}")
+
+            results[activity_key] = (is_confirmed, {
+                'method': 'voting_batch',
+                'activity_type': activity_type,
+                'person_idx': person_idx,
+                'timestamp_sec': timestamp_sec,
+                'frames_analyzed': len(votes),
+                'positive_votes': positive_votes,
+                'vote_breakdown': vote_breakdown,
+                'vote_ratio': vote_ratio,
+                'threshold': threshold,
+                'is_confirmed': is_confirmed,
+                'frame_details': frame_details,
+                'confidences': confidences
+            })
+
+            # Save debug frames if enabled (only for first activity to avoid duplicates)
+            if self.settings.voting_save_debug_frames and activity_key == f"{activities[0]['type']}_p{activities[0].get('person_idx', 0)}":
+                self._save_debug_frames(
+                    frames=frames,
+                    batch_detections=batch_detections,
+                    batch_poses=batch_poses,
+                    votes=votes,
+                    activity_type=f"batch_{len(activities)}_activities",
+                    timestamp_sec=timestamp_sec,
+                    person_bbox=person_bbox,
+                    is_confirmed=is_confirmed,
+                    vote_ratio=vote_ratio,
+                    threshold=threshold,
+                    video_path=video_path
+                )
+
+        elapsed = time.time() - start_time
+        cache_stats = self._inference_cache.get_stats()
+
+        logger.info("-"*60)
+        logger.info(f"[VOTING BATCH] ========== BATCH SUMMARY ==========")
+        logger.info(f"[VOTING BATCH] Activities verified: {len(activities)}")
+        logger.info(f"[VOTING BATCH] Inference runs: 1 (shared)")
+        logger.info(f"[VOTING BATCH] Without batching would need: {len(activities)} inference runs")
+        logger.info(f"[VOTING BATCH] Speedup: ~{len(activities)}x")
+        logger.info(f"[VOTING BATCH] Time elapsed: {elapsed*1000:.1f}ms")
+        logger.info(f"[VOTING BATCH] Cache stats: hits={cache_stats['hits']}, misses={cache_stats['misses']}, "
+                   f"hit_rate={cache_stats['hit_rate']:.1f}%")
+        logger.info(f"[VOTING BATCH] =================================")
+        logger.info("")
+
+        return results
+
+    def get_cache_stats(self) -> Dict[str, Any]:
+        """
+        Get inference cache statistics for monitoring.
+
+        Returns:
+            Dict with cache hit/miss statistics
+        """
+        return self._inference_cache.get_stats()
+
+    def clear_cache(self) -> None:
+        """Clear the inference cache. Call between videos to free memory."""
+        self._inference_cache.clear()
+        logger.info("[VOTING] Inference cache cleared")
 
     def _extract_native_frames(
         self,
@@ -796,8 +1281,12 @@ class VotingVerificationService:
     ) -> Tuple[bool, float, Dict]:
         """Verify mind diversion detection in a single frame.
 
-        Mind diversion = head turned sideways (not looking at road ahead)
-        BUT suppressed if person is holding/interacting with objects (writing, drinking, etc.)
+        Uses multi-scenario detection:
+        1. looking_sideways - head turned > threshold (HIGH CONFIDENCE)
+        2. looking_away_combined - head turned AND down (HIGH CONFIDENCE)
+        3. looking_down_distracted - only head down (MEDIUM CONFIDENCE, needs suppression check)
+
+        Suppressed if person is holding/interacting with objects or in writing pose.
         """
         logger.debug(f"[VOTING:MIND_DIV] Frame {frame_num}/{total_frames}: checking head pose...")
 
@@ -810,8 +1299,10 @@ class VotingVerificationService:
             logger.debug(f"[VOTING:MIND_DIV] Frame {frame_num}: No matching pose - VOTE=NO")
             return False, 0.0, {'reason': 'no_matching_pose'}
 
-        # YOLO keypoints: 0=nose, 5=left_shoulder, 6=right_shoulder, 9=left_wrist, 10=right_wrist
+        # YOLO keypoints: 0=nose, 5=left_shoulder, 6=right_shoulder, 3=left_ear, 4=right_ear, 9=left_wrist, 10=right_wrist
         nose = best_pose[0]
+        left_ear = best_pose[3]
+        right_ear = best_pose[4]
         left_shoulder = best_pose[5]
         right_shoulder = best_pose[6]
         left_wrist = best_pose[9]
@@ -819,42 +1310,66 @@ class VotingVerificationService:
 
         # Check visibility of key points
         if nose[2] < 0.3 or left_shoulder[2] < 0.3 or right_shoulder[2] < 0.3:
-            logger.debug(f"[VOTING:MIND_DIV] Frame {frame_num}: Low visibility "
-                        f"(nose={nose[2]:.2f}, l_shoulder={left_shoulder[2]:.2f}, "
-                        f"r_shoulder={right_shoulder[2]:.2f}) - VOTE=NO")
+            logger.debug(f"[VOTING:MIND_DIV] Frame {frame_num}: Low visibility - VOTE=NO")
             return False, 0.0, {'reason': 'low_visibility'}
 
         # Calculate reference points
         shoulder_center_x = (left_shoulder[0] + right_shoulder[0]) / 2
+        shoulder_center_y = (left_shoulder[1] + right_shoulder[1]) / 2
         shoulder_width = abs(right_shoulder[0] - left_shoulder[0])
 
         if shoulder_width < 10:  # Invalid pose (shoulders too close)
-            logger.debug(f"[VOTING:MIND_DIV] Frame {frame_num}: Invalid pose (shoulder_width={shoulder_width:.1f}) - VOTE=NO")
+            logger.debug(f"[VOTING:MIND_DIV] Frame {frame_num}: Invalid pose - VOTE=NO")
             return False, 0.0, {'reason': 'invalid_pose'}
 
-        # YAW: Check if head is turned sideways
-        # Nose offset from shoulder center as a ratio of shoulder width
-        nose_offset_x = abs(nose[0] - shoulder_center_x)
-        yaw_ratio = nose_offset_x / shoulder_width
+        # Calculate YAW angle (side turn)
+        nose_offset_x = nose[0] - shoulder_center_x
+        yaw_normalized = nose_offset_x / (shoulder_width / 2) if shoulder_width > 0 else 0
+        yaw_angle = np.clip(yaw_normalized * 45, -90, 90)
 
-        # YAW threshold: 0.5 = nose is half a shoulder width away from center (~45° turn)
-        looking_sideways = yaw_ratio > 0.5
+        # Calculate PITCH angle (up/down tilt) using ears if available
+        ear_midpoint_y = shoulder_center_y - 50  # Default estimate
+        if left_ear[2] > 0.3 and right_ear[2] > 0.3:
+            ear_midpoint_y = (left_ear[1] + right_ear[1]) / 2
+        nose_offset_y = nose[1] - ear_midpoint_y
+        head_height = shoulder_center_y - ear_midpoint_y
+        if head_height > 0:
+            pitch_normalized = nose_offset_y / head_height
+            pitch_angle = np.clip(pitch_normalized * 30, -45, 45)
+        else:
+            pitch_angle = 0
 
-        logger.debug(f"[VOTING:MIND_DIV] Frame {frame_num}: "
-                    f"nose_offset_x={nose_offset_x:.1f}, shoulder_width={shoulder_width:.1f}, "
-                    f"yaw_ratio={yaw_ratio:.2f}, looking_sideways={looking_sideways}")
+        # Determine sub-type using configurable thresholds
+        sub_type = None
+        detected = False
 
-        if not looking_sideways:
-            logger.debug(f"[VOTING:MIND_DIV] Frame {frame_num}: Not looking sideways - VOTE=NO")
+        # Scenario 1: looking_sideways (head turned > threshold)
+        if abs(yaw_angle) > self.mind_div_yaw_sideways:
+            sub_type = 'looking_sideways'
+            detected = True
+        # Scenario 2: looking_away_combined (turned AND down)
+        elif abs(yaw_angle) > self.mind_div_yaw_combined and pitch_angle > self.mind_div_pitch_combined:
+            sub_type = 'looking_away_combined'
+            detected = True
+        # Scenario 3: looking_down_distracted (only down, not sideways)
+        elif pitch_angle > self.mind_div_pitch_down and abs(yaw_angle) < self.mind_div_yaw_max_for_down:
+            sub_type = 'looking_down_distracted'
+            detected = True
+
+        logger.debug(f"[VOTING:MIND_DIV] Frame {frame_num}: yaw={yaw_angle:.1f}°, pitch={pitch_angle:.1f}°, "
+                    f"sub_type={sub_type}, detected={detected}")
+
+        if not detected:
+            logger.debug(f"[VOTING:MIND_DIV] Frame {frame_num}: No diversion detected - VOTE=NO")
             return False, 0.0, {
-                'yaw_ratio': yaw_ratio,
-                'looking_sideways': False,
+                'yaw_angle': yaw_angle,
+                'pitch_angle': pitch_angle,
+                'sub_type': None,
                 'suppressed': False,
                 'looking_away': False
             }
 
-        # SUPPRESSION: Check if person is holding/interacting with objects
-        # If hands are near any detected objects, suppress mind diversion
+        # SUPPRESSION: Check if person is doing legitimate work activity
         suppressed = False
         suppression_reason = None
 
@@ -866,16 +1381,34 @@ class VotingVerificationService:
         if right_wrist[2] > 0.3:
             right_wrist_coords = (int(right_wrist[0]), int(right_wrist[1]))
 
-        # Check proximity to phones
-        for phone_data in detections.get('cell_phone', []):
-            phone_bbox = phone_data['bbox']
-            if self._check_hand_near_object(left_wrist_coords, phone_bbox, 150) or \
-               self._check_hand_near_object(right_wrist_coords, phone_bbox, 150):
-                suppressed = True
-                suppression_reason = 'holding_phone'
-                break
+        # Suppression 1: Book detected in frame
+        if not suppressed and len(detections.get('book', [])) > 0:
+            suppressed = True
+            suppression_reason = 'book_detected'
 
-        # Check proximity to books (writing)
+        # Suppression 2: Hand position heuristic (wrists close together below face = writing pose)
+        if not suppressed and left_wrist_coords and right_wrist_coords:
+            wrist_distance = np.sqrt(
+                (left_wrist_coords[0] - right_wrist_coords[0])**2 +
+                (left_wrist_coords[1] - right_wrist_coords[1])**2
+            )
+            avg_wrist_y = (left_wrist_coords[1] + right_wrist_coords[1]) / 2
+            wrists_below_nose = avg_wrist_y > nose[1]
+
+            if wrist_distance < self.mind_div_wrist_distance and wrists_below_nose:
+                suppressed = True
+                suppression_reason = 'writing_pose_detected'
+
+        # Suppression 3: Hand near detected objects (phone, book, bottle, bag)
+        if not suppressed:
+            for phone_data in detections.get('cell_phone', []):
+                phone_bbox = phone_data['bbox']
+                if self._check_hand_near_object(left_wrist_coords, phone_bbox, 150) or \
+                   self._check_hand_near_object(right_wrist_coords, phone_bbox, 150):
+                    suppressed = True
+                    suppression_reason = 'holding_phone'
+                    break
+
         if not suppressed:
             for book_data in detections.get('book', []):
                 book_bbox = book_data['bbox']
@@ -885,7 +1418,6 @@ class VotingVerificationService:
                     suppression_reason = 'writing'
                     break
 
-        # Check proximity to backpacks/bags
         if not suppressed:
             for bag_data in detections.get('backpack', []):
                 bag_bbox = bag_data['bbox']
@@ -895,7 +1427,6 @@ class VotingVerificationService:
                     suppression_reason = 'handling_bag'
                     break
 
-        # Check proximity to bottles (YOLO class 'bottle' = 39)
         if not suppressed:
             for bottle_data in detections.get('bottle', []):
                 bottle_bbox = bottle_data['bbox']
@@ -905,19 +1436,18 @@ class VotingVerificationService:
                     suppression_reason = 'holding_bottle'
                     break
 
-        logger.debug(f"[VOTING:MIND_DIV] Frame {frame_num}: "
-                    f"suppressed={suppressed}, reason={suppression_reason}")
+        logger.debug(f"[VOTING:MIND_DIV] Frame {frame_num}: suppressed={suppressed}, reason={suppression_reason}")
 
-        # Mind diversion = looking sideways AND NOT holding anything
-        looking_away = looking_sideways and not suppressed
+        # Mind diversion = detected AND NOT suppressed
+        looking_away = detected and not suppressed
 
-        logger.debug(f"[VOTING:MIND_DIV] Frame {frame_num}: "
-                    f"looking_away={looking_away} (sideways={looking_sideways} AND NOT suppressed={not suppressed})")
-        logger.debug(f"[VOTING:MIND_DIV] Frame {frame_num}: VOTE={'YES' if looking_away else 'NO'}")
+        logger.debug(f"[VOTING:MIND_DIV] Frame {frame_num}: VOTE={'YES' if looking_away else 'NO'} "
+                    f"(detected={detected}, suppressed={suppressed})")
 
         return looking_away, 1.0 if looking_away else 0.0, {
-            'yaw_ratio': yaw_ratio,
-            'looking_sideways': looking_sideways,
+            'yaw_angle': yaw_angle,
+            'pitch_angle': pitch_angle,
+            'sub_type': sub_type,
             'suppressed': suppressed,
             'suppression_reason': suppression_reason,
             'looking_away': looking_away
