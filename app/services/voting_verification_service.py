@@ -306,7 +306,12 @@ class VotingVerificationService:
         self.cell_phone_margin = 100  # Hand-to-phone proximity
         self.book_hand_margin = 180   # Hand-to-book proximity
         self.person_book_margin = 250 # Person-to-book region
-        self.backpack_wrist_margin = 40  # Wrist inside backpack
+
+        # Packing bags verification thresholds (stricter for voting)
+        self.packing_wrist_visibility = self.settings.packing_wrist_visibility_threshold  # 0.4 min visibility
+        self.packing_voting_margin = self.settings.packing_voting_margin  # 30px stricter margin
+        self.packing_max_dist_ratio = self.settings.packing_max_distance_ratio  # 0.6 of bag diagonal
+        self.backpack_wrist_margin = self.packing_voting_margin  # Use voting margin
 
         # Mind diversion thresholds (now configurable from settings)
         self.mind_div_yaw_sideways = self.settings.mind_diversion_yaw_sideways
@@ -1129,7 +1134,15 @@ class VotingVerificationService:
         frame_num: int,
         total_frames: int
     ) -> Tuple[bool, float, Dict]:
-        """Verify packing bags detection in a single frame."""
+        """Verify packing bags detection with strict hand-bag interaction checks.
+
+        Enhanced verification requires:
+        1. Wrist visibility >= threshold (0.4) - reject unreliable pose data
+        2. Wrist inside bag bbox with margin (30px)
+        3. Wrist distance to bag center <= 60% of bag diagonal - actual interaction, not edge overlap
+        """
+        import math
+
         backpacks = detections.get('backpack', [])
 
         logger.debug(f"[VOTING:PACKING] Frame {frame_num}/{total_frames}: backpacks_detected={len(backpacks)}")
@@ -1138,45 +1151,84 @@ class VotingVerificationService:
             logger.debug(f"[VOTING:PACKING] Frame {frame_num}: No backpacks detected - VOTE=NO")
             return False, 0.0, {'reason': 'no_backpack_detected'}
 
-        # Get wrist coordinates
+        # Get wrist coordinates with visibility
         left_wrist = None
+        left_wrist_vis = 0.0
         right_wrist = None
+        right_wrist_vis = 0.0
 
         if poses.get('keypoints') and len(poses['keypoints']) > 0:
             best_pose = self._find_matching_pose(poses, person_bbox)
             if best_pose is not None:
-                if best_pose[9][2] > 0.3:
+                left_wrist_vis = best_pose[9][2]
+                right_wrist_vis = best_pose[10][2]
+                # Use stricter visibility threshold from settings
+                if left_wrist_vis >= self.packing_wrist_visibility:
                     left_wrist = (int(best_pose[9][0]), int(best_pose[9][1]))
-                if best_pose[10][2] > 0.3:
+                if right_wrist_vis >= self.packing_wrist_visibility:
                     right_wrist = (int(best_pose[10][0]), int(best_pose[10][1]))
 
         logger.debug(f"[VOTING:PACKING] Frame {frame_num}: "
-                    f"left_wrist={left_wrist}, right_wrist={right_wrist}")
+                    f"left_wrist={left_wrist} (vis={left_wrist_vis:.2f}), "
+                    f"right_wrist={right_wrist} (vis={right_wrist_vis:.2f}), "
+                    f"vis_threshold={self.packing_wrist_visibility}")
 
         for bag_data in backpacks:
             bag_bbox = bag_data['bbox']
             conf = bag_data['confidence']
+            x1, y1, x2, y2 = bag_bbox
+
+            # Calculate bag center and diagonal for distance check
+            bag_cx = (x1 + x2) / 2
+            bag_cy = (y1 + y2) / 2
+            bag_w = x2 - x1
+            bag_h = y2 - y1
+            bag_diagonal = math.sqrt(bag_w**2 + bag_h**2)
+            max_dist = bag_diagonal * self.packing_max_dist_ratio
 
             logger.debug(f"[VOTING:PACKING] Frame {frame_num}: "
-                        f"backpack_bbox={[int(x) for x in bag_bbox]}, confidence={conf:.3f}")
+                        f"backpack_bbox={[int(x) for x in bag_bbox]}, confidence={conf:.3f}, "
+                        f"center=({bag_cx:.0f},{bag_cy:.0f}), max_dist={max_dist:.0f}")
 
-            # Check if wrist is inside backpack bbox
-            left_inside = self._point_inside_bbox(left_wrist, bag_bbox, self.backpack_wrist_margin) if left_wrist else False
-            right_inside = self._point_inside_bbox(right_wrist, bag_bbox, self.backpack_wrist_margin) if right_wrist else False
+            # Check each wrist for interaction
+            for wrist, wrist_name, wrist_vis in [
+                (left_wrist, 'left', left_wrist_vis),
+                (right_wrist, 'right', right_wrist_vis)
+            ]:
+                if wrist is None:
+                    continue
 
-            logger.debug(f"[VOTING:PACKING] Frame {frame_num}: "
-                        f"left_wrist_inside={left_inside}, right_wrist_inside={right_inside}")
+                wx, wy = wrist
 
-            if left_inside or right_inside:
-                logger.debug(f"[VOTING:PACKING] Frame {frame_num}: VOTE=YES")
+                # Check if wrist inside bag bbox (with margin)
+                inside = self._point_inside_bbox(wrist, bag_bbox, self.packing_voting_margin)
+
+                if not inside:
+                    logger.debug(f"[VOTING:PACKING] Frame {frame_num}: {wrist_name}_wrist ({wx},{wy}) not inside bag bbox")
+                    continue
+
+                # Check distance to bag center (NEW - prevents edge-only overlap)
+                dist_to_center = math.sqrt((wx - bag_cx)**2 + (wy - bag_cy)**2)
+
+                if dist_to_center > max_dist:
+                    logger.debug(f"[VOTING:PACKING] Frame {frame_num}: {wrist_name}_wrist too far from center "
+                                f"(dist={dist_to_center:.0f} > max={max_dist:.0f}) - SKIP")
+                    continue
+
+                # All checks passed - TRUE hand-bag interaction
+                logger.debug(f"[VOTING:PACKING] Frame {frame_num}: VOTE=YES ({wrist_name}_wrist, "
+                            f"vis={wrist_vis:.2f}, dist={dist_to_center:.0f})")
                 return True, conf, {
                     'backpack_bbox': bag_bbox,
                     'confidence': conf,
-                    'wrist_inside': True
+                    'wrist': wrist_name,
+                    'wrist_visibility': round(wrist_vis, 2),
+                    'distance_to_center': round(dist_to_center, 1),
+                    'max_allowed_distance': round(max_dist, 1)
                 }
 
-        logger.debug(f"[VOTING:PACKING] Frame {frame_num}: VOTE=NO (wrist not inside backpack)")
-        return False, 0.0, {'reason': 'wrist_not_inside_backpack'}
+        logger.debug(f"[VOTING:PACKING] Frame {frame_num}: VOTE=NO (no valid hand-bag interaction)")
+        return False, 0.0, {'reason': 'no_hand_bag_interaction'}
 
     def _verify_hand_gesture(
         self,

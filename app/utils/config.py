@@ -177,7 +177,7 @@ class Settings(BaseSettings):
     # Default 50% (5/10 frames must detect the activity)
     voting_threshold_cell_phone: float = float(os.getenv("VOTING_THRESHOLD_CELL_PHONE", "0.5"))
     voting_threshold_writing: float = float(os.getenv("VOTING_THRESHOLD_WRITING", "0.5"))
-    voting_threshold_packing_bags: float = float(os.getenv("VOTING_THRESHOLD_PACKING_BAGS", "0.5"))
+    voting_threshold_packing_bags: float = float(os.getenv("VOTING_THRESHOLD_PACKING_BAGS", "0.6"))  # 60% - stricter for false positive reduction
     voting_threshold_lp_hand_gesture: float = float(os.getenv("VOTING_THRESHOLD_LP_GESTURE", "0.5"))
     voting_threshold_alp_hand_gesture: float = float(os.getenv("VOTING_THRESHOLD_ALP_GESTURE", "0.5"))
     voting_threshold_mind_diversion: float = float(os.getenv("VOTING_THRESHOLD_MIND_DIVERSION", "0.5"))
@@ -186,6 +186,11 @@ class Settings(BaseSettings):
     # Voting debug settings - save annotated frames for troubleshooting
     voting_save_debug_frames: bool = bool(int(os.getenv("VOTING_SAVE_DEBUG_FRAMES", "1")))  # Enable by default
     voting_debug_frames_dir: str = os.getenv("VOTING_DEBUG_FRAMES_DIR", "voting_debug_frames")
+
+    # Packing bags verification thresholds (stricter than initial detection)
+    packing_wrist_visibility_threshold: float = float(os.getenv("PACKING_WRIST_VIS", "0.4"))  # Min wrist visibility (40%)
+    packing_voting_margin: int = int(os.getenv("PACKING_VOTING_MARGIN", "30"))  # Stricter bbox margin for voting
+    packing_max_distance_ratio: float = float(os.getenv("PACKING_MAX_DIST_RATIO", "0.6"))  # Wrist must be within 60% of bag diagonal from center
 
     # Mind Diversion Detection Thresholds
     # Three sub-types: looking_sideways, looking_down_distracted, looking_away_combined
