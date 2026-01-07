@@ -275,7 +275,7 @@ class LocopilotActivityMonitor:
                 self.preprocessing_service = None
 
         # Cell phone detection confidence threshold (configurable)
-        self.cell_phone_confidence = float(os.getenv("CELL_PHONE_CONFIDENCE", "0.45"))
+        self.cell_phone_confidence = float(os.getenv("CELL_PHONE_CONFIDENCE", "0.40"))
 
         # Phase 2: Load inference optimization settings (1.5-1.8x speedup)
         self.yolo_imgsz = settings.yolo_imgsz if settings else 416
@@ -314,10 +314,10 @@ class LocopilotActivityMonitor:
             'packing_bags': {
                 'min_duration': 0.0,          # NO minimum duration - any detection creates activity
                 'required_consecutive': 1,    # Immediate detection when wrist inside backpack bbox
-                'margin': 50,                 # Hand proximity margin in pixels
+                'margin': 100,                # Hand proximity margin in pixels (was 50)
                 'region_margin': 150,         # Region overlap margin for person-backpack association
                 'grace_frames': 5,            # Allow 5 samples (~10s) gap to group nearby detections
-                'wrist_inside_margin': 40,    # NEW: Margin for wrist-inside-bbox check (40px tolerance)
+                'wrist_inside_margin': 80,    # Margin for wrist-inside-bbox check (was 40 - INCREASED)
                 'sustained_proximity_seconds': 4.0  # If hand near backpack for 4+ seconds, detect as packing
             },
             'writing': {
@@ -4213,9 +4213,39 @@ class LocopilotActivityMonitor:
             right_ear = self.get_keypoint(pose_landmarks, 'right_ear')
 
             # Check visibility
-            if nose.visibility < 0.5:
-                return result
-            
+            if not nose or nose.visibility < 0.5:
+                # FALLBACK: When nose not visible, use ear asymmetry for yaw estimation
+                left_ear_vis = left_ear.visibility if left_ear else 0
+                right_ear_vis = right_ear.visibility if right_ear else 0
+
+                if left_ear_vis > 0.5 and right_ear_vis < 0.3:
+                    # Right ear hidden = turned right
+                    yaw_angle = 60  # Estimate significant right turn
+                    result['yaw'] = yaw_angle
+                    result['method'] = 'ear_asymmetry'
+
+                    # Check if this exceeds sideways threshold
+                    settings = self.settings
+                    if abs(yaw_angle) > settings.mind_diversion_yaw_sideways:
+                        result['detected'] = True
+                        result['sub_type'] = 'looking_sideways'
+                    return result
+                elif right_ear_vis > 0.5 and left_ear_vis < 0.3:
+                    # Left ear hidden = turned left
+                    yaw_angle = -60  # Estimate significant left turn
+                    result['yaw'] = yaw_angle
+                    result['method'] = 'ear_asymmetry'
+
+                    # Check if this exceeds sideways threshold
+                    settings = self.settings
+                    if abs(yaw_angle) > settings.mind_diversion_yaw_sideways:
+                        result['detected'] = True
+                        result['sub_type'] = 'looking_sideways'
+                    return result
+                else:
+                    # Neither ear pattern matches, cannot determine head pose
+                    return result
+
             # Convert to pixel coordinates
             nose_coords = np.array([nose.x * w, nose.y * h])
             left_shoulder_coords = np.array([left_shoulder.x * w, left_shoulder.y * h])

@@ -199,7 +199,7 @@ class Settings(BaseSettings):
     # Suppress false positives when LP is doing legitimate document work
     mind_diversion_suppress_with_writing: bool = os.getenv("MIND_DIV_SUPPRESS_WRITING", "true").lower() == "true"
     mind_diversion_writing_grace_seconds: float = float(os.getenv("MIND_DIV_WRITING_GRACE", "5.0"))
-    mind_diversion_wrist_distance_threshold: float = float(os.getenv("MIND_DIV_WRIST_DIST", "350"))  # Max wrist distance for writing pose
+    mind_diversion_wrist_distance_threshold: float = float(os.getenv("MIND_DIV_WRIST_DIST", "200"))  # Max wrist distance for writing pose
 
     # Job Queue Settings - Async video processing queue management
     # Note: max_concurrent_videos and job_queue_max_size defined in GPU Settings section above
