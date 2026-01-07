@@ -1,4 +1,4 @@
-# Task 0003: Update Mind Diversion Suppression Threshold
+# Task 0003: Update Mind Diversion Suppression Threshold [COMPLETED]
 
 ## Overview
 Reduce the mind diversion wrist distance suppression threshold in config.py to only suppress when truly in writing pose.

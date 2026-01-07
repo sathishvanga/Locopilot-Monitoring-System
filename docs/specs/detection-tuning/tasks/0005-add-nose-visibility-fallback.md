@@ -1,4 +1,4 @@
-# Task 0005: Add Nose Visibility Fallback for Mind Diversion
+# Task 0005: Add Nose Visibility Fallback for Mind Diversion [COMPLETED]
 
 ## Overview
 Add fallback logic in `calculate_head_pose_angles()` when nose visibility is low, using ear asymmetry for yaw estimation.

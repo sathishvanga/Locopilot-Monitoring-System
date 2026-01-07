@@ -1,4 +1,4 @@
-# Task 0002: Update Bag Detection Confidence Threshold
+# Task 0002: Update Bag Detection Confidence Threshold [COMPLETED]
 
 ## Overview
 Lower bag detection confidence threshold in voting_verification_service.py to catch bags detected at lower confidence levels.
