@@ -192,7 +192,8 @@ class LocopilotActivityMonitor:
         
         # Get settings early (needed for both preloaded and fresh model paths)
         settings = get_settings() if get_settings is not None else None
-        
+        self.settings = settings  # Store for use in end_activity() clip buffer settings
+
         # Initialize models - either use preloaded or load fresh
         if preloaded_models is not None:
             # ✅ PERFORMANCE: Use pre-loaded models from worker pool (fast path)
@@ -371,10 +372,10 @@ class LocopilotActivityMonitor:
                 'grace_frames': 5             # Allow 5 samples (~10s) gap
             },
             'no_person_detected': {
-                'min_duration': 10.0,         # Must last 10 seconds minimum to avoid false positives (increased from 5.0)
-                'required_consecutive': 5,    # 5 samples @ 0.5fps = 10 seconds (increased from 3)
+                'min_duration': 5.0,          # Must last 5 seconds minimum (increased from 2.0)
+                'required_consecutive': 3,    # 3 samples @ 0.5fps = 6 seconds (increased from 1)
                 'margin': None,               # N/A for person detection
-                'grace_frames': 5             # Allow 5 samples (~10s) gap for temporary detection failures (increased from 2)
+                'grace_frames': 3             # Allow 3 samples (~6s) gap for brief detection failures (reduced from 5)
             }
         }
         
@@ -4802,6 +4803,10 @@ class LocopilotActivityMonitor:
             self.activities[activity_name]['duration'] = 0
             self.activities[activity_name]['person_roles'] = person_roles if person_roles else {}
 
+            # Track actual detection timestamps for precise clip duration
+            self.activities[activity_name]['first_detection_time'] = timestamp
+            self.activities[activity_name]['last_detection_time'] = timestamp
+
             # Log with OCR timestamp if available
             if ocr_ts:
                 self.logger.info(f"[{timestamp}] Activity started: {activity_name} (Frame timestamp: {ocr_ts})")
@@ -4856,9 +4861,30 @@ class LocopilotActivityMonitor:
                 seconds = float(parts[2])
                 return hours * 3600 + minutes * 60 + seconds
 
-            activity_start_seconds = time_to_seconds(start_time_str)
-            # Calculate end time based on actual clip duration, not elapsed time
-            activity_end_seconds = activity_start_seconds + actual_clip_duration
+            # Use ACTUAL detection timestamps for precise clip duration
+            first_detection = activity.get('first_detection_time', start_time_str)
+            last_detection = activity.get('last_detection_time', start_time_str)
+
+            first_detection_seconds = time_to_seconds(first_detection)
+            last_detection_seconds = time_to_seconds(last_detection)
+
+            # Calculate precise activity duration from detection window
+            actual_activity_duration = last_detection_seconds - first_detection_seconds
+
+            # Apply configurable buffer (default: 1 sec before/after)
+            # Use getattr for safe attribute access in case settings wasn't initialized
+            settings = getattr(self, 'settings', None)
+            buffer_before = settings.clip_buffer_before if settings else 1.0
+            buffer_after = settings.clip_buffer_after if settings else 1.0
+
+            activity_start_seconds = max(0, first_detection_seconds - buffer_before)
+            activity_end_seconds = last_detection_seconds + buffer_after
+
+            # Ensure minimum clip duration (at least min_duration)
+            if activity_end_seconds - activity_start_seconds < min_duration:
+                activity_end_seconds = activity_start_seconds + min_duration
+
+            self.logger.info(f"  Precise clip: {first_detection_seconds:.2f}s - {last_detection_seconds:.2f}s (activity: {actual_activity_duration:.2f}s, buffer: +/-{buffer_before}s)")
 
             # Calculate OCR timestamps if available
             ocr_start_time_str = activity.get('ocr_start_time')
@@ -5463,6 +5489,7 @@ class LocopilotActivityMonitor:
                                 self.activities[activity_name]['frames'].append(frame.copy())
                                 self.activities[activity_name]['last_frame_count'] = frame_idx
                                 self.activities[activity_name]['last_detected_frame'] = frame_idx  # Track last actual detection
+                                self.activities[activity_name]['last_detection_time'] = timestamp  # Track for precise clip duration
                                 # Update person roles (in case they change during activity)
                                 if person_roles:
                                     self.activities[activity_name]['person_roles'] = person_roles
@@ -5796,6 +5823,7 @@ class LocopilotActivityMonitor:
                                 self.activities[activity_name]['frames'].append(frame.copy())
                                 self.activities[activity_name]['last_frame_count'] = frame_idx
                                 self.activities[activity_name]['last_detected_frame'] = frame_idx
+                                self.activities[activity_name]['last_detection_time'] = timestamp  # Track for precise clip duration
                                 # Update person roles (in case they change during activity)
                                 if person_roles:
                                     self.activities[activity_name]['person_roles'] = person_roles

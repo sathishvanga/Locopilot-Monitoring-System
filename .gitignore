@@ -16,3 +16,5 @@ desktop_app/build_config/dist/
 logs/
 logs/LocopilotMonitoring.log
 voting_debug_frames/
+cell_phone_frames
+diagnostic_output*

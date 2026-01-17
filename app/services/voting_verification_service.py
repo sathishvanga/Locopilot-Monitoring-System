@@ -310,7 +310,9 @@ class VotingVerificationService:
         # Packing bags verification thresholds (stricter for voting)
         self.packing_wrist_visibility = self.settings.packing_wrist_visibility_threshold  # 0.4 min visibility
         self.packing_voting_margin = self.settings.packing_voting_margin  # 30px stricter margin
-        self.packing_max_dist_ratio = self.settings.packing_max_distance_ratio  # 0.6 of bag diagonal
+        self.packing_max_dist_ratio = self.settings.packing_max_distance_ratio  # 0.45 of bag diagonal (reduced from 0.6)
+        self.packing_min_bag_area = self.settings.packing_min_bag_area  # 40,000 sq px min bag area
+        self.packing_require_truly_inside = self.settings.packing_require_wrist_truly_inside  # Require wrist truly inside
         self.backpack_wrist_margin = self.packing_voting_margin  # Use voting margin
 
         # Mind diversion thresholds (now configurable from settings)
@@ -339,6 +341,10 @@ class VotingVerificationService:
         logger.info(f"    alp_hand_gesture: {self.settings.voting_threshold_alp_hand_gesture}")
         logger.info(f"    mind_diversion: {self.settings.voting_threshold_mind_diversion}")
         logger.info(f"    group_detected: {self.settings.voting_threshold_group_detected}")
+        logger.info(f"  Packing Bags Strict Settings:")
+        logger.info(f"    packing_min_bag_area: {self.packing_min_bag_area}")
+        logger.info(f"    packing_max_dist_ratio: {self.packing_max_dist_ratio}")
+        logger.info(f"    packing_require_truly_inside: {self.packing_require_truly_inside}")
         logger.info(f"  Debug Settings:")
         logger.info(f"    save_debug_frames: {self.settings.voting_save_debug_frames}")
         logger.info(f"    debug_frames_dir: {self.settings.voting_debug_frames_dir}")
@@ -1138,8 +1144,9 @@ class VotingVerificationService:
 
         Enhanced verification requires:
         1. Wrist visibility >= threshold (0.4) - reject unreliable pose data
-        2. Wrist inside bag bbox with margin (30px)
-        3. Wrist distance to bag center <= 60% of bag diagonal - actual interaction, not edge overlap
+        2. Minimum bag area >= 40,000 sq px - eliminates small/false bag detections
+        3. Wrist truly inside bag bbox (no margin) - prevents edge-only false positives
+        4. Wrist distance to bag center <= 45% of bag diagonal - actual interaction
         """
         import math
 
@@ -1178,17 +1185,23 @@ class VotingVerificationService:
             conf = bag_data['confidence']
             x1, y1, x2, y2 = bag_bbox
 
-            # Calculate bag center and diagonal for distance check
+            # Calculate bag dimensions and area
             bag_cx = (x1 + x2) / 2
             bag_cy = (y1 + y2) / 2
             bag_w = x2 - x1
             bag_h = y2 - y1
+            bag_area = bag_w * bag_h
             bag_diagonal = math.sqrt(bag_w**2 + bag_h**2)
             max_dist = bag_diagonal * self.packing_max_dist_ratio
 
             logger.debug(f"[VOTING:PACKING] Frame {frame_num}: "
                         f"backpack_bbox={[int(x) for x in bag_bbox]}, confidence={conf:.3f}, "
-                        f"center=({bag_cx:.0f},{bag_cy:.0f}), max_dist={max_dist:.0f}")
+                        f"area={bag_area:.0f}, center=({bag_cx:.0f},{bag_cy:.0f}), max_dist={max_dist:.0f}")
+
+            # Check minimum bag area (eliminates small/false bag detections)
+            if bag_area < self.packing_min_bag_area:
+                logger.debug(f"[VOTING:PACKING] Frame {frame_num}: bag_area={bag_area:.0f} < min={self.packing_min_bag_area} - SKIP")
+                continue
 
             # Check each wrist for interaction
             for wrist, wrist_name, wrist_vis in [
@@ -1200,11 +1213,15 @@ class VotingVerificationService:
 
                 wx, wy = wrist
 
-                # Check if wrist inside bag bbox (with margin)
-                inside = self._point_inside_bbox(wrist, bag_bbox, self.packing_voting_margin)
+                # Check if wrist inside bag bbox (strict mode = no margin, else use margin)
+                if self.packing_require_truly_inside:
+                    inside = self._point_inside_bbox(wrist, bag_bbox, 0)  # No margin - wrist must be truly inside
+                else:
+                    inside = self._point_inside_bbox(wrist, bag_bbox, self.packing_voting_margin)
 
                 if not inside:
-                    logger.debug(f"[VOTING:PACKING] Frame {frame_num}: {wrist_name}_wrist ({wx},{wy}) not inside bag bbox")
+                    logger.debug(f"[VOTING:PACKING] Frame {frame_num}: {wrist_name}_wrist ({wx},{wy}) not inside bag bbox "
+                                f"(strict_mode={self.packing_require_truly_inside})")
                     continue
 
                 # Check distance to bag center (NEW - prevents edge-only overlap)
@@ -1217,14 +1234,16 @@ class VotingVerificationService:
 
                 # All checks passed - TRUE hand-bag interaction
                 logger.debug(f"[VOTING:PACKING] Frame {frame_num}: VOTE=YES ({wrist_name}_wrist, "
-                            f"vis={wrist_vis:.2f}, dist={dist_to_center:.0f})")
+                            f"vis={wrist_vis:.2f}, dist={dist_to_center:.0f}, area={bag_area:.0f})")
                 return True, conf, {
                     'backpack_bbox': bag_bbox,
                     'confidence': conf,
+                    'bag_area': round(bag_area),
                     'wrist': wrist_name,
                     'wrist_visibility': round(wrist_vis, 2),
                     'distance_to_center': round(dist_to_center, 1),
-                    'max_allowed_distance': round(max_dist, 1)
+                    'max_allowed_distance': round(max_dist, 1),
+                    'strict_inside_mode': self.packing_require_truly_inside
                 }
 
         logger.debug(f"[VOTING:PACKING] Frame {frame_num}: VOTE=NO (no valid hand-bag interaction)")

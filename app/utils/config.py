@@ -190,7 +190,13 @@ class Settings(BaseSettings):
     # Packing bags verification thresholds (stricter than initial detection)
     packing_wrist_visibility_threshold: float = float(os.getenv("PACKING_WRIST_VIS", "0.4"))  # Min wrist visibility (40%)
     packing_voting_margin: int = int(os.getenv("PACKING_VOTING_MARGIN", "30"))  # Stricter bbox margin for voting
-    packing_max_distance_ratio: float = float(os.getenv("PACKING_MAX_DIST_RATIO", "0.6"))  # Wrist must be within 60% of bag diagonal from center
+    packing_max_distance_ratio: float = float(os.getenv("PACKING_MAX_DIST_RATIO", "0.45"))  # Wrist must be within 45% of bag diagonal from center (reduced from 0.6)
+    packing_min_bag_area: int = int(os.getenv("PACKING_MIN_BAG_AREA", "20000"))  # Min bag area 20,000 sq pixels (filters very small/spurious detections)
+    packing_require_wrist_truly_inside: bool = bool(int(os.getenv("PACKING_STRICT_INSIDE", "1")))  # Require wrist truly inside bbox (no margin)
+
+    # Clip duration settings - Precise clip extraction matching actual activity duration
+    clip_buffer_before: float = float(os.getenv("CLIP_BUFFER_BEFORE", "1.0"))  # Seconds before activity start
+    clip_buffer_after: float = float(os.getenv("CLIP_BUFFER_AFTER", "1.0"))    # Seconds after activity end
 
     # Mind Diversion Detection Thresholds
     # Three sub-types: looking_sideways, looking_down_distracted, looking_away_combined
