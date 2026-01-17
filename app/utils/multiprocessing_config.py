@@ -45,6 +45,14 @@ class MultiprocessingConfig:
     yolo_pose_model_path: str = os.getenv("YOLO_POSE_WEIGHTS", "yolo11m-pose.pt")  # YOLO-Pose for body pose estimation
     yolo_device: str = os.getenv("YOLO_DEVICE", "cpu")  # Device for YOLO inference (cpu, cuda:0, 0)
     model_cache_dir: Optional[str] = None  # Model cache directory
+
+    # Two-tier model strategy: Detection tier (nano - fast) for Stage 1
+    yolo_detection_model_path: str = os.getenv("YOLO_DETECTION_WEIGHTS", "yolo11n.pt")
+    yolo_detection_pose_model_path: str = os.getenv("YOLO_DETECTION_POSE_WEIGHTS", "yolo11n-pose.pt")
+
+    # Voting tier (medium - accurate) for Stage 2 verification
+    yolo_voting_model_path: str = os.getenv("YOLO_WEIGHTS_PRELOAD", "yolo11m.pt")
+    yolo_voting_pose_model_path: str = os.getenv("YOLO_POSE_WEIGHTS", "yolo11m-pose.pt")
     
     # Progress settings
     enable_progress_tracking: bool = True  # Enable progress updates

@@ -81,6 +81,10 @@ class Settings(BaseSettings):
     yolo_pose_weights: str = os.getenv("YOLO_POSE_WEIGHTS", "yolo11m-pose.pt")  # YOLO11m-pose for multi-person pose
     yolo_pose_confidence: float = float(os.getenv("YOLO_POSE_CONFIDENCE", "0.45"))  # Pose detection confidence
 
+    # Detection-tier models (Stage 1 - fast, nano for quick scanning)
+    yolo_detection_weights: str = os.getenv("YOLO_DETECTION_WEIGHTS", "yolo11n.pt")
+    yolo_detection_pose_weights: str = os.getenv("YOLO_DETECTION_POSE_WEIGHTS", "yolo11n-pose.pt")
+
     # Phase 2: Inference optimization settings
     # CHANGED from 416 to 640 for better accuracy on small objects (cell phones)
     yolo_imgsz: int = int(os.getenv("YOLO_IMGSZ", "640"))  # Model input size (640 for better small object detection)

@@ -122,45 +122,76 @@ def worker_initializer(config: MultiprocessingConfig):
             from ultralytics import YOLO
             import mediapipe as mp
             from app.services.yolo_pose_adapter import YoloPoseAdapter
-            
-            # 1. Load YOLO object detection model
-            logger.info(f"Worker {os.getpid()} loading YOLO model: {config.yolo_model_path}")
-            yolo_model = YOLO(config.yolo_model_path)
+
+            # =================================================================
+            # Detection tier (nano - fast, for Stage 1 activity scanning)
+            # =================================================================
+            logger.info(f"Worker {os.getpid()} loading Detection-tier YOLO (nano): {config.yolo_detection_model_path}")
+            detection_yolo = YOLO(config.yolo_detection_model_path)
 
             # Move model to GPU if configured
             if config.yolo_device and config.yolo_device != 'cpu':
-                # Convert numeric string to int (e.g., "0" -> 0 for GPU device)
                 device = int(config.yolo_device) if config.yolo_device.isdigit() else config.yolo_device
-                yolo_model.to(device)
-                logger.info(f"Worker {os.getpid()} YOLO moved to device: {device}")
+                detection_yolo.to(device)
+                logger.info(f"Worker {os.getpid()} Detection YOLO moved to device: {device}")
 
-            # Phase 3.5 Quick Win A: Fuse Conv+BatchNorm layers for faster inference (15-20% speedup)
-            if hasattr(yolo_model.model, 'fuse'):
-                yolo_model.fuse()
-                logger.info(f"Worker {os.getpid()} YOLO model layers fused for optimized inference")
+            if hasattr(detection_yolo.model, 'fuse'):
+                detection_yolo.fuse()
+                logger.info(f"Worker {os.getpid()} Detection YOLO (nano) layers fused")
 
-            # 2. Load YOLOv8-Pose model for body pose estimation
-            yolo_pose_model_path = config.yolo_pose_model_path
-            logger.info(f"Worker {os.getpid()} loading YOLOv8-Pose model: {yolo_pose_model_path}")
-            yolo_pose_raw = YOLO(yolo_pose_model_path)
+            # Detection pose model (nano)
+            logger.info(f"Worker {os.getpid()} loading Detection-tier Pose (nano): {config.yolo_detection_pose_model_path}")
+            detection_pose_raw = YOLO(config.yolo_detection_pose_model_path)
 
-            # Move pose model to GPU if configured
             if config.yolo_device and config.yolo_device != 'cpu':
-                # Convert numeric string to int (e.g., "0" -> 0 for GPU device)
                 device = int(config.yolo_device) if config.yolo_device.isdigit() else config.yolo_device
-                yolo_pose_raw.to(device)
-                logger.info(f"Worker {os.getpid()} YOLO-Pose moved to device: {device}")
+                detection_pose_raw.to(device)
+                logger.info(f"Worker {os.getpid()} Detection Pose moved to device: {device}")
 
-            # Fuse pose model layers as well
-            if hasattr(yolo_pose_raw.model, 'fuse'):
-                yolo_pose_raw.fuse()
-                logger.info(f"Worker {os.getpid()} YOLO-Pose model layers fused")
-            yolo_pose = YoloPoseAdapter(
-                model_path=yolo_pose_model_path,
+            if hasattr(detection_pose_raw.model, 'fuse'):
+                detection_pose_raw.fuse()
+                logger.info(f"Worker {os.getpid()} Detection Pose (nano) layers fused")
+
+            detection_pose = YoloPoseAdapter(
+                model_path=config.yolo_detection_pose_model_path,
                 conf_threshold=0.45,
-                preloaded_model=yolo_pose_raw
+                preloaded_model=detection_pose_raw
             )
-            
+
+            # =================================================================
+            # Voting tier (medium - accurate, for Stage 2 verification)
+            # =================================================================
+            logger.info(f"Worker {os.getpid()} loading Voting-tier YOLO (medium): {config.yolo_voting_model_path}")
+            voting_yolo = YOLO(config.yolo_voting_model_path)
+
+            if config.yolo_device and config.yolo_device != 'cpu':
+                device = int(config.yolo_device) if config.yolo_device.isdigit() else config.yolo_device
+                voting_yolo.to(device)
+                logger.info(f"Worker {os.getpid()} Voting YOLO moved to device: {device}")
+
+            if hasattr(voting_yolo.model, 'fuse'):
+                voting_yolo.fuse()
+                logger.info(f"Worker {os.getpid()} Voting YOLO (medium) layers fused")
+
+            # Voting pose model (medium)
+            logger.info(f"Worker {os.getpid()} loading Voting-tier Pose (medium): {config.yolo_voting_pose_model_path}")
+            voting_pose_raw = YOLO(config.yolo_voting_pose_model_path)
+
+            if config.yolo_device and config.yolo_device != 'cpu':
+                device = int(config.yolo_device) if config.yolo_device.isdigit() else config.yolo_device
+                voting_pose_raw.to(device)
+                logger.info(f"Worker {os.getpid()} Voting Pose moved to device: {device}")
+
+            if hasattr(voting_pose_raw.model, 'fuse'):
+                voting_pose_raw.fuse()
+                logger.info(f"Worker {os.getpid()} Voting Pose (medium) layers fused")
+
+            voting_pose = YoloPoseAdapter(
+                model_path=config.yolo_voting_pose_model_path,
+                conf_threshold=0.45,
+                preloaded_model=voting_pose_raw
+            )
+
             # 3. Initialize MediaPipe FaceMesh (for Eye Aspect Ratio detection)
             logger.info(f"Worker {os.getpid()} initializing MediaPipe FaceMesh")
             mp_face_mesh = mp.solutions.face_mesh
@@ -170,7 +201,7 @@ def worker_initializer(config: MultiprocessingConfig):
                 min_detection_confidence=0.5,
                 min_tracking_confidence=0.5
             )
-            
+
             # 4. Initialize Image Preprocessing Service
             preprocessing_service = None
             try:
@@ -193,16 +224,24 @@ def worker_initializer(config: MultiprocessingConfig):
                 logger.info(f"Worker {os.getpid()} preprocessing service initialized")
             except Exception as e:
                 logger.warning(f"Worker {os.getpid()} failed to init preprocessing: {e}")
-            
+
+            # Two-tier model architecture:
+            # - yolo/yolo_pose: Detection tier (nano) for fast Stage 1 scanning
+            # - yolo_voting/yolo_pose_voting: Voting tier (medium) for accurate Stage 2 verification
             _worker_models = {
-                'yolo': yolo_model,
-                'yolo_pose': yolo_pose,
+                # Detection tier (nano - fast)
+                'yolo': detection_yolo,
+                'yolo_pose': detection_pose,
+                # Voting tier (medium - accurate)
+                'yolo_voting': voting_yolo,
+                'yolo_pose_voting': voting_pose,
+                # Shared resources
                 'face_mesh': face_mesh,
                 'mp_face_mesh': mp_face_mesh,
                 'preprocessing_service': preprocessing_service
             }
-            
-            logger.info(f"Worker {os.getpid()} all models loaded successfully (YOLO, YOLOv8-Pose, FaceMesh)")
+
+            logger.info(f"Worker {os.getpid()} all models loaded successfully (Detection: nano, Voting: medium, FaceMesh)")
         
         _worker_config = config
         

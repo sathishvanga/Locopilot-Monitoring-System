@@ -197,17 +197,24 @@ class LocopilotActivityMonitor:
         # Initialize models - either use preloaded or load fresh
         if preloaded_models is not None:
             # ✅ PERFORMANCE: Use pre-loaded models from worker pool (fast path)
-            self.yolo_model = preloaded_models.get('yolo')
-            self.yolo_pose = preloaded_models.get('yolo_pose')
+            # Two-tier model strategy:
+            # - Detection tier (nano): yolo, yolo_pose for fast Stage 1 scanning
+            # - Voting tier (medium): yolo_voting, yolo_pose_voting for accurate Stage 2 verification
+            self.yolo_model = preloaded_models.get('yolo')  # Detection tier (nano)
+            self.yolo_pose = preloaded_models.get('yolo_pose')  # Detection tier (nano)
             self.face_mesh = preloaded_models.get('face_mesh')
             self.mp_face_mesh = preloaded_models.get('mp_face_mesh')
             self.preprocessing_service = preloaded_models.get('preprocessing_service')
-            
+
+            # Voting tier models (medium) for Stage 2 verification
+            self._voting_yolo_model = preloaded_models.get('yolo_voting')
+            self._voting_yolo_pose_model = preloaded_models.get('yolo_pose_voting')
+
             # Keep MediaPipe references for backward compatibility
             self.mp_pose = mp.solutions.pose
             self.mp_drawing = mp.solutions.drawing_utils
             self.mp_drawing_styles = mp.solutions.drawing_styles
-            
+
             # Validate required models
             if self.yolo_model is None or self.yolo_pose is None:
                 raise ValueError("preloaded_models must contain 'yolo' and 'yolo_pose'")
@@ -274,6 +281,10 @@ class LocopilotActivityMonitor:
                     self.preprocessing_service = None
             else:
                 self.preprocessing_service = None
+
+            # For standalone mode, use the same models for voting (medium tier only)
+            self._voting_yolo_model = self.yolo_model
+            self._voting_yolo_pose_model = self.yolo_pose
 
         # Cell phone detection confidence threshold (configurable)
         self.cell_phone_confidence = float(os.getenv("CELL_PHONE_CONFIDENCE", "0.40"))
@@ -501,14 +512,19 @@ class LocopilotActivityMonitor:
 
         # Initialize voting verification service for multi-frame voting
         # This reduces false positives by verifying detections across multiple native frames
+        # Uses voting tier models (medium) for accurate Stage 2 verification
         self.current_video_path = video_path  # Track current video for voting
         if VotingVerificationService is not None:
             try:
+                # Use voting tier models (medium - accurate) for Stage 2 verification
+                # Falls back to detection models if voting models not available
+                voting_yolo = self._voting_yolo_model if self._voting_yolo_model is not None else self.yolo_model
+                voting_pose = self._voting_yolo_pose_model if self._voting_yolo_pose_model is not None else self.yolo_pose
                 self.voting_service = VotingVerificationService(
-                    yolo_model=self.yolo_model,
-                    yolo_pose_model=self.yolo_pose
+                    yolo_model=voting_yolo,
+                    yolo_pose_model=voting_pose
                 )
-                self.logger.info("VotingVerificationService initialized successfully")
+                self.logger.info("VotingVerificationService initialized with voting-tier models (medium)")
             except Exception as e:
                 self.logger.warning(f"Failed to initialize VotingVerificationService: {e}")
                 self.voting_service = None

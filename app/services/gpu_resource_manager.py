@@ -93,7 +93,11 @@ class GPUResourceManager:
         self._total_memory_mb: float = 0.0
         self._gpu_available: bool = False
 
-        # Model instances
+        # Model instances - Detection tier (nano - fast, for Stage 1)
+        self._detection_yolo_model: Optional[Any] = None
+        self._detection_pose_model: Optional[Any] = None
+
+        # Model instances - Voting tier (medium - accurate, for Stage 2)
         self._yolo_model: Optional[Any] = None
         self._pose_model: Optional[Any] = None
         self._face_mesh: Optional[Any] = None
@@ -269,11 +273,47 @@ class GPUResourceManager:
             try:
                 from ultralytics import YOLO
 
-                # Get model paths from settings
+                # =========================================================
+                # Detection tier (nano - fast, for Stage 1 activity scanning)
+                # =========================================================
+                detection_yolo_weights = self._settings.yolo_detection_weights
+                detection_pose_weights = self._settings.yolo_detection_pose_weights
+
+                logger.info(f"Loading Detection-tier YOLO model (nano): {detection_yolo_weights}")
+                start_time = time.time()
+
+                self._detection_yolo_model = YOLO(detection_yolo_weights)
+                if self._gpu_available:
+                    self._detection_yolo_model.to(self._device)
+                    self._detection_yolo_model.fuse()
+
+                detection_yolo_time = time.time() - start_time
+                logger.info(
+                    f"Detection YOLO (nano) loaded in {detection_yolo_time:.2f}s "
+                    f"on {self._device_name}"
+                )
+
+                logger.info(f"Loading Detection-tier Pose model (nano): {detection_pose_weights}")
+                start_time = time.time()
+
+                self._detection_pose_model = YOLO(detection_pose_weights)
+                if self._gpu_available:
+                    self._detection_pose_model.to(self._device)
+                    self._detection_pose_model.fuse()
+
+                detection_pose_time = time.time() - start_time
+                logger.info(
+                    f"Detection Pose (nano) loaded in {detection_pose_time:.2f}s "
+                    f"on {self._device_name}"
+                )
+
+                # =========================================================
+                # Voting tier (medium - accurate, for Stage 2 verification)
+                # =========================================================
                 yolo_weights = self._settings.yolo_weights
                 pose_weights = self._settings.yolo_pose_weights
 
-                logger.info(f"Loading YOLO model: {yolo_weights}")
+                logger.info(f"Loading Voting-tier YOLO model (medium): {yolo_weights}")
                 start_time = time.time()
 
                 # Load object detection model
@@ -285,12 +325,12 @@ class GPUResourceManager:
 
                 yolo_load_time = time.time() - start_time
                 logger.info(
-                    f"YOLO model loaded and fused in {yolo_load_time:.2f}s "
+                    f"Voting YOLO (medium) loaded and fused in {yolo_load_time:.2f}s "
                     f"on {self._device_name}"
                 )
 
                 # Load pose estimation model
-                logger.info(f"Loading Pose model: {pose_weights}")
+                logger.info(f"Loading Voting-tier Pose model (medium): {pose_weights}")
                 start_time = time.time()
 
                 self._pose_model = YOLO(pose_weights)
@@ -301,7 +341,7 @@ class GPUResourceManager:
 
                 pose_load_time = time.time() - start_time
                 logger.info(
-                    f"Pose model loaded and fused in {pose_load_time:.2f}s "
+                    f"Voting Pose (medium) loaded and fused in {pose_load_time:.2f}s "
                     f"on {self._device_name}"
                 )
 
@@ -376,8 +416,10 @@ class GPUResourceManager:
 
         Returns:
             Dict[str, Any]: Dictionary containing model references:
-                - yolo: YOLO object detection model
-                - yolo_pose: YOLO pose estimation model
+                - yolo: Detection-tier YOLO model (nano - fast)
+                - yolo_pose: Detection-tier YOLO pose model (nano - fast)
+                - yolo_voting: Voting-tier YOLO model (medium - accurate)
+                - yolo_pose_voting: Voting-tier YOLO pose model (medium - accurate)
                 - face_mesh: MediaPipe FaceMesh instance
                 - mp_face_mesh: MediaPipe FaceMesh class
                 - preprocessing_service: Image preprocessing service
@@ -388,8 +430,13 @@ class GPUResourceManager:
             self.load_models()
 
         models = {
-            'yolo': self._yolo_model,
-            'yolo_pose': self._pose_model,
+            # Detection tier (nano - fast, for Stage 1)
+            'yolo': self._detection_yolo_model,
+            'yolo_pose': self._detection_pose_model,
+            # Voting tier (medium - accurate, for Stage 2)
+            'yolo_voting': self._yolo_model,
+            'yolo_pose_voting': self._pose_model,
+            # Shared resources
             'face_mesh': self._face_mesh,
             'mp_face_mesh': self._mp_face_mesh,
             'preprocessing_service': self._preprocessing_service
@@ -397,6 +444,28 @@ class GPUResourceManager:
 
         logger.debug("Exiting get_models_dict", extra={"num_models": len(models)})
         return models
+
+    def get_detection_models(self) -> Tuple[Any, Any]:
+        """
+        Get detection-tier model instances (nano - fast for Stage 1).
+
+        Returns:
+            Tuple[Any, Any]: (detection_yolo_model, detection_pose_model)
+        """
+        if not self._models_loaded:
+            self.load_models()
+        return self._detection_yolo_model, self._detection_pose_model
+
+    def get_voting_models(self) -> Tuple[Any, Any]:
+        """
+        Get voting-tier model instances (medium - accurate for Stage 2).
+
+        Returns:
+            Tuple[Any, Any]: (voting_yolo_model, voting_pose_model)
+        """
+        if not self._models_loaded:
+            self.load_models()
+        return self._yolo_model, self._pose_model
 
     def get_yolo_model(self) -> Any:
         """
@@ -985,7 +1054,11 @@ class GPUResourceManager:
                 self._face_mesh.close()
                 self._face_mesh = None
 
-            # Clear model references
+            # Clear detection tier model references (nano)
+            self._detection_yolo_model = None
+            self._detection_pose_model = None
+
+            # Clear voting tier model references (medium)
             self._yolo_model = None
             self._pose_model = None
             self._mp_face_mesh = None
