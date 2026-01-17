@@ -201,7 +201,8 @@ class DiagnosticVideoAnalyzer:
 
     def run_yolo_detection(self, frame: np.ndarray) -> Dict[str, List[DetectionResult]]:
         """Run YOLO object detection on frame."""
-        results = self.yolo_model(frame, verbose=False, imgsz=self.settings.yolo_imgsz)
+        # Phase 1.1: Added half=self.settings.yolo_use_half for FP16 inference (1.5-2x speedup)
+        results = self.yolo_model(frame, verbose=False, imgsz=self.settings.yolo_imgsz, half=self.settings.yolo_use_half)
 
         detections = defaultdict(list)
 

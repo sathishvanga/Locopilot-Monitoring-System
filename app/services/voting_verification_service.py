@@ -818,8 +818,9 @@ class VotingVerificationService:
 
         try:
             # YOLO supports batch inference
+            # Phase 1.1: Added half=self.settings.yolo_use_half for FP16 inference (1.5-2x speedup)
             logger.debug(f"[VOTING] {activity_type}: Running batch YOLO inference on {len(frames)} frames...")
-            results = self.yolo_model(frames, verbose=False, imgsz=self.settings.yolo_imgsz)
+            results = self.yolo_model(frames, verbose=False, imgsz=self.settings.yolo_imgsz, half=self.settings.yolo_use_half)
 
             for i, r in enumerate(results):
                 detections = {

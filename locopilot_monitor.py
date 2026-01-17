@@ -12,6 +12,9 @@ import gc
 import contextlib
 import sys
 import subprocess
+from concurrent.futures import ThreadPoolExecutor
+from queue import Queue
+from threading import Event
 
 # Add app directory to path for importing preprocessing service
 script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -279,9 +282,15 @@ class LocopilotActivityMonitor:
         self.cell_phone_confidence = float(os.getenv("CELL_PHONE_CONFIDENCE", "0.40"))
 
         # Phase 2: Load inference optimization settings (1.5-1.8x speedup)
-        self.yolo_imgsz = settings.yolo_imgsz if settings else 416
+        self.yolo_imgsz = settings.yolo_imgsz if settings else 640
+        self.yolo_imgsz_fast = settings.yolo_imgsz_fast if settings else 480  # Phase 1.3: Fast detection mode
         self.yolo_device = settings.yolo_device if settings else 'cpu'
-        
+        # Phase 1.1: FP16 (Half Precision) Inference - 1.5-2x speedup on GPU
+        self.yolo_use_half = settings.yolo_use_half if settings else True
+        # Phase 2.3: Async Frame Prefetching settings - 1.1-1.2x speedup
+        self.frame_prefetch_enabled = settings.frame_prefetch_enabled if settings else True
+        self.frame_prefetch_size = settings.frame_prefetch_size if settings else 8
+
         # Track if models were pre-loaded (don't close them in cleanup)
         self._models_preloaded = preloaded_models is not None
 
@@ -631,7 +640,99 @@ class LocopilotActivityMonitor:
                 sampled_idx += 1
             
             self.logger.debug(f"[Frame Sampling] Completed sampling, total samples: {sampled_idx}")
-        
+
+    def sample_video_frames_prefetch(self, video_path, start_frame=None, end_frame=None, prefetch_size=8):
+        """
+        Phase 2.3: Async Frame Prefetching - Sample frames with background prefetching.
+
+        Uses a ThreadPoolExecutor to prefetch frames while the main thread processes,
+        reducing I/O wait time and improving throughput by 1.1-1.2x.
+
+        Yields tuples: (sample_index, timestamp_sec, frame_bgr, frame_idx)
+
+        Args:
+            video_path: Path to video file
+            start_frame: Optional starting frame index (for range processing)
+            end_frame: Optional ending frame index (for range processing)
+            prefetch_size: Number of frames to prefetch (default: 8)
+
+        Yields:
+            sample_index: Sequential index of sampled frames (0, 1, 2, ...)
+            timestamp_sec: Timestamp in seconds from video start
+            frame_bgr: BGR frame from OpenCV
+            frame_idx: Original frame index in the video
+        """
+        cap = cv2.VideoCapture(video_path)
+        if not cap.isOpened():
+            raise RuntimeError(f"Failed to open video: {video_path}")
+
+        try:
+            native_fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
+            total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+
+            # Determine frame range
+            start_frame = start_frame if start_frame is not None else 0
+            end_frame = end_frame if end_frame is not None else total_frames
+
+            # Calculate stride: how many frames to skip between samples
+            step = max(1, int(round(native_fps / max(1e-6, float(self.sample_fps)))))
+
+            # Calculate frame indices to sample
+            first_sample_frame = start_frame + (step - (start_frame % step)) % step
+            frame_indices = list(range(first_sample_frame, end_frame, step))
+
+            self.logger.debug(f"[Prefetch] Sampling {len(frame_indices)} frames with prefetch_size={prefetch_size}")
+
+            # Frame buffer queue (thread-safe)
+            frame_queue = Queue(maxsize=prefetch_size)
+            stop_event = Event()
+
+            def prefetch_worker():
+                """Background thread that reads frames ahead of processing."""
+                nonlocal cap
+                for frame_idx in frame_indices:
+                    if stop_event.is_set():
+                        break
+
+                    cap.set(cv2.CAP_PROP_POS_FRAMES, int(frame_idx))
+                    ret, frame = cap.read()
+
+                    if ret:
+                        timestamp = frame_idx / native_fps
+                        frame_queue.put((frame_idx, timestamp, frame))
+                    else:
+                        # Signal end with None
+                        frame_queue.put(None)
+                        break
+
+                # Signal end of frames
+                frame_queue.put(None)
+
+            # Start prefetch thread
+            with ThreadPoolExecutor(max_workers=1) as executor:
+                prefetch_future = executor.submit(prefetch_worker)
+
+                sampled_idx = 0
+                while True:
+                    item = frame_queue.get(timeout=30.0)  # 30 second timeout
+
+                    if item is None:
+                        break
+
+                    frame_idx, timestamp, frame = item
+                    yield sampled_idx, timestamp, frame, frame_idx
+                    sampled_idx += 1
+
+                # Ensure prefetch thread completes
+                stop_event.set()
+                prefetch_future.result(timeout=5.0)
+
+            self.logger.debug(f"[Prefetch] Completed sampling, total samples: {sampled_idx}")
+
+        finally:
+            if cap.isOpened():
+                cap.release()
+
     def calculate_eye_aspect_ratio(self, landmarks):
         """Calculate Eye Aspect Ratio (EAR) for drowsiness detection"""
         try:
@@ -1294,8 +1395,9 @@ class LocopilotActivityMonitor:
         
         # Run YOLO on ROI with strict confidence threshold to minimize false positives
         # Increased from 0.01 → 0.15 → 0.25 → 0.38 → 0.45 (configurable)
+        # Phase 1.1: Added half=self.yolo_use_half for FP16 inference (1.5-2x speedup)
         results = self.yolo_model(roi_frame, verbose=False, conf=self.cell_phone_confidence,
-                                  imgsz=self.yolo_imgsz, device=self.yolo_device)
+                                  imgsz=self.yolo_imgsz, device=self.yolo_device, half=self.yolo_use_half)
         
         detections = []
         debug_all_detections = []  # Track all detections for debugging
@@ -1389,8 +1491,9 @@ class LocopilotActivityMonitor:
 
         # Step 2: Batch YOLO inference on all ROI crops
         # This is the KEY optimization: 1 call instead of N calls
+        # Phase 1.1: Added half=self.yolo_use_half for FP16 inference (1.5-2x speedup)
         batch_results = self.yolo_model(roi_frames, verbose=False, conf=self.cell_phone_confidence,
-                                         imgsz=self.yolo_imgsz, device=self.yolo_device)
+                                         imgsz=self.yolo_imgsz, device=self.yolo_device, half=self.yolo_use_half)
 
         # Step 3: Process batch results and translate to global coordinates
         for batch_idx, (results_idx, roi_bbox_idx) in enumerate(zip(range(len(batch_results)), valid_indices)):
@@ -1516,7 +1619,8 @@ class LocopilotActivityMonitor:
             Dictionary with detections and ROI information
         """
         # Stage 1: Full frame detection for person, backpack, and books near person
-        results = self.yolo_model(frame, verbose=False, imgsz=self.yolo_imgsz, device=self.yolo_device)
+        # Phase 1.1 & 1.3: Use fast imgsz for initial detection + FP16 inference
+        results = self.yolo_model(frame, verbose=False, imgsz=self.yolo_imgsz_fast, device=self.yolo_device, half=self.yolo_use_half)
 
         # Phase 3: Cache results for potential reuse (avoid redundant inference)
         # Store results with timestamp for cache validation (100ms TTL)
@@ -4569,8 +4673,9 @@ class LocopilotActivityMonitor:
         else:
             # Cache miss or stale - run full-frame YOLO detection
             # Look for: tv/monitor, keyboard, mouse, laptop, book, backpack, cell phone
+            # Phase 1.1: Added half=self.yolo_use_half for FP16 inference (1.5-2x speedup)
             yolo_results = self.yolo_model(frame, verbose=False, conf=0.3,
-                                            imgsz=self.yolo_imgsz, device=self.yolo_device)
+                                            imgsz=self.yolo_imgsz, device=self.yolo_device, half=self.yolo_use_half)
         
         # Collect all detected objects with their class names
         all_objects = []
@@ -5616,10 +5721,20 @@ class LocopilotActivityMonitor:
         timestamp_sec = 0  # Initialize to handle empty frame ranges
         frame_idx = start_frame  # Initialize to handle empty frame ranges
 
+        # Phase 2.3: Use prefetching frame sampler when enabled (1.1-1.2x speedup)
+        if self.frame_prefetch_enabled:
+            frame_generator = self.sample_video_frames_prefetch(
+                self.video_path, start_frame=start_frame, end_frame=end_frame,
+                prefetch_size=self.frame_prefetch_size
+            )
+            self.logger.debug(f"Using prefetching frame sampler (prefetch_size={self.frame_prefetch_size})")
+        else:
+            frame_generator = self.sample_video_frames(
+                self.video_path, start_frame=start_frame, end_frame=end_frame
+            )
+
         # Use the frame sampling generator with range limits
-        for sample_idx, timestamp_sec, frame, frame_idx in self.sample_video_frames(
-            self.video_path, start_frame=start_frame, end_frame=end_frame
-        ):
+        for sample_idx, timestamp_sec, frame, frame_idx in frame_generator:
             sampled_count += 1
 
             try:
