@@ -65,6 +65,12 @@ except ImportError:
     VotingVerificationService = None
     ActivityBatchCollector = None
 
+# Import MotionDetectionService for Stage 0 pre-ML filtering
+try:
+    from app.services.motion_detection_service import MotionDetectionService
+except ImportError:
+    MotionDetectionService = None
+
 
 # ✅ WINDOWS FIX: Prevent Qt/GUI initialization in worker processes
 # If running in a worker process (detected by QT_QPA_PLATFORM=offscreen),
@@ -531,6 +537,30 @@ class LocopilotActivityMonitor:
         else:
             self.voting_service = None
             self.logger.info("VotingVerificationService not available - voting disabled")
+
+        # Initialize Motion Detection Service (Stage 0 - Pre-ML filtering)
+        # Skips static frames before expensive ML inference to improve processing speed
+        self.motion_detector = None
+        if MotionDetectionService is not None and settings is not None:
+            if settings.motion_detection_enabled:
+                try:
+                    self.motion_detector = MotionDetectionService(
+                        motion_threshold=settings.motion_threshold,
+                        min_contour_area=settings.motion_min_contour_area,
+                        blur_kernel_size=settings.motion_blur_kernel,
+                        binary_threshold=settings.motion_binary_threshold,
+                        adaptive_calibration=settings.motion_adaptive_threshold,
+                        calibration_frames=settings.motion_calibration_frames,
+                        max_consecutive_skips=settings.motion_skip_consecutive_limit
+                    )
+                    self.logger.info("MotionDetectionService initialized (Stage 0 filtering enabled)")
+                except Exception as e:
+                    self.logger.warning(f"Failed to initialize MotionDetectionService: {e}")
+                    self.motion_detector = None
+            else:
+                self.logger.info("Motion detection disabled by configuration")
+        else:
+            self.logger.debug("MotionDetectionService not available")
 
     def get_keypoint(self, landmarks, keypoint_name):
         """Get a keypoint from landmarks by name (works with both YOLO and MediaPipe formats).
@@ -5228,13 +5258,23 @@ class LocopilotActivityMonitor:
         for sample_idx, timestamp_sec, frame, frame_idx in self.sample_video_frames(self.video_path):
             sampled_count += 1
 
+            # Stage 0: Motion Detection - Skip static frames before ML inference
+            if self.motion_detector is not None:
+                should_skip, motion_metrics = self.motion_detector.should_skip_frame(frame)
+                if should_skip:
+                    self.logger.debug(
+                        f"[Motion] Skipping frame {frame_idx} (motion={motion_metrics.motion_percentage:.4f}, "
+                        f"threshold={self.motion_detector._get_effective_threshold():.4f})"
+                    )
+                    continue  # Skip ML inference for this static frame
+
             try:
                 # Convert timestamp to HH:MM:SS format
                 timestamp = str(timedelta(seconds=timestamp_sec))
 
                 # Add frame to buffer
                 self.frame_buffer.append(frame.copy())
-                
+
                 # STEP 1: Run MediaPipe Face Mesh on full frame (for face-based sleep/EAR detection)
                 rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
                 face_results = self.face_mesh.process(rgb_frame)
@@ -5638,13 +5678,22 @@ class LocopilotActivityMonitor:
         ):
             sampled_count += 1
 
+            # Stage 0: Motion Detection - Skip static frames before ML inference
+            if self.motion_detector is not None:
+                should_skip, motion_metrics = self.motion_detector.should_skip_frame(frame)
+                if should_skip:
+                    self.logger.debug(
+                        f"[Motion] Skipping frame {frame_idx} (motion={motion_metrics.motion_percentage:.4f})"
+                    )
+                    continue  # Skip ML inference for this static frame
+
             try:
                 # Convert timestamp to HH:MM:SS format
                 timestamp = str(timedelta(seconds=timestamp_sec))
 
                 # Add frame to buffer
                 self.frame_buffer.append(frame.copy())
-                
+
                 # STEP 1: Run MediaPipe Face Mesh on full frame (for face-based sleep/EAR detection)
                 rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
                 face_results = self.face_mesh.process(rgb_frame)
@@ -5934,9 +5983,19 @@ class LocopilotActivityMonitor:
                     if 'frames' in self.activities[activity_name]:
                         self.activities[activity_name]['frames'].clear()
             
+            # Log motion detection statistics (if enabled)
+            if hasattr(self, 'motion_detector') and self.motion_detector is not None:
+                self.motion_detector.log_statistics()
+                stats = self.motion_detector.get_statistics_summary()
+                self.logger.info(
+                    f"Motion Detection Summary: analyzed={stats['frames_analyzed']}, "
+                    f"skipped={stats['frames_skipped']} ({stats['skip_rate_percent']:.1f}%), "
+                    f"processed={stats['frames_processed']}"
+                )
+
             # Force garbage collection
             gc.collect()
-            
+
             self.logger.info("Cleanup completed: Models closed, buffers cleared")
         except Exception as e:
             self.logger.warning(f"Warning during cleanup: {e}")

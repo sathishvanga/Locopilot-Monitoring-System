@@ -223,6 +223,17 @@ class Settings(BaseSettings):
     # GPU Memory Management Settings
     gpu_memory_warning_threshold: float = float(os.getenv("GPU_MEMORY_WARNING_THRESHOLD", "80.0"))  # Percentage
 
+    # Motion Detection Settings (Stage 0 - Pre-ML filtering)
+    # Skip static frames before expensive ML inference to improve processing speed
+    motion_detection_enabled: bool = bool(int(os.getenv("MOTION_DETECTION_ENABLED", "1")))  # Enable/disable feature
+    motion_threshold: float = float(os.getenv("MOTION_THRESHOLD", "0.01"))  # 1% of frame must change
+    motion_min_contour_area: int = int(os.getenv("MOTION_MIN_CONTOUR_AREA", "500"))  # Min pixels for motion region
+    motion_blur_kernel: int = int(os.getenv("MOTION_BLUR_KERNEL", "5"))  # Gaussian blur kernel size
+    motion_binary_threshold: int = int(os.getenv("MOTION_BINARY_THRESHOLD", "25"))  # Diff threshold (0-255)
+    motion_adaptive_threshold: bool = bool(int(os.getenv("MOTION_ADAPTIVE_THRESHOLD", "1")))  # Adaptive calibration
+    motion_calibration_frames: int = int(os.getenv("MOTION_CALIBRATION_FRAMES", "10"))  # Frames for calibration
+    motion_skip_consecutive_limit: int = int(os.getenv("MOTION_SKIP_CONSECUTIVE_LIMIT", "5"))  # Max consecutive skips
+
 
 @lru_cache()
 def get_settings() -> Settings:

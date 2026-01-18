@@ -53,7 +53,11 @@ class MultiprocessingConfig:
     # Voting tier (medium - accurate) for Stage 2 verification
     yolo_voting_model_path: str = os.getenv("YOLO_WEIGHTS_PRELOAD", "yolo11m.pt")
     yolo_voting_pose_model_path: str = os.getenv("YOLO_POSE_WEIGHTS", "yolo11m-pose.pt")
-    
+
+    # Motion detection (Stage 0 - Pre-ML filtering)
+    # Skip static frames before expensive ML inference
+    motion_detection_enabled: bool = bool(int(os.getenv("MOTION_DETECTION_ENABLED", "1")))
+
     # Progress settings
     enable_progress_tracking: bool = True  # Enable progress updates
     progress_update_interval: float = 1.0  # Progress update interval in seconds
