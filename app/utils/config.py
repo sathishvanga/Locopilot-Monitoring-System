@@ -226,13 +226,22 @@ class Settings(BaseSettings):
     # Motion Detection Settings (Stage 0 - Pre-ML filtering)
     # Skip static frames before expensive ML inference to improve processing speed
     motion_detection_enabled: bool = bool(int(os.getenv("MOTION_DETECTION_ENABLED", "1")))  # Enable/disable feature
-    motion_threshold: float = float(os.getenv("MOTION_THRESHOLD", "0.01"))  # 1% of frame must change
-    motion_min_contour_area: int = int(os.getenv("MOTION_MIN_CONTOUR_AREA", "500"))  # Min pixels for motion region
+    motion_threshold: float = float(os.getenv("MOTION_THRESHOLD", "0.025"))  # 2.5% of frame must change (increased from 1%)
+    motion_min_contour_area: int = int(os.getenv("MOTION_MIN_CONTOUR_AREA", "2000"))  # Min pixels for motion region (increased from 500)
     motion_blur_kernel: int = int(os.getenv("MOTION_BLUR_KERNEL", "5"))  # Gaussian blur kernel size
-    motion_binary_threshold: int = int(os.getenv("MOTION_BINARY_THRESHOLD", "25"))  # Diff threshold (0-255)
+    motion_binary_threshold: int = int(os.getenv("MOTION_BINARY_THRESHOLD", "35"))  # Diff threshold (0-255) (increased from 25)
     motion_adaptive_threshold: bool = bool(int(os.getenv("MOTION_ADAPTIVE_THRESHOLD", "1")))  # Adaptive calibration
     motion_calibration_frames: int = int(os.getenv("MOTION_CALIBRATION_FRAMES", "10"))  # Frames for calibration
-    motion_skip_consecutive_limit: int = int(os.getenv("MOTION_SKIP_CONSECUTIVE_LIMIT", "5"))  # Max consecutive skips
+    motion_skip_consecutive_limit: int = int(os.getenv("MOTION_SKIP_CONSECUTIVE_LIMIT", "30"))  # Max consecutive skips (increased from 5, ~60s at 0.5 FPS)
+
+    # Enhanced Motion Detection Settings (Phase 2-6 optimizations)
+    motion_use_gpu: bool = bool(int(os.getenv("MOTION_USE_GPU", "1")))  # Use GPU-accelerated motion detection (PyTorch CUDA)
+    motion_use_mog2: bool = bool(int(os.getenv("MOTION_USE_MOG2", "1")))  # Use MOG2 background subtraction (CPU fallback only)
+    motion_detection_scale: float = float(os.getenv("MOTION_DETECTION_SCALE", "0.25"))  # Process at 25% resolution (4x speedup)
+    motion_roi_margin: float = float(os.getenv("MOTION_ROI_MARGIN", "0.10"))  # Ignore 10% border (edge filtering)
+    motion_scene_change_threshold: float = float(os.getenv("MOTION_SCENE_CHANGE_THRESHOLD", "0.15"))  # 15% brightness change = scene change
+    motion_continuous_subsample: int = int(os.getenv("MOTION_CONTINUOUS_SUBSAMPLE", "3"))  # Process 1 in 3 during sustained motion
+    motion_min_continuous_frames: int = int(os.getenv("MOTION_MIN_CONTINUOUS_FRAMES", "5"))  # Frames before subsampling kicks in
 
 
 @lru_cache()

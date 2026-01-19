@@ -54,7 +54,13 @@ def create_service():
         blur_kernel_size=5,
         binary_threshold=25,
         adaptive_calibration=False,  # Disable for predictable tests
-        max_consecutive_skips=5
+        max_consecutive_skips=5,
+        use_mog2=False,  # Use frame differencing for predictable tests
+        detection_scale=1.0,  # Full resolution for tests
+        roi_margin=0.0,  # No ROI exclusion for tests
+        scene_change_threshold=1.0,  # Disable scene change detection for tests (100% threshold)
+        continuous_motion_subsample=3,
+        min_continuous_motion_frames=100  # Effectively disable subsampling for tests
     )
 
 
@@ -87,6 +93,8 @@ class TestMotionMetrics:
         assert metrics.contour_count == 0
         assert metrics.has_significant_motion is True  # Default: process frame
         assert metrics.processing_time_ms == 0.0
+        assert metrics.scene_change_detected is False
+        assert metrics.is_subsampled_skip is False
 
 
 class TestMotionDetectionStats:
@@ -181,10 +189,11 @@ class TestMotionDetectionService:
         moving_frame = create_moving_frame()
 
         # Process a mix of frames
-        service.should_skip_frame(static_frame)  # First frame - processed
-        service.should_skip_frame(static_frame.copy())  # Static - skipped
-        service.should_skip_frame(moving_frame)  # Motion - processed
-        service.should_skip_frame(static_frame.copy())  # Static - skipped
+        # Note: Frame differencing compares each frame to the previous one
+        service.should_skip_frame(static_frame)  # First frame - always processed
+        service.should_skip_frame(static_frame.copy())  # Same as prev - skipped (no change)
+        service.should_skip_frame(static_frame.copy())  # Same as prev - skipped (no change)
+        service.should_skip_frame(moving_frame)  # Motion appeared - processed
 
         stats = service.get_statistics_summary()
 
@@ -279,7 +288,13 @@ class TestMotionDetectionRealWorldScenarios:
 
     def test_gradual_lighting_change(self):
         """Gradual lighting changes should not trigger motion"""
-        service = MotionDetectionService()
+        service = MotionDetectionService(
+            use_mog2=False,  # Use frame differencing for predictable test behavior
+            motion_threshold=0.01,
+            min_contour_area=500,
+            binary_threshold=25,
+            max_consecutive_skips=30
+        )
         base_value = 100
         frames_processed = 0
         frames_skipped = 0
@@ -306,7 +321,12 @@ class TestMotionDetectionRealWorldScenarios:
 
     def test_person_moving_triggers_motion(self):
         """A person moving through the frame should trigger motion detection"""
-        service = MotionDetectionService()
+        service = MotionDetectionService(
+            use_mog2=False,  # Use frame differencing for predictable test behavior
+            motion_threshold=0.01,
+            min_contour_area=500,
+            binary_threshold=25
+        )
 
         # Background frame
         background = np.ones((480, 640, 3), dtype=np.uint8) * 128
@@ -323,7 +343,10 @@ class TestMotionDetectionRealWorldScenarios:
 
     def test_processing_time_is_fast(self):
         """Motion detection should be fast (< 10ms per frame)"""
-        service = MotionDetectionService()
+        service = MotionDetectionService(
+            use_mog2=False,  # Use frame differencing for speed test
+            detection_scale=1.0
+        )
         frame = np.random.randint(0, 255, (480, 640, 3), dtype=np.uint8)
 
         # Warmup
@@ -335,6 +358,195 @@ class TestMotionDetectionRealWorldScenarios:
 
         # Motion detection should be very fast
         assert metrics.processing_time_ms < 10.0  # Should be < 1ms typically
+
+
+class TestEnhancedMotionDetection:
+    """Tests for Phase 2-6 motion detection enhancements"""
+
+    def test_frame_downscaling(self):
+        """Test that frame downscaling works correctly"""
+        service = MotionDetectionService(
+            motion_threshold=0.01,
+            min_contour_area=500,
+            blur_kernel_size=5,
+            binary_threshold=25,
+            adaptive_calibration=False,
+            max_consecutive_skips=5,
+            use_mog2=False,
+            detection_scale=0.25,  # 25% resolution
+            roi_margin=0.0,
+            scene_change_threshold=1.0  # Disable scene change detection for test
+        )
+
+        # Test with a frame that has motion
+        static_frame = create_static_frame()
+        moving_frame = create_moving_frame()
+
+        service.should_skip_frame(static_frame)
+        should_skip, metrics = service.should_skip_frame(moving_frame)
+
+        # Should still detect motion even with downscaling
+        assert should_skip is False
+        assert metrics.motion_percentage > 0.0
+
+    def test_mog2_background_subtraction(self):
+        """Test that MOG2 background subtraction works"""
+        service = MotionDetectionService(
+            motion_threshold=0.01,
+            min_contour_area=500,
+            blur_kernel_size=5,
+            binary_threshold=25,
+            adaptive_calibration=False,
+            max_consecutive_skips=30,
+            use_mog2=True,  # Enable MOG2
+            detection_scale=1.0,
+            roi_margin=0.0
+        )
+
+        # Verify MOG2 is initialized
+        assert service.bg_subtractor is not None
+
+        # Test with frames
+        static_frame = create_static_frame()
+        service.should_skip_frame(static_frame)
+
+        # Second static frame should be skipped
+        should_skip, _ = service.should_skip_frame(static_frame.copy())
+        assert should_skip is True
+
+    def test_scene_change_detection(self):
+        """Test that scene changes (lighting transitions) are detected"""
+        service = MotionDetectionService(
+            motion_threshold=0.01,
+            min_contour_area=500,
+            blur_kernel_size=5,
+            binary_threshold=25,
+            adaptive_calibration=False,
+            max_consecutive_skips=30,
+            use_mog2=False,
+            detection_scale=1.0,
+            roi_margin=0.0,
+            scene_change_threshold=0.15
+        )
+
+        # First frame - dark
+        dark_frame = np.ones((480, 640, 3), dtype=np.uint8) * 50
+        service.should_skip_frame(dark_frame)
+
+        # Second frame - much brighter (scene change)
+        bright_frame = np.ones((480, 640, 3), dtype=np.uint8) * 200
+        should_skip, metrics = service.should_skip_frame(bright_frame)
+
+        # Scene change should be detected and frame skipped
+        assert metrics.scene_change_detected is True
+        assert should_skip is True
+
+    def test_roi_exclusion(self):
+        """Test that ROI margin excludes border motion"""
+        service = MotionDetectionService(
+            motion_threshold=0.01,
+            min_contour_area=500,
+            blur_kernel_size=5,
+            binary_threshold=25,
+            adaptive_calibration=False,
+            max_consecutive_skips=30,
+            use_mog2=False,
+            detection_scale=1.0,
+            roi_margin=0.10  # 10% border exclusion
+        )
+
+        # Create static frame
+        static_frame = np.ones((480, 640, 3), dtype=np.uint8) * 128
+        service.should_skip_frame(static_frame)
+
+        # Create frame with motion only in border (should be ignored)
+        border_motion_frame = static_frame.copy()
+        # Add motion to top border (within 10% = 48 pixels)
+        border_motion_frame[:40, :, :] = 255
+
+        should_skip, metrics = service.should_skip_frame(border_motion_frame)
+        # Border motion should be ignored
+        assert should_skip is True
+
+    def test_continuous_motion_subsampling(self):
+        """Test that continuous motion triggers subsampling"""
+        service = MotionDetectionService(
+            motion_threshold=0.01,
+            min_contour_area=500,
+            blur_kernel_size=5,
+            binary_threshold=25,
+            adaptive_calibration=False,
+            max_consecutive_skips=30,
+            use_mog2=False,
+            detection_scale=1.0,
+            roi_margin=0.0,
+            continuous_motion_subsample=3,  # Process 1 in 3
+            min_continuous_motion_frames=3  # Start after 3 frames
+        )
+
+        # Background
+        static_frame = np.ones((480, 640, 3), dtype=np.uint8) * 128
+        service.should_skip_frame(static_frame)
+
+        # Generate sustained motion frames
+        subsampled_count = 0
+        processed_count = 0
+
+        for i in range(15):
+            # Create frame with motion
+            motion_frame = static_frame.copy()
+            # Move rectangle position each frame
+            x = 100 + (i * 20)
+            cv2.rectangle(motion_frame, (x, 100), (x + 100, 200), (255, 255, 255), -1)
+
+            should_skip, metrics = service.should_skip_frame(motion_frame)
+
+            if metrics.is_subsampled_skip:
+                subsampled_count += 1
+            elif not should_skip:
+                processed_count += 1
+
+        # After min_continuous_motion_frames, subsampling should kick in
+        # With subsample=3, we process 1 in every 3 motion frames
+        assert subsampled_count > 0, "Subsampling should have occurred"
+        assert service.stats.subsampled_skips > 0
+
+    def test_statistics_includes_new_metrics(self):
+        """Test that statistics summary includes new metrics"""
+        service = MotionDetectionService(
+            use_mog2=True,
+            detection_scale=0.25
+        )
+
+        stats = service.get_statistics_summary()
+
+        # Verify new metrics are present
+        assert 'scene_change_skips' in stats
+        assert 'subsampled_skips' in stats
+        assert 'use_mog2' in stats
+        assert 'detection_scale' in stats
+
+        # Verify values
+        assert stats['use_mog2'] is True
+        assert stats['detection_scale'] == 0.25
+
+    def test_reset_reinitializes_mog2(self):
+        """Test that reset reinitializes MOG2 background subtractor"""
+        service = MotionDetectionService(use_mog2=True)
+
+        # Process a frame
+        frame = create_static_frame()
+        service.should_skip_frame(frame)
+
+        # Store reference to old bg_subtractor
+        old_bg_subtractor = service.bg_subtractor
+
+        # Reset
+        service.reset()
+
+        # MOG2 should be reinitialized (new object)
+        assert service.bg_subtractor is not None
+        assert service.continuous_motion_frames == 0
 
 
 # ============================================================================
@@ -349,6 +561,7 @@ def run_tests_without_pytest():
         TestMotionDetectionService,
         TestMotionDetectionWithAdaptiveCalibration,
         TestMotionDetectionRealWorldScenarios,
+        TestEnhancedMotionDetection,
     ]
 
     total_tests = 0

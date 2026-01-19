@@ -71,6 +71,12 @@ try:
 except ImportError:
     MotionDetectionService = None
 
+# Import GPU-accelerated MotionDetectionService (PyTorch CUDA)
+try:
+    from app.services.gpu_motion_detection_service import GPUMotionDetectionService
+except ImportError:
+    GPUMotionDetectionService = None
+
 
 # ✅ WINDOWS FIX: Prevent Qt/GUI initialization in worker processes
 # If running in a worker process (detected by QT_QPA_PLATFORM=offscreen),
@@ -121,17 +127,40 @@ monitor_logger = _setup_module_logger('LocopilotMonitor')
 
 
 @contextlib.contextmanager
-def video_capture_context(video_path):
+def video_capture_context(video_path, use_gpu=True):
     """
     Context manager to ensure VideoCapture is always released.
     This prevents memory leaks from unclosed video captures.
+
+    Args:
+        video_path: Path to video file
+        use_gpu: If True, attempt to use NVDEC hardware decoding (default: True)
     """
-    cap = cv2.VideoCapture(video_path)
+    # Try GPU-accelerated video decoding with NVDEC
+    if use_gpu:
+        # Set FFmpeg options for CUDA hardware acceleration
+        # This uses NVDEC for video decoding on NVIDIA GPUs
+        os.environ['OPENCV_FFMPEG_CAPTURE_OPTIONS'] = 'video_codec;h264_cuvid'
+        cap = cv2.VideoCapture(video_path, cv2.CAP_FFMPEG)
+
+        # Check if hardware acceleration is working
+        if cap.isOpened():
+            # Try to enable hardware acceleration via property (OpenCV 4.5+)
+            try:
+                cap.set(cv2.CAP_PROP_HW_ACCELERATION, cv2.VIDEO_ACCELERATION_ANY)
+            except:
+                pass  # Property may not be available in all OpenCV versions
+    else:
+        cap = cv2.VideoCapture(video_path)
+
     try:
         yield cap
     finally:
         if cap.isOpened():
             cap.release()
+        # Reset environment variable
+        if 'OPENCV_FFMPEG_CAPTURE_OPTIONS' in os.environ:
+            del os.environ['OPENCV_FFMPEG_CAPTURE_OPTIONS']
 
 
 class LocopilotActivityMonitor:
@@ -540,9 +569,36 @@ class LocopilotActivityMonitor:
 
         # Initialize Motion Detection Service (Stage 0 - Pre-ML filtering)
         # Skips static frames before expensive ML inference to improve processing speed
+        # Prefers GPU-accelerated version when available for better CPU utilization
         self.motion_detector = None
-        if MotionDetectionService is not None and settings is not None:
-            if settings.motion_detection_enabled:
+        if settings is not None and settings.motion_detection_enabled:
+            use_gpu_motion = getattr(settings, 'motion_use_gpu', True)  # Default to GPU
+
+            # Try GPU-accelerated motion detection first
+            if use_gpu_motion and GPUMotionDetectionService is not None:
+                try:
+                    import torch
+                    if torch.cuda.is_available():
+                        self.motion_detector = GPUMotionDetectionService(
+                            motion_threshold=settings.motion_threshold,
+                            min_contour_area=settings.motion_min_contour_area,
+                            blur_kernel_size=settings.motion_blur_kernel,
+                            binary_threshold=settings.motion_binary_threshold,
+                            max_consecutive_skips=settings.motion_skip_consecutive_limit,
+                            detection_scale=settings.motion_detection_scale,
+                            roi_margin=settings.motion_roi_margin,
+                            scene_change_threshold=settings.motion_scene_change_threshold,
+                            continuous_motion_subsample=settings.motion_continuous_subsample,
+                            min_continuous_motion_frames=settings.motion_min_continuous_frames,
+                            device="cuda"
+                        )
+                        self.logger.info("GPUMotionDetectionService initialized (Stage 0 GPU filtering enabled)")
+                except Exception as e:
+                    self.logger.warning(f"Failed to initialize GPU motion detection: {e}, falling back to CPU")
+                    self.motion_detector = None
+
+            # Fallback to CPU-based motion detection
+            if self.motion_detector is None and MotionDetectionService is not None:
                 try:
                     self.motion_detector = MotionDetectionService(
                         motion_threshold=settings.motion_threshold,
@@ -551,16 +607,23 @@ class LocopilotActivityMonitor:
                         binary_threshold=settings.motion_binary_threshold,
                         adaptive_calibration=settings.motion_adaptive_threshold,
                         calibration_frames=settings.motion_calibration_frames,
-                        max_consecutive_skips=settings.motion_skip_consecutive_limit
+                        max_consecutive_skips=settings.motion_skip_consecutive_limit,
+                        # Phase 2-6 optimizations
+                        use_mog2=settings.motion_use_mog2,
+                        detection_scale=settings.motion_detection_scale,
+                        roi_margin=settings.motion_roi_margin,
+                        scene_change_threshold=settings.motion_scene_change_threshold,
+                        continuous_motion_subsample=settings.motion_continuous_subsample,
+                        min_continuous_motion_frames=settings.motion_min_continuous_frames
                     )
-                    self.logger.info("MotionDetectionService initialized (Stage 0 filtering enabled)")
+                    self.logger.info("MotionDetectionService initialized (Stage 0 CPU filtering enabled)")
                 except Exception as e:
                     self.logger.warning(f"Failed to initialize MotionDetectionService: {e}")
                     self.motion_detector = None
-            else:
-                self.logger.info("Motion detection disabled by configuration")
+        elif settings is not None:
+            self.logger.info("Motion detection disabled by configuration")
         else:
-            self.logger.debug("MotionDetectionService not available")
+            self.logger.debug("MotionDetectionService not available - no settings")
 
     def get_keypoint(self, landmarks, keypoint_name):
         """Get a keypoint from landmarks by name (works with both YOLO and MediaPipe formats).
