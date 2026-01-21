@@ -177,7 +177,7 @@ class Settings(BaseSettings):
     # Default 50% (5/10 frames must detect the activity)
     voting_threshold_cell_phone: float = float(os.getenv("VOTING_THRESHOLD_CELL_PHONE", "0.5"))
     voting_threshold_writing: float = float(os.getenv("VOTING_THRESHOLD_WRITING", "0.5"))
-    voting_threshold_packing_bags: float = float(os.getenv("VOTING_THRESHOLD_PACKING_BAGS", "0.6"))  # 60% - stricter for false positive reduction
+    voting_threshold_packing_bags: float = float(os.getenv("VOTING_THRESHOLD_PACKING_BAGS", "0.75"))  # 75% - stricter for false positive reduction (was 60%)
     voting_threshold_lp_hand_gesture: float = float(os.getenv("VOTING_THRESHOLD_LP_GESTURE", "0.5"))
     voting_threshold_alp_hand_gesture: float = float(os.getenv("VOTING_THRESHOLD_ALP_GESTURE", "0.5"))
     voting_threshold_mind_diversion: float = float(os.getenv("VOTING_THRESHOLD_MIND_DIVERSION", "0.5"))
@@ -188,10 +188,11 @@ class Settings(BaseSettings):
     voting_debug_frames_dir: str = os.getenv("VOTING_DEBUG_FRAMES_DIR", "voting_debug_frames")
 
     # Packing bags verification thresholds (stricter than initial detection)
-    packing_wrist_visibility_threshold: float = float(os.getenv("PACKING_WRIST_VIS", "0.4"))  # Min wrist visibility (40%)
-    packing_voting_margin: int = int(os.getenv("PACKING_VOTING_MARGIN", "30"))  # Stricter bbox margin for voting
-    packing_max_distance_ratio: float = float(os.getenv("PACKING_MAX_DIST_RATIO", "0.45"))  # Wrist must be within 45% of bag diagonal from center (reduced from 0.6)
-    packing_min_bag_area: int = int(os.getenv("PACKING_MIN_BAG_AREA", "20000"))  # Min bag area 20,000 sq pixels (filters very small/spurious detections)
+    # TUNED 2026-01-21: Stricter thresholds to reduce false positives from bags on floor near seated crew
+    packing_wrist_visibility_threshold: float = float(os.getenv("PACKING_WRIST_VIS", "0.5"))  # Min wrist visibility 50% (was 40%)
+    packing_voting_margin: int = int(os.getenv("PACKING_VOTING_MARGIN", "0"))  # No margin - wrist must be truly inside (was 30)
+    packing_max_distance_ratio: float = float(os.getenv("PACKING_MAX_DIST_RATIO", "0.30"))  # Wrist must be within 30% of bag diagonal from center (was 0.45)
+    packing_min_bag_area: int = int(os.getenv("PACKING_MIN_BAG_AREA", "25000"))  # Min bag area 25,000 sq pixels (was 20000)
     packing_require_wrist_truly_inside: bool = bool(int(os.getenv("PACKING_STRICT_INSIDE", "1")))  # Require wrist truly inside bbox (no margin)
 
     # Clip duration settings - Precise clip extraction matching actual activity duration
@@ -200,11 +201,18 @@ class Settings(BaseSettings):
 
     # Mind Diversion Detection Thresholds
     # Three sub-types: looking_sideways, looking_down_distracted, looking_away_combined
-    mind_diversion_yaw_sideways: float = float(os.getenv("MIND_DIV_YAW_SIDEWAYS", "55"))  # Head turned > 55° for sideways
-    mind_diversion_yaw_combined: float = float(os.getenv("MIND_DIV_YAW_COMBINED", "40"))  # Yaw threshold for combined detection
-    mind_diversion_pitch_down: float = float(os.getenv("MIND_DIV_PITCH_DOWN", "30"))  # Head down > 30° for looking_down
-    mind_diversion_pitch_combined: float = float(os.getenv("MIND_DIV_PITCH_COMBINED", "20"))  # Pitch threshold for combined
-    mind_diversion_yaw_max_for_down: float = float(os.getenv("MIND_DIV_YAW_MAX_DOWN", "40"))  # Max yaw for pure looking_down
+    # TUNED 2026-01-21 v2: Further increased thresholds - camera angle makes forward-looking appear as ~60-70° yaw
+    mind_diversion_yaw_sideways: float = float(os.getenv("MIND_DIV_YAW_SIDEWAYS", "78"))  # Head turned > 78° for sideways (was 68°, orig 55°)
+    mind_diversion_yaw_combined: float = float(os.getenv("MIND_DIV_YAW_COMBINED", "58"))  # Yaw threshold for combined detection (was 50°, orig 40°)
+    mind_diversion_pitch_down: float = float(os.getenv("MIND_DIV_PITCH_DOWN", "45"))  # Head down > 45° for looking_down (was 40°, orig 30°)
+    mind_diversion_pitch_combined: float = float(os.getenv("MIND_DIV_PITCH_COMBINED", "35"))  # Pitch threshold for combined (was 28°, orig 20°)
+    mind_diversion_yaw_max_for_down: float = float(os.getenv("MIND_DIV_YAW_MAX_DOWN", "55"))  # Max yaw for pure looking_down (was 50°, orig 40°)
+
+    # Forward-looking exemption: Camera is behind-right of crew, so:
+    # - Negative yaw = looking LEFT toward track/window (LEGITIMATE WORK)
+    # - Positive yaw = looking RIGHT away from track (POTENTIAL DIVERSION)
+    # When enabled, only positive yaw triggers mind diversion (exempts looking at track)
+    mind_diversion_exempt_forward_looking: bool = os.getenv("MIND_DIV_EXEMPT_FORWARD", "true").lower() == "true"
 
     # Mind Diversion Suppression Settings
     # Suppress false positives when LP is doing legitimate document work

@@ -4220,28 +4220,33 @@ class LocopilotActivityMonitor:
                 right_ear_vis = right_ear.visibility if right_ear else 0
 
                 if left_ear_vis > 0.5 and right_ear_vis < 0.3:
-                    # Right ear hidden = turned right
+                    # Right ear hidden = turned right (looking away from track)
                     yaw_angle = 60  # Estimate significant right turn
                     result['yaw'] = yaw_angle
                     result['method'] = 'ear_asymmetry'
 
                     # Check if this exceeds sideways threshold
                     settings = self.settings
-                    if abs(yaw_angle) > settings.mind_diversion_yaw_sideways:
+                    # Positive yaw (looking right/away) - always check threshold
+                    if yaw_angle > settings.mind_diversion_yaw_sideways:
                         result['detected'] = True
                         result['sub_type'] = 'looking_sideways'
                     return result
                 elif right_ear_vis > 0.5 and left_ear_vis < 0.3:
-                    # Left ear hidden = turned left
+                    # Left ear hidden = turned left (looking toward track - LEGITIMATE)
                     yaw_angle = -60  # Estimate significant left turn
                     result['yaw'] = yaw_angle
                     result['method'] = 'ear_asymmetry'
 
                     # Check if this exceeds sideways threshold
                     settings = self.settings
-                    if abs(yaw_angle) > settings.mind_diversion_yaw_sideways:
+                    # Negative yaw (looking left/forward toward track)
+                    # Only trigger if forward-looking exemption is disabled
+                    exempt_forward = getattr(settings, 'mind_diversion_exempt_forward_looking', True)
+                    if not exempt_forward and abs(yaw_angle) > settings.mind_diversion_yaw_sideways:
                         result['detected'] = True
                         result['sub_type'] = 'looking_sideways'
+                    # If exempt_forward is True, negative yaw does NOT trigger detection
                     return result
                 else:
                     # Neither ear pattern matches, cannot determine head pose
@@ -4294,18 +4299,32 @@ class LocopilotActivityMonitor:
 
             sub_type = None
 
+            # Forward-looking exemption: Camera is behind-right of crew
+            # - Negative yaw = looking LEFT toward track/window (LEGITIMATE WORK)
+            # - Positive yaw = looking RIGHT away from track (POTENTIAL DIVERSION)
+            # When exempt_forward_looking is True, only positive yaw triggers detection
+            exempt_forward = getattr(settings, 'mind_diversion_exempt_forward_looking', True)
+
+            # Calculate effective yaw for threshold comparison
+            # If exempting forward-looking, only positive (rightward) yaw counts
+            # If not exempting, use absolute value (both directions count)
+            if exempt_forward:
+                effective_yaw = yaw_angle if yaw_angle > 0 else 0  # Only positive yaw triggers
+            else:
+                effective_yaw = abs(yaw_angle)  # Both directions trigger (original behavior)
+
             # Scenario 1: looking_sideways (head turned > threshold, regardless of pitch)
-            if abs(yaw_angle) > settings.mind_diversion_yaw_sideways:
+            if effective_yaw > settings.mind_diversion_yaw_sideways:
                 sub_type = 'looking_sideways'
                 result['detected'] = True
             # Scenario 2: looking_away_combined (turned AND down)
-            elif (abs(yaw_angle) > settings.mind_diversion_yaw_combined and
+            elif (effective_yaw > settings.mind_diversion_yaw_combined and
                   pitch_angle > settings.mind_diversion_pitch_combined):
                 sub_type = 'looking_away_combined'
                 result['detected'] = True
             # Scenario 3: looking_down_distracted (only down, not sideways)
             elif (pitch_angle > settings.mind_diversion_pitch_down and
-                  abs(yaw_angle) < settings.mind_diversion_yaw_max_for_down):
+                  effective_yaw < settings.mind_diversion_yaw_max_for_down):
                 sub_type = 'looking_down_distracted'
                 result['detected'] = True
 
@@ -4361,18 +4380,25 @@ class LocopilotActivityMonitor:
                     pitch_fm = result['pitch']
                     sub_type = None
 
+                    # Forward-looking exemption (same logic as pose-based detection)
+                    exempt_forward = getattr(settings, 'mind_diversion_exempt_forward_looking', True)
+                    if exempt_forward:
+                        effective_yaw_fm = yaw_fm if yaw_fm > 0 else 0  # Only positive yaw triggers
+                    else:
+                        effective_yaw_fm = abs(yaw_fm)  # Both directions trigger
+
                     # Scenario 1: looking_sideways
-                    if abs(yaw_fm) > settings.mind_diversion_yaw_sideways:
+                    if effective_yaw_fm > settings.mind_diversion_yaw_sideways:
                         sub_type = 'looking_sideways'
                         result['detected'] = True
                     # Scenario 2: looking_away_combined
-                    elif (abs(yaw_fm) > settings.mind_diversion_yaw_combined and
+                    elif (effective_yaw_fm > settings.mind_diversion_yaw_combined and
                           pitch_fm > settings.mind_diversion_pitch_combined):
                         sub_type = 'looking_away_combined'
                         result['detected'] = True
                     # Scenario 3: looking_down_distracted
                     elif (pitch_fm > settings.mind_diversion_pitch_down and
-                          abs(yaw_fm) < settings.mind_diversion_yaw_max_for_down):
+                          effective_yaw_fm < settings.mind_diversion_yaw_max_for_down):
                         sub_type = 'looking_down_distracted'
                         result['detected'] = True
                     else:

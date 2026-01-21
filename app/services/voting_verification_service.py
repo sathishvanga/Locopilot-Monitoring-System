@@ -322,6 +322,8 @@ class VotingVerificationService:
         self.mind_div_pitch_combined = self.settings.mind_diversion_pitch_combined
         self.mind_div_yaw_max_for_down = self.settings.mind_diversion_yaw_max_for_down
         self.mind_div_wrist_distance = self.settings.mind_diversion_wrist_distance_threshold
+        # Forward-looking exemption: only trigger for positive yaw (looking away from track)
+        self.mind_div_exempt_forward = getattr(self.settings, 'mind_diversion_exempt_forward_looking', True)
 
         # OPTIMIZATION: LRU cache for frame extraction and inference results
         # Cache size of 32 covers ~3 timestamps with room for overlap
@@ -1414,16 +1416,24 @@ class VotingVerificationService:
         sub_type = None
         detected = False
 
+        # Forward-looking exemption: Camera is behind-right of crew
+        # - Negative yaw = looking LEFT toward track/window (LEGITIMATE WORK)
+        # - Positive yaw = looking RIGHT away from track (POTENTIAL DIVERSION)
+        if self.mind_div_exempt_forward:
+            effective_yaw = yaw_angle if yaw_angle > 0 else 0  # Only positive yaw triggers
+        else:
+            effective_yaw = abs(yaw_angle)  # Both directions trigger (original behavior)
+
         # Scenario 1: looking_sideways (head turned > threshold)
-        if abs(yaw_angle) > self.mind_div_yaw_sideways:
+        if effective_yaw > self.mind_div_yaw_sideways:
             sub_type = 'looking_sideways'
             detected = True
         # Scenario 2: looking_away_combined (turned AND down)
-        elif abs(yaw_angle) > self.mind_div_yaw_combined and pitch_angle > self.mind_div_pitch_combined:
+        elif effective_yaw > self.mind_div_yaw_combined and pitch_angle > self.mind_div_pitch_combined:
             sub_type = 'looking_away_combined'
             detected = True
         # Scenario 3: looking_down_distracted (only down, not sideways)
-        elif pitch_angle > self.mind_div_pitch_down and abs(yaw_angle) < self.mind_div_yaw_max_for_down:
+        elif pitch_angle > self.mind_div_pitch_down and effective_yaw < self.mind_div_yaw_max_for_down:
             sub_type = 'looking_down_distracted'
             detected = True
 
