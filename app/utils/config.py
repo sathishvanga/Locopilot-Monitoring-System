@@ -69,10 +69,10 @@ class Settings(BaseSettings):
     
     # Multiprocessing settings
     enable_multiprocessing: bool = True
-    # ✅ PERFORMANCE BOOST: 6s chunks maximize parallelism with minimal overhead
-    # 6s chunks: ~380 chunks, better load distribution across more workers
-    # Smaller chunks = workers stay busy, no idle time waiting for long tasks
-    mp_chunk_duration: float = 6.0  # Chunk duration in seconds (optimized for 11-core system)
+    # ✅ 15s chunks ensure hand gesture coordination detection works correctly
+    # Coordination window is 10s, so 15s chunks capture full coordination sequences
+    # Tradeoff: fewer chunks (~118 for 30-min video) but reliable coordination detection
+    mp_chunk_duration: float = 15.0  # Chunk duration in seconds (optimized for coordination detection)
     mp_max_workers: Optional[int] = None  # None = auto-detect (uses min(CPU count, max_workers_cap))
     mp_max_workers_cap: int = 12  # Maximum number of workers (11 cores + slight oversubscription)
     
@@ -109,14 +109,16 @@ class Settings(BaseSettings):
     dev_log_level: str = os.getenv("DEV_LOG_LEVEL", "DEBUG")
     
     # External API settings (CVVR API)
+    # Use {division} placeholder in URL - will be replaced with actual division value at runtime
     cvvr_api_url: str = os.getenv(
         "CVVR_API_URL",
-        "https://api.mindcoinapps.com/ai_demo_api/cvvr/cvvrTripViolations/addUpdateBulk"
+        "https://api.mindcoinapps.com/ai_{division}_api/cvvr/cvvrTripViolations/addUpdateBulk"
     )
     cvvr_api_url_no_events: str = os.getenv(
         "CVVR_API_URL_NO_EVENTS",
-        "https://api.mindcoinapps.com/ai_demo_api/cvvr/cvvrTripViolations/addUpdateBulkNoEvents"
+        "https://api.mindcoinapps.com/ai_{division}_api/cvvr/cvvrTripViolations/addUpdateBulkNoEvents"
     )
+    cvvr_api_default_division: str = os.getenv("CVVR_API_DEFAULT_DIVISION", "ai_demo_api")
     cvvr_api_token: Optional[str] = os.getenv("CVVR_API_TOKEN", None)
     cvvr_api_timeout: int = int(os.getenv("CVVR_API_TIMEOUT", "30"))
     cvvr_api_enabled: bool = bool(int(os.getenv("CVVR_API_ENABLED", "1")))  # Enable by default
@@ -182,6 +184,11 @@ class Settings(BaseSettings):
     voting_threshold_alp_hand_gesture: float = float(os.getenv("VOTING_THRESHOLD_ALP_GESTURE", "0.5"))
     voting_threshold_mind_diversion: float = float(os.getenv("VOTING_THRESHOLD_MIND_DIVERSION", "0.5"))
     voting_threshold_group_detected: float = float(os.getenv("VOTING_THRESHOLD_GROUP", "0.5"))
+
+    # Hand Gesture Coordination Session Settings
+    # Session-based tracking: session starts on first raise, ends after timeout with no activity
+    # Violation only if one person NEVER raised during the entire session
+    hand_gesture_session_timeout: float = float(os.getenv("HAND_GESTURE_SESSION_TIMEOUT", "10.0"))
 
     # Voting debug settings - save annotated frames for troubleshooting
     voting_save_debug_frames: bool = bool(int(os.getenv("VOTING_SAVE_DEBUG_FRAMES", "1")))  # Enable by default

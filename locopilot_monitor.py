@@ -305,9 +305,23 @@ class LocopilotActivityMonitor:
         self.recent_person_activities = {}
         self.temporal_suppression_window = 10.0  # Suppress hand gestures for 10 seconds after detecting work activity
 
-        # Hand gesture coordination temporal window
+        # Hand gesture coordination temporal window (legacy - kept for reference)
         # Suppress coordination failure alerts if both LP and ALP raised hands within this window
         self.hand_gesture_coordination_window = float(os.getenv('HAND_GESTURE_COORDINATION_WINDOW', '5.0'))
+
+        # Session-based hand gesture coordination tracking
+        # Replaces rolling window approach to fix false positives when ALP raises multiple times
+        # after LP's single instruction raise
+        self.hand_coordination_session = {
+            'active': False,
+            'start_time': None,
+            'lp_raised': False,
+            'alp_raised': False,
+            'last_activity_time': None,
+            'lp_raise_count': 0,
+            'alp_raise_count': 0
+        }
+        self.hand_coordination_session_timeout = float(os.getenv('HAND_GESTURE_SESSION_TIMEOUT', '10.0'))
 
         # Activity thresholds: minimum duration and required consecutive frames before recording starts
         # OPTIMIZED FOR 0.5 FPS SAMPLING (1 frame every 2 seconds)
@@ -3031,10 +3045,18 @@ class LocopilotActivityMonitor:
 
     def _check_hand_gesture_coordination(self, lp_detected, alp_detected, current_time):
         """
-        Check for hand gesture coordination failures with temporal window support.
+        Check for hand gesture coordination failures using session-based tracking.
 
-        Prevents false positives when both people raise hands within a time window
-        (collaborative discussion) but not in the exact same frame.
+        Session-based approach:
+        - A session starts when either LP or ALP raises their hand
+        - Within a session, track if each person raised at least once
+        - Session ends after configurable timeout (no hand raises)
+        - Violation only if one person NEVER raised during the entire session
+
+        This fixes false positives when:
+        - LP raises hand once to instruct ALP
+        - ALP raises hand multiple times in response
+        - The old rolling window approach incorrectly flagged this as LP not coordinating
 
         Args:
             lp_detected: LP hand gesture detected in current frame
@@ -3043,47 +3065,113 @@ class LocopilotActivityMonitor:
 
         Returns:
             tuple: (lp_not_coordinating, alp_not_coordinating)
-                - lp_not_coordinating: True if ALP raised hand but LP failed to coordinate
-                - alp_not_coordinating: True if LP raised hand but ALP failed to coordinate
+                - lp_not_coordinating: True if ALP raised hand but LP NEVER raised in session
+                - alp_not_coordinating: True if LP raised hand but ALP NEVER raised in session
         """
-        # Get last hand raise times from recent activities
-        lp_last_raise_time = None
-        alp_last_raise_time = None
+        session = self.hand_coordination_session
+        timeout = self.hand_coordination_session_timeout
 
-        for person_idx, activities in self.recent_person_activities.items():
-            if 'lp_hand_raise' in activities:
-                t = activities['lp_hand_raise']
-                if lp_last_raise_time is None or t > lp_last_raise_time:
-                    lp_last_raise_time = t
-            if 'alp_hand_raise' in activities:
-                t = activities['alp_hand_raise']
-                if alp_last_raise_time is None or t > alp_last_raise_time:
-                    alp_last_raise_time = t
+        # Case 1: No session active, check if we need to start one
+        if not session['active']:
+            if lp_detected or alp_detected:
+                # Start a new session
+                session['active'] = True
+                session['start_time'] = current_time
+                session['lp_raised'] = lp_detected
+                session['alp_raised'] = alp_detected
+                session['last_activity_time'] = current_time
+                session['lp_raise_count'] = 1 if lp_detected else 0
+                session['alp_raise_count'] = 1 if alp_detected else 0
+                self.logger.debug(f"[COORDINATION SESSION] Started at {current_time:.2f}s - "
+                                f"LP: {lp_detected}, ALP: {alp_detected}")
+            # No violation on session start or when nothing detected
+            return False, False
 
-        # Helper: Check if both raised hands within coordination window
-        def both_within_window(lp_time, alp_time):
-            if lp_time is None or alp_time is None:
-                return False
-            lp_recent = (current_time - lp_time) <= self.hand_gesture_coordination_window
-            alp_recent = (current_time - alp_time) <= self.hand_gesture_coordination_window
-            return lp_recent and alp_recent
+        # Case 2: Session is active
+        # First, check if session has timed out
+        time_since_last = current_time - session['last_activity_time']
 
-        # Check coordination with temporal window logic
-        lp_not_coordinating = False
-        alp_not_coordinating = False
+        if time_since_last > timeout and not lp_detected and not alp_detected:
+            # Session timed out with no new activity
+            # Check if one person NEVER raised during the session
+            lp_not_coordinating = session['alp_raised'] and not session['lp_raised']
+            alp_not_coordinating = session['lp_raised'] and not session['alp_raised']
 
-        if alp_detected and not lp_detected:
-            # ALP raised hand, LP didn't in current frame
-            # Check if LP raised recently (within window)
-            if not both_within_window(lp_last_raise_time, alp_last_raise_time):
-                lp_not_coordinating = True  # True coordination failure
+            if lp_not_coordinating or alp_not_coordinating:
+                self.logger.info(f"[COORDINATION SESSION] Timeout violation at {current_time:.2f}s - "
+                               f"LP raised: {session['lp_raised']} ({session['lp_raise_count']}x), "
+                               f"ALP raised: {session['alp_raised']} ({session['alp_raise_count']}x), "
+                               f"Session duration: {current_time - session['start_time']:.2f}s")
+            else:
+                self.logger.debug(f"[COORDINATION SESSION] Ended at {current_time:.2f}s - "
+                                f"Both participated, no violation. "
+                                f"LP: {session['lp_raise_count']}x, ALP: {session['alp_raise_count']}x")
 
-        if lp_detected and not alp_detected:
-            # LP raised hand, ALP didn't in current frame
-            # Check if ALP raised recently (within window)
-            if not both_within_window(lp_last_raise_time, alp_last_raise_time):
-                alp_not_coordinating = True  # True coordination failure
+            # Reset session
+            self._reset_coordination_session()
+            return lp_not_coordinating, alp_not_coordinating
 
+        # Session is active and not timed out
+        if lp_detected or alp_detected:
+            # Update session with new activity
+            session['lp_raised'] = session['lp_raised'] or lp_detected
+            session['alp_raised'] = session['alp_raised'] or alp_detected
+            session['last_activity_time'] = current_time
+            if lp_detected:
+                session['lp_raise_count'] += 1
+            if alp_detected:
+                session['alp_raise_count'] += 1
+            self.logger.debug(f"[COORDINATION SESSION] Activity at {current_time:.2f}s - "
+                            f"LP: {lp_detected} (total: {session['lp_raise_count']}), "
+                            f"ALP: {alp_detected} (total: {session['alp_raise_count']})")
+
+        # No violation while session is active with ongoing activity
+        return False, False
+
+    def _reset_coordination_session(self):
+        """Reset the hand coordination session to initial state."""
+        self.hand_coordination_session = {
+            'active': False,
+            'start_time': None,
+            'lp_raised': False,
+            'alp_raised': False,
+            'last_activity_time': None,
+            'lp_raise_count': 0,
+            'alp_raise_count': 0
+        }
+
+    def _finalize_coordination_session(self, current_time):
+        """
+        Finalize any active coordination session at video end.
+
+        Called when video processing completes to ensure pending sessions
+        are evaluated and violations are not missed.
+
+        Args:
+            current_time: Final timestamp in seconds
+
+        Returns:
+            tuple: (lp_not_coordinating, alp_not_coordinating) or (False, False) if no active session
+        """
+        session = self.hand_coordination_session
+
+        if not session['active']:
+            return False, False
+
+        # Session was active at video end - evaluate it
+        lp_not_coordinating = session['alp_raised'] and not session['lp_raised']
+        alp_not_coordinating = session['lp_raised'] and not session['alp_raised']
+
+        if lp_not_coordinating or alp_not_coordinating:
+            self.logger.info(f"[COORDINATION SESSION] Video-end violation at {current_time:.2f}s - "
+                           f"LP raised: {session['lp_raised']} ({session['lp_raise_count']}x), "
+                           f"ALP raised: {session['alp_raised']} ({session['alp_raise_count']}x)")
+        else:
+            self.logger.debug(f"[COORDINATION SESSION] Video-end evaluation at {current_time:.2f}s - "
+                            f"Both participated, no violation")
+
+        # Reset session
+        self._reset_coordination_session()
         return lp_not_coordinating, alp_not_coordinating
 
     def analyze_hand_velocity_and_trajectory(self, person_idx, landmarks, frame_shape, timestamp_sec):
@@ -4715,21 +4803,30 @@ class LocopilotActivityMonitor:
             }
         
         elif len(person_scores) == 2:
-            # Two people - assign LP and ALP
-            # Check if scores are meaningful (not both zero)
-            scores_meaningful = any(p['lp_score'] > 0 or p['alp_score'] > 0 for p in person_scores)
+            # Two people - assign LP and ALP based on camera position
+            # Logic: Person CLOSER to camera = LP (driver), person FURTHER from camera = ALP (assistant)
+            #
+            # How to determine "closer to camera":
+            # 1. Bounding box area - larger area means person appears bigger (closer)
+            # 2. Bottom Y coordinate - higher Y value means lower in frame (closer to camera)
+            #
+            # We use bounding box area as primary indicator (more reliable)
 
-            if scores_meaningful:
-                # Use score-based assignment
-                sorted_persons = sorted(person_scores, key=lambda x: x['lp_score'], reverse=True)
-            else:
-                # Fallback: Use spatial position when scores are all zero
-                # In most locomotive cabs:
-                # - LP typically on the LEFT side (when viewed from behind/above)
-                # - ALP typically on the RIGHT side
-                # Sort by X position (leftmost = LP, rightmost = ALP)
-                sorted_persons = sorted(person_scores, key=lambda x: (x['bbox'][0] + x['bbox'][2]) / 2)  # Sort by center_x
-                self.logger.debug("Using spatial heuristic for role assignment (all scores zero)")
+            def get_bbox_area(person):
+                bbox = person['bbox']
+                width = bbox[2] - bbox[0]
+                height = bbox[3] - bbox[1]
+                return width * height
+
+            def get_bottom_y(person):
+                return person['bbox'][3]  # y2 = bottom of bounding box
+
+            # Sort by bounding box area (largest first = closest to camera = LP)
+            sorted_persons = sorted(person_scores, key=lambda x: get_bbox_area(x), reverse=True)
+
+            self.logger.debug(f"Role assignment by camera position: "
+                            f"Person {sorted_persons[0]['person_idx']} (area={get_bbox_area(sorted_persons[0]):.0f}) -> LP, "
+                            f"Person {sorted_persons[1]['person_idx']} (area={get_bbox_area(sorted_persons[1]):.0f}) -> ALP")
 
             # Person with higher lp_score (or leftmost position) is LP
             person_roles[sorted_persons[0]['person_idx']] = {
@@ -4753,8 +4850,15 @@ class LocopilotActivityMonitor:
         
         else:
             # Three or more people
-            # Sort by lp_score (descending)
-            sorted_persons = sorted(person_scores, key=lambda x: x['lp_score'], reverse=True)
+            # Sort by bounding box area (largest first = closest to camera)
+            def get_bbox_area(person):
+                bbox = person['bbox']
+                width = bbox[2] - bbox[0]
+                height = bbox[3] - bbox[1]
+                return width * height
+
+            sorted_persons = sorted(person_scores, key=lambda x: get_bbox_area(x), reverse=True)
+            self.logger.debug(f"Role assignment (3+ people) by camera position - areas: {[get_bbox_area(p) for p in sorted_persons]}")
             
             # First person is LP
             person_roles[sorted_persons[0]['person_idx']] = {
@@ -5567,11 +5671,22 @@ class LocopilotActivityMonitor:
                 if 'rgb_frame' in locals():
                     del rgb_frame
         
+        # Finalize any pending hand coordination session at video end
+        lp_not_coordinating, alp_not_coordinating = self._finalize_coordination_session(timestamp_sec)
+        if lp_not_coordinating:
+            # Record LP coordination failure if session ended with violation
+            if not self.activities['lp_hand_gesture']['active']:
+                self.start_activity('lp_hand_gesture', str(timedelta(seconds=timestamp_sec)), fps, frame_idx, person_roles=None)
+        if alp_not_coordinating:
+            # Record ALP coordination failure if session ended with violation
+            if not self.activities['alp_hand_gesture']['active']:
+                self.start_activity('alp_hand_gesture', str(timedelta(seconds=timestamp_sec)), fps, frame_idx, person_roles=None)
+
         # End any remaining active activities
         final_timestamp = str(timedelta(seconds=timestamp_sec))
         for activity_name in self.activities:
             if self.activities[activity_name]['active']:
-                self.end_activity(activity_name, final_timestamp, fps, frame_idx, 1)  # Default to 1 person for final activities
+                self.end_activity(activity_name, final_timestamp, fps, frame_idx, people_count=1)  # Default to 1 person for final activities
         
         # ✅ MEMORY FIX: Clear frame buffers and activity frames to free memory
         self.frame_buffer.clear()
@@ -5781,7 +5896,7 @@ class LocopilotActivityMonitor:
                 
                 # Save annotated frames periodically if enabled (in process_video_range for multiprocessing)
                 if (
-                    self.save_annotated_frames 
+                    self.save_annotated_frames
                     and self.frames_dir is not None
                     and sample_idx % self.frame_save_interval == 0
                 ):
@@ -5789,13 +5904,13 @@ class LocopilotActivityMonitor:
                         # Save frame with unique filename
                         frame_filename = f"frame_{frame_idx:08d}.jpg"
                         frame_path = os.path.join(self.frames_dir, frame_filename)
-                        
+
                         # Ensure directory exists (for multiprocessing safety)
                         os.makedirs(self.frames_dir, exist_ok=True)
-                        
+
                         # Save with high quality
                         cv2.imwrite(frame_path, annotated_frame_for_activity, [cv2.IMWRITE_JPEG_QUALITY, 95])
-                            
+
                     except Exception as e:
                         self.logger.error(f"[{timestamp}] Error saving frame {frame_idx}: {e}")
 
@@ -5803,7 +5918,9 @@ class LocopilotActivityMonitor:
                 # Activity Type 8 (LP not exchanging): Triggers when ALP raises hand BUT LP does NOT
                 # Activity Type 9 (ALP not exchanging): Triggers when LP raises hand BUT ALP does NOT
                 # This ensures we detect COORDINATION FAILURES, not individual gestures
-                # Uses temporal window to prevent false positives when both people raise hands within window
+                #
+                # NOTE: With 15s chunk duration (> 10s coordination timeout), session-based
+                # tracking works reliably as most coordination events fit within a single chunk.
                 lp_not_coordinating, alp_not_coordinating = self._check_hand_gesture_coordination(
                     lp_hand_gesture_detected,
                     alp_hand_gesture_detected,
@@ -5887,11 +6004,18 @@ class LocopilotActivityMonitor:
             self.logger.warning(f"No frames sampled in range {start_frame}-{end_frame}, skipping activity finalization")
             return self.all_activities
 
+        # NOTE: Do NOT finalize coordination sessions in process_video_range()
+        # This method processes small chunks (~5s) in parallel, and session state
+        # doesn't carry across chunks. Coordination checking requires full video context.
+        # Coordination failures are detected during chunk processing via the session
+        # timeout mechanism, not at chunk boundaries. The _finalize_coordination_session()
+        # is only appropriate for process_video() which processes the entire video sequentially.
+
         # End any remaining active activities
         final_timestamp = str(timedelta(seconds=timestamp_sec))
         for activity_name in self.activities:
             if self.activities[activity_name]['active']:
-                self.end_activity(activity_name, final_timestamp, fps, frame_idx, 1, save_clips=save_clips)
+                self.end_activity(activity_name, final_timestamp, fps, frame_idx, people_count=1, save_clips=save_clips)
 
         # ✅ MEMORY FIX: Clear frame buffers and activity frames to free memory
         self.frame_buffer.clear()

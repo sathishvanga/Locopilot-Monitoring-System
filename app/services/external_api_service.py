@@ -42,18 +42,20 @@ class ExternalAPIService:
         events: List[Dict[str, Any]],
         job_id: Optional[str] = None,
         host_url: Optional[str] = None,
-        video_s3_url: Optional[str] = None
+        video_s3_url: Optional[str] = None,
+        division: Optional[str] = None
     ) -> Dict[str, Any]:
         """
         Post activity results to CVVR API
-        
+
         Args:
             trip_id: Trip identifier
             events: List of detected activities
             job_id: Job/run identifier (optional, used for fileUrl construction)
             host_url: Host URL for building media links (optional, deprecated - use video_s3_url)
             video_s3_url: S3 URL of the uploaded video (preferred for fileUrl)
-            
+            division: Division identifier for API URL (optional, uses default if not provided)
+
         Returns:
             Dict with posting result (success status, response data, etc.)
         """
@@ -71,16 +73,21 @@ class ExternalAPIService:
         # Use configured host URL if not provided
         if not host_url:
             host_url = self.settings.host_url
-        
+
+        # Use default division if not provided
+        if not division:
+            division = self.settings.cvvr_api_default_division
+
         logger.info(
             f"📤 [external_api] Preparing to post results for trip_id={trip_id}, "
-            f"events_count={len(events)}, job_id={job_id}, video_s3_url={'provided' if video_s3_url else 'not provided'}"
+            f"events_count={len(events)}, job_id={job_id}, division={division}, "
+            f"video_s3_url={'provided' if video_s3_url else 'not provided'}"
         )
-        
+
         # If no events, post no-events notice
         if not events or len(events) == 0:
-            return self._post_no_events(trip_id, job_id)
-        
+            return self._post_no_events(trip_id, job_id, division)
+
         # Transform events to violations
         violations = self._transform_events_to_violations(
             trip_id=trip_id,
@@ -89,22 +96,25 @@ class ExternalAPIService:
             host_url=host_url,
             video_s3_url=video_s3_url
         )
-        
+
         # Post violations to API
-        return self._post_violations(trip_id, violations, job_id)
+        return self._post_violations(trip_id, violations, job_id, division)
     
-    def _post_no_events(self, trip_id: str, job_id: Optional[str] = None) -> Dict[str, Any]:
+    def _post_no_events(self, trip_id: str, job_id: Optional[str] = None, division: Optional[str] = None) -> Dict[str, Any]:
         """
         Post no-events notice to CVVR API
-        
+
         Args:
             trip_id: Trip identifier
             job_id: Job/run identifier (optional)
-            
+            division: Division identifier for API URL (optional)
+
         Returns:
             Dict with posting result
         """
-        url_no_events = self.settings.cvvr_api_url_no_events
+        # Build URL with division
+        division = division or self.settings.cvvr_api_default_division
+        url_no_events = self.settings.cvvr_api_url_no_events.format(division=division)
         timeout = self.settings.cvvr_api_timeout
         
         # Prepare headers
@@ -180,20 +190,24 @@ class ExternalAPIService:
         self,
         trip_id: str,
         violations: List[Dict[str, Any]],
-        job_id: Optional[str] = None
+        job_id: Optional[str] = None,
+        division: Optional[str] = None
     ) -> Dict[str, Any]:
         """
         Post violations to CVVR API
-        
+
         Args:
             trip_id: Trip identifier
             violations: List of transformed violation objects
             job_id: Job/run identifier (optional)
-            
+            division: Division identifier for API URL (optional)
+
         Returns:
             Dict with posting result
         """
-        url = self.settings.cvvr_api_url
+        # Build URL with division
+        division = division or self.settings.cvvr_api_default_division
+        url = self.settings.cvvr_api_url.format(division=division)
         timeout = self.settings.cvvr_api_timeout
         
         # Prepare headers

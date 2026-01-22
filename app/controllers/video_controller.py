@@ -61,6 +61,7 @@ s3_upload_service = get_s3_upload_service()
     - video: Video file (multipart/form-data) - optional if videoUrl provided
     - videoUrl: MinIO URL to download video from (e.g., https://mind.snikbtel.uk:9000/cvss/video.mp4)
     - tripId: Unique trip identifier (required)
+    - division: Division identifier (optional)
     - lpCrewName: LP crew member name (optional)
     - lpCrewId: LP crew member ID (optional)
     - alpCrewName: ALP crew member name (optional)
@@ -80,6 +81,7 @@ async def process_video(
     video: Optional[UploadFile] = File(default=None, description="Video file to process (optional if videoUrl provided)"),
     videoUrl: Optional[str] = Form(default=None, description="MinIO URL to download video from (e.g., https://mind.snikbtel.uk:9000/cvss/video.mp4)"),
     tripId: str = Form(..., description="Unique trip identifier"),
+    division: Optional[str] = Form(default=None, description="Division identifier"),
     lpCrewName: Optional[str] = Form(default=None, description="Loco Pilot crew member name"),
     lpCrewId: Optional[str] = Form(default=None, description="Loco Pilot crew member ID"),
     alpCrewName: Optional[str] = Form(default=None, description="Assistant Loco Pilot crew member name"),
@@ -98,7 +100,7 @@ async def process_video(
     video_filename = None
 
     try:
-        logger.info(f"📥 Received video processing request for trip: {tripId}")
+        logger.info(f"📥 Received video processing request for trip: {tripId}, division: {division}")
 
         # Validate tripId
         if not tripId or not tripId.strip():
@@ -207,7 +209,8 @@ async def process_video(
             crew_role=1,  # LP role
             use_mock_detection=useMockDetection,
             use_multiprocessing=use_mp,
-            save_clips=saveClips
+            save_clips=saveClips,
+            division=division
         )
 
         # Schedule cleanup of uploaded video after processing (production mode)
@@ -430,6 +433,7 @@ async def process_and_upload_video(
     background_tasks: BackgroundTasks,
     video_file: UploadFile = File(..., description="Video file to process"),
     tripId: str = Form(..., description="Unique trip identifier"),
+    division: Optional[str] = Form(default=None, description="Division identifier"),
     subFolderName: str = Form(default="cvvr", description="S3 subfolder name"),
     authToken: Optional[str] = Form(default=None, description="Authentication token for S3 upload"),
     lpCrewName: Optional[str] = Form(default=None, description="Loco Pilot crew member name"),
@@ -646,7 +650,8 @@ async def process_and_upload_video(
                     trip_id=tripId,
                     events=activities,  # Use updated activities with S3 URLs (evidence clips)
                     job_id=run_id,
-                    video_s3_url=None  # No original video URL - we don't upload original video
+                    video_s3_url=None,  # No original video URL - we don't upload original video
+                    division=division
                 )
                 
                 if external_api_result.get("success"):

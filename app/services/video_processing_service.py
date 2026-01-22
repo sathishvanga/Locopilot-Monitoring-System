@@ -132,11 +132,12 @@ class VideoProcessingService:
         use_mock_detection: bool = False,
         use_multiprocessing: bool = False,
         save_clips: bool = True,
-        skip_external_api: bool = False
+        skip_external_api: bool = False,
+        division: Optional[str] = None
     ) -> Dict[str, Any]:
         """
         Process video and detect activities
-        
+
         Args:
             video_path: Path to video file
             trip_id: Trip identifier
@@ -147,10 +148,12 @@ class VideoProcessingService:
             use_mock_detection: Use mock detection instead of real ML models
             use_multiprocessing: Enable multiprocessing for faster processing
             save_clips: Whether to save video clips and images (default: True)
-            
+            skip_external_api: Skip posting to external API (for process-and-upload endpoint)
+            division: Division identifier for external API URL
+
         Returns:
             Dict[str, Any]: Processing results with activities
-            
+
         Raises:
             Exception: If processing fails
         """
@@ -241,7 +244,8 @@ class VideoProcessingService:
                         trip_id=trip_id,
                         events=activities,
                         job_id=run_id,
-                        host_url=settings.host_url
+                        host_url=settings.host_url,
+                        division=division
                     )
                     
                     if api_result.get("success"):
