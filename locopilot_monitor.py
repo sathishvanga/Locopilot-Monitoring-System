@@ -281,7 +281,12 @@ class LocopilotActivityMonitor:
         # Phase 2: Load inference optimization settings (1.5-1.8x speedup)
         self.yolo_imgsz = settings.yolo_imgsz if settings else 416
         self.yolo_device = settings.yolo_device if settings else 'cpu'
-        
+
+        # GPU Batch Processing Settings - maximize GPU utilization
+        # Use settings if available, otherwise fall back to environment variables
+        self.gpu_batch_size = getattr(settings, 'gpu_batch_size', None) or int(os.getenv('GPU_BATCH_SIZE', '8'))
+        self.gpu_batch_enabled = getattr(settings, 'gpu_batch_enabled', None) if settings else bool(int(os.getenv('GPU_BATCH_ENABLED', '1')))
+
         # Track if models were pre-loaded (don't close them in cleanup)
         self._models_preloaded = preloaded_models is not None
 
@@ -1701,7 +1706,194 @@ class LocopilotActivityMonitor:
                             detections['book'].append([x1, y1, x2, y2])
         
         return detections
-    
+
+    # =========================================================================
+    # BATCH INFERENCE METHODS - GPU OPTIMIZATION
+    # =========================================================================
+    # These methods process multiple frames at once to maximize GPU utilization.
+    # Instead of running inference N times (once per frame), we run it once on
+    # a batch of N frames, keeping the GPU busy and reducing overhead.
+    # =========================================================================
+
+    def detect_objects_batch(self, frames, batch_size=8):
+        """Run YOLO object detection on multiple frames in a single batch.
+
+        This maximizes GPU utilization by processing multiple frames at once
+        instead of one at a time. The GPU stays busy with larger batches.
+
+        Args:
+            frames: List of BGR frames (numpy arrays)
+            batch_size: Maximum batch size for inference (default 8)
+
+        Returns:
+            List of detection dictionaries, one per frame
+        """
+        if not frames:
+            return []
+
+        self.logger.debug(f"[GPU BATCH] detect_objects_batch: {len(frames)} frames, batch_size={batch_size}")
+        all_detections = []
+
+        # Process frames in batches
+        for batch_start in range(0, len(frames), batch_size):
+            batch_frames = frames[batch_start:batch_start + batch_size]
+
+            try:
+                # Run batch inference - YOLO handles list of frames efficiently
+                batch_results = self.yolo_model(
+                    batch_frames,
+                    verbose=False,
+                    imgsz=self.yolo_imgsz,
+                    device=self.yolo_device
+                )
+            except Exception as e:
+                self.logger.error(f"[GPU BATCH] Object detection failed for batch starting at {batch_start}: {e}")
+                # Fallback: return empty detections for this batch
+                for _ in batch_frames:
+                    all_detections.append({
+                        'person': [], 'cell_phone': [], 'book': [],
+                        'backpack': [], 'roi_detections': [], 'roi_boxes': []
+                    })
+                continue
+
+            # Process results for each frame in batch
+            for frame_idx, (frame, results) in enumerate(zip(batch_frames, batch_results)):
+                detections = {
+                    'person': [],
+                    'cell_phone': [],
+                    'book': [],
+                    'backpack': [],
+                    'roi_detections': [],
+                    'roi_boxes': []
+                }
+
+                person_boxes = []
+                pending_books = []  # Store books to check after all persons are found
+
+                # Process detections from this frame's results
+                if results.boxes is not None:
+                    for box in results.boxes:
+                        cls = int(box.cls[0])
+                        conf = float(box.conf[0])
+                        xyxy = box.xyxy[0].cpu().numpy()
+
+                        class_name = self.yolo_model.names[cls]
+
+                        if class_name == 'person' and conf > 0.5:
+                            detections['person'].append(xyxy)
+                            person_boxes.append(xyxy)
+                        elif class_name in ['backpack', 'handbag', 'suitcase']:
+                            if conf > 0.45:
+                                bag_width = xyxy[2] - xyxy[0]
+                                bag_height = xyxy[3] - xyxy[1]
+                                aspect_ratio = bag_width / bag_height if bag_height > 0 else 999
+                                bag_area = bag_width * bag_height
+
+                                if aspect_ratio < 1.2 and 5000 < bag_area < 100000:
+                                    detections['backpack'].append(xyxy)
+                        elif class_name == 'book' and conf > 0.4:
+                            # Store book for later processing (after all persons found)
+                            pending_books.append(xyxy)
+                        elif class_name == 'cell phone' and conf > 0.3:
+                            detections['cell_phone'].append(xyxy)
+
+                # Process pending books - check proximity to persons
+                for book_xyxy in pending_books:
+                    if len(person_boxes) > 0:
+                        for person_box in person_boxes:
+                            if self._boxes_overlap_or_near(book_xyxy, person_box, margin=200):
+                                detections['book'].append(book_xyxy)
+                                break
+                    else:
+                        # Fallback: add book anyway if no persons detected
+                        detections['book'].append(book_xyxy)
+
+                all_detections.append(detections)
+
+        self.logger.debug(f"[GPU BATCH] detect_objects_batch complete: {len(all_detections)} results")
+        return all_detections
+
+    def detect_poses_batch(self, frames, batch_size=8):
+        """Run YOLO pose detection on multiple frames in a single batch.
+
+        This maximizes GPU utilization by processing multiple frames at once.
+
+        Args:
+            frames: List of BGR frames (numpy arrays)
+            batch_size: Maximum batch size for inference (default 8)
+
+        Returns:
+            List of pose result dictionaries, one per frame.
+            Format matches self.yolo_pose.process() output:
+            {person_idx: {'bbox': [...], 'bbox_confidence': float, 'keypoints': YoloPoseLandmarks}}
+        """
+        # Import at method level (not inside loop)
+        from app.services.yolo_pose_adapter import YoloPoseLandmarks, PersonKeypoints
+
+        if not frames:
+            return []
+
+        self.logger.debug(f"[GPU BATCH] detect_poses_batch: {len(frames)} frames, batch_size={batch_size}")
+        all_poses = []
+
+        # Process frames in batches
+        for batch_start in range(0, len(frames), batch_size):
+            batch_frames = frames[batch_start:batch_start + batch_size]
+
+            try:
+                # Run batch inference on pose model with device parameter
+                batch_results = self.yolo_pose.model(
+                    batch_frames,
+                    verbose=False,
+                    conf=self.yolo_pose.conf_threshold,
+                    device=self.yolo_device
+                )
+            except Exception as e:
+                self.logger.error(f"[GPU BATCH] Pose detection failed for batch starting at {batch_start}: {e}")
+                # Fallback: return empty poses for this batch
+                for _ in batch_frames:
+                    all_poses.append({})
+                continue
+
+            # Process results for each frame in batch
+            for frame_idx, (frame, results) in enumerate(zip(batch_frames, batch_results)):
+                persons = {}
+
+                if results.keypoints is not None and results.boxes is not None:
+                    for idx in range(len(results.boxes)):
+                        box = results.boxes[idx]
+                        person_keypoints = PersonKeypoints(results.keypoints, idx)
+
+                        persons[idx] = {
+                            'bbox': box.xyxy[0].cpu().numpy().tolist(),
+                            'bbox_confidence': float(box.conf[0]),
+                            'keypoints': YoloPoseLandmarks(person_keypoints, frame.shape)
+                        }
+
+                all_poses.append(persons)
+
+        self.logger.debug(f"[GPU BATCH] detect_poses_batch complete: {len(all_poses)} results")
+        return all_poses
+
+    def _boxes_overlap_or_near(self, box1, box2, margin=100):
+        """Check if two boxes overlap or are within margin pixels of each other."""
+        x1_min, y1_min, x1_max, y1_max = box1
+        x2_min, y2_min, x2_max, y2_max = box2
+
+        # Expand box2 by margin
+        x2_min_expanded = x2_min - margin
+        y2_min_expanded = y2_min - margin
+        x2_max_expanded = x2_max + margin
+        y2_max_expanded = y2_max + margin
+
+        # Check for overlap with expanded box
+        return not (x1_max < x2_min_expanded or x1_min > x2_max_expanded or
+                   y1_max < y2_min_expanded or y1_min > y2_max_expanded)
+
+    # =========================================================================
+    # END BATCH INFERENCE METHODS
+    # =========================================================================
+
     def draw_bounding_boxes(self, frame, detections, show_roi_boxes=True, person_roles=None):
         """Draw bounding boxes on frame for detected objects and ROI regions.
         
@@ -3519,15 +3711,15 @@ class LocopilotActivityMonitor:
 
         return matched
 
-    def process_all_persons_activities(self, frame, detections, person_roles, timestamp_sec, face_results=None, frame_number=None):
+    def process_all_persons_activities(self, frame, detections, person_roles, timestamp_sec, face_results=None, frame_number=None, precomputed_pose_results=None):
         """Process all detected persons for ALL activity detections (mind diversion, sleep, etc.)
 
         This is the MAIN multi-person processing method that:
-        1. Runs YOLOv8-Pose once to get all persons with keypoints
+        1. Runs YOLOv8-Pose once to get all persons with keypoints (or uses precomputed results)
         2. Matches YOLO detections to person_roles by bounding box IoU
         3. Detects ALL activities for EACH person (mind diversion, sleep, cell phone, writing, etc.)
         4. Returns aggregated results for all persons
-        
+
         Args:
             frame: The full frame image (BGR format)
             detections: YOLO detections dictionary containing 'person', 'cell_phone', 'book', etc.
@@ -3535,6 +3727,7 @@ class LocopilotActivityMonitor:
             timestamp_sec: Current timestamp in seconds
             face_results: MediaPipe face mesh results (optional, for mind diversion detection)
             frame_number: Frame number for logging/debugging (optional)
+            precomputed_pose_results: Pre-computed YOLO pose results (optional, for GPU batch optimization)
             
         Returns:
             dict: {
@@ -3596,7 +3789,11 @@ class LocopilotActivityMonitor:
         # ============ YOLOV8-POSE: Single inference for all persons ============
         # Run YOLOv8-Pose once on the full frame to get all persons with keypoints
         # This replaces the per-person MediaPipe cropping loop for better performance
-        yolo_pose_results = self.yolo_pose.process(frame)
+        # If precomputed_pose_results is provided (from GPU batch inference), use it directly
+        if precomputed_pose_results is not None:
+            yolo_pose_results = precomputed_pose_results
+        else:
+            yolo_pose_results = self.yolo_pose.process(frame)
 
         # Match YOLO pose detections to person_roles by bounding box IoU
         matched_poses = self._match_pose_to_roles(yolo_pose_results, person_roles)
@@ -5733,15 +5930,21 @@ class LocopilotActivityMonitor:
     def process_video_range(self, start_frame: int, end_frame: int, save_clips: bool = False) -> list:
         """
         Process a specific frame range (for multiprocessing support)
-        
+
         This method processes only frames within the specified range and returns
         detected activities without saving clips/images to disk (activities in memory only).
-        
+
+        GPU OPTIMIZED: Uses batch inference for YOLO object and pose detection.
+        Phase 1: Collect all frames
+        Phase 2: Batch YOLO object detection
+        Phase 3: Batch YOLO pose detection
+        Phase 4: Sequential per-frame activity processing with pre-computed detections
+
         Args:
             start_frame: Starting frame index (inclusive)
             end_frame: Ending frame index (exclusive)
             save_clips: Whether to save video clips and images (default: False for multiprocessing)
-            
+
         Returns:
             List of detected activities in this range
         """
@@ -5750,17 +5953,57 @@ class LocopilotActivityMonitor:
         with video_capture_context(self.video_path) as cap:
             fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
             total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-        
+
         self.logger.info(f"Processing frame range {start_frame}-{end_frame} (worker {os.getpid()})")
 
-        sampled_count = 0
-        timestamp_sec = 0  # Initialize to handle empty frame ranges
-        frame_idx = start_frame  # Initialize to handle empty frame ranges
+        # =========================================================================
+        # GPU BATCH OPTIMIZATION: Collect frames, run batch inference, then process
+        # =========================================================================
 
-        # Use the frame sampling generator with range limits
+        # Get batch settings from instance variables
+        batch_size = self.gpu_batch_size
+        batch_enabled = self.gpu_batch_enabled
+
+        # PHASE 1: Collect all frames for this chunk
+        frames_data = []  # List of (frame, frame_idx, timestamp_sec, sample_idx)
         for sample_idx, timestamp_sec, frame, frame_idx in self.sample_video_frames(
             self.video_path, start_frame=start_frame, end_frame=end_frame
         ):
+            frames_data.append((frame.copy(), frame_idx, timestamp_sec, sample_idx))
+
+        if not frames_data:
+            self.logger.warning(f"No frames sampled in range {start_frame}-{end_frame}")
+            return self.all_activities
+
+        self.logger.info(f"[GPU BATCH] Collected {len(frames_data)} frames for batch processing (batch_size={batch_size})")
+
+        # PHASE 2 & 3: Batch YOLO inference (object + pose detection)
+        if batch_enabled and len(frames_data) > 1:
+            # Run batch object detection
+            frames_only = [fd[0] for fd in frames_data]
+            self.logger.debug(f"[GPU BATCH] Running batch object detection on {len(frames_only)} frames")
+            batch_object_detections = self.detect_objects_batch(frames_only, batch_size)
+
+            # Run batch pose detection
+            self.logger.debug(f"[GPU BATCH] Running batch pose detection on {len(frames_only)} frames")
+            batch_pose_results = self.detect_poses_batch(frames_only, batch_size)
+
+            self.logger.info(f"[GPU BATCH] Batch inference complete: {len(batch_object_detections)} object results, {len(batch_pose_results)} pose results")
+
+            # Release frames_only to free memory after batch inference
+            del frames_only
+            gc.collect()
+        else:
+            # Fallback: No batching (will compute per-frame)
+            batch_object_detections = None
+            batch_pose_results = None
+
+        # PHASE 4: Sequential per-frame activity processing with pre-computed detections
+        sampled_count = 0
+        timestamp_sec = 0
+        frame_idx = start_frame
+
+        for idx, (frame, frame_idx, timestamp_sec, sample_idx) in enumerate(frames_data):
             sampled_count += 1
 
             try:
@@ -5788,16 +6031,20 @@ class LocopilotActivityMonitor:
                     if ear_values:
                         min_ear_value = min(ear_values)
                         ear_value = min_ear_value
-                
-                # STEP 2: Detect objects with YOLO (without pose-guided detection yet)
-                # We need person boxes first before we can do per-person pose detection
-                detections = self.detect_objects(frame, None, use_pose_guided=False)
-                
+
+                # STEP 2: Detect objects with YOLO (use pre-computed batch results if available)
+                # GPU BATCH: Use pre-computed detections from batch inference
+                if batch_object_detections is not None and idx < len(batch_object_detections):
+                    detections = batch_object_detections[idx]
+                else:
+                    # Fallback: Run per-frame detection
+                    detections = self.detect_objects(frame, None, use_pose_guided=False)
+
                 # STEP 3: Identify person roles and count people
                 people_count = len(detections['person'])
                 if people_count == 0:
                     people_count = 1
-                
+
                 # De-duplicate person boxes and identify roles
                 group_detected_flag = False
                 person_roles = {}
@@ -5833,8 +6080,14 @@ class LocopilotActivityMonitor:
 
                 # STEP 4: *** NEW MULTI-PERSON PROCESSING ***
                 # Process ALL persons individually for ALL activities
+                # GPU BATCH: Pass pre-computed pose results if available
+                precomputed_poses = None
+                if batch_pose_results is not None and idx < len(batch_pose_results):
+                    precomputed_poses = batch_pose_results[idx]
+
                 multi_person_results = self.process_all_persons_activities(
-                    frame, detections, person_roles, timestamp_sec, face_results, frame_idx
+                    frame, detections, person_roles, timestamp_sec, face_results, frame_idx,
+                    precomputed_pose_results=precomputed_poses
                 )
 
                 # Extract aggregated detection flags

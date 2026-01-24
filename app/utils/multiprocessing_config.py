@@ -44,6 +44,12 @@ class MultiprocessingConfig:
     yolo_model_path: str = os.getenv("YOLO_WEIGHTS_PRELOAD", "yolo11m.pt")  # YOLO model for object detection
     yolo_pose_model_path: str = os.getenv("YOLO_POSE_WEIGHTS", "yolo11m-pose.pt")  # YOLO-Pose for body pose estimation
     yolo_device: str = os.getenv("YOLO_DEVICE", "cpu")  # Device for YOLO inference (cpu, cuda:0, 0)
+
+    # GPU Batch Processing Settings
+    # These settings optimize GPU utilization by processing multiple frames at once
+    # instead of one frame at a time, keeping the GPU busy and reducing overhead.
+    gpu_batch_size: int = int(os.getenv("GPU_BATCH_SIZE", "8"))  # Frames per GPU batch (8-16 recommended for GTX 1080)
+    gpu_batch_enabled: bool = bool(int(os.getenv("GPU_BATCH_ENABLED", "1")))  # Enable batch inference (default: enabled)
     model_cache_dir: Optional[str] = None  # Model cache directory
     
     # Progress settings
