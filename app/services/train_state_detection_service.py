@@ -12,6 +12,12 @@ Detection Logic:
 3. If average flow magnitude < threshold = STOPPED
 4. Apply temporal filtering (require sustained state)
 
+Dual ROI System (ALP Occlusion Handling):
+- PRIMARY ROI: Side window behind ALP (37-52% x, 0-15% y)
+- SECONDARY ROI: Left side window (0-12% x, 15-40% y) - below and left of primary
+- When ALP stands near primary window and occludes it, falls back to secondary ROI
+- Occlusion detected via person bounding box overlap or flow inconsistency
+
 Camera Setup (Indian Locomotive Cab):
 - Camera mounted in upper rear-right corner, looking forward-left
 - LEFT edge of frame shows cab window with outside scenery
@@ -58,6 +64,15 @@ class TrainStateDetector:
     3. If average flow magnitude < threshold = STOPPED
     4. Apply temporal filtering (require sustained state before change)
 
+    Dual ROI Approach (ALP Occlusion Handling):
+    - PRIMARY ROI: Side window (behind ALP standing position)
+    - SECONDARY ROI: Front window above control panel (in front of LP)
+    - When ALP stands near primary window, their movement can cause false motion detection
+    - System detects occlusion via:
+      a) Person bounding box overlap with primary ROI
+      b) Flow inconsistency (high primary flow + low secondary flow)
+    - Falls back to secondary ROI when primary is occluded
+
     The left portion of frame shows the cab window with outside view.
     When train moves: scenery flows past window (high optical flow in left ROI)
     When train stops: scenery is static (low/zero optical flow in left ROI)
@@ -72,8 +87,12 @@ class TrainStateDetector:
             config: Configuration dictionary with keys:
                 - motion_threshold: Optical flow magnitude threshold (default: 2.0)
                 - min_stopped_duration: Seconds before state changes to STOPPED (default: 5.0)
-                - roi1_x_start/end, roi1_y_start/end: Front window ROI coordinates
-                - roi2_x_start/end, roi2_y_start/end: Side window ROI coordinates
+                - roi_x_start/end, roi_y_start/end: Primary side window ROI coordinates
+                - secondary_roi_enabled: Enable secondary ROI fallback (default: True)
+                - secondary_roi_x_start/end, secondary_roi_y_start/end: Secondary window ROI
+                  (above control panel, used when primary is occluded by ALP)
+                - occlusion_overlap_threshold: Person overlap % to trigger fallback (default: 0.3)
+                - occlusion_flow_diff_threshold: Flow difference to detect occlusion (default: 3.0)
                 - adaptive_roi: Use color-based ROI detection (default: False)
                 - debug_frames: Enable debug frame saving (default: False)
                 - debug_dir: Directory for debug frames (default: 'train_state_debug')
@@ -89,11 +108,26 @@ class TrainStateDetector:
         self.approaching_stop_flow_threshold = config.get('approaching_stop_flow_threshold', 4.0)
         self.approaching_stop_lookback_frames = config.get('approaching_stop_lookback_frames', 15)
 
-        # ROI: Side window/door - TOP ONLY (above person height to avoid crew movement)
-        self.roi_x_start = max(0.0, min(1.0, config.get('roi_x_start', 0.37)))
-        self.roi_x_end = max(0.0, min(1.0, config.get('roi_x_end', 0.52)))
+        # PRIMARY ROI: Side window/door - TOP ONLY (above person height to avoid crew movement)
+        self.roi_x_start = max(0.0, min(1.0, config.get('roi_x_start', 0.40)))
+        self.roi_x_end = max(0.0, min(1.0, config.get('roi_x_end', 0.49)))
         self.roi_y_start = max(0.0, min(1.0, config.get('roi_y_start', 0.0)))
-        self.roi_y_end = max(0.0, min(1.0, config.get('roi_y_end', 0.15)))
+        self.roi_y_end = max(0.0, min(1.0, config.get('roi_y_end', 0.12)))
+
+        # SECONDARY ROI: Left side window (fallback when primary ROI is occluded by ALP)
+        # This window is on the far left of the frame, showing outside scenery
+        # Used when ALP stands near the primary side window
+        self.secondary_roi_enabled = config.get('secondary_roi_enabled', True)
+        self.secondary_roi_x_start = max(0.0, min(1.0, config.get('secondary_roi_x_start', 0.0)))
+        self.secondary_roi_x_end = max(0.0, min(1.0, config.get('secondary_roi_x_end', 0.12)))
+        self.secondary_roi_y_start = max(0.0, min(1.0, config.get('secondary_roi_y_start', 0.30)))
+        self.secondary_roi_y_end = max(0.0, min(1.0, config.get('secondary_roi_y_end', 0.55)))
+
+        # Occlusion detection settings
+        # If a person bounding box overlaps with primary ROI by this percentage, consider it occluded
+        self.occlusion_overlap_threshold = config.get('occlusion_overlap_threshold', 0.3)
+        # Flow difference threshold - if primary shows high flow but secondary shows low, primary may be occluded
+        self.occlusion_flow_diff_threshold = config.get('occlusion_flow_diff_threshold', 3.0)
 
         self.adaptive_roi = config.get('adaptive_roi', False)
 
@@ -127,13 +161,20 @@ class TrainStateDetector:
         self.stopped_periods: List[StoppedPeriod] = []
         self._current_stopped_period: Optional[StoppedPeriod] = None
 
-        # ROI mask (lazily initialized on first frame)
+        # ROI masks (lazily initialized on first frame)
         self.roi_mask: Optional[np.ndarray] = None
+        self.secondary_roi_mask: Optional[np.ndarray] = None
         self.frame_shape: Optional[Tuple[int, int]] = None
+
+        # Occlusion tracking
+        self.primary_roi_occluded: bool = False
+        self.using_secondary_roi: bool = False
 
         # Last flow for debug visualization
         self.last_flow: Optional[np.ndarray] = None
         self.last_flow_magnitude: float = 0.0
+        self.last_primary_flow: float = 0.0
+        self.last_secondary_flow: float = 0.0
 
         # Logger
         self.logger = logging.getLogger('TrainStateDetector')
@@ -146,12 +187,18 @@ class TrainStateDetector:
         self.logger.info(
             f"TrainStateDetector initialized: "
             f"threshold={self.motion_threshold}, min_stopped={self.min_stopped_duration}s, "
-            f"ROI(x={self.roi_x_start:.0%}-{self.roi_x_end:.0%}, y={self.roi_y_start:.0%}-{self.roi_y_end:.0%})"
+            f"Primary ROI(x={self.roi_x_start:.0%}-{self.roi_x_end:.0%}, y={self.roi_y_start:.0%}-{self.roi_y_end:.0%})"
         )
+        if self.secondary_roi_enabled:
+            self.logger.info(
+                f"Secondary ROI enabled: "
+                f"(x={self.secondary_roi_x_start:.0%}-{self.secondary_roi_x_end:.0%}, "
+                f"y={self.secondary_roi_y_start:.0%}-{self.secondary_roi_y_end:.0%})"
+            )
 
     def _create_roi_mask(self, frame_shape: Tuple[int, ...]) -> np.ndarray:
         """
-        Create mask for window ROI where outside scenery is visible.
+        Create mask for primary window ROI where outside scenery is visible.
 
         The ROI should cover only the window area (not crew members)
         where scenery is visible - motion detected here indicates train moving.
@@ -165,7 +212,7 @@ class TrainStateDetector:
         height, width = frame_shape[:2]
         mask = np.zeros((height, width), dtype=bool)
 
-        # Side window/door ROI (top area above person height)
+        # Primary side window/door ROI (top area above person height)
         x_start = int(width * self.roi_x_start)
         x_end = int(width * self.roi_x_end)
         y_start = int(height * self.roi_y_start)
@@ -174,6 +221,89 @@ class TrainStateDetector:
             mask[y_start:y_end, x_start:x_end] = True
 
         return mask
+
+    def _create_secondary_roi_mask(self, frame_shape: Tuple[int, ...]) -> np.ndarray:
+        """
+        Create mask for secondary window ROI (front window in front of LP).
+
+        This ROI is used as fallback when the primary ROI is occluded by ALP
+        standing near the side window.
+
+        Args:
+            frame_shape: Shape of frame (height, width, channels)
+
+        Returns:
+            Boolean mask where True indicates secondary ROI pixels
+        """
+        height, width = frame_shape[:2]
+        mask = np.zeros((height, width), dtype=bool)
+
+        # Secondary front window ROI
+        x_start = int(width * self.secondary_roi_x_start)
+        x_end = int(width * self.secondary_roi_x_end)
+        y_start = int(height * self.secondary_roi_y_start)
+        y_end = int(height * self.secondary_roi_y_end)
+        if x_end > x_start and y_end > y_start:
+            mask[y_start:y_end, x_start:x_end] = True
+
+        return mask
+
+    def _get_primary_roi_bounds(self, frame_shape: Tuple[int, ...]) -> Tuple[int, int, int, int]:
+        """Get pixel bounds for primary ROI (x_start, y_start, x_end, y_end)."""
+        height, width = frame_shape[:2]
+        return (
+            int(width * self.roi_x_start),
+            int(height * self.roi_y_start),
+            int(width * self.roi_x_end),
+            int(height * self.roi_y_end)
+        )
+
+    def _check_roi_occlusion(
+        self,
+        person_boxes: Optional[List[List[float]]],
+        frame_shape: Tuple[int, ...]
+    ) -> bool:
+        """
+        Check if primary ROI is occluded by a person (ALP standing near window).
+
+        Args:
+            person_boxes: List of person bounding boxes [x1, y1, x2, y2] in pixels
+            frame_shape: Shape of frame
+
+        Returns:
+            True if primary ROI is likely occluded by a person
+        """
+        if person_boxes is None or len(person_boxes) == 0:
+            return False
+
+        # Get primary ROI bounds in pixels
+        roi_x1, roi_y1, roi_x2, roi_y2 = self._get_primary_roi_bounds(frame_shape)
+        roi_area = max(1, (roi_x2 - roi_x1) * (roi_y2 - roi_y1))
+
+        for box in person_boxes:
+            if len(box) < 4:
+                continue
+
+            # Person bounding box
+            px1, py1, px2, py2 = box[:4]
+
+            # Calculate intersection
+            inter_x1 = max(roi_x1, px1)
+            inter_y1 = max(roi_y1, py1)
+            inter_x2 = min(roi_x2, px2)
+            inter_y2 = min(roi_y2, py2)
+
+            if inter_x2 > inter_x1 and inter_y2 > inter_y1:
+                inter_area = (inter_x2 - inter_x1) * (inter_y2 - inter_y1)
+                overlap_ratio = inter_area / roi_area
+
+                if overlap_ratio >= self.occlusion_overlap_threshold:
+                    self.logger.debug(
+                        f"Primary ROI occluded: person box overlaps {overlap_ratio:.1%}"
+                    )
+                    return True
+
+        return False
 
     def _create_adaptive_roi_mask(self, frame: np.ndarray) -> np.ndarray:
         """
@@ -202,17 +332,20 @@ class TrainStateDetector:
 
         return window_mask.astype(bool)
 
-    def _calculate_roi_optical_flow(self, prev_gray: np.ndarray, curr_gray: np.ndarray) -> float:
+    def _calculate_optical_flow(
+        self,
+        prev_gray: np.ndarray,
+        curr_gray: np.ndarray
+    ) -> Optional[np.ndarray]:
         """
-        Calculate dense optical flow ONLY in window ROI regions.
-        Excludes cabin interior to avoid crew movement noise.
+        Calculate dense optical flow for the entire frame.
 
         Args:
             prev_gray: Previous grayscale frame
             curr_gray: Current grayscale frame
 
         Returns:
-            Average flow magnitude in ROI only (0.0 on error)
+            Flow array or None on error
         """
         try:
             # Validate frame dimensions match
@@ -220,7 +353,7 @@ class TrainStateDetector:
                 self.logger.warning(
                     f"Frame dimension mismatch: prev={prev_gray.shape}, curr={curr_gray.shape}"
                 )
-                return 0.0
+                return None
 
             # Calculate dense optical flow (Farneback method)
             flow = cv2.calcOpticalFlowFarneback(
@@ -234,29 +367,133 @@ class TrainStateDetector:
                 flags=0
             )
 
-            # Store for debug visualization
-            self.last_flow = flow
-
-            # Calculate magnitude
-            magnitude, _ = cv2.cartToPolar(flow[..., 0], flow[..., 1])
-
-            # CRITICAL: Apply ROI mask to exclude cabin interior
-            # Only analyze edge regions (windows) where scenery is visible
-            if self.roi_mask is not None:
-                roi_magnitude = magnitude[self.roi_mask]
-            else:
-                # Fallback to full frame if mask not ready
-                roi_magnitude = magnitude.flatten()
-
-            # Return average magnitude in ROI only
-            return float(np.mean(roi_magnitude)) if roi_magnitude.size > 0 else 0.0
+            return flow
 
         except cv2.error as e:
             self.logger.error(f"OpenCV error in optical flow calculation: {e}")
-            return 0.0
+            return None
         except Exception as e:
             self.logger.error(f"Unexpected error in optical flow calculation: {e}")
+            return None
+
+    def _get_roi_flow_magnitude(
+        self,
+        flow: np.ndarray,
+        roi_mask: Optional[np.ndarray]
+    ) -> float:
+        """
+        Calculate average flow magnitude within a specific ROI.
+
+        Args:
+            flow: Optical flow array
+            roi_mask: Boolean mask for the ROI
+
+        Returns:
+            Average flow magnitude in ROI (0.0 if empty)
+        """
+        # Calculate magnitude
+        magnitude, _ = cv2.cartToPolar(flow[..., 0], flow[..., 1])
+
+        # Apply ROI mask
+        if roi_mask is not None:
+            roi_magnitude = magnitude[roi_mask]
+        else:
+            roi_magnitude = magnitude.flatten()
+
+        return float(np.mean(roi_magnitude)) if roi_magnitude.size > 0 else 0.0
+
+    def _calculate_roi_optical_flow(
+        self,
+        prev_gray: np.ndarray,
+        curr_gray: np.ndarray
+    ) -> float:
+        """
+        Calculate dense optical flow ONLY in window ROI regions.
+        Excludes cabin interior to avoid crew movement noise.
+
+        Args:
+            prev_gray: Previous grayscale frame
+            curr_gray: Current grayscale frame
+
+        Returns:
+            Average flow magnitude in ROI only (0.0 on error)
+        """
+        flow = self._calculate_optical_flow(prev_gray, curr_gray)
+        if flow is None:
             return 0.0
+
+        # Store for debug visualization
+        self.last_flow = flow
+
+        return self._get_roi_flow_magnitude(flow, self.roi_mask)
+
+    def _calculate_dual_roi_flow(
+        self,
+        prev_gray: np.ndarray,
+        curr_gray: np.ndarray,
+        person_boxes: Optional[List[List[float]]] = None
+    ) -> Tuple[float, bool]:
+        """
+        Calculate optical flow using dual ROI with fallback logic.
+
+        When primary ROI is occluded (ALP standing near window), falls back
+        to secondary ROI to maintain accurate motion detection.
+
+        Args:
+            prev_gray: Previous grayscale frame
+            curr_gray: Current grayscale frame
+            person_boxes: Optional list of person bounding boxes
+
+        Returns:
+            Tuple of (flow_magnitude, using_secondary_roi)
+        """
+        flow = self._calculate_optical_flow(prev_gray, curr_gray)
+        if flow is None:
+            return 0.0, False
+
+        # Store for debug visualization
+        self.last_flow = flow
+
+        # Calculate flow for primary ROI
+        primary_flow = self._get_roi_flow_magnitude(flow, self.roi_mask)
+        self.last_primary_flow = primary_flow
+
+        # If secondary ROI is not enabled, just use primary
+        if not self.secondary_roi_enabled or self.secondary_roi_mask is None:
+            return primary_flow, False
+
+        # Calculate flow for secondary ROI
+        secondary_flow = self._get_roi_flow_magnitude(flow, self.secondary_roi_mask)
+        self.last_secondary_flow = secondary_flow
+
+        # Check if primary ROI is occluded by a person
+        is_occluded_by_person = self._check_roi_occlusion(
+            person_boxes, (prev_gray.shape[0], prev_gray.shape[1])
+        )
+
+        # Check for flow-based occlusion detection:
+        # If primary shows high flow but secondary shows low flow, primary may be
+        # detecting person movement rather than scenery
+        is_flow_inconsistent = (
+            primary_flow > self.motion_threshold and
+            secondary_flow <= self.motion_threshold and
+            (primary_flow - secondary_flow) > self.occlusion_flow_diff_threshold
+        )
+
+        # Determine if we should use secondary ROI
+        use_secondary = is_occluded_by_person or is_flow_inconsistent
+        self.primary_roi_occluded = use_secondary
+        self.using_secondary_roi = use_secondary
+
+        if use_secondary:
+            self.logger.debug(
+                f"Using secondary ROI: person_occlusion={is_occluded_by_person}, "
+                f"flow_inconsistent={is_flow_inconsistent}, "
+                f"primary_flow={primary_flow:.2f}, secondary_flow={secondary_flow:.2f}"
+            )
+            return secondary_flow, True
+        else:
+            return primary_flow, False
 
     def _smooth_flow_value(self, flow_magnitude: float) -> float:
         """
@@ -442,29 +679,58 @@ class TrainStateDetector:
         debug_frame = frame.copy()
         h, w = frame.shape[:2]
 
-        # Calculate ROI bounding box
-        x_start = int(w * self.roi_x_start)
-        x_end = int(w * self.roi_x_end)
-        y_start = int(h * self.roi_y_start)
-        y_end = int(h * self.roi_y_end)
+        # Calculate primary ROI bounding box
+        roi_x_start = int(w * self.roi_x_start)
+        roi_x_end = int(w * self.roi_x_end)
+        roi_y_start = int(h * self.roi_y_start)
+        roi_y_end = int(h * self.roi_y_end)
 
-        # 1. Draw ROI boundary (green rectangle) - Side Window
-        if x_end > x_start and y_end > y_start:
-            cv2.rectangle(debug_frame, (x_start, y_start), (x_end, y_end), (0, 255, 0), 3)
-            cv2.putText(debug_frame, "WINDOW ROI", (x_start + 5, y_start + 25),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+        # 1. Draw primary ROI boundary
+        # Color: Green if active, Gray if occluded
+        primary_color = (128, 128, 128) if self.using_secondary_roi else (0, 255, 0)
+        primary_thickness = 2 if self.using_secondary_roi else 3
+        if roi_x_end > roi_x_start and roi_y_end > roi_y_start:
+            cv2.rectangle(debug_frame, (roi_x_start, roi_y_start),
+                          (roi_x_end, roi_y_end), primary_color, primary_thickness)
+            label = "PRIMARY ROI (OCCLUDED)" if self.using_secondary_roi else "WINDOW ROI"
+            cv2.putText(debug_frame, label,
+                        (roi_x_start + 5, roi_y_start + 25),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, primary_color, 2)
 
-        # 2. Draw optical flow vectors (if available) within ROI
+        # 2. Draw secondary ROI boundary if enabled
+        if self.secondary_roi_enabled:
+            sec_x_start = int(w * self.secondary_roi_x_start)
+            sec_x_end = int(w * self.secondary_roi_x_end)
+            sec_y_start = int(h * self.secondary_roi_y_start)
+            sec_y_end = int(h * self.secondary_roi_y_end)
+
+            # Color: Cyan if active, Gray if not being used
+            secondary_color = (255, 255, 0) if self.using_secondary_roi else (128, 128, 128)
+            secondary_thickness = 3 if self.using_secondary_roi else 2
+            if sec_x_end > sec_x_start and sec_y_end > sec_y_start:
+                cv2.rectangle(debug_frame, (sec_x_start, sec_y_start),
+                              (sec_x_end, sec_y_end), secondary_color, secondary_thickness)
+                label = "SECONDARY ROI (ACTIVE)" if self.using_secondary_roi else "SECONDARY ROI"
+                cv2.putText(debug_frame, label,
+                            (sec_x_start + 5, sec_y_start + 25),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, secondary_color, 2)
+
+        # 3. Draw optical flow vectors in the active ROI
         if self.last_flow is not None:
             step = 16
-            for y in range(y_start, y_end, step):
-                for x in range(x_start, x_end, step):
+            # Draw flow vectors in both ROIs
+            active_roi = (roi_x_start, roi_y_start, roi_x_end, roi_y_end)
+            if self.using_secondary_roi and self.secondary_roi_enabled:
+                active_roi = (sec_x_start, sec_y_start, sec_x_end, sec_y_end)
+
+            for y in range(active_roi[1], active_roi[3], step):
+                for x in range(active_roi[0], active_roi[2], step):
                     if x < self.last_flow.shape[1] and y < self.last_flow.shape[0]:
                         fx, fy = self.last_flow[y, x]
                         cv2.arrowedLine(debug_frame, (x, y), (int(x + fx * 3), int(y + fy * 3)),
                                         (0, 255, 255), 1, tipLength=0.3)
 
-        # 3. Draw state indicator (top-right)
+        # 4. Draw state indicator (top-right)
         state_color = {
             TrainState.MOVING: (0, 0, 255),      # Red
             TrainState.STOPPED: (0, 255, 0),     # Green
@@ -484,24 +750,49 @@ class TrainStateDetector:
             (w - 280, 120), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (200, 200, 200), 2
         )
 
-        # 4. Add timestamp
+        # 5. Show ROI flow values
+        roi_label = "Using: SECONDARY" if self.using_secondary_roi else "Using: PRIMARY"
+        cv2.putText(
+            debug_frame, roi_label,
+            (w - 280, 160), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2
+        )
+        cv2.putText(
+            debug_frame, f"Primary: {self.last_primary_flow:.2f}",
+            (w - 280, 190), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1
+        )
+        if self.secondary_roi_enabled:
+            cv2.putText(
+                debug_frame, f"Secondary: {self.last_secondary_flow:.2f}",
+                (w - 280, 215), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1
+            )
+
+        # 6. Add timestamp
         cv2.putText(
             debug_frame, f"Time: {timestamp:.2f}s",
             (10, h - 20), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2
         )
 
-        # 5. Save frame
+        # 7. Save frame
         os.makedirs(self.debug_dir, exist_ok=True)
         filename = f"train_state_{timestamp:.2f}s_{state.name}.jpg"
         cv2.imwrite(os.path.join(self.debug_dir, filename), debug_frame)
 
-    def analyze_frame(self, frame: np.ndarray, timestamp: float) -> TrainState:
+    def analyze_frame(
+        self,
+        frame: np.ndarray,
+        timestamp: float,
+        person_boxes: Optional[List[List[float]]] = None
+    ) -> TrainState:
         """
         Analyze single frame for motion in window ROI regions.
+
+        Uses dual ROI approach: primary window ROI with fallback to secondary
+        window ROI when primary is occluded by ALP standing near the window.
 
         Args:
             frame: BGR frame from video
             timestamp: Current timestamp in seconds
+            person_boxes: Optional list of person bounding boxes for occlusion detection
 
         Returns:
             Current train state (MOVING, STOPPED, or UNKNOWN)
@@ -509,7 +800,7 @@ class TrainStateDetector:
         # Convert to grayscale
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
 
-        # Initialize ROI mask on first frame
+        # Initialize ROI masks on first frame
         if self.roi_mask is None or self.frame_shape != frame.shape[:2]:
             self.frame_shape = frame.shape[:2]
             if self.adaptive_roi:
@@ -517,13 +808,19 @@ class TrainStateDetector:
             else:
                 self.roi_mask = self._create_roi_mask(frame.shape)
 
+            # Initialize secondary ROI mask if enabled
+            if self.secondary_roi_enabled:
+                self.secondary_roi_mask = self._create_secondary_roi_mask(frame.shape)
+
         # Need previous frame for optical flow
         if self.prev_gray is None:
             self.prev_gray = gray
             return self.current_state
 
-        # Calculate optical flow in ROI
-        flow_magnitude = self._calculate_roi_optical_flow(self.prev_gray, gray)
+        # Calculate optical flow using dual ROI with fallback logic
+        flow_magnitude, using_secondary = self._calculate_dual_roi_flow(
+            self.prev_gray, gray, person_boxes
+        )
         self.last_flow_magnitude = flow_magnitude
 
         # Smooth flow values
@@ -536,8 +833,9 @@ class TrainStateDetector:
         is_approaching_stop = self._is_approaching_stop(smoothed_flow, timestamp)
 
         # Debug logging - log flow values every frame
+        roi_indicator = "SECONDARY" if using_secondary else "PRIMARY"
         self.logger.debug(
-            f"[{timestamp:.2f}s] Flow: {flow_magnitude:.2f} | "
+            f"[{timestamp:.2f}s] Flow: {flow_magnitude:.2f} ({roi_indicator}) | "
             f"Smoothed: {smoothed_flow:.2f} | Threshold: {self.motion_threshold:.2f} | "
             f"Moving: {is_moving} | Approaching: {is_approaching_stop} | State: {self.current_state.name}"
         )
@@ -547,7 +845,7 @@ class TrainStateDetector:
         if self._frame_count % self._log_interval == 0:
             self.logger.info(
                 f"[{timestamp:.2f}s] Train State: {self.current_state.name} | "
-                f"Flow: {smoothed_flow:.2f}/{self.motion_threshold:.2f}"
+                f"Flow: {smoothed_flow:.2f}/{self.motion_threshold:.2f} | ROI: {roi_indicator}"
             )
 
         # Update state with temporal filtering
@@ -670,8 +968,13 @@ class TrainStateDetector:
         self.stopped_periods.clear()
         self._current_stopped_period = None
         self.roi_mask = None
+        self.secondary_roi_mask = None
         self.frame_shape = None
         self.last_flow = None
         self.last_flow_magnitude = 0.0
+        self.last_primary_flow = 0.0
+        self.last_secondary_flow = 0.0
+        self.primary_roi_occluded = False
+        self.using_secondary_roi = False
         self._debug_frame_count = 0
         self._frame_count = 0

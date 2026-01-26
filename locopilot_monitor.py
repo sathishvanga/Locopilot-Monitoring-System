@@ -578,12 +578,21 @@ class LocopilotActivityMonitor:
                         'roi_x_end': getattr(settings, 'train_state_roi_x_end', 0.52),
                         'roi_y_start': getattr(settings, 'train_state_roi_y_start', 0.0),
                         'roi_y_end': getattr(settings, 'train_state_roi_y_end', 0.15),
+                        # Front Window ROI - Fallback when side window is occluded by ALP
+                        'front_roi_enabled': getattr(settings, 'train_state_front_roi_enabled', True),
+                        'front_roi_x_start': getattr(settings, 'train_state_front_roi_x_start', 0.75),
+                        'front_roi_x_end': getattr(settings, 'train_state_front_roi_x_end', 0.95),
+                        'front_roi_y_start': getattr(settings, 'train_state_front_roi_y_start', 0.15),
+                        'front_roi_y_end': getattr(settings, 'train_state_front_roi_y_end', 0.45),
+                        'occlusion_threshold': getattr(settings, 'train_state_occlusion_threshold', 0.3),
                         'adaptive_roi': getattr(settings, 'train_state_adaptive_roi', False),
                         'debug_frames': getattr(settings, 'train_state_debug_frames', False),
                         'debug_dir': getattr(settings, 'train_state_debug_dir', 'train_state_debug'),
                         'debug_interval': getattr(settings, 'train_state_debug_interval', 1),
                     }
                     self.train_state_detector = TrainStateDetector(train_state_config)
+                    # Track person boxes for occlusion detection in train state
+                    self._prev_frame_person_boxes = []
                     self.exempt_activities = getattr(
                         settings, 'stopped_state_exempt_activities',
                         ['cell_phone', 'writing', 'packing_bags', 'mind_diversion']
@@ -3442,9 +3451,9 @@ class LocopilotActivityMonitor:
             # REMOVED: Control zone filter - we now want to detect hand-to-face actions
             # not right_in_control_zone and
 
-            # Hand at or above shoulder level (includes face-level actions like drinking)
-            # >0 means wrist is at or above shoulder height
-            right_wrist_shoulder_vertical > 0 and
+            # Hand clearly above shoulder level (not just barely above)
+            # >= 30px margin to avoid false positives from holding grab handles
+            right_wrist_shoulder_vertical >= 30 and
 
             # RELAXED: Allow bent arm (drinking position has wrist near elbow level)
             # >-30 allows wrist to be slightly below elbow (bent arm holding cup)
@@ -3477,9 +3486,9 @@ class LocopilotActivityMonitor:
             # REMOVED: Control zone filter - we now want to detect hand-to-face actions
             # not left_in_control_zone and
 
-            # Hand at or above shoulder level (includes face-level actions like drinking)
-            # >0 means wrist is at or above shoulder height
-            left_wrist_shoulder_vertical > 0 and
+            # Hand clearly above shoulder level (not just barely above)
+            # >= 30px margin to avoid false positives from holding grab handles
+            left_wrist_shoulder_vertical >= 30 and
 
             # RELAXED: Allow bent arm (drinking position has wrist near elbow level)
             # >-30 allows wrist to be slightly below elbow (bent arm holding cup)
@@ -3517,7 +3526,7 @@ class LocopilotActivityMonitor:
         gesture_logger.info(f"  - Wrist coords: {right_wrist_coords}")
         gesture_logger.info(f"  - Shoulder coords: {right_shoulder_coords}")
         gesture_logger.info(f"  - Elbow coords: {right_elbow_coords}")
-        gesture_logger.info(f"  - Wrist above Shoulder: {right_wrist_shoulder_vertical:.1f}px (need >0)")
+        gesture_logger.info(f"  - Wrist above Shoulder: {right_wrist_shoulder_vertical:.1f}px (need >=30)")
         gesture_logger.info(f"  - Wrist above Elbow: {right_wrist_elbow_distance:.1f}px (need >-30)")
         gesture_logger.info(f"  - Arm extension (lateral): {right_arm_extension:.1f}px (need >20)")
         gesture_logger.info(f"  - Elbow position check: {right_elbow_coords[1] - right_shoulder_coords[1]:.1f}px (need <150)")
@@ -3530,7 +3539,7 @@ class LocopilotActivityMonitor:
         gesture_logger.info(f"  - Wrist coords: {left_wrist_coords}")
         gesture_logger.info(f"  - Shoulder coords: {left_shoulder_coords}")
         gesture_logger.info(f"  - Elbow coords: {left_elbow_coords}")
-        gesture_logger.info(f"  - Wrist above Shoulder: {left_wrist_shoulder_vertical:.1f}px (need >0)")
+        gesture_logger.info(f"  - Wrist above Shoulder: {left_wrist_shoulder_vertical:.1f}px (need >=30)")
         gesture_logger.info(f"  - Wrist above Elbow: {left_wrist_elbow_distance:.1f}px (need >-30)")
         gesture_logger.info(f"  - Arm extension (lateral): {left_arm_extension:.1f}px (need >20)")
         gesture_logger.info(f"  - Elbow position check: {left_elbow_coords[1] - left_shoulder_coords[1]:.1f}px (need <150)")
@@ -5909,11 +5918,16 @@ class LocopilotActivityMonitor:
 
                 # TRAIN STATE DETECTION: Analyze if train is stopped or moving
                 # Uses ROI-based optical flow on window regions (excludes cabin interior)
+                # Pass person_boxes from previous frame to detect occlusion of side window
                 train_is_stopped = False
                 train_state = None
                 train_state_changed = False
                 if self.train_state_detector is not None:
-                    train_state = self.train_state_detector.analyze_frame(frame, timestamp_sec)
+                    # Use previous frame's person boxes for occlusion detection
+                    prev_person_boxes = getattr(self, '_prev_frame_person_boxes', [])
+                    train_state = self.train_state_detector.analyze_frame(
+                        frame, timestamp_sec, person_boxes=prev_person_boxes
+                    )
                     train_is_stopped = self.train_state_detector.is_stopped()
                     train_state_changed = self.train_state_detector.state_changed()
 
@@ -5969,6 +5983,10 @@ class LocopilotActivityMonitor:
                             self.consecutive_detections['no_person_detected'] = 0
                             if self.activities['no_person_detected']['active']:
                                 self.end_activity('no_person_detected', timestamp, fps, frame_idx, people_count=person_count)
+
+                    # Update previous frame's person boxes for next frame's train state occlusion detection
+                    if self.train_state_detector is not None:
+                        self._prev_frame_person_boxes = deduplicated_persons if person_count > 0 else []
 
                     continue  # Skip to next frame - no other activity checks needed
 
@@ -6054,7 +6072,11 @@ class LocopilotActivityMonitor:
                     if self.consecutive_detections['no_person_detected'] == 0:
                         raw_detections = len(detections['person'])
                         self.logger.debug(f"[{timestamp}] NO PERSON detected in frame (raw YOLO detections: {raw_detections})")
-                
+
+                # Update previous frame's person boxes for next frame's train state occlusion detection
+                if self.train_state_detector is not None:
+                    self._prev_frame_person_boxes = detections.get('deduplicated_person', [])
+
                 # STEP 4: *** NEW MULTI-PERSON PROCESSING ***
                 # Process ALL persons individually for ALL activities
                 multi_person_results = self.process_all_persons_activities(
@@ -6473,11 +6495,16 @@ class LocopilotActivityMonitor:
 
                 # TRAIN STATE DETECTION: Analyze if train is stopped or moving
                 # Uses ROI-based optical flow on window regions (excludes cabin interior)
+                # Pass person_boxes from previous frame to detect occlusion of side window
                 train_is_stopped = False
                 train_state = None
                 train_state_changed = False
                 if self.train_state_detector is not None:
-                    train_state = self.train_state_detector.analyze_frame(frame, timestamp_sec)
+                    # Use previous frame's person boxes for occlusion detection
+                    prev_person_boxes = getattr(self, '_prev_frame_person_boxes', [])
+                    train_state = self.train_state_detector.analyze_frame(
+                        frame, timestamp_sec, person_boxes=prev_person_boxes
+                    )
                     train_is_stopped = self.train_state_detector.is_stopped()
                     train_state_changed = self.train_state_detector.state_changed()
 
@@ -6536,6 +6563,10 @@ class LocopilotActivityMonitor:
                             self.consecutive_detections['no_person_detected'] = 0
                             if self.activities['no_person_detected']['active']:
                                 self.end_activity('no_person_detected', timestamp, fps, frame_idx, people_count=person_count, save_clips=save_clips)
+
+                    # Update previous frame's person boxes for next frame's train state occlusion detection
+                    if self.train_state_detector is not None:
+                        self._prev_frame_person_boxes = deduplicated_persons if person_count > 0 else []
 
                     continue  # Skip to next frame - no other activity checks needed
 
@@ -6603,6 +6634,10 @@ class LocopilotActivityMonitor:
                 else:
                     detections['deduplicated_person'] = []
                     person_roles = {}
+
+                # Update previous frame's person boxes for next frame's train state occlusion detection
+                if self.train_state_detector is not None:
+                    self._prev_frame_person_boxes = detections.get('deduplicated_person', [])
 
                 # STEP 4: *** NEW MULTI-PERSON PROCESSING ***
                 # Process ALL persons individually for ALL activities
