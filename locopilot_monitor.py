@@ -309,7 +309,8 @@ class LocopilotActivityMonitor:
             'lp_hand_gesture': {'active': False, 'start_time': None, 'ocr_start_time': None, 'frames': [], 'duration': 0},
             'alp_hand_gesture': {'active': False, 'start_time': None, 'ocr_start_time': None, 'frames': [], 'duration': 0},
             'mind_diversion': {'active': False, 'start_time': None, 'ocr_start_time': None, 'frames': [], 'duration': 0},
-            'no_person_detected': {'active': False, 'start_time': None, 'ocr_start_time': None, 'frames': [], 'duration': 0}
+            'no_person_detected': {'active': False, 'start_time': None, 'ocr_start_time': None, 'frames': [], 'duration': 0},
+            'alp_not_standing_before_stop': {'active': False, 'start_time': None, 'ocr_start_time': None, 'frames': [], 'duration': 0}
         }
         
         # TEMPORAL SUPPRESSION: Track recent activities per person for gesture suppression
@@ -334,6 +335,18 @@ class LocopilotActivityMonitor:
             'alp_raise_count': 0
         }
         self.hand_coordination_session_timeout = float(os.getenv('HAND_GESTURE_SESSION_TIMEOUT', '10.0'))
+
+        # ALP Standing Before Stop tracking
+        # Tracks if ALP stands up before train stops at station
+        self.alp_standing_tracking = {
+            'monitoring_active': False,      # True when APPROACHING_STOP detected
+            'approaching_start_time': None,  # When APPROACHING_STOP began
+            'alp_stood_time': None,          # When ALP first stood (None if never)
+            'alp_visible': False,            # Whether ALP pose is visible
+            'violation_flagged': False       # Prevent duplicate violations per stop
+        }
+        # Get ALP standing required seconds from config
+        self.alp_standing_required_seconds = settings.alp_standing_required_seconds if settings else 30.0
 
         # Activity thresholds: minimum duration and required consecutive frames before recording starts
         # OPTIMIZED FOR 0.5 FPS SAMPLING (1 frame every 2 seconds)
@@ -402,6 +415,12 @@ class LocopilotActivityMonitor:
                 'required_consecutive': 3,    # 3 samples @ 0.5fps = 6 seconds (increased from 1)
                 'margin': None,               # N/A for person detection
                 'grace_frames': 3             # Allow 3 samples (~6s) gap for brief detection failures (reduced from 5)
+            },
+            'alp_not_standing_before_stop': {
+                'min_duration': 0.0,          # Instant violation when train stops without ALP standing
+                'required_consecutive': 1,    # Single detection triggers violation
+                'margin': None,               # N/A for pose-based detection
+                'grace_frames': 0             # No grace - violation is one-time per stop
             }
         }
         
@@ -416,7 +435,8 @@ class LocopilotActivityMonitor:
             'lp_hand_gesture': 0,
             'alp_hand_gesture': 0,
             'mind_diversion': 0,
-            'no_person_detected': 0
+            'no_person_detected': 0,
+            'alp_not_standing_before_stop': 0
         }
         
         # Grace period counters - allows brief interruptions without resetting
@@ -430,7 +450,8 @@ class LocopilotActivityMonitor:
             'lp_hand_gesture': 0,
             'alp_hand_gesture': 0,
             'mind_diversion': 0,
-            'no_person_detected': 0
+            'no_person_detected': 0,
+            'alp_not_standing_before_stop': 0
         }
         
         # Buffer for pre-activity frames (5 seconds before at sampled rate)
@@ -482,7 +503,8 @@ class LocopilotActivityMonitor:
             'lp_hand_gesture': 8,
             'alp_hand_gesture': 9,
             'mind_diversion': 10,
-            'no_person_detected': 11
+            'no_person_detected': 11,
+            'alp_not_standing_before_stop': 12
         }
         
         # Activity descriptions
@@ -496,7 +518,8 @@ class LocopilotActivityMonitor:
             'lp_hand_gesture': 'LP not exchanging hand gesture',
             'alp_hand_gesture': 'ALP not exchanging hand gesture',
             'mind_diversion': 'Mind diversion - attention diverted from controls',
-            'no_person_detected': 'No person detected in frame'
+            'no_person_detected': 'No person detected in frame',
+            'alp_not_standing_before_stop': 'ALP not standing before station stop'
         }
         
         # Evidence rules
@@ -550,8 +573,11 @@ class LocopilotActivityMonitor:
                     train_state_config = {
                         'motion_threshold': getattr(settings, 'train_state_motion_threshold', 2.0),
                         'min_stopped_duration': getattr(settings, 'train_state_min_stopped_duration', 5.0),
-                        'roi_left_percent': getattr(settings, 'train_state_roi_left_percent', 0.20),
-                        'roi_top_percent': getattr(settings, 'train_state_roi_top_percent', 0.10),
+                        # ROI: Side Window - TOP ONLY (above person height)
+                        'roi_x_start': getattr(settings, 'train_state_roi_x_start', 0.37),
+                        'roi_x_end': getattr(settings, 'train_state_roi_x_end', 0.52),
+                        'roi_y_start': getattr(settings, 'train_state_roi_y_start', 0.0),
+                        'roi_y_end': getattr(settings, 'train_state_roi_y_end', 0.15),
                         'adaptive_roi': getattr(settings, 'train_state_adaptive_roi', False),
                         'debug_frames': getattr(settings, 'train_state_debug_frames', False),
                         'debug_dir': getattr(settings, 'train_state_debug_dir', 'train_state_debug'),
@@ -1335,9 +1361,300 @@ class LocopilotActivityMonitor:
         # Ensure minimum ROI size
         if (x2 - x1) < 50 or (y2 - y1) < 50:
             return None
-        
+
         return (int(x1), int(y1), int(x2), int(y2))
-    
+
+    def detect_standing_posture(self, pose_landmarks, frame_shape):
+        """
+        Detect if a person is standing based on YOLO-Pose keypoints.
+
+        Uses hip-knee-ankle keypoint alignment to determine posture:
+        - Standing: Legs mostly straight (hip-knee-ankle vertically aligned)
+        - Sitting: Knees bent significantly (knee forward of hip-ankle line)
+
+        YOLO-Pose keypoint indices:
+        - Left Hip: 11, Right Hip: 12
+        - Left Knee: 13, Right Knee: 14
+        - Left Ankle: 15, Right Ankle: 16
+
+        Args:
+            pose_landmarks: YOLO-Pose landmarks for a person
+            frame_shape: (height, width) of frame
+
+        Returns:
+            dict: {
+                'is_standing': bool,
+                'confidence': float (0-1),
+                'left_leg_ratio': float or None,
+                'right_leg_ratio': float or None,
+                'visible': bool  # True if enough keypoints visible
+            }
+        """
+        result = {
+            'is_standing': False,
+            'confidence': 0.0,
+            'left_leg_ratio': None,
+            'right_leg_ratio': None,
+            'visible': False
+        }
+
+        if pose_landmarks is None:
+            return result
+
+        h, w = frame_shape[:2]
+        min_visibility = 0.3  # Minimum visibility threshold for keypoints
+
+        # Get keypoints using the adapter
+        left_hip = self._get_keypoint_by_name(pose_landmarks, 'left_hip')
+        right_hip = self._get_keypoint_by_name(pose_landmarks, 'right_hip')
+        left_knee = self._get_keypoint_by_name(pose_landmarks, 'left_knee')
+        right_knee = self._get_keypoint_by_name(pose_landmarks, 'right_knee')
+        left_ankle = self._get_keypoint_by_name(pose_landmarks, 'left_ankle')
+        right_ankle = self._get_keypoint_by_name(pose_landmarks, 'right_ankle')
+
+        def get_visibility(kp):
+            """Get visibility score for keypoint."""
+            if kp is None:
+                return 0.0
+            # YOLO-Pose keypoints: [x, y, conf]
+            if len(kp) >= 3:
+                return kp[2]
+            return 0.0
+
+        def get_coords(kp):
+            """Get (x, y) pixel coordinates from keypoint."""
+            if kp is None:
+                return None
+            x = kp[0] * w if kp[0] <= 1 else kp[0]
+            y = kp[1] * h if kp[1] <= 1 else kp[1]
+            return (x, y)
+
+        # Check left leg visibility
+        left_visible = (
+            get_visibility(left_hip) >= min_visibility and
+            get_visibility(left_knee) >= min_visibility and
+            get_visibility(left_ankle) >= min_visibility
+        )
+
+        # Check right leg visibility
+        right_visible = (
+            get_visibility(right_hip) >= min_visibility and
+            get_visibility(right_knee) >= min_visibility and
+            get_visibility(right_ankle) >= min_visibility
+        )
+
+        # Need at least one leg visible
+        if not left_visible and not right_visible:
+            return result
+
+        result['visible'] = True
+
+        def calculate_leg_verticality(hip, knee, ankle):
+            """
+            Calculate how vertical a leg is (standing vs sitting).
+
+            Standing: knee is on the line between hip and ankle (ratio near 0)
+            Sitting: knee is forward/bent (high ratio)
+
+            Returns ratio of knee forward displacement to leg height.
+            """
+            hip_coords = get_coords(hip)
+            knee_coords = get_coords(knee)
+            ankle_coords = get_coords(ankle)
+
+            if not all([hip_coords, knee_coords, ankle_coords]):
+                return None
+
+            # Calculate vertical distance (hip to ankle)
+            leg_height = abs(ankle_coords[1] - hip_coords[1])
+            if leg_height < 50:  # Too small to measure reliably
+                return None
+
+            # Calculate how far forward the knee is from the hip-ankle line
+            # For a standing person, knee should be roughly on the line
+            # For sitting, knee will be forward
+
+            # Use simple vertical alignment check
+            hip_x, hip_y = hip_coords
+            knee_x, knee_y = knee_coords
+            ankle_x, ankle_y = ankle_coords
+
+            # Expected knee x if standing (linear interpolation)
+            t = (knee_y - hip_y) / leg_height if leg_height > 0 else 0.5
+            expected_knee_x = hip_x + t * (ankle_x - hip_x)
+
+            # Horizontal deviation of knee from expected position
+            knee_deviation = abs(knee_x - expected_knee_x)
+
+            # Ratio of deviation to leg height (standing = low, sitting = high)
+            verticality_ratio = knee_deviation / leg_height
+
+            return verticality_ratio
+
+        left_ratio = None
+        right_ratio = None
+
+        if left_visible:
+            left_ratio = calculate_leg_verticality(left_hip, left_knee, left_ankle)
+            result['left_leg_ratio'] = left_ratio
+
+        if right_visible:
+            right_ratio = calculate_leg_verticality(right_hip, right_knee, right_ankle)
+            result['right_leg_ratio'] = right_ratio
+
+        # Determine standing based on leg verticality
+        # Standing threshold: ratio < 0.15 (knee close to hip-ankle line)
+        # Sitting threshold: ratio > 0.25 (knee significantly forward)
+        standing_threshold = 0.15
+
+        ratios = [r for r in [left_ratio, right_ratio] if r is not None]
+
+        if not ratios:
+            return result
+
+        # Person is standing if at least one leg shows standing posture
+        min_ratio = min(ratios)
+        result['is_standing'] = min_ratio < standing_threshold
+
+        # Confidence based on how clearly standing vs sitting
+        # Higher confidence when ratio is further from threshold
+        if result['is_standing']:
+            result['confidence'] = max(0.0, min(1.0, (standing_threshold - min_ratio) / standing_threshold))
+        else:
+            result['confidence'] = max(0.0, min(1.0, (min_ratio - standing_threshold) / 0.3))
+
+        return result
+
+    def check_alp_standing_before_stop(
+        self,
+        train_state,
+        train_state_changed: bool,
+        timestamp_sec: float,
+        persons_data: dict,
+        person_roles: dict,
+        frame_shape: tuple
+    ) -> bool:
+        """
+        Check if ALP stood up in time before train stopped.
+
+        Logic:
+        1. When APPROACHING_STOP detected -> start monitoring ALP pose
+        2. If ALP stands -> record timestamp
+        3. If ALP not visible -> skip check (avoid false positives)
+        4. When STOPPED detected -> check if ALP stood >= 30s before stop
+        5. If ALP was visible but didn't stand in time -> flag violation
+        6. When MOVING detected -> reset tracking
+
+        Args:
+            train_state: Current TrainState enum value
+            train_state_changed: Whether state changed this frame
+            timestamp_sec: Current timestamp in seconds
+            persons_data: Multi-person results from process_all_persons_activities
+            person_roles: Dict mapping person_idx to role info
+            frame_shape: (height, width) of frame
+
+        Returns:
+            bool: True if violation should be flagged (ALP didn't stand in time)
+        """
+        from app.models.activity_models import TrainStateEnum as TrainState
+
+        violation_detected = False
+
+        # Handle state transitions
+        if train_state_changed:
+            if train_state == TrainState.APPROACHING_STOP:
+                # Start monitoring ALP standing
+                self.alp_standing_tracking['monitoring_active'] = True
+                self.alp_standing_tracking['approaching_start_time'] = timestamp_sec
+                self.alp_standing_tracking['alp_stood_time'] = None
+                self.alp_standing_tracking['alp_visible'] = False
+                self.alp_standing_tracking['violation_flagged'] = False
+                self.logger.info(
+                    f"[{timestamp_sec:.2f}s] ALP standing monitoring STARTED (approaching stop)"
+                )
+
+            elif train_state == TrainState.STOPPED:
+                # Train stopped - check if ALP stood in time
+                if self.alp_standing_tracking['monitoring_active']:
+                    stop_time = timestamp_sec
+                    alp_stood_time = self.alp_standing_tracking['alp_stood_time']
+                    alp_visible = self.alp_standing_tracking['alp_visible']
+
+                    if alp_visible and not self.alp_standing_tracking['violation_flagged']:
+                        if alp_stood_time is not None:
+                            # ALP stood - check if it was >= 30s before stop
+                            time_before_stop = stop_time - alp_stood_time
+                            if time_before_stop < self.alp_standing_required_seconds:
+                                # ALP stood too late
+                                violation_detected = True
+                                self.alp_standing_tracking['violation_flagged'] = True
+                                self.logger.warning(
+                                    f"[{timestamp_sec:.2f}s] ALP VIOLATION: Stood only {time_before_stop:.1f}s "
+                                    f"before stop (required: {self.alp_standing_required_seconds}s)"
+                                )
+                            else:
+                                self.logger.info(
+                                    f"[{timestamp_sec:.2f}s] ALP stood {time_before_stop:.1f}s before stop - OK"
+                                )
+                        else:
+                            # ALP was visible but never stood
+                            violation_detected = True
+                            self.alp_standing_tracking['violation_flagged'] = True
+                            self.logger.warning(
+                                f"[{timestamp_sec:.2f}s] ALP VIOLATION: Never stood before stop"
+                            )
+                    elif not alp_visible:
+                        # ALP not visible - skip check (no violation)
+                        self.logger.info(
+                            f"[{timestamp_sec:.2f}s] ALP not visible during approach - skipping standing check"
+                        )
+
+                # Keep monitoring active in case train starts moving again
+                self.alp_standing_tracking['monitoring_active'] = False
+
+            elif train_state == TrainState.MOVING:
+                # Train moving again - reset tracking
+                self.alp_standing_tracking['monitoring_active'] = False
+                self.alp_standing_tracking['approaching_start_time'] = None
+                self.alp_standing_tracking['alp_stood_time'] = None
+                self.alp_standing_tracking['alp_visible'] = False
+                self.alp_standing_tracking['violation_flagged'] = False
+
+        # During APPROACHING_STOP, monitor ALP posture
+        if self.alp_standing_tracking['monitoring_active']:
+            # Find ALP in person_roles
+            alp_person_idx = None
+            for person_idx, role_info in person_roles.items():
+                if role_info.get('role') == 'ALP':
+                    alp_person_idx = person_idx
+                    break
+
+            if alp_person_idx is not None and alp_person_idx in persons_data:
+                person_data = persons_data[alp_person_idx]
+                pose_landmarks = person_data.get('pose_landmarks')
+
+                if pose_landmarks is not None:
+                    self.alp_standing_tracking['alp_visible'] = True
+
+                    # Check if ALP is standing
+                    standing_result = self.detect_standing_posture(pose_landmarks, frame_shape)
+
+                    if standing_result['is_standing'] and standing_result['confidence'] > 0.5:
+                        # ALP is standing - record first time
+                        if self.alp_standing_tracking['alp_stood_time'] is None:
+                            self.alp_standing_tracking['alp_stood_time'] = timestamp_sec
+                            self.logger.info(
+                                f"[{timestamp_sec:.2f}s] ALP stood up (confidence: {standing_result['confidence']:.2f})"
+                            )
+                else:
+                    # Pose not detected for this person
+                    pass
+            else:
+                # ALP not identified in frame - don't mark as visible
+                pass
+
+        return violation_detected
+
     def detect_objects_in_roi(self, frame, roi_bbox, target_classes=['cell phone', 'book', 'pen', 'pencil']):
         """Run YOLO detection on a specific ROI region.
         
@@ -5593,31 +5910,67 @@ class LocopilotActivityMonitor:
                 # TRAIN STATE DETECTION: Analyze if train is stopped or moving
                 # Uses ROI-based optical flow on window regions (excludes cabin interior)
                 train_is_stopped = False
+                train_state = None
+                train_state_changed = False
                 if self.train_state_detector is not None:
                     train_state = self.train_state_detector.analyze_frame(frame, timestamp_sec)
                     train_is_stopped = self.train_state_detector.is_stopped()
+                    train_state_changed = self.train_state_detector.state_changed()
 
                     # Log state changes
-                    if self.train_state_detector.state_changed():
+                    if train_state_changed:
                         state_name = train_state.name if hasattr(train_state, 'name') else str(train_state)
                         self.logger.info(f"[{timestamp}] Train state changed to: {state_name}")
 
-                # PERFORMANCE OPTIMIZATION: Skip all heavy model inference when train is stopped
-                # No need to run YOLO, YOLO-Pose, MediaPipe when all violations are exempted
+                # WHEN STOPPED: Run minimal person detection only
+                # - Check no_person_detected violation (0 persons = violation)
+                # - Skip ALL other activities (including group_detected - exempted when stopped)
                 if train_is_stopped:
-                    # Log periodically that we're skipping processing
+                    # Log periodically that we're in stopped mode
                     if sample_idx % 100 == 0:
-                        self.logger.debug(f"[{timestamp}] Train STOPPED - skipping activity detection")
+                        self.logger.debug(f"[{timestamp}] Train STOPPED - minimal person detection only")
 
                     # End any active activities since train is now stopped
                     for activity_name in self.activities:
                         if self.activities[activity_name]['active']:
                             self.end_activity(activity_name, timestamp, fps, frame_idx, people_count=1)
-                        # Reset detection counters
-                        self.consecutive_detections[activity_name] = 0
-                        self.grace_counters[activity_name] = 0
+                        # Reset detection counters (except no_person_detected)
+                        if activity_name != 'no_person_detected':
+                            self.consecutive_detections[activity_name] = 0
+                            self.grace_counters[activity_name] = 0
 
-                    continue  # Skip to next frame - no model inference needed
+                    # Run MINIMAL person detection to check no_person_detected
+                    detections = self.detect_objects(frame, None, use_pose_guided=False)
+
+                    if len(detections['person']) > 0:
+                        deduplicated_persons = self.deduplicate_person_boxes(detections['person'], iou_threshold=0.5)
+                        person_count = len(deduplicated_persons)
+                    else:
+                        person_count = 0
+
+                    # Only check no_person_detected (existing violation)
+                    # group_detected is EXEMPTED when stopped
+                    no_person_flag = (person_count == 0)
+
+                    # Update no_person_detected activity tracking
+                    if no_person_flag:
+                        self.consecutive_detections['no_person_detected'] += 1
+                        self.grace_counters['no_person_detected'] = 0
+
+                        threshold = self.activity_thresholds['no_person_detected']
+                        if self.consecutive_detections['no_person_detected'] >= threshold['required_consecutive']:
+                            if not self.activities['no_person_detected']['active']:
+                                self.start_activity('no_person_detected', timestamp, frame)
+                                self.logger.info(f"[{timestamp}] NO PERSON detected (train stopped)")
+                    else:
+                        self.grace_counters['no_person_detected'] += 1
+                        grace_frames = self.activity_thresholds['no_person_detected']['grace_frames']
+                        if self.grace_counters['no_person_detected'] > grace_frames:
+                            self.consecutive_detections['no_person_detected'] = 0
+                            if self.activities['no_person_detected']['active']:
+                                self.end_activity('no_person_detected', timestamp, fps, frame_idx, people_count=person_count)
+
+                    continue  # Skip to next frame - no other activity checks needed
 
                 # STEP 1: Run MediaPipe Face Mesh on full frame (for face-based sleep/EAR detection)
                 rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
@@ -5763,15 +6116,32 @@ class LocopilotActivityMonitor:
                     
                     if activities.get('packing', False) and self.consecutive_detections.get('packing_bags', 0) == 0:
                         self.logger.info(f"[{timestamp}] PACKING detected for {role_name} (Person {person_idx+1})")
-                
+
+                # ALP STANDING CHECK: Check if ALP stands before train stops
+                if self.train_state_detector is not None and train_state is not None:
+                    alp_standing_violation = self.check_alp_standing_before_stop(
+                        train_state=train_state,
+                        train_state_changed=train_state_changed,
+                        timestamp_sec=timestamp_sec,
+                        persons_data=persons_data,
+                        person_roles=person_roles,
+                        frame_shape=frame.shape
+                    )
+                    if alp_standing_violation:
+                        # Start ALP standing violation activity
+                        if not self.activities['alp_not_standing_before_stop']['active']:
+                            self.start_activity('alp_not_standing_before_stop', timestamp, frame)
+                        # Immediately end it (one-time violation per stop)
+                        self.end_activity('alp_not_standing_before_stop', timestamp, fps, frame_idx, people_count=people_count)
+
                 # Face-based sleep detection (still use EAR as additional signal)
                 if face_results.multi_face_landmarks and ear_value is not None:
                     if ear_value < 0.2:
                         if self.eye_closure_start is None:
                             self.eye_closure_start = timestamp_sec
-                        
+
                         self.eye_closure_duration = timestamp_sec - self.eye_closure_start
-                        
+
                         # Merge with pose-based detection
                         if self.eye_closure_duration >= 30:
                             sleep_detected = True
@@ -6104,31 +6474,70 @@ class LocopilotActivityMonitor:
                 # TRAIN STATE DETECTION: Analyze if train is stopped or moving
                 # Uses ROI-based optical flow on window regions (excludes cabin interior)
                 train_is_stopped = False
+                train_state = None
+                train_state_changed = False
                 if self.train_state_detector is not None:
                     train_state = self.train_state_detector.analyze_frame(frame, timestamp_sec)
                     train_is_stopped = self.train_state_detector.is_stopped()
+                    train_state_changed = self.train_state_detector.state_changed()
 
                     # Log state changes
-                    if self.train_state_detector.state_changed():
+                    if train_state_changed:
                         state_name = train_state.name if hasattr(train_state, 'name') else str(train_state)
                         self.logger.info(f"[{timestamp}] Train state changed to: {state_name}")
 
-                # PERFORMANCE OPTIMIZATION: Skip activity detection when train is stopped
-                # Note: Batch YOLO inference already happened, but skip MediaPipe and activity logic
+                # WHEN STOPPED: Run minimal person detection only
+                # - Check no_person_detected violation (0 persons = violation)
+                # - Skip ALL other activities (including group_detected - exempted when stopped)
                 if train_is_stopped:
-                    # Log periodically that we're skipping processing
+                    # Log periodically that we're in stopped mode
                     if sample_idx % 100 == 0:
-                        self.logger.debug(f"[{timestamp}] Train STOPPED - skipping activity detection")
+                        self.logger.debug(f"[{timestamp}] Train STOPPED - minimal person detection only")
 
                     # End any active activities since train is now stopped
                     for activity_name in self.activities:
                         if self.activities[activity_name]['active']:
                             self.end_activity(activity_name, timestamp, fps, frame_idx, people_count=1, save_clips=save_clips)
-                        # Reset detection counters
-                        self.consecutive_detections[activity_name] = 0
-                        self.grace_counters[activity_name] = 0
+                        # Reset detection counters (except no_person_detected)
+                        if activity_name != 'no_person_detected':
+                            self.consecutive_detections[activity_name] = 0
+                            self.grace_counters[activity_name] = 0
 
-                    continue  # Skip to next frame - no activity detection needed
+                    # Use pre-computed batch detections if available, otherwise run detection
+                    if batch_object_detections is not None and idx < len(batch_object_detections):
+                        detections = batch_object_detections[idx]
+                    else:
+                        detections = self.detect_objects(frame, None, use_pose_guided=False)
+
+                    if len(detections['person']) > 0:
+                        deduplicated_persons = self.deduplicate_person_boxes(detections['person'], iou_threshold=0.5)
+                        person_count = len(deduplicated_persons)
+                    else:
+                        person_count = 0
+
+                    # Only check no_person_detected (existing violation)
+                    # group_detected is EXEMPTED when stopped
+                    no_person_flag = (person_count == 0)
+
+                    # Update no_person_detected activity tracking
+                    if no_person_flag:
+                        self.consecutive_detections['no_person_detected'] += 1
+                        self.grace_counters['no_person_detected'] = 0
+
+                        threshold = self.activity_thresholds['no_person_detected']
+                        if self.consecutive_detections['no_person_detected'] >= threshold['required_consecutive']:
+                            if not self.activities['no_person_detected']['active']:
+                                self.start_activity('no_person_detected', timestamp, frame)
+                                self.logger.info(f"[{timestamp}] NO PERSON detected (train stopped)")
+                    else:
+                        self.grace_counters['no_person_detected'] += 1
+                        grace_frames = self.activity_thresholds['no_person_detected']['grace_frames']
+                        if self.grace_counters['no_person_detected'] > grace_frames:
+                            self.consecutive_detections['no_person_detected'] = 0
+                            if self.activities['no_person_detected']['active']:
+                                self.end_activity('no_person_detected', timestamp, fps, frame_idx, people_count=person_count, save_clips=save_clips)
+
+                    continue  # Skip to next frame - no other activity checks needed
 
                 # STEP 1: Run MediaPipe Face Mesh on full frame (for face-based sleep/EAR detection)
                 rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
@@ -6221,14 +6630,31 @@ class LocopilotActivityMonitor:
                 alp_hand_gesture_detected = aggregated['alp_hand_gesture_detected']
                 mind_diversion_detected = aggregated['mind_diversion_detected']
 
+                # ALP STANDING CHECK: Check if ALP stands before train stops
+                if self.train_state_detector is not None and train_state is not None:
+                    alp_standing_violation = self.check_alp_standing_before_stop(
+                        train_state=train_state,
+                        train_state_changed=train_state_changed,
+                        timestamp_sec=timestamp_sec,
+                        persons_data=persons_data,
+                        person_roles=person_roles,
+                        frame_shape=frame.shape
+                    )
+                    if alp_standing_violation:
+                        # Start ALP standing violation activity
+                        if not self.activities['alp_not_standing_before_stop']['active']:
+                            self.start_activity('alp_not_standing_before_stop', timestamp, frame)
+                        # Immediately end it (one-time violation per stop)
+                        self.end_activity('alp_not_standing_before_stop', timestamp, fps, frame_idx, people_count=people_count, save_clips=save_clips)
+
                 # Face-based sleep detection (still use EAR as additional signal)
                 if face_results.multi_face_landmarks and ear_value is not None:
                     if ear_value < 0.2:
                         if self.eye_closure_start is None:
                             self.eye_closure_start = timestamp_sec
-                        
+
                         self.eye_closure_duration = timestamp_sec - self.eye_closure_start
-                        
+
                         # Merge with pose-based detection
                         if self.eye_closure_duration >= 30:
                             sleep_detected = True
@@ -6237,7 +6663,7 @@ class LocopilotActivityMonitor:
                     else:
                         self.eye_closure_start = None
                         self.eye_closure_duration = 0
-                
+
                 # DEPRECATED: Old single-person detection code removed
                 # The new process_all_persons_activities() method above handles all detections
                 

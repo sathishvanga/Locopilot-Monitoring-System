@@ -249,11 +249,11 @@ class Settings(BaseSettings):
     # Minimum seconds before state changes to STOPPED (temporal filtering)
     train_state_min_stopped_duration: float = float(os.getenv("TRAIN_STATE_MIN_STOPPED_SEC", "5.0"))
 
-    # PRIMARY: Left edge ROI width as fraction (where window is visible)
-    train_state_roi_left_percent: float = float(os.getenv("TRAIN_STATE_ROI_LEFT", "0.20"))
-
-    # Optional: Top edge ROI height as fraction
-    train_state_roi_top_percent: float = float(os.getenv("TRAIN_STATE_ROI_TOP", "0.10"))
+    # ROI: Side Window/Door - TOP ONLY (above person height to avoid crew movement)
+    train_state_roi_x_start: float = float(os.getenv("TRAIN_STATE_ROI_X_START", "0.37"))
+    train_state_roi_x_end: float = float(os.getenv("TRAIN_STATE_ROI_X_END", "0.52"))
+    train_state_roi_y_start: float = float(os.getenv("TRAIN_STATE_ROI_Y_START", "0.0"))
+    train_state_roi_y_end: float = float(os.getenv("TRAIN_STATE_ROI_Y_END", "0.15"))
 
     # Use adaptive ROI detection (color-based, experimental)
     train_state_adaptive_roi: bool = bool(int(os.getenv("TRAIN_STATE_ROI_ADAPTIVE", "0")))
@@ -262,6 +262,22 @@ class Settings(BaseSettings):
     train_state_debug_frames: bool = bool(int(os.getenv("TRAIN_STATE_DEBUG_FRAMES", "0")))
     train_state_debug_dir: str = os.getenv("TRAIN_STATE_DEBUG_DIR", "train_state_debug")
     train_state_debug_interval: int = int(os.getenv("TRAIN_STATE_DEBUG_INTERVAL", "1"))
+
+    # ==========================================================================
+    # ALP Standing Before Stop Detection Settings
+    # ==========================================================================
+    # ALP must stand up at least N seconds before train stops at a station
+    # Uses YOLO-Pose keypoints to detect standing posture
+
+    # Time in seconds ALP must stand before train stops
+    alp_standing_required_seconds: float = float(os.getenv("ALP_STANDING_REQUIRED_SECONDS", "30.0"))
+
+    # Optical flow threshold for detecting approach to stop (lower = slower)
+    # Train is "approaching stop" when flow drops below this but above stopped threshold
+    approaching_stop_flow_threshold: float = float(os.getenv("APPROACHING_STOP_FLOW_THRESHOLD", "4.0"))
+
+    # Number of frames to analyze for trend detection (linear regression on flow history)
+    approaching_stop_lookback_frames: int = int(os.getenv("APPROACHING_STOP_LOOKBACK_FRAMES", "15"))
 
     # ==========================================================================
     # Violation Exemption During Stopped State

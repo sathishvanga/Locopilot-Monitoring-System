@@ -20,6 +20,7 @@ class ActivityTypeEnum(IntEnum):
     ALP_NOT_EXCHANGING_HAND_GESTURE = 9
     MIND_DIVERSION = 10
     NO_PERSON_DETECTED = 11
+    ALP_NOT_STANDING_BEFORE_STOP = 12  # ALP must stand 30s before train stops at station
 
 
 class TrainStateEnum(IntEnum):
@@ -30,9 +31,10 @@ class TrainStateEnum(IntEnum):
     enabling exemption of non-safety-critical violations
     during stopped periods (at stations, signals, etc.).
     """
-    UNKNOWN = 0   # State not yet determined
-    MOVING = 1    # Train is in motion
-    STOPPED = 2   # Train is stationary
+    UNKNOWN = 0          # State not yet determined
+    MOVING = 1           # Train is in motion
+    STOPPED = 2          # Train is stationary
+    APPROACHING_STOP = 3 # Train decelerating toward stop (for ALP standing check)
 
 
 class EvidenceModel(BaseModel):

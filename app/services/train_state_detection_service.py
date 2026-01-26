@@ -72,19 +72,29 @@ class TrainStateDetector:
             config: Configuration dictionary with keys:
                 - motion_threshold: Optical flow magnitude threshold (default: 2.0)
                 - min_stopped_duration: Seconds before state changes to STOPPED (default: 5.0)
-                - roi_left_percent: Left edge ROI width as fraction (default: 0.20)
-                - roi_top_percent: Optional top edge ROI height (default: 0.10)
+                - roi1_x_start/end, roi1_y_start/end: Front window ROI coordinates
+                - roi2_x_start/end, roi2_y_start/end: Side window ROI coordinates
                 - adaptive_roi: Use color-based ROI detection (default: False)
                 - debug_frames: Enable debug frame saving (default: False)
                 - debug_dir: Directory for debug frames (default: 'train_state_debug')
                 - debug_interval: Save every Nth frame (default: 1)
+                - approaching_stop_flow_threshold: Flow threshold for approaching stop (default: 4.0)
+                - approaching_stop_lookback_frames: Frames to analyze for trend (default: 15)
         """
         # Configuration with validation
         self.motion_threshold = config.get('motion_threshold', 2.0)
         self.min_stopped_duration = config.get('min_stopped_duration', 5.0)
-        # Validate ROI percentages to be in range [0, 1]
-        self.roi_left_percent = max(0.0, min(1.0, config.get('roi_left_percent', 0.20)))
-        self.roi_top_percent = max(0.0, min(1.0, config.get('roi_top_percent', 0.10)))
+
+        # APPROACHING_STOP detection settings
+        self.approaching_stop_flow_threshold = config.get('approaching_stop_flow_threshold', 4.0)
+        self.approaching_stop_lookback_frames = config.get('approaching_stop_lookback_frames', 15)
+
+        # ROI: Side window/door - TOP ONLY (above person height to avoid crew movement)
+        self.roi_x_start = max(0.0, min(1.0, config.get('roi_x_start', 0.37)))
+        self.roi_x_end = max(0.0, min(1.0, config.get('roi_x_end', 0.52)))
+        self.roi_y_start = max(0.0, min(1.0, config.get('roi_y_start', 0.0)))
+        self.roi_y_end = max(0.0, min(1.0, config.get('roi_y_end', 0.15)))
+
         self.adaptive_roi = config.get('adaptive_roi', False)
 
         # Debug settings
@@ -108,6 +118,11 @@ class TrainStateDetector:
         self.flow_history_size = 5  # Number of frames to average
         self.flow_history: Deque[float] = deque(maxlen=self.flow_history_size)
 
+        # APPROACHING_STOP: Flow history for trend analysis (detecting deceleration)
+        self.approaching_stop_flow_history: Deque[Tuple[float, float]] = deque(
+            maxlen=self.approaching_stop_lookback_frames
+        )  # Stores (timestamp, flow_magnitude) tuples
+
         # Stopped periods tracking
         self.stopped_periods: List[StoppedPeriod] = []
         self._current_stopped_period: Optional[StoppedPeriod] = None
@@ -123,12 +138,23 @@ class TrainStateDetector:
         # Logger
         self.logger = logging.getLogger('TrainStateDetector')
 
+        # Periodic logging counter
+        self._log_interval = 10  # Log every 10 frames at INFO level
+        self._frame_count = 0
+
+        # Log initialization config
+        self.logger.info(
+            f"TrainStateDetector initialized: "
+            f"threshold={self.motion_threshold}, min_stopped={self.min_stopped_duration}s, "
+            f"ROI(x={self.roi_x_start:.0%}-{self.roi_x_end:.0%}, y={self.roi_y_start:.0%}-{self.roi_y_end:.0%})"
+        )
+
     def _create_roi_mask(self, frame_shape: Tuple[int, ...]) -> np.ndarray:
         """
-        Create mask for LEFT EDGE ROI where window/outside scenery is visible.
-        Based on actual camera setup: mounted rear-right, facing forward-left.
+        Create mask for window ROI where outside scenery is visible.
 
-        The left portion of frame shows the cab window with outside view.
+        The ROI should cover only the window area (not crew members)
+        where scenery is visible - motion detected here indicates train moving.
 
         Args:
             frame_shape: Shape of frame (height, width, channels)
@@ -139,15 +165,13 @@ class TrainStateDetector:
         height, width = frame_shape[:2]
         mask = np.zeros((height, width), dtype=bool)
 
-        # PRIMARY: Left edge ROI (window region) - where outside scenery is visible
-        # Based on sample frames: window occupies ~15-20% of left side
-        left_roi_width = int(width * self.roi_left_percent)
-        mask[:, :left_roi_width] = True
-
-        # OPTIONAL: Top edge ROI (may show partial window/ceiling)
-        if self.roi_top_percent > 0:
-            top_roi_height = int(height * self.roi_top_percent)
-            mask[:top_roi_height, :] = True
+        # Side window/door ROI (top area above person height)
+        x_start = int(width * self.roi_x_start)
+        x_end = int(width * self.roi_x_end)
+        y_start = int(height * self.roi_y_start)
+        y_end = int(height * self.roi_y_end)
+        if x_end > x_start and y_end > y_start:
+            mask[y_start:y_end, x_start:x_end] = True
 
         return mask
 
@@ -250,7 +274,71 @@ class TrainStateDetector:
         # Return moving average
         return sum(self.flow_history) / len(self.flow_history)
 
-    def _update_state(self, is_moving: bool, timestamp: float) -> None:
+    def _is_approaching_stop(self, smoothed_flow: float, timestamp: float) -> bool:
+        """
+        Detect if train is approaching a stop (decelerating).
+
+        Uses linear regression on flow history to detect consistent deceleration.
+        Train is "approaching stop" when:
+        1. Flow is between motion_threshold and approaching_stop_flow_threshold
+        2. Flow shows a consistent downward trend (negative slope)
+
+        Args:
+            smoothed_flow: Current smoothed flow magnitude
+            timestamp: Current timestamp
+
+        Returns:
+            True if train appears to be approaching a stop
+        """
+        # Store flow in history for trend analysis
+        self.approaching_stop_flow_history.append((timestamp, smoothed_flow))
+
+        # Need enough history for trend analysis
+        if len(self.approaching_stop_flow_history) < 5:
+            return False
+
+        # Check if flow is in the "approaching stop" range
+        # (below high threshold but above stopped threshold)
+        if smoothed_flow >= self.approaching_stop_flow_threshold:
+            return False  # Still moving at normal speed
+
+        if smoothed_flow <= self.motion_threshold:
+            return False  # Already stopped
+
+        # Perform linear regression to detect downward trend
+        # Extract timestamps and flow values
+        times = [t for t, _ in self.approaching_stop_flow_history]
+        flows = [f for _, f in self.approaching_stop_flow_history]
+
+        n = len(times)
+        if n < 3:
+            return False
+
+        # Simple linear regression: slope = (n*sum(xy) - sum(x)*sum(y)) / (n*sum(x^2) - sum(x)^2)
+        sum_t = sum(times)
+        sum_f = sum(flows)
+        sum_tf = sum(t * f for t, f in zip(times, flows))
+        sum_t2 = sum(t * t for t in times)
+
+        denominator = n * sum_t2 - sum_t * sum_t
+        if abs(denominator) < 1e-10:
+            return False
+
+        slope = (n * sum_tf - sum_t * sum_f) / denominator
+
+        # Negative slope indicates deceleration (flow decreasing over time)
+        # Threshold: slope should be significantly negative (e.g., < -0.1 per second)
+        is_decelerating = slope < -0.1
+
+        if is_decelerating:
+            self.logger.debug(
+                f"[{timestamp:.2f}s] Approaching stop detected: "
+                f"flow={smoothed_flow:.2f}, slope={slope:.3f}/s"
+            )
+
+        return is_decelerating
+
+    def _update_state(self, is_moving: bool, timestamp: float, is_approaching_stop: bool = False) -> None:
         """
         Update train state with temporal filtering.
         Requires sustained detection before changing state.
@@ -258,14 +346,21 @@ class TrainStateDetector:
         Args:
             is_moving: Whether motion is detected in current frame
             timestamp: Current timestamp in seconds
+            is_approaching_stop: Whether train is decelerating toward a stop
         """
         self._state_changed = False
 
         if is_moving:
-            # Motion detected
+            # Motion detected at normal speed
             self.potential_stopped_start = None  # Reset stopped timer
 
-            if self.current_state != TrainState.MOVING:
+            # Check for APPROACHING_STOP transition
+            if is_approaching_stop and self.current_state == TrainState.MOVING:
+                # Train is decelerating - transition to APPROACHING_STOP
+                self._transition_to_state(TrainState.APPROACHING_STOP, timestamp)
+                return
+
+            if self.current_state not in (TrainState.MOVING,):
                 if self.potential_moving_start is None:
                     self.potential_moving_start = timestamp
 
@@ -275,7 +370,7 @@ class TrainStateDetector:
                 if moving_duration >= 1.0:  # 1 second threshold for moving
                     self._transition_to_state(TrainState.MOVING, timestamp)
         else:
-            # No motion detected
+            # No motion detected (stopped or nearly stopped)
             self.potential_moving_start = None  # Reset moving timer
 
             if self.current_state != TrainState.STOPPED:
@@ -305,6 +400,9 @@ class TrainStateDetector:
             # Start new stopped period
             self._current_stopped_period = StoppedPeriod(start_time=timestamp)
             self.logger.info(f"[{timestamp:.2f}s] Train state changed to STOPPED")
+        elif new_state == TrainState.APPROACHING_STOP:
+            # Train is decelerating toward a stop
+            self.logger.info(f"[{timestamp:.2f}s] Train state changed to APPROACHING_STOP")
         elif new_state == TrainState.MOVING:
             # End current stopped period if active
             if self._current_stopped_period is not None:
@@ -344,25 +442,27 @@ class TrainStateDetector:
         debug_frame = frame.copy()
         h, w = frame.shape[:2]
 
-        # 1. Draw ROI boundary (green rectangle)
-        roi_left = int(w * self.roi_left_percent)
-        cv2.rectangle(debug_frame, (0, 0), (roi_left, h), (0, 255, 0), 3)
-        cv2.putText(debug_frame, "ROI", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
+        # Calculate ROI bounding box
+        x_start = int(w * self.roi_x_start)
+        x_end = int(w * self.roi_x_end)
+        y_start = int(h * self.roi_y_start)
+        y_end = int(h * self.roi_y_end)
 
-        # 2. Draw optical flow vectors (if available)
+        # 1. Draw ROI boundary (green rectangle) - Side Window
+        if x_end > x_start and y_end > y_start:
+            cv2.rectangle(debug_frame, (x_start, y_start), (x_end, y_end), (0, 255, 0), 3)
+            cv2.putText(debug_frame, "WINDOW ROI", (x_start + 5, y_start + 25),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+
+        # 2. Draw optical flow vectors (if available) within ROI
         if self.last_flow is not None:
-            # Subsample flow for visualization
             step = 16
-            for y in range(0, h, step):
-                for x in range(0, roi_left, step):  # Only in ROI
+            for y in range(y_start, y_end, step):
+                for x in range(x_start, x_end, step):
                     if x < self.last_flow.shape[1] and y < self.last_flow.shape[0]:
                         fx, fy = self.last_flow[y, x]
-                        cv2.arrowedLine(
-                            debug_frame,
-                            (x, y),
-                            (int(x + fx * 3), int(y + fy * 3)),
-                            (0, 255, 255), 1, tipLength=0.3
-                        )
+                        cv2.arrowedLine(debug_frame, (x, y), (int(x + fx * 3), int(y + fy * 3)),
+                                        (0, 255, 255), 1, tipLength=0.3)
 
         # 3. Draw state indicator (top-right)
         state_color = {
@@ -432,8 +532,26 @@ class TrainStateDetector:
         # Determine if train is moving based on threshold
         is_moving = smoothed_flow > self.motion_threshold
 
+        # Check for approaching stop (decelerating toward station)
+        is_approaching_stop = self._is_approaching_stop(smoothed_flow, timestamp)
+
+        # Debug logging - log flow values every frame
+        self.logger.debug(
+            f"[{timestamp:.2f}s] Flow: {flow_magnitude:.2f} | "
+            f"Smoothed: {smoothed_flow:.2f} | Threshold: {self.motion_threshold:.2f} | "
+            f"Moving: {is_moving} | Approaching: {is_approaching_stop} | State: {self.current_state.name}"
+        )
+
+        # Periodic INFO logging (every N frames) for easier monitoring
+        self._frame_count += 1
+        if self._frame_count % self._log_interval == 0:
+            self.logger.info(
+                f"[{timestamp:.2f}s] Train State: {self.current_state.name} | "
+                f"Flow: {smoothed_flow:.2f}/{self.motion_threshold:.2f}"
+            )
+
         # Update state with temporal filtering
-        self._update_state(is_moving, timestamp)
+        self._update_state(is_moving, timestamp, is_approaching_stop)
 
         # Save debug frame if enabled
         self._save_debug_frame(frame, smoothed_flow, self.current_state, timestamp)
@@ -469,6 +587,15 @@ class TrainStateDetector:
             True if train is in MOVING state
         """
         return self.current_state == TrainState.MOVING
+
+    def is_approaching_stop(self) -> bool:
+        """
+        Quick check if train is approaching a stop (decelerating).
+
+        Returns:
+            True if train is in APPROACHING_STOP state
+        """
+        return self.current_state == TrainState.APPROACHING_STOP
 
     def state_changed(self) -> bool:
         """
@@ -539,6 +666,7 @@ class TrainStateDetector:
         self.potential_stopped_start = None
         self.potential_moving_start = None
         self.flow_history.clear()
+        self.approaching_stop_flow_history.clear()
         self.stopped_periods.clear()
         self._current_stopped_period = None
         self.roi_mask = None
@@ -546,3 +674,4 @@ class TrainStateDetector:
         self.last_flow = None
         self.last_flow_magnitude = 0.0
         self._debug_frame_count = 0
+        self._frame_count = 0
