@@ -29,7 +29,7 @@ import numpy as np
 import os
 import logging
 from collections import deque
-from typing import Dict, List, Tuple, Optional, Deque
+from typing import Any, Dict, List, Tuple, Optional, Deque
 from dataclasses import dataclass
 
 # Import TrainState from activity_models to avoid duplicate enum definition
@@ -170,6 +170,13 @@ class TrainStateDetector:
         self.primary_roi_occluded: bool = False
         self.using_secondary_roi: bool = False
 
+        # ROI quality tracking (overexposure/underexposure detection)
+        self.primary_roi_valid: bool = True
+        self.secondary_roi_valid: bool = True
+        self.primary_roi_quality_reason: str = "valid"
+        self.secondary_roi_quality_reason: str = "valid"
+        self.roi_quality_unknown: bool = False  # True when both ROIs are invalid
+
         # Last flow for debug visualization
         self.last_flow: Optional[np.ndarray] = None
         self.last_flow_magnitude: float = 0.0
@@ -256,6 +263,67 @@ class TrainStateDetector:
             int(height * self.roi_y_start),
             int(width * self.roi_x_end),
             int(height * self.roi_y_end)
+        )
+
+    def _check_roi_quality(
+        self,
+        gray: np.ndarray,
+        roi_mask: np.ndarray
+    ) -> Tuple[bool, str]:
+        """
+        Check if ROI has enough texture for reliable optical flow.
+
+        Detects problematic conditions:
+        1. Overexposure (bright sunlight through window - mostly white pixels)
+        2. Underexposure (darkness/night - mostly black pixels)
+        3. Low texture (uniform area - no features to track)
+
+        Optical flow requires texture/features to track pixel movement.
+        When window shows only bright sunlight, there's nothing to track,
+        leading to false "stopped" detection even when train is moving.
+
+        Args:
+            gray: Grayscale frame
+            roi_mask: Boolean mask for the ROI
+
+        Returns:
+            Tuple of (is_valid, reason) where:
+            - is_valid: True if ROI has enough texture for reliable flow
+            - reason: "valid", "overexposed", "underexposed", or "low_texture"
+        """
+        roi_pixels = gray[roi_mask]
+
+        if roi_pixels.size == 0:
+            return False, "empty_roi"
+
+        mean_brightness = float(np.mean(roi_pixels))
+        std_brightness = float(np.std(roi_pixels))  # Texture/variance indicator
+
+        # Check overexposure (sunlight) - high brightness + low variance
+        # Window showing only bright sunlight will be mostly white (>240) with little variation
+        if mean_brightness > 240 and std_brightness < 15:
+            return False, "overexposed"
+
+        # Check underexposure (darkness/night)
+        # Very dark window with no visible features
+        if mean_brightness < 20 and std_brightness < 10:
+            return False, "underexposed"
+
+        # Check low texture (uniform area - nothing to track)
+        # Even with moderate brightness, if variance is very low, optical flow won't work
+        if std_brightness < 8:
+            return False, "low_texture"
+
+        return True, "valid"
+
+    def _get_secondary_roi_bounds(self, frame_shape: Tuple[int, ...]) -> Tuple[int, int, int, int]:
+        """Get pixel bounds for secondary ROI (x_start, y_start, x_end, y_end)."""
+        height, width = frame_shape[:2]
+        return (
+            int(width * self.secondary_roi_x_start),
+            int(height * self.secondary_roi_y_start),
+            int(width * self.secondary_roi_x_end),
+            int(height * self.secondary_roi_y_end)
         )
 
     def _check_roi_occlusion(
@@ -432,12 +500,12 @@ class TrainStateDetector:
         prev_gray: np.ndarray,
         curr_gray: np.ndarray,
         person_boxes: Optional[List[List[float]]] = None
-    ) -> Tuple[float, bool]:
+    ) -> Tuple[float, bool, bool]:
         """
         Calculate optical flow using dual ROI with fallback logic.
 
-        When primary ROI is occluded (ALP standing near window), falls back
-        to secondary ROI to maintain accurate motion detection.
+        When primary ROI is occluded (ALP standing near window) or has poor quality
+        (overexposed due to sunlight), falls back to secondary ROI.
 
         Args:
             prev_gray: Previous grayscale frame
@@ -445,11 +513,14 @@ class TrainStateDetector:
             person_boxes: Optional list of person bounding boxes
 
         Returns:
-            Tuple of (flow_magnitude, using_secondary_roi)
+            Tuple of (flow_magnitude, using_secondary_roi, quality_unknown)
+            - flow_magnitude: Average optical flow in the active ROI
+            - using_secondary_roi: True if secondary ROI is being used
+            - quality_unknown: True if both ROIs have poor quality (can't determine motion)
         """
         flow = self._calculate_optical_flow(prev_gray, curr_gray)
         if flow is None:
-            return 0.0, False
+            return 0.0, False, False
 
         # Store for debug visualization
         self.last_flow = flow
@@ -458,13 +529,29 @@ class TrainStateDetector:
         primary_flow = self._get_roi_flow_magnitude(flow, self.roi_mask)
         self.last_primary_flow = primary_flow
 
-        # If secondary ROI is not enabled, just use primary
+        # Check primary ROI quality (overexposure/underexposure/low texture)
+        self.primary_roi_valid, self.primary_roi_quality_reason = self._check_roi_quality(
+            curr_gray, self.roi_mask
+        )
+
+        # If secondary ROI is not enabled, just use primary (even if quality is poor)
         if not self.secondary_roi_enabled or self.secondary_roi_mask is None:
-            return primary_flow, False
+            self.roi_quality_unknown = not self.primary_roi_valid
+            if not self.primary_roi_valid:
+                self.logger.debug(
+                    f"Primary ROI quality issue: {self.primary_roi_quality_reason}, "
+                    f"no secondary ROI available"
+                )
+            return primary_flow, False, not self.primary_roi_valid
 
         # Calculate flow for secondary ROI
         secondary_flow = self._get_roi_flow_magnitude(flow, self.secondary_roi_mask)
         self.last_secondary_flow = secondary_flow
+
+        # Check secondary ROI quality
+        self.secondary_roi_valid, self.secondary_roi_quality_reason = self._check_roi_quality(
+            curr_gray, self.secondary_roi_mask
+        )
 
         # Check if primary ROI is occluded by a person
         is_occluded_by_person = self._check_roi_occlusion(
@@ -481,19 +568,41 @@ class TrainStateDetector:
         )
 
         # Determine if we should use secondary ROI
-        use_secondary = is_occluded_by_person or is_flow_inconsistent
-        self.primary_roi_occluded = use_secondary
+        # Use secondary if: primary is occluded by person, flow inconsistent, OR primary has quality issues
+        primary_unusable = is_occluded_by_person or is_flow_inconsistent or not self.primary_roi_valid
+        use_secondary = primary_unusable and self.secondary_roi_valid
+
+        self.primary_roi_occluded = is_occluded_by_person or is_flow_inconsistent
         self.using_secondary_roi = use_secondary
 
+        # Check if BOTH ROIs have quality issues (can't reliably determine motion)
+        both_rois_invalid = not self.primary_roi_valid and not self.secondary_roi_valid
+        self.roi_quality_unknown = both_rois_invalid
+
+        if both_rois_invalid:
+            self.logger.warning(
+                f"Both ROIs have quality issues - cannot reliably determine motion. "
+                f"Primary: {self.primary_roi_quality_reason}, Secondary: {self.secondary_roi_quality_reason}"
+            )
+            # Return primary flow but mark as unknown quality
+            return primary_flow, False, True
+
         if use_secondary:
+            reason_parts = []
+            if is_occluded_by_person:
+                reason_parts.append("person_occlusion")
+            if is_flow_inconsistent:
+                reason_parts.append("flow_inconsistent")
+            if not self.primary_roi_valid:
+                reason_parts.append(f"primary_{self.primary_roi_quality_reason}")
+
             self.logger.debug(
-                f"Using secondary ROI: person_occlusion={is_occluded_by_person}, "
-                f"flow_inconsistent={is_flow_inconsistent}, "
+                f"Using secondary ROI: reasons=[{', '.join(reason_parts)}], "
                 f"primary_flow={primary_flow:.2f}, secondary_flow={secondary_flow:.2f}"
             )
-            return secondary_flow, True
+            return secondary_flow, True, False
         else:
-            return primary_flow, False
+            return primary_flow, False, False
 
     def _smooth_flow_value(self, flow_magnitude: float) -> float:
         """
@@ -686,14 +795,21 @@ class TrainStateDetector:
         roi_y_end = int(h * self.roi_y_end)
 
         # 1. Draw primary ROI boundary
-        # Color: Green if active, Gray if occluded
-        primary_color = (128, 128, 128) if self.using_secondary_roi else (0, 255, 0)
+        # Color: Green if active and valid, Orange if quality issue, Gray if using secondary
+        if not self.primary_roi_valid:
+            primary_color = (0, 165, 255)  # Orange - quality issue
+            primary_label = f"PRIMARY ({self.primary_roi_quality_reason.upper()})"
+        elif self.using_secondary_roi:
+            primary_color = (128, 128, 128)  # Gray - not in use
+            primary_label = "PRIMARY ROI (OCCLUDED)"
+        else:
+            primary_color = (0, 255, 0)  # Green - active and valid
+            primary_label = "WINDOW ROI"
         primary_thickness = 2 if self.using_secondary_roi else 3
         if roi_x_end > roi_x_start and roi_y_end > roi_y_start:
             cv2.rectangle(debug_frame, (roi_x_start, roi_y_start),
                           (roi_x_end, roi_y_end), primary_color, primary_thickness)
-            label = "PRIMARY ROI (OCCLUDED)" if self.using_secondary_roi else "WINDOW ROI"
-            cv2.putText(debug_frame, label,
+            cv2.putText(debug_frame, primary_label,
                         (roi_x_start + 5, roi_y_start + 25),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.5, primary_color, 2)
 
@@ -704,16 +820,32 @@ class TrainStateDetector:
             sec_y_start = int(h * self.secondary_roi_y_start)
             sec_y_end = int(h * self.secondary_roi_y_end)
 
-            # Color: Cyan if active, Gray if not being used
-            secondary_color = (255, 255, 0) if self.using_secondary_roi else (128, 128, 128)
+            # Color: Cyan if active and valid, Orange if quality issue, Gray if not used
+            if not self.secondary_roi_valid:
+                secondary_color = (0, 165, 255)  # Orange - quality issue
+                secondary_label = f"SECONDARY ({self.secondary_roi_quality_reason.upper()})"
+            elif self.using_secondary_roi:
+                secondary_color = (255, 255, 0)  # Cyan - active
+                secondary_label = "SECONDARY ROI (ACTIVE)"
+            else:
+                secondary_color = (128, 128, 128)  # Gray - not in use
+                secondary_label = "SECONDARY ROI"
             secondary_thickness = 3 if self.using_secondary_roi else 2
             if sec_x_end > sec_x_start and sec_y_end > sec_y_start:
                 cv2.rectangle(debug_frame, (sec_x_start, sec_y_start),
                               (sec_x_end, sec_y_end), secondary_color, secondary_thickness)
-                label = "SECONDARY ROI (ACTIVE)" if self.using_secondary_roi else "SECONDARY ROI"
-                cv2.putText(debug_frame, label,
+                cv2.putText(debug_frame, secondary_label,
                             (sec_x_start + 5, sec_y_start + 25),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.5, secondary_color, 2)
+
+        # 2b. Draw warning banner if both ROIs have quality issues
+        if self.roi_quality_unknown:
+            # Draw red warning banner at top
+            cv2.rectangle(debug_frame, (0, 0), (w, 35), (0, 0, 180), -1)
+            cv2.putText(
+                debug_frame, "WARNING: BOTH ROIs INVALID - CANNOT DETERMINE MOTION",
+                (10, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2
+            )
 
         # 3. Draw optical flow vectors in the active ROI
         if self.last_flow is not None:
@@ -750,20 +882,40 @@ class TrainStateDetector:
             (w - 280, 120), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (200, 200, 200), 2
         )
 
-        # 5. Show ROI flow values
-        roi_label = "Using: SECONDARY" if self.using_secondary_roi else "Using: PRIMARY"
+        # 5. Show ROI flow values and quality status
+        if self.roi_quality_unknown:
+            roi_label = "QUALITY UNKNOWN"
+            roi_color = (0, 165, 255)  # Orange
+        elif self.using_secondary_roi:
+            roi_label = "Using: SECONDARY"
+            roi_color = (255, 255, 255)
+        else:
+            roi_label = "Using: PRIMARY"
+            roi_color = (255, 255, 255)
         cv2.putText(
             debug_frame, roi_label,
-            (w - 280, 160), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2
+            (w - 280, 160), cv2.FONT_HERSHEY_SIMPLEX, 0.6, roi_color, 2
         )
+
+        # Primary ROI info with quality
+        primary_quality_color = (0, 255, 0) if self.primary_roi_valid else (0, 165, 255)
+        primary_info = f"Primary: {self.last_primary_flow:.2f}"
+        if not self.primary_roi_valid:
+            primary_info += f" [{self.primary_roi_quality_reason}]"
         cv2.putText(
-            debug_frame, f"Primary: {self.last_primary_flow:.2f}",
-            (w - 280, 190), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1
+            debug_frame, primary_info,
+            (w - 280, 190), cv2.FONT_HERSHEY_SIMPLEX, 0.5, primary_quality_color, 1
         )
+
+        # Secondary ROI info with quality
         if self.secondary_roi_enabled:
+            secondary_quality_color = (0, 255, 0) if self.secondary_roi_valid else (0, 165, 255)
+            secondary_info = f"Secondary: {self.last_secondary_flow:.2f}"
+            if not self.secondary_roi_valid:
+                secondary_info += f" [{self.secondary_roi_quality_reason}]"
             cv2.putText(
-                debug_frame, f"Secondary: {self.last_secondary_flow:.2f}",
-                (w - 280, 215), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1
+                debug_frame, secondary_info,
+                (w - 280, 215), cv2.FONT_HERSHEY_SIMPLEX, 0.5, secondary_quality_color, 1
             )
 
         # 6. Add timestamp
@@ -818,10 +970,29 @@ class TrainStateDetector:
             return self.current_state
 
         # Calculate optical flow using dual ROI with fallback logic
-        flow_magnitude, using_secondary = self._calculate_dual_roi_flow(
+        flow_magnitude, using_secondary, quality_unknown = self._calculate_dual_roi_flow(
             self.prev_gray, gray, person_boxes
         )
         self.last_flow_magnitude = flow_magnitude
+
+        # Handle case when both ROIs have quality issues (overexposed/underexposed)
+        # In this case, we cannot reliably determine motion, so maintain previous state
+        if quality_unknown:
+            self._frame_count += 1
+            if self._frame_count % self._log_interval == 0:
+                self.logger.warning(
+                    f"[{timestamp:.2f}s] ROI quality unknown (primary: {self.primary_roi_quality_reason}, "
+                    f"secondary: {self.secondary_roi_quality_reason}) - maintaining state: {self.current_state.name}"
+                )
+
+            # Save debug frame showing quality issue
+            self._save_debug_frame(frame, flow_magnitude, self.current_state, timestamp)
+
+            # Store current frame for next iteration
+            self.prev_gray = gray
+
+            # Return current state without updating (can't determine motion reliably)
+            return self.current_state
 
         # Smooth flow values
         smoothed_flow = self._smooth_flow_value(flow_magnitude)
@@ -894,6 +1065,39 @@ class TrainStateDetector:
             True if train is in APPROACHING_STOP state
         """
         return self.current_state == TrainState.APPROACHING_STOP
+
+    def is_quality_unknown(self) -> bool:
+        """
+        Check if motion detection quality is unknown due to ROI issues.
+
+        This occurs when both primary and secondary ROIs have quality problems
+        (overexposed from sunlight, underexposed, or low texture), making it
+        impossible to reliably determine train motion.
+
+        Returns:
+            True if both ROIs have quality issues and motion cannot be determined
+        """
+        return self.roi_quality_unknown
+
+    def get_roi_quality_status(self) -> Dict[str, Any]:
+        """
+        Get detailed ROI quality status for debugging/monitoring.
+
+        Returns:
+            Dictionary with quality information for both ROIs:
+            - primary_valid: bool
+            - primary_reason: str (valid, overexposed, underexposed, low_texture)
+            - secondary_valid: bool
+            - secondary_reason: str
+            - quality_unknown: bool (True if both invalid)
+        """
+        return {
+            'primary_valid': self.primary_roi_valid,
+            'primary_reason': self.primary_roi_quality_reason,
+            'secondary_valid': self.secondary_roi_valid,
+            'secondary_reason': self.secondary_roi_quality_reason,
+            'quality_unknown': self.roi_quality_unknown,
+        }
 
     def state_changed(self) -> bool:
         """
@@ -976,5 +1180,11 @@ class TrainStateDetector:
         self.last_secondary_flow = 0.0
         self.primary_roi_occluded = False
         self.using_secondary_roi = False
+        # Reset ROI quality tracking
+        self.primary_roi_valid = True
+        self.secondary_roi_valid = True
+        self.primary_roi_quality_reason = "valid"
+        self.secondary_roi_quality_reason = "valid"
+        self.roi_quality_unknown = False
         self._debug_frame_count = 0
         self._frame_count = 0
