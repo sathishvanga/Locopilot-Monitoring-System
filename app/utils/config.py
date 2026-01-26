@@ -234,6 +234,71 @@ class Settings(BaseSettings):
     # GPU Memory Management Settings
     gpu_memory_warning_threshold: float = float(os.getenv("GPU_MEMORY_WARNING_THRESHOLD", "80.0"))  # Percentage
 
+    # ==========================================================================
+    # Train State Detection Settings (ROI-based Optical Flow)
+    # ==========================================================================
+    # Detects when train is stopped to exempt non-safety-critical violations
+    # ROI configured for Indian loco cab camera (mounted rear-right, window on left)
+
+    # Enable/disable train state detection
+    train_state_detection_enabled: bool = bool(int(os.getenv("TRAIN_STATE_DETECTION_ENABLED", "1")))
+
+    # Optical flow magnitude threshold (lower = more sensitive to motion)
+    train_state_motion_threshold: float = float(os.getenv("TRAIN_STATE_MOTION_THRESHOLD", "2.0"))
+
+    # Minimum seconds before state changes to STOPPED (temporal filtering)
+    train_state_min_stopped_duration: float = float(os.getenv("TRAIN_STATE_MIN_STOPPED_SEC", "5.0"))
+
+    # PRIMARY: Left edge ROI width as fraction (where window is visible)
+    train_state_roi_left_percent: float = float(os.getenv("TRAIN_STATE_ROI_LEFT", "0.20"))
+
+    # Optional: Top edge ROI height as fraction
+    train_state_roi_top_percent: float = float(os.getenv("TRAIN_STATE_ROI_TOP", "0.10"))
+
+    # Use adaptive ROI detection (color-based, experimental)
+    train_state_adaptive_roi: bool = bool(int(os.getenv("TRAIN_STATE_ROI_ADAPTIVE", "0")))
+
+    # Debug settings for train state detection
+    train_state_debug_frames: bool = bool(int(os.getenv("TRAIN_STATE_DEBUG_FRAMES", "0")))
+    train_state_debug_dir: str = os.getenv("TRAIN_STATE_DEBUG_DIR", "train_state_debug")
+    train_state_debug_interval: int = int(os.getenv("TRAIN_STATE_DEBUG_INTERVAL", "1"))
+
+    # ==========================================================================
+    # Violation Exemption During Stopped State
+    # ==========================================================================
+    # Activities that are EXEMPTED when train is stopped
+    # Format: JSON array of activity names
+    # When train is stopped (at stations, signals, etc.), crew is permitted to rest/relax
+    # ALL violations are exempted during stopped periods
+
+    @field_validator('stopped_state_exempt_activities', mode='before')
+    @classmethod
+    def parse_exempt_activities(cls, v):
+        """Parse exempt activities from JSON string or return default"""
+        default_exempt = [
+            "cell_phone", "writing", "packing_bags", "mind_diversion",
+            "microsleep", "sleep", "no_person_detected", "group_detected",
+            "lp_hand_gesture", "alp_hand_gesture"
+        ]
+        if v is None:
+            return default_exempt
+        if isinstance(v, str):
+            try:
+                parsed = json.loads(v)
+                if isinstance(parsed, list):
+                    return parsed
+            except (json.JSONDecodeError, ValueError, TypeError):
+                pass
+            return default_exempt
+        if isinstance(v, list):
+            return v
+        return default_exempt
+
+    stopped_state_exempt_activities: List[str] = json.loads(
+        os.getenv("STOPPED_STATE_EXEMPT_ACTIVITIES",
+                  '["cell_phone", "writing", "packing_bags", "mind_diversion", "microsleep", "sleep", "no_person_detected", "group_detected", "lp_hand_gesture", "alp_hand_gesture"]')
+    )
+
 
 @lru_cache()
 def get_settings() -> Settings:

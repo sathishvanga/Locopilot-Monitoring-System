@@ -65,6 +65,13 @@ except ImportError:
     VotingVerificationService = None
     ActivityBatchCollector = None
 
+# Import TrainStateDetector for stopped train detection
+try:
+    from app.services.train_state_detection_service import TrainStateDetector, TrainState
+except ImportError:
+    TrainStateDetector = None
+    TrainState = None
+
 
 # ✅ WINDOWS FIX: Prevent Qt/GUI initialization in worker processes
 # If running in a worker process (detected by QT_QPA_PLATFORM=offscreen),
@@ -534,6 +541,43 @@ class LocopilotActivityMonitor:
         else:
             self.voting_service = None
             self.logger.info("VotingVerificationService not available - voting disabled")
+
+        # Initialize train state detector for stopped train detection
+        # When train is stopped, certain activities (cell_phone, writing, packing_bags, mind_diversion) are exempted
+        if TrainStateDetector is not None and settings is not None:
+            if getattr(settings, 'train_state_detection_enabled', True):
+                try:
+                    train_state_config = {
+                        'motion_threshold': getattr(settings, 'train_state_motion_threshold', 2.0),
+                        'min_stopped_duration': getattr(settings, 'train_state_min_stopped_duration', 5.0),
+                        'roi_left_percent': getattr(settings, 'train_state_roi_left_percent', 0.20),
+                        'roi_top_percent': getattr(settings, 'train_state_roi_top_percent', 0.10),
+                        'adaptive_roi': getattr(settings, 'train_state_adaptive_roi', False),
+                        'debug_frames': getattr(settings, 'train_state_debug_frames', False),
+                        'debug_dir': getattr(settings, 'train_state_debug_dir', 'train_state_debug'),
+                        'debug_interval': getattr(settings, 'train_state_debug_interval', 1),
+                    }
+                    self.train_state_detector = TrainStateDetector(train_state_config)
+                    self.exempt_activities = getattr(
+                        settings, 'stopped_state_exempt_activities',
+                        ['cell_phone', 'writing', 'packing_bags', 'mind_diversion']
+                    )
+                    self.logger.info(
+                        f"TrainStateDetector initialized - exempt activities: {self.exempt_activities}"
+                    )
+                except Exception as e:
+                    self.logger.warning(f"Failed to initialize TrainStateDetector: {e}")
+                    self.train_state_detector = None
+                    self.exempt_activities = []
+            else:
+                self.train_state_detector = None
+                self.exempt_activities = []
+                self.logger.info("Train state detection disabled by configuration")
+        else:
+            self.train_state_detector = None
+            self.exempt_activities = []
+            if TrainStateDetector is None:
+                self.logger.info("TrainStateDetector not available - stopped train exemption disabled")
 
     def get_keypoint(self, landmarks, keypoint_name):
         """Get a keypoint from landmarks by name (works with both YOLO and MediaPipe formats).
@@ -5545,15 +5589,44 @@ class LocopilotActivityMonitor:
 
                 # Add frame to buffer
                 self.frame_buffer.append(frame.copy())
-                
+
+                # TRAIN STATE DETECTION: Analyze if train is stopped or moving
+                # Uses ROI-based optical flow on window regions (excludes cabin interior)
+                train_is_stopped = False
+                if self.train_state_detector is not None:
+                    train_state = self.train_state_detector.analyze_frame(frame, timestamp_sec)
+                    train_is_stopped = self.train_state_detector.is_stopped()
+
+                    # Log state changes
+                    if self.train_state_detector.state_changed():
+                        state_name = train_state.name if hasattr(train_state, 'name') else str(train_state)
+                        self.logger.info(f"[{timestamp}] Train state changed to: {state_name}")
+
+                # PERFORMANCE OPTIMIZATION: Skip all heavy model inference when train is stopped
+                # No need to run YOLO, YOLO-Pose, MediaPipe when all violations are exempted
+                if train_is_stopped:
+                    # Log periodically that we're skipping processing
+                    if sample_idx % 100 == 0:
+                        self.logger.debug(f"[{timestamp}] Train STOPPED - skipping activity detection")
+
+                    # End any active activities since train is now stopped
+                    for activity_name in self.activities:
+                        if self.activities[activity_name]['active']:
+                            self.end_activity(activity_name, timestamp, fps, frame_idx, people_count=1)
+                        # Reset detection counters
+                        self.consecutive_detections[activity_name] = 0
+                        self.grace_counters[activity_name] = 0
+
+                    continue  # Skip to next frame - no model inference needed
+
                 # STEP 1: Run MediaPipe Face Mesh on full frame (for face-based sleep/EAR detection)
                 rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
                 face_results = self.face_mesh.process(rgb_frame)
-                
+
                 # Calculate EAR for all detected faces (check all people)
                 ear_value = None
                 min_ear_value = None  # Track the lowest EAR (most closed eyes)
-                
+
                 if face_results.multi_face_landmarks:
                     # Check all detected faces
                     ear_values = []
@@ -5561,7 +5634,7 @@ class LocopilotActivityMonitor:
                         ear = self.calculate_eye_aspect_ratio(face_landmarks.landmark)
                         if ear is not None:
                             ear_values.append(ear)
-                    
+
                     # Use the minimum EAR (most closed eyes) for microsleep detection
                     if ear_values:
                         min_ear_value = min(ear_values)
@@ -5796,15 +5869,17 @@ class LocopilotActivityMonitor:
                     'no_person_detected': no_person_detected_flag
                 }
 
+                # Note: Train stopped check with `continue` happens earlier - if we reach here, train is moving
+
                 for activity_name, detected in activities_map.items():
                     if detected:
                         # Activity detected - increment consecutive counter and reset grace period
                         self.consecutive_detections[activity_name] += 1
                         self.grace_counters[activity_name] = 0  # Reset grace period
-                        
+
                         # Only start recording after required consecutive frames threshold is met
                         required_consecutive = self.activity_thresholds[activity_name]['required_consecutive']
-                        
+
                         if self.consecutive_detections[activity_name] >= required_consecutive:
                             # Start activity if not already active
                             if not self.activities[activity_name]['active']:
@@ -5878,6 +5953,19 @@ class LocopilotActivityMonitor:
             # Record ALP coordination failure if session ended with violation
             if not self.activities['alp_hand_gesture']['active']:
                 self.start_activity('alp_hand_gesture', str(timedelta(seconds=timestamp_sec)), fps, frame_idx, person_roles=None)
+
+        # Finalize train state detection and log stopped periods
+        if self.train_state_detector is not None:
+            self.train_state_detector.finalize(timestamp_sec)
+            stopped_periods = self.train_state_detector.get_stopped_periods()
+            if stopped_periods:
+                self.logger.info("-" * 40)
+                self.logger.info("[TRAIN STATE DETECTION SUMMARY]")
+                self.logger.info(f"  Total stopped periods: {len(stopped_periods)}")
+                for i, (start, end) in enumerate(stopped_periods, 1):
+                    duration = (end - start) if end else "ongoing"
+                    end_str = f"{end:.2f}s" if end else "video end"
+                    self.logger.info(f"  Period {i}: {start:.2f}s - {end_str} (duration: {duration}s)")
 
         # End any remaining active activities
         final_timestamp = str(timedelta(seconds=timestamp_sec))
@@ -6012,22 +6100,51 @@ class LocopilotActivityMonitor:
 
                 # Add frame to buffer
                 self.frame_buffer.append(frame.copy())
-                
+
+                # TRAIN STATE DETECTION: Analyze if train is stopped or moving
+                # Uses ROI-based optical flow on window regions (excludes cabin interior)
+                train_is_stopped = False
+                if self.train_state_detector is not None:
+                    train_state = self.train_state_detector.analyze_frame(frame, timestamp_sec)
+                    train_is_stopped = self.train_state_detector.is_stopped()
+
+                    # Log state changes
+                    if self.train_state_detector.state_changed():
+                        state_name = train_state.name if hasattr(train_state, 'name') else str(train_state)
+                        self.logger.info(f"[{timestamp}] Train state changed to: {state_name}")
+
+                # PERFORMANCE OPTIMIZATION: Skip activity detection when train is stopped
+                # Note: Batch YOLO inference already happened, but skip MediaPipe and activity logic
+                if train_is_stopped:
+                    # Log periodically that we're skipping processing
+                    if sample_idx % 100 == 0:
+                        self.logger.debug(f"[{timestamp}] Train STOPPED - skipping activity detection")
+
+                    # End any active activities since train is now stopped
+                    for activity_name in self.activities:
+                        if self.activities[activity_name]['active']:
+                            self.end_activity(activity_name, timestamp, fps, frame_idx, people_count=1, save_clips=save_clips)
+                        # Reset detection counters
+                        self.consecutive_detections[activity_name] = 0
+                        self.grace_counters[activity_name] = 0
+
+                    continue  # Skip to next frame - no activity detection needed
+
                 # STEP 1: Run MediaPipe Face Mesh on full frame (for face-based sleep/EAR detection)
                 rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
                 face_results = self.face_mesh.process(rgb_frame)
-                
+
                 # Calculate EAR for all detected faces
                 ear_value = None
                 min_ear_value = None
-                
+
                 if face_results.multi_face_landmarks:
                     ear_values = []
                     for face_landmarks in face_results.multi_face_landmarks:
                         ear = self.calculate_eye_aspect_ratio(face_landmarks.landmark)
                         if ear is not None:
                             ear_values.append(ear)
-                    
+
                     if ear_values:
                         min_ear_value = min(ear_values)
                         ear_value = min_ear_value
@@ -6203,17 +6320,19 @@ class LocopilotActivityMonitor:
                     'no_person_detected': no_person_detected_flag
                 }
 
+                # Note: Train stopped check with `continue` happens earlier - if we reach here, train is moving
+
                 for activity_name, detected in activities_map.items():
                     if detected:
                         self.consecutive_detections[activity_name] += 1
                         self.grace_counters[activity_name] = 0
-                        
+
                         required_consecutive = self.activity_thresholds[activity_name]['required_consecutive']
-                        
+
                         if self.consecutive_detections[activity_name] >= required_consecutive:
                             if not self.activities[activity_name]['active']:
                                 self.start_activity(activity_name, timestamp, fps, frame_idx, person_roles=person_roles)
-                            
+
                             if self.activities[activity_name]['active']:
                                 # Store raw frame (without annotations) for clean evidence clips
                                 self.activities[activity_name]['frames'].append(frame.copy())
@@ -6263,6 +6382,11 @@ class LocopilotActivityMonitor:
         # Coordination failures are detected during chunk processing via the session
         # timeout mechanism, not at chunk boundaries. The _finalize_coordination_session()
         # is only appropriate for process_video() which processes the entire video sequentially.
+
+        # Finalize train state detection for this chunk
+        # Note: Unlike process_video(), we don't log a summary since this is a partial view
+        if self.train_state_detector is not None:
+            self.train_state_detector.finalize(timestamp_sec)
 
         # End any remaining active activities
         final_timestamp = str(timedelta(seconds=timestamp_sec))
@@ -6314,16 +6438,20 @@ class LocopilotActivityMonitor:
             # Clear frame buffers (always)
             if hasattr(self, 'frame_buffer'):
                 self.frame_buffer.clear()
-            
+
             # Clear activity frames (always)
             if hasattr(self, 'activities'):
                 for activity_name in self.activities:
                     if 'frames' in self.activities[activity_name]:
                         self.activities[activity_name]['frames'].clear()
-            
+
+            # Reset train state detector (always)
+            if hasattr(self, 'train_state_detector') and self.train_state_detector is not None:
+                self.train_state_detector.reset()
+
             # Force garbage collection
             gc.collect()
-            
+
             self.logger.info("Cleanup completed: Models closed, buffers cleared")
         except Exception as e:
             self.logger.warning(f"Warning during cleanup: {e}")

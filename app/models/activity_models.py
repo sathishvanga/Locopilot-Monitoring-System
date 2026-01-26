@@ -22,6 +22,19 @@ class ActivityTypeEnum(IntEnum):
     NO_PERSON_DETECTED = 11
 
 
+class TrainStateEnum(IntEnum):
+    """
+    Train state enumeration for stopped train detection.
+
+    Used to track whether the train is moving or stopped,
+    enabling exemption of non-safety-critical violations
+    during stopped periods (at stations, signals, etc.).
+    """
+    UNKNOWN = 0   # State not yet determined
+    MOVING = 1    # Train is in motion
+    STOPPED = 2   # Train is stationary
+
+
 class EvidenceModel(BaseModel):
     """Evidence details for an activity"""
     rule: str = Field(..., description="Evidence rule that triggered the activity")
