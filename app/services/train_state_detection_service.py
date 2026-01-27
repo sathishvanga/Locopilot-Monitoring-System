@@ -1,20 +1,24 @@
 """
 Train State Detection Service
 
-Detects train stopped/moving state using ROI-based optical flow analysis.
+Detects train stopped/moving state using MULTI-METHOD motion analysis.
 
 Key Insight: LP/ALP move in cabin regardless of train state.
 Solution: Analyze ONLY window/edge regions (scenery), EXCLUDE cabin interior.
 
-Detection Logic:
-1. Extract window/edge ROI (left side of frame where window is visible)
-2. Calculate optical flow ONLY within ROI
-3. If average flow magnitude < threshold = STOPPED
+Multi-Method Detection (Robust to Overexposure):
+1. PRIMARY: Standard optical flow on grayscale ROI
+2. FALLBACK 1: Edge-based optical flow (Canny edges first, then flow)
+   - Works when window is overexposed (bright sunlight)
+   - Edges at window frame boundaries are still visible
+3. FALLBACK 2: Frame differencing with adaptive threshold
+   - Simple but effective for detecting any change
 4. Apply temporal filtering (require sustained state)
 
 Dual ROI System (ALP Occlusion Handling):
-- PRIMARY ROI: Side window behind ALP (37-52% x, 0-15% y)
-- SECONDARY ROI: Left side window (0-12% x, 15-40% y) - below and left of primary
+- PRIMARY ROI: Front window/monitor area (40-49% x, 0-12% y)
+- SECONDARY ROI: Left side window showing OUTSIDE scenery (0-18% x, 3-45% y)
+  IMPORTANT: Secondary ROI must capture a window with external scenery, NOT interior controls!
 - When ALP stands near primary window and occludes it, falls back to secondary ROI
 - Occlusion detected via person bounding box overlap or flow inconsistency
 
@@ -117,11 +121,13 @@ class TrainStateDetector:
         # SECONDARY ROI: Left side window (fallback when primary ROI is occluded by ALP)
         # This window is on the far left of the frame, showing outside scenery
         # Used when ALP stands near the primary side window
+        # IMPORTANT: ROI must show OUTSIDE scenery, NOT interior control panel!
+        # The side window extends from upper-left down the left edge (x=0-18%, y=3-45%)
         self.secondary_roi_enabled = config.get('secondary_roi_enabled', True)
         self.secondary_roi_x_start = max(0.0, min(1.0, config.get('secondary_roi_x_start', 0.0)))
-        self.secondary_roi_x_end = max(0.0, min(1.0, config.get('secondary_roi_x_end', 0.12)))
-        self.secondary_roi_y_start = max(0.0, min(1.0, config.get('secondary_roi_y_start', 0.30)))
-        self.secondary_roi_y_end = max(0.0, min(1.0, config.get('secondary_roi_y_end', 0.55)))
+        self.secondary_roi_x_end = max(0.0, min(1.0, config.get('secondary_roi_x_end', 0.18)))
+        self.secondary_roi_y_start = max(0.0, min(1.0, config.get('secondary_roi_y_start', 0.03)))
+        self.secondary_roi_y_end = max(0.0, min(1.0, config.get('secondary_roi_y_end', 0.45)))
 
         # Occlusion detection settings
         # If a person bounding box overlaps with primary ROI by this percentage, consider it occluded
@@ -130,6 +136,17 @@ class TrainStateDetector:
         self.occlusion_flow_diff_threshold = config.get('occlusion_flow_diff_threshold', 3.0)
 
         self.adaptive_roi = config.get('adaptive_roi', False)
+
+        # Multi-method detection settings (robust to overexposure)
+        self.multi_method_enabled = config.get('multi_method_enabled', True)
+        # Edge-based optical flow settings
+        self.edge_canny_low = config.get('edge_canny_low', 30)
+        self.edge_canny_high = config.get('edge_canny_high', 100)
+        # Frame differencing settings
+        self.frame_diff_threshold_percent = config.get('frame_diff_threshold_percent', 3.0)
+        # Method thresholds (can be lower than optical flow threshold)
+        self.edge_flow_threshold_multiplier = config.get('edge_flow_threshold_multiplier', 0.6)
+        self.frame_diff_motion_threshold = config.get('frame_diff_motion_threshold', 2.0)
 
         # Debug settings
         self.debug_enabled = config.get('debug_frames', False)
@@ -182,6 +199,12 @@ class TrainStateDetector:
         self.last_flow_magnitude: float = 0.0
         self.last_primary_flow: float = 0.0
         self.last_secondary_flow: float = 0.0
+
+        # Multi-method detection tracking
+        self.last_detection_method: str = "PRIMARY"
+        self.last_edge_flow: float = 0.0
+        self.last_frame_diff: float = 0.0
+        self.multi_method_override: bool = False
 
         # Logger
         self.logger = logging.getLogger('TrainStateDetector')
@@ -494,6 +517,187 @@ class TrainStateDetector:
         self.last_flow = flow
 
         return self._get_roi_flow_magnitude(flow, self.roi_mask)
+
+    def _calculate_edge_optical_flow(
+        self,
+        prev_gray: np.ndarray,
+        curr_gray: np.ndarray,
+        roi_mask: Optional[np.ndarray] = None
+    ) -> float:
+        """
+        Calculate optical flow on edge maps (Canny edges).
+
+        This method is robust to overexposure because:
+        - Edges at boundaries (window frame vs bright sky) are still visible
+        - Uniform bright areas are ignored (no edges to track)
+        - Motion of edge features indicates train movement
+
+        Args:
+            prev_gray: Previous grayscale frame
+            curr_gray: Current grayscale frame
+            roi_mask: Optional ROI mask
+
+        Returns:
+            Average flow magnitude in edge regions
+        """
+        try:
+            # Step 1: Detect edges in both frames using Canny
+            prev_edges = cv2.Canny(prev_gray, self.edge_canny_low, self.edge_canny_high)
+            curr_edges = cv2.Canny(curr_gray, self.edge_canny_low, self.edge_canny_high)
+
+            # Step 2: Dilate edges slightly to connect broken edges
+            kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+            prev_edges = cv2.dilate(prev_edges, kernel, iterations=1)
+            curr_edges = cv2.dilate(curr_edges, kernel, iterations=1)
+
+            # Step 3: Calculate optical flow on edge maps
+            flow = cv2.calcOpticalFlowFarneback(
+                prev_edges, curr_edges, None,
+                pyr_scale=0.5,
+                levels=3,
+                winsize=15,
+                iterations=3,
+                poly_n=5,
+                poly_sigma=1.2,
+                flags=0
+            )
+
+            # Step 4: Calculate magnitude only in edge regions
+            magnitude, _ = cv2.cartToPolar(flow[..., 0], flow[..., 1])
+
+            # Create edge mask (where edges exist in either frame)
+            edge_mask = (prev_edges > 0) | (curr_edges > 0)
+
+            # Combine with ROI mask if provided
+            if roi_mask is not None:
+                edge_mask = edge_mask & roi_mask
+
+            # Calculate average flow in edge regions
+            if np.any(edge_mask):
+                return float(np.mean(magnitude[edge_mask]))
+            else:
+                return 0.0
+
+        except Exception as e:
+            self.logger.error(f"Error in edge-based optical flow: {e}")
+            return 0.0
+
+    def _calculate_frame_difference(
+        self,
+        prev_gray: np.ndarray,
+        curr_gray: np.ndarray,
+        roi_mask: Optional[np.ndarray] = None
+    ) -> float:
+        """
+        Calculate motion using frame differencing with adaptive thresholding.
+
+        This method detects ANY change between frames, which can indicate motion
+        even in overexposed or low-texture areas.
+
+        Args:
+            prev_gray: Previous grayscale frame
+            curr_gray: Current grayscale frame
+            roi_mask: Optional ROI mask
+
+        Returns:
+            Percentage of changed pixels in ROI (0-100)
+        """
+        try:
+            # Calculate absolute difference
+            diff = cv2.absdiff(prev_gray, curr_gray)
+
+            # Apply morphological operations to reduce noise
+            kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+            diff = cv2.morphologyEx(diff, cv2.MORPH_OPEN, kernel)
+
+            # Apply Otsu's automatic thresholding
+            _, thresh = cv2.threshold(diff, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+
+            # Apply ROI mask
+            if roi_mask is not None:
+                roi_thresh = thresh[roi_mask]
+                roi_total = np.sum(roi_mask)
+            else:
+                roi_thresh = thresh.flatten()
+                roi_total = thresh.size
+
+            # Calculate percentage of changed pixels
+            changed_pixels = np.sum(roi_thresh > 0)
+            change_percent = (changed_pixels / roi_total * 100) if roi_total > 0 else 0.0
+
+            return change_percent
+
+        except Exception as e:
+            self.logger.error(f"Error in frame differencing: {e}")
+            return 0.0
+
+    def _detect_motion_multi_method(
+        self,
+        prev_gray: np.ndarray,
+        curr_gray: np.ndarray,
+        roi_mask: Optional[np.ndarray] = None
+    ) -> Tuple[float, str, bool]:
+        """
+        Multi-method motion detection for robustness.
+
+        Uses multiple methods and combines results:
+        1. Standard optical flow (primary)
+        2. Edge-based optical flow (for overexposed areas)
+        3. Frame differencing (for low-texture areas)
+
+        Args:
+            prev_gray: Previous grayscale frame
+            curr_gray: Current grayscale frame
+            roi_mask: Optional ROI mask
+
+        Returns:
+            Tuple of (motion_score, method_used, is_moving)
+        """
+        results = {}
+
+        # Method 1: Standard optical flow
+        flow = self._calculate_optical_flow(prev_gray, curr_gray)
+        if flow is not None:
+            self.last_flow = flow
+            std_flow = self._get_roi_flow_magnitude(flow, roi_mask)
+            results['optical_flow'] = std_flow
+        else:
+            results['optical_flow'] = 0.0
+
+        # Method 2: Edge-based optical flow
+        edge_flow = self._calculate_edge_optical_flow(prev_gray, curr_gray, roi_mask)
+        results['edge_flow'] = edge_flow
+        self.last_edge_flow = edge_flow  # Store for debug visualization
+
+        # Method 3: Frame differencing
+        frame_diff = self._calculate_frame_difference(prev_gray, curr_gray, roi_mask)
+        results['frame_diff'] = frame_diff
+        self.last_frame_diff = frame_diff  # Store for debug visualization
+
+        # Decision logic with thresholds
+        std_flow_moving = results['optical_flow'] > self.motion_threshold
+        edge_flow_moving = results['edge_flow'] > (self.motion_threshold * self.edge_flow_threshold_multiplier)
+        frame_diff_moving = results['frame_diff'] > self.frame_diff_motion_threshold
+
+        # Determine final result using voting/priority
+        # Priority: If edge_flow OR frame_diff detects motion, consider moving
+        # This helps when standard optical flow fails due to overexposure
+
+        if std_flow_moving:
+            # Standard flow works - use it
+            return results['optical_flow'], 'optical_flow', True
+        elif edge_flow_moving:
+            # Edge-based flow detects motion (overexposed window case)
+            return results['edge_flow'], 'edge_flow', True
+        elif frame_diff_moving:
+            # Frame differencing detects motion (backup)
+            return results['frame_diff'], 'frame_diff', True
+        else:
+            # No method detects motion - train likely stopped
+            # Return the best flow value for debugging
+            best_flow = max(results['optical_flow'], results['edge_flow'])
+            method = 'optical_flow' if results['optical_flow'] >= results['edge_flow'] else 'edge_flow'
+            return best_flow, method, False
 
     def _calculate_dual_roi_flow(
         self,
@@ -918,6 +1122,28 @@ class TrainStateDetector:
                 (w - 280, 215), cv2.FONT_HERSHEY_SIMPLEX, 0.5, secondary_quality_color, 1
             )
 
+        # 5b. Show multi-method detection results
+        if self.multi_method_enabled:
+            # Edge flow result
+            edge_thresh = self.motion_threshold * self.edge_flow_threshold_multiplier
+            edge_color = (0, 255, 0) if self.last_edge_flow > edge_thresh else (128, 128, 128)
+            cv2.putText(
+                debug_frame, f"EdgeFlow: {self.last_edge_flow:.2f}",
+                (w - 280, 240), cv2.FONT_HERSHEY_SIMPLEX, 0.5, edge_color, 1
+            )
+            # Frame diff result
+            diff_color = (0, 255, 0) if self.last_frame_diff > self.frame_diff_motion_threshold else (128, 128, 128)
+            cv2.putText(
+                debug_frame, f"FrameDiff: {self.last_frame_diff:.1f}%",
+                (w - 280, 260), cv2.FONT_HERSHEY_SIMPLEX, 0.5, diff_color, 1
+            )
+            # Show detection method used
+            method_color = (0, 255, 255) if self.multi_method_override else (200, 200, 200)
+            cv2.putText(
+                debug_frame, f"Method: {self.last_detection_method}",
+                (w - 280, 280), cv2.FONT_HERSHEY_SIMPLEX, 0.5, method_color, 1
+            )
+
         # 6. Add timestamp
         cv2.putText(
             debug_frame, f"Time: {timestamp:.2f}s",
@@ -999,12 +1225,42 @@ class TrainStateDetector:
 
         # Determine if train is moving based on threshold
         is_moving = smoothed_flow > self.motion_threshold
+        detection_method = "SECONDARY" if using_secondary else "PRIMARY"
+        self.multi_method_override = False
+
+        # MULTI-METHOD DETECTION: When standard optical flow shows no motion,
+        # try alternative methods (edge-based flow, frame differencing)
+        # This handles overexposed windows where optical flow fails
+        if self.multi_method_enabled and not is_moving:
+            # Get the active ROI mask
+            active_roi = self.secondary_roi_mask if using_secondary else self.roi_mask
+
+            # Use multi-method detection
+            multi_flow, multi_method, multi_moving = self._detect_motion_multi_method(
+                self.prev_gray, gray, active_roi
+            )
+
+            if multi_moving:
+                # Multi-method detected motion that standard flow missed
+                is_moving = True
+                detection_method = f"MULTI({multi_method})"
+                self.multi_method_override = True
+                # Update flow magnitude for display
+                flow_magnitude = multi_flow
+                smoothed_flow = multi_flow  # Use multi-method result
+                self.logger.debug(
+                    f"[{timestamp:.2f}s] Multi-method override: {multi_method} detected motion "
+                    f"(flow={multi_flow:.2f}) when standard flow was {self.last_flow_magnitude:.2f}"
+                )
+
+        # Store for debug visualization
+        self.last_detection_method = detection_method
 
         # Check for approaching stop (decelerating toward station)
         is_approaching_stop = self._is_approaching_stop(smoothed_flow, timestamp)
 
         # Debug logging - log flow values every frame
-        roi_indicator = "SECONDARY" if using_secondary else "PRIMARY"
+        roi_indicator = detection_method
         self.logger.debug(
             f"[{timestamp:.2f}s] Flow: {flow_magnitude:.2f} ({roi_indicator}) | "
             f"Smoothed: {smoothed_flow:.2f} | Threshold: {self.motion_threshold:.2f} | "
@@ -1186,5 +1442,10 @@ class TrainStateDetector:
         self.primary_roi_quality_reason = "valid"
         self.secondary_roi_quality_reason = "valid"
         self.roi_quality_unknown = False
+        # Reset multi-method tracking
+        self.last_detection_method = "PRIMARY"
+        self.last_edge_flow = 0.0
+        self.last_frame_diff = 0.0
+        self.multi_method_override = False
         self._debug_frame_count = 0
         self._frame_count = 0
