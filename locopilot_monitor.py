@@ -23,13 +23,19 @@ try:
     from app.services.image_preprocessing_service import ImagePreprocessingService
     from app.utils.config import get_settings
     from app.services.voting_verification_service import VotingVerificationService, ActivityBatchCollector
+    # Train motion rule engine imports
+    from app.services.rule_engine_service import RuleEngineService, get_rule_engine_service
+    from app.services.train_motion_resolver_service import TrainMotionResolverService, get_motion_resolver_service
+    from app.services.ocr_timestamp_service import OCRTimestampService, get_ocr_timestamp_service
+    from app.services.alp_alertness_service import ALPAlertnessService, get_alp_alertness_service
+    from app.models.trip_models import TripSchedule, TrainMotionContext, TrainMotionState
 except ImportError:
     # Fallback: try importing as module
     try:
         import importlib.util
         preprocessing_path = os.path.join(script_dir, 'app', 'services', 'image_preprocessing_service.py')
         config_path = os.path.join(script_dir, 'app', 'utils', 'config.py')
-        
+
         if os.path.exists(preprocessing_path):
             spec = importlib.util.spec_from_file_location("image_preprocessing_service", preprocessing_path)
             if spec and spec.loader:
@@ -40,7 +46,7 @@ except ImportError:
                 ImagePreprocessingService = None
         else:
             ImagePreprocessingService = None
-        
+
         if os.path.exists(config_path):
             spec = importlib.util.spec_from_file_location("config", config_path)
             if spec and spec.loader:
@@ -56,6 +62,19 @@ except ImportError:
         get_settings = None
         VotingVerificationService = None
         ActivityBatchCollector = None
+
+    # Set rule engine imports to None if not available
+    RuleEngineService = None
+    get_rule_engine_service = None
+    TrainMotionResolverService = None
+    get_motion_resolver_service = None
+    OCRTimestampService = None
+    get_ocr_timestamp_service = None
+    ALPAlertnessService = None
+    get_alp_alertness_service = None
+    TripSchedule = None
+    TrainMotionContext = None
+    TrainMotionState = None
 
 # Import VotingVerificationService separately (may not exist in fallback path)
 try:
@@ -475,7 +494,8 @@ class LocopilotActivityMonitor:
             'lp_hand_gesture': 8,
             'alp_hand_gesture': 9,
             'mind_diversion': 10,
-            'no_person_detected': 11
+            'no_person_detected': 11,
+            'alp_not_standing': 12  # ALP not standing in pre-arrival window
         }
         
         # Activity descriptions
@@ -489,7 +509,8 @@ class LocopilotActivityMonitor:
             'lp_hand_gesture': 'LP not exchanging hand gesture',
             'alp_hand_gesture': 'ALP not exchanging hand gesture',
             'mind_diversion': 'Mind diversion - attention diverted from controls',
-            'no_person_detected': 'No person detected in frame'
+            'no_person_detected': 'No person detected in frame',
+            'alp_not_standing': 'ALP not standing during pre-arrival window'
         }
         
         # Evidence rules
@@ -503,7 +524,8 @@ class LocopilotActivityMonitor:
             'lp_hand_gesture': 'lp_hand_raised_gesture_detected',
             'alp_hand_gesture': 'alp_hand_raised_gesture_detected',
             'mind_diversion': 'attention_diverted_from_controls',  # Sub-type stored in evidence details
-            'no_person_detected': 'zero_persons_in_frame'
+            'no_person_detected': 'zero_persons_in_frame',
+            'alp_not_standing': 'alp_seated_during_pre_arrival_window'
         }
         
         # Default crew/trip information
@@ -534,6 +556,248 @@ class LocopilotActivityMonitor:
         else:
             self.voting_service = None
             self.logger.info("VotingVerificationService not available - voting disabled")
+
+        # Initialize train motion rule engine services
+        self.trip_schedule = None  # Will be set via set_trip_schedule()
+        self.current_motion_context = None  # Current train motion state
+
+        # Rule engine service
+        if get_rule_engine_service is not None:
+            try:
+                self.rule_engine = get_rule_engine_service()
+                self.logger.info("RuleEngineService initialized successfully")
+            except Exception as e:
+                self.logger.warning(f"Failed to initialize RuleEngineService: {e}")
+                self.rule_engine = None
+        else:
+            self.rule_engine = None
+
+        # Motion resolver service
+        if get_motion_resolver_service is not None:
+            try:
+                self.motion_resolver = get_motion_resolver_service()
+                self.logger.info("TrainMotionResolverService initialized successfully")
+            except Exception as e:
+                self.logger.warning(f"Failed to initialize TrainMotionResolverService: {e}")
+                self.motion_resolver = None
+        else:
+            self.motion_resolver = None
+
+        # OCR timestamp service
+        if get_ocr_timestamp_service is not None:
+            try:
+                self.ocr_service = get_ocr_timestamp_service()
+                self.logger.info("OCRTimestampService initialized successfully")
+            except Exception as e:
+                self.logger.warning(f"Failed to initialize OCRTimestampService: {e}")
+                self.ocr_service = None
+        else:
+            self.ocr_service = None
+
+        # ALP alertness service
+        if get_alp_alertness_service is not None:
+            try:
+                self.alp_alertness_service = get_alp_alertness_service()
+                self.logger.info("ALPAlertnessService initialized successfully")
+            except Exception as e:
+                self.logger.warning(f"Failed to initialize ALPAlertnessService: {e}")
+                self.alp_alertness_service = None
+        else:
+            self.alp_alertness_service = None
+
+        # Add activity tracking for alp_not_standing
+        self.activities['alp_not_standing'] = {'active': False, 'start_time': None, 'ocr_start_time': None, 'frames': [], 'duration': 0}
+        self.consecutive_detections['alp_not_standing'] = 0
+        self.grace_counters['alp_not_standing'] = 0
+        self.activity_thresholds['alp_not_standing'] = {
+            'min_duration': 0.0,
+            'required_consecutive': 2,  # 2 samples @ 0.5fps = 4 seconds
+            'margin': None,
+            'grace_frames': 3
+        }
+
+    def set_trip_schedule(self, trip_schedule):
+        """
+        Set the trip schedule for motion-based rule evaluation.
+
+        Args:
+            trip_schedule: TripSchedule object or None
+        """
+        self.trip_schedule = trip_schedule
+        if trip_schedule:
+            self.logger.info(
+                f"Trip schedule set for train {trip_schedule.train_number} "
+                f"on {trip_schedule.journey_date} with {len(trip_schedule.halts)} halts"
+            )
+        else:
+            self.logger.info("Trip schedule cleared - motion rules will use UNKNOWN state")
+
+    def set_video_start_time(self, start_time_str: str):
+        """
+        Set the video's actual start time (time of day when recording began).
+
+        This allows calculating real timestamps from video offsets when OCR is unavailable.
+
+        Args:
+            start_time_str: Start time in HH:MM:SS format (e.g., "14:30:00")
+        """
+        self.video_start_time = start_time_str
+        if start_time_str:
+            self.logger.info(f"Video start time set to {start_time_str} - will use for motion rules when OCR unavailable")
+        else:
+            self.video_start_time = None
+
+    def _convert_video_to_real_time(self, video_seconds: float) -> str:
+        """
+        Convert video timestamp (seconds from start) to real time of day.
+
+        If video_start_time is set, calculates actual time by adding video offset.
+        Otherwise returns video-relative time (which won't match station schedules).
+
+        Args:
+            video_seconds: Seconds from video start
+
+        Returns:
+            Time string in HH:MM:SS format
+        """
+        if hasattr(self, 'video_start_time') and self.video_start_time:
+            try:
+                # Parse video start time
+                parts = self.video_start_time.split(':')
+                start_hours = int(parts[0])
+                start_minutes = int(parts[1])
+                start_seconds = int(parts[2]) if len(parts) > 2 else 0
+                total_start_seconds = start_hours * 3600 + start_minutes * 60 + start_seconds
+
+                # Add video offset
+                total_seconds = total_start_seconds + int(video_seconds)
+
+                # Handle day rollover (wrap at 24 hours)
+                total_seconds = total_seconds % (24 * 3600)
+
+                hours = total_seconds // 3600
+                minutes = (total_seconds % 3600) // 60
+                seconds = total_seconds % 60
+                return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+            except (ValueError, IndexError) as e:
+                self.logger.warning(f"Failed to parse video_start_time '{self.video_start_time}': {e}")
+
+        # Fallback: return video-relative time
+        hours = int(video_seconds // 3600)
+        minutes = int((video_seconds % 3600) // 60)
+        seconds = int(video_seconds % 60)
+        return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+
+    def _resolve_motion_context(self, timestamp_str):
+        """
+        Resolve current train motion context from timestamp.
+
+        Args:
+            timestamp_str: Current timestamp in HH:MM:SS format
+
+        Returns:
+            TrainMotionContext or None
+        """
+        if self.motion_resolver is None or self.trip_schedule is None:
+            return None
+
+        try:
+            context = self.motion_resolver.resolve_motion_state(
+                timestamp_str, self.trip_schedule
+            )
+            return context
+        except Exception as e:
+            self.logger.warning(f"Error resolving motion context: {e}")
+            return None
+
+    def _extract_ocr_timestamp(self, frame):
+        """
+        Extract timestamp from video frame using OCR.
+
+        Args:
+            frame: Video frame (numpy array)
+
+        Returns:
+            Extracted timestamp string (HH:MM:SS) or None
+        """
+        if self.ocr_service is None:
+            return None
+
+        try:
+            result = self.ocr_service.extract_timestamp(frame)
+            if result.success:
+                return result.timestamp
+            return None
+        except Exception as e:
+            self.logger.debug(f"OCR extraction failed: {e}")
+            return None
+
+    def _apply_motion_rules(self, activities_map, motion_context):
+        """
+        Apply motion-based rules to filter activities.
+
+        Args:
+            activities_map: Dictionary of activity_name -> detected (bool)
+            motion_context: Current TrainMotionContext
+
+        Returns:
+            Filtered activities_map with exemptions applied
+        """
+        if self.rule_engine is None:
+            return activities_map
+
+        try:
+            return self.rule_engine.get_filtered_activities_map(
+                activities_map, motion_context
+            )
+        except Exception as e:
+            self.logger.warning(f"Error applying motion rules: {e}")
+            return activities_map
+
+    def _check_alp_standing(self, persons_data, person_roles, frame_shape):
+        """
+        Check if ALP is standing (for pre-arrival alertness detection).
+
+        Args:
+            persons_data: Per-person detection data from process_all_persons_activities
+            person_roles: Person role assignments
+            frame_shape: Frame shape (height, width, channels)
+
+        Returns:
+            bool: True if ALP is NOT standing (violation), False otherwise
+        """
+        if self.alp_alertness_service is None:
+            return False
+
+        # Find ALP person
+        alp_person_idx = None
+        for person_idx, role_info in person_roles.items():
+            if role_info.get('role') == 'ALP':
+                alp_person_idx = person_idx
+                break
+
+        if alp_person_idx is None:
+            # No ALP identified - can't check standing
+            return False
+
+        # Get pose keypoints for ALP
+        person_data = persons_data.get(alp_person_idx)
+        if person_data is None:
+            return False
+
+        pose_keypoints = person_data.get('pose_keypoints')
+        if pose_keypoints is None:
+            return False
+
+        try:
+            result = self.alp_alertness_service.is_alp_standing(
+                pose_keypoints, frame_shape, 'ALP'
+            )
+            # Return True if NOT standing (violation)
+            return not result.get('is_standing', False)
+        except Exception as e:
+            self.logger.debug(f"ALP standing check failed: {e}")
+            return False
 
     def get_keypoint(self, landmarks, keypoint_name):
         """Get a keypoint from landmarks by name (works with both YOLO and MediaPipe formats).
@@ -5782,6 +6046,57 @@ class LocopilotActivityMonitor:
                 # Detect when no person is in frame
                 no_person_detected_flag = (len(detections.get('deduplicated_person', [])) == 0)
 
+                # ==========================================
+                # TRAIN MOTION RULE ENGINE INTEGRATION
+                # ==========================================
+                # 1. Extract OCR timestamp from frame (if enabled)
+                ocr_timestamp = self._extract_ocr_timestamp(frame)
+
+                # 2. Resolve train motion context
+                # Priority: OCR timestamp > video_start_time + offset > video-relative time
+                if ocr_timestamp:
+                    motion_timestamp = ocr_timestamp
+                    # Log OCR success periodically (every 30 frames to avoid spam)
+                    if frame_idx % 30 == 0:
+                        self.logger.info(f"[MOTION-RULES] Frame {frame_idx}: OCR extracted timestamp: {motion_timestamp}")
+                else:
+                    # Convert video offset to real time (if video_start_time is set)
+                    video_seconds = float(timestamp) if isinstance(timestamp, (int, float, str)) else 0
+                    motion_timestamp = self._convert_video_to_real_time(video_seconds)
+                    has_start_time = hasattr(self, 'video_start_time') and self.video_start_time
+                    # Log periodically (every 60 frames)
+                    if frame_idx % 60 == 0:
+                        if has_start_time:
+                            self.logger.info(
+                                f"[MOTION-RULES] Frame {frame_idx}: Using video_start_time + offset = {motion_timestamp}"
+                            )
+                        else:
+                            self.logger.info(
+                                f"[MOTION-RULES] Frame {frame_idx}: No OCR/start_time - using video-relative: {motion_timestamp}"
+                            )
+                self.current_motion_context = self._resolve_motion_context(motion_timestamp)
+
+                # Log motion state periodically
+                if frame_idx % 60 == 0 and self.current_motion_context:
+                    self.logger.info(
+                        f"[MOTION-RULES] Frame {frame_idx}: State={self.current_motion_context.motion_state.value}, "
+                        f"Station={self.current_motion_context.current_station.station_code if self.current_motion_context.current_station else 'N/A'}"
+                    )
+
+                # 3. Check ALP pre-arrival alertness (if in pre-arrival window)
+                alp_not_standing_detected = False
+                if (self.rule_engine is not None and
+                    self.current_motion_context is not None and
+                    self.rule_engine.should_check_alp_alertness(self.current_motion_context)):
+                    alp_not_standing_detected = self._check_alp_standing(
+                        persons_data, person_roles, frame.shape
+                    )
+                    if alp_not_standing_detected and self.consecutive_detections.get('alp_not_standing', 0) == 0:
+                        self.logger.info(
+                            f"[{timestamp}] ALP NOT STANDING in pre-arrival window - "
+                            f"{self.current_motion_context.seconds_to_arrival}s to arrival"
+                        )
+
                 # Update activity states with temporal filtering
                 activities_map = {
                     'microsleep': microsleep_detected and not sleep_detected,
@@ -5793,18 +6108,22 @@ class LocopilotActivityMonitor:
                     'lp_hand_gesture': lp_not_coordinating,  # LP fails to respond when ALP raises hand
                     'alp_hand_gesture': alp_not_coordinating,  # ALP fails to respond when LP raises hand
                     'mind_diversion': mind_diversion_detected,
-                    'no_person_detected': no_person_detected_flag
+                    'no_person_detected': no_person_detected_flag,
+                    'alp_not_standing': alp_not_standing_detected  # ALP not standing in pre-arrival
                 }
+
+                # 4. Apply motion-based rule engine to filter exempted activities
+                activities_map = self._apply_motion_rules(activities_map, self.current_motion_context)
 
                 for activity_name, detected in activities_map.items():
                     if detected:
                         # Activity detected - increment consecutive counter and reset grace period
                         self.consecutive_detections[activity_name] += 1
                         self.grace_counters[activity_name] = 0  # Reset grace period
-                        
+
                         # Only start recording after required consecutive frames threshold is met
                         required_consecutive = self.activity_thresholds[activity_name]['required_consecutive']
-                        
+
                         if self.consecutive_detections[activity_name] >= required_consecutive:
                             # Start activity if not already active
                             if not self.activities[activity_name]['active']:
@@ -6189,6 +6508,43 @@ class LocopilotActivityMonitor:
                 # Detect when no person is in frame
                 no_person_detected_flag = (len(detections.get('deduplicated_person', [])) == 0)
 
+                # ==========================================
+                # TRAIN MOTION RULE ENGINE INTEGRATION (process_video_range)
+                # ==========================================
+                # 1. Extract OCR timestamp from frame (if enabled)
+                ocr_timestamp = self._extract_ocr_timestamp(frame)
+
+                # 2. Resolve train motion context
+                # Priority: OCR timestamp > video_start_time + offset > video-relative time
+                if ocr_timestamp:
+                    motion_timestamp = ocr_timestamp
+                    if frame_idx % 30 == 0:
+                        self.logger.info(f"[MOTION-RULES] Frame {frame_idx}: OCR extracted: {motion_timestamp}")
+                else:
+                    # Convert video offset to real time (if video_start_time is set)
+                    video_seconds = float(timestamp) if isinstance(timestamp, (int, float, str)) else 0
+                    motion_timestamp = self._convert_video_to_real_time(video_seconds)
+                    has_start_time = hasattr(self, 'video_start_time') and self.video_start_time
+                    if frame_idx % 60 == 0:
+                        src = "video_start_time" if has_start_time else "video-relative"
+                        self.logger.info(f"[MOTION-RULES] Frame {frame_idx}: Using {src}: {motion_timestamp}")
+                self.current_motion_context = self._resolve_motion_context(motion_timestamp)
+
+                # Log motion state periodically
+                if frame_idx % 60 == 0 and self.current_motion_context:
+                    ctx = self.current_motion_context
+                    station = ctx.current_station.station_code if ctx.current_station else "N/A"
+                    self.logger.info(f"[MOTION-RULES] Frame {frame_idx}: State={ctx.motion_state.value}, Station={station}")
+
+                # 3. Check ALP pre-arrival alertness
+                alp_not_standing_detected = False
+                if (self.rule_engine is not None and
+                    self.current_motion_context is not None and
+                    self.rule_engine.should_check_alp_alertness(self.current_motion_context)):
+                    alp_not_standing_detected = self._check_alp_standing(
+                        persons_data, person_roles, frame.shape
+                    )
+
                 # Update activity states with temporal filtering
                 activities_map = {
                     'microsleep': microsleep_detected and not sleep_detected,
@@ -6200,20 +6556,24 @@ class LocopilotActivityMonitor:
                     'lp_hand_gesture': lp_not_coordinating,  # LP fails to respond when ALP raises hand
                     'alp_hand_gesture': alp_not_coordinating,  # ALP fails to respond when LP raises hand
                     'mind_diversion': mind_diversion_detected,
-                    'no_person_detected': no_person_detected_flag
+                    'no_person_detected': no_person_detected_flag,
+                    'alp_not_standing': alp_not_standing_detected  # ALP not standing in pre-arrival
                 }
+
+                # 4. Apply motion-based rule engine to filter exempted activities
+                activities_map = self._apply_motion_rules(activities_map, self.current_motion_context)
 
                 for activity_name, detected in activities_map.items():
                     if detected:
                         self.consecutive_detections[activity_name] += 1
                         self.grace_counters[activity_name] = 0
-                        
+
                         required_consecutive = self.activity_thresholds[activity_name]['required_consecutive']
-                        
+
                         if self.consecutive_detections[activity_name] >= required_consecutive:
                             if not self.activities[activity_name]['active']:
                                 self.start_activity(activity_name, timestamp, fps, frame_idx, person_roles=person_roles)
-                            
+
                             if self.activities[activity_name]['active']:
                                 # Store raw frame (without annotations) for clean evidence clips
                                 self.activities[activity_name]['frames'].append(frame.copy())
@@ -6237,7 +6597,7 @@ class LocopilotActivityMonitor:
                                 self.grace_counters[activity_name] = 0
                         else:
                             self.grace_counters[activity_name] = 0
-            
+
             except Exception as e:
                 self.logger.error(f"Error processing sample {sample_idx} (frame {frame_idx}): {e}")
                 continue

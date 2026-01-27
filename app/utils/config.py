@@ -68,7 +68,7 @@ class Settings(BaseSettings):
     sample_fps: float = 0.5  # Sample at 0.5 FPS (1 frame every 2 seconds)
     
     # Multiprocessing settings
-    enable_multiprocessing: bool = True
+    enable_multiprocessing: bool = bool(int(os.getenv("ENABLE_MULTIPROCESSING", "1")))
     # ✅ 15s chunks ensure hand gesture coordination detection works correctly
     # Coordination window is 10s, so 15s chunks capture full coordination sequences
     # Tradeoff: fewer chunks (~118 for 30-min video) but reliable coordination detection
@@ -233,6 +233,32 @@ class Settings(BaseSettings):
 
     # GPU Memory Management Settings
     gpu_memory_warning_threshold: float = float(os.getenv("GPU_MEMORY_WARNING_THRESHOLD", "80.0"))  # Percentage
+
+    # ==========================================
+    # Train Motion Rules Settings
+    # ==========================================
+    # Enable/disable train motion-based rule engine
+    train_motion_rules_enabled: bool = bool(int(os.getenv("TRAIN_MOTION_RULES_ENABLED", "0")))
+
+    # Trip API Settings (RailRadar API)
+    trip_api_url: str = os.getenv("TRIP_API_URL", "https://api.railradar.in/api/v1/trains")
+    trip_api_timeout: int = int(os.getenv("TRIP_API_TIMEOUT", "10"))
+
+    # OCR Timestamp Extraction Settings
+    ocr_enabled: bool = bool(int(os.getenv("OCR_ENABLED", "0")))
+    ocr_engine: str = os.getenv("OCR_ENGINE", "auto")  # 'easyocr' (recommended), 'tesseract', or 'auto'
+    ocr_roi_position: str = os.getenv("OCR_ROI_POSITION", "top-left")  # top-right, top-left, bottom-right, bottom-left
+    ocr_roi_x: int = int(os.getenv("OCR_ROI_X", "10"))  # X offset from edge
+    ocr_roi_y: int = int(os.getenv("OCR_ROI_Y", "10"))  # Y offset from edge
+    ocr_roi_width: int = int(os.getenv("OCR_ROI_WIDTH", "200"))  # ROI width
+    ocr_roi_height: int = int(os.getenv("OCR_ROI_HEIGHT", "50"))  # ROI height
+
+    # Pre-Arrival ALP Alertness Settings
+    pre_arrival_window_start: int = int(os.getenv("PRE_ARRIVAL_WINDOW_START", "60"))  # 60s before arrival
+    pre_arrival_window_end: int = int(os.getenv("PRE_ARRIVAL_WINDOW_END", "30"))  # 30s before arrival
+
+    # Halt Grace Period - allow exemptions for short time after scheduled departure
+    halt_grace_period: int = int(os.getenv("HALT_GRACE_PERIOD", "120"))  # 120s after departure
 
 
 @lru_cache()

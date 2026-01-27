@@ -66,6 +66,9 @@ s3_upload_service = get_s3_upload_service()
     - lpCrewId: LP crew member ID (optional)
     - alpCrewName: ALP crew member name (optional)
     - alpCrewId: ALP crew member ID (optional)
+    - trainNumber: Train number for motion-based rules (optional, e.g., "12345")
+    - tripDate: Trip date in YYYY-MM-DD format for motion-based rules (optional)
+    - videoStartTime: Video recording start time in HH:MM:SS format (optional, for motion rules when OCR unavailable)
     - useMockDetection: Use mock detection for testing (optional, default: false)
     - useMultiprocessing: Enable parallel processing (optional, default: from config)
     - saveClips: Save annotated frames for debugging (optional, default: false). Clips and images are always saved for UI evidence.
@@ -86,6 +89,9 @@ async def process_video(
     lpCrewId: Optional[str] = Form(default=None, description="Loco Pilot crew member ID"),
     alpCrewName: Optional[str] = Form(default=None, description="Assistant Loco Pilot crew member name"),
     alpCrewId: Optional[str] = Form(default=None, description="Assistant Loco Pilot crew member ID"),
+    trainNumber: Optional[str] = Form(default=None, description="Train number for motion-based rules (e.g., '12345')"),
+    tripDate: Optional[str] = Form(default=None, description="Trip date in YYYY-MM-DD format for motion-based rules"),
+    videoStartTime: Optional[str] = Form(default=None, description="Video recording start time in HH:MM:SS format (for motion rules when OCR unavailable)"),
     useMockDetection: Optional[bool] = Form(default=False, description="Use mock detection for testing"),
     useMultiprocessing: Optional[bool] = Form(default=None, description="Enable multiprocessing (default: from config)"),
     saveClips: Optional[bool] = Form(default=False, description="Save annotated frames for debugging (default: false). Clips/images always saved.")
@@ -100,7 +106,7 @@ async def process_video(
     video_filename = None
 
     try:
-        logger.info(f"📥 Received video processing request for trip: {tripId}, division: {division}")
+        logger.info(f"📥 Received video processing request for trip: {tripId}, division: {division}, train: {trainNumber}, date: {tripDate}")
 
         # Validate tripId
         if not tripId or not tripId.strip():
@@ -210,7 +216,10 @@ async def process_video(
             use_mock_detection=useMockDetection,
             use_multiprocessing=use_mp,
             save_clips=saveClips,
-            division=division
+            division=division,
+            train_number=trainNumber,
+            trip_date=tripDate,
+            video_start_time=videoStartTime
         )
 
         # Schedule cleanup of uploaded video after processing (production mode)
@@ -440,6 +449,9 @@ async def process_and_upload_video(
     lpCrewId: Optional[str] = Form(default=None, description="Loco Pilot crew member ID"),
     alpCrewName: Optional[str] = Form(default=None, description="Assistant Loco Pilot crew member name"),
     alpCrewId: Optional[str] = Form(default=None, description="Assistant Loco Pilot crew member ID"),
+    trainNumber: Optional[str] = Form(default=None, description="Train number for motion-based rules (e.g., '12345')"),
+    tripDate: Optional[str] = Form(default=None, description="Trip date in YYYY-MM-DD format for motion-based rules"),
+    videoStartTime: Optional[str] = Form(default=None, description="Video recording start time in HH:MM:SS format (for motion rules when OCR unavailable)"),
     useMultiprocessing: Optional[bool] = Form(default=None, description="Enable multiprocessing (default: from config)"),
     useMockDetection: Optional[bool] = Form(default=False, description="Use mock detection for testing"),
     saveClips: Optional[bool] = Form(default=False, description="Save annotated frames for debugging")
@@ -453,7 +465,7 @@ async def process_and_upload_video(
     video_path = None
     
     try:
-        logger.info(f"📥 Process and upload request for trip: {tripId}")
+        logger.info(f"📥 Process and upload request for trip: {tripId}, train: {trainNumber}, date: {tripDate}")
         
         # Validate tripId
         if not tripId or not tripId.strip():
@@ -525,7 +537,10 @@ async def process_and_upload_video(
             use_mock_detection=useMockDetection,
             use_multiprocessing=use_mp,  # ✅ Now using multiprocessing!
             save_clips=saveClips,
-            skip_external_api=True  # Skip here - will call after S3 uploads with correct S3 URLs
+            skip_external_api=True,  # Skip here - will call after S3 uploads with correct S3 URLs
+            train_number=trainNumber,
+            trip_date=tripDate,
+            video_start_time=videoStartTime
         )
         
         logger.info(

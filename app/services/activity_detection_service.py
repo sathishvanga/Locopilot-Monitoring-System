@@ -236,11 +236,13 @@ class ActivityDetectionService:
         crew_role: int = 1,
         output_dir: str = "locopilot_evidence",
         sample_fps: float = 1.0,
-        run_dir: str = None
+        run_dir: str = None,
+        trip_schedule = None,
+        video_start_time: str = None
     ) -> List[Dict[str, Any]]:
         """
         Single-process activity detection (original implementation)
-        
+
         Args:
             video_path: Path to video file
             trip_id: Trip identifier
@@ -250,12 +252,14 @@ class ActivityDetectionService:
             output_dir: Output directory for evidence (base directory)
             sample_fps: Frame sampling rate
             run_dir: Run directory to use (if None, creates new one)
-            
+            trip_schedule: TripSchedule object for motion-based rule engine (optional)
+            video_start_time: Video recording start time in HH:MM:SS format (optional)
+
         Returns:
             List[Dict[str, Any]]: List of detected activities
         """
         from locopilot_monitor import LocopilotActivityMonitor
-        
+
         # Create monitor instance (with or without run_dir)
         if run_dir:
             # Use existing run directory
@@ -277,17 +281,25 @@ class ActivityDetectionService:
                 frame_save_interval=self.settings.frame_save_interval,
                 sample_fps=sample_fps
             )
-        
+
         # Set trip and crew information
         monitor.trip_id = trip_id
         monitor.crew_name = crew_name
         monitor.crew_id = crew_id
         monitor.crew_role = crew_role
-        
+
         # Set crew members mapping if provided
         if crew_members:
             monitor.crew_members = crew_members
-        
+
+        # Set trip schedule for motion-based rule engine
+        if trip_schedule is not None and hasattr(monitor, 'set_trip_schedule'):
+            monitor.set_trip_schedule(trip_schedule)
+
+        # Set video start time for motion rules (when OCR unavailable)
+        if video_start_time and hasattr(monitor, 'set_video_start_time'):
+            monitor.set_video_start_time(video_start_time)
+
         # Process video
         monitor.process_video()
         
@@ -320,11 +332,13 @@ class ActivityDetectionService:
         output_dir: str = "locopilot_evidence",
         sample_fps: float = 1.0,
         run_dir: str = None,
-        save_clips: bool = True
+        save_clips: bool = True,
+        trip_schedule = None,
+        video_start_time: str = None
     ) -> List[Dict[str, Any]]:
         """
         Multi-process activity detection using parallel processing
-        
+
         Args:
             video_path: Path to video file
             trip_id: Trip identifier
@@ -335,7 +349,9 @@ class ActivityDetectionService:
             sample_fps: Frame sampling rate
             run_dir: Run directory to use (if None, creates new one)
             save_clips: Whether to save video clips and images (default: True)
-            
+            trip_schedule: TripSchedule object for motion-based rule engine (optional)
+            video_start_time: Video recording start time in HH:MM:SS format (optional)
+
         Returns:
             List[Dict[str, Any]]: List of detected activities
         """
@@ -372,6 +388,8 @@ class ActivityDetectionService:
         
         try:
             # Process video in parallel with clip generation
+            # Note: trip_schedule is passed for motion-based rules
+            # Multiprocessing workers will need to re-fetch or receive serialized schedule
             activities = orchestrator.process_video_parallel(
                 video_path=video_path,
                 trip_id=trip_id,
@@ -381,7 +399,9 @@ class ActivityDetectionService:
                 crew_role=crew_role,
                 sample_fps=sample_fps,
                 run_dir=run_dir,
-                save_clips=save_clips
+                save_clips=save_clips,
+                trip_schedule=trip_schedule,
+                video_start_time=video_start_time
             )
             
             # ✅ MEMORY FIX: Force garbage collection after processing

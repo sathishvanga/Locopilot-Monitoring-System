@@ -16,6 +16,12 @@ from ..repositories.activity_repository import ActivityRepository
 from .activity_detection_service import ActivityDetectionService
 from .external_api_service import get_external_api_service
 
+# Train motion rule engine imports
+try:
+    from .trip_data_service import get_trip_data_service
+except ImportError:
+    get_trip_data_service = None
+
 
 logger = get_logger(__name__)
 settings = get_settings()
@@ -133,7 +139,10 @@ class VideoProcessingService:
         use_multiprocessing: bool = False,
         save_clips: bool = True,
         skip_external_api: bool = False,
-        division: Optional[str] = None
+        division: Optional[str] = None,
+        train_number: Optional[str] = None,
+        trip_date: Optional[str] = None,
+        video_start_time: Optional[str] = None
     ) -> Dict[str, Any]:
         """
         Process video and detect activities
@@ -150,6 +159,9 @@ class VideoProcessingService:
             save_clips: Whether to save video clips and images (default: True)
             skip_external_api: Skip posting to external API (for process-and-upload endpoint)
             division: Division identifier for external API URL
+            train_number: Train number for motion-based rule engine (optional)
+            trip_date: Trip date in YYYY-MM-DD format for schedule lookup (optional)
+            video_start_time: Video recording start time in HH:MM:SS format (optional, for motion rules when OCR unavailable)
 
         Returns:
             Dict[str, Any]: Processing results with activities
@@ -158,21 +170,78 @@ class VideoProcessingService:
             Exception: If processing fails
         """
         start_time = time.time()
-        
+
         try:
             logger.info(
                 f"🎬 Starting video processing for trip {trip_id} - "
                 f"Multiprocessing: {'enabled' if use_multiprocessing else 'disabled'}, "
                 f"Save clips: {save_clips}, Mock detection: {use_mock_detection}"
             )
-            
+
             # Validate video file exists
             if not os.path.exists(video_path):
                 logger.error(f"❌ Video file not found: {video_path}")
                 raise FileNotFoundError(f"Video file not found: {video_path}")
-            
+
             logger.info(f"✅ Video file validated: {video_path}")
-            
+
+            # Fetch trip schedule for motion-based rule engine (if train info provided)
+            trip_schedule = None
+            logger.info(
+                f"[MOTION-RULES] Configuration check - "
+                f"train_number: {train_number}, trip_date: {trip_date}, "
+                f"rules_enabled: {settings.train_motion_rules_enabled}"
+            )
+
+            if train_number and trip_date and settings.train_motion_rules_enabled:
+                logger.info(
+                    f"[MOTION-RULES] ✅ All conditions met - fetching trip schedule "
+                    f"for train {train_number} on {trip_date}"
+                )
+                try:
+                    if get_trip_data_service is not None:
+                        trip_data_service = get_trip_data_service()
+                        logger.info(f"[MOTION-RULES] Calling TripDataService.fetch_trip_schedule()")
+                        trip_schedule = trip_data_service.fetch_trip_schedule(
+                            train_number=train_number,
+                            journey_date=trip_date,
+                            division=division
+                        )
+                        if trip_schedule:
+                            logger.info(
+                                f"[MOTION-RULES] 🚂 Successfully fetched trip schedule for train {train_number}: "
+                                f"{len(trip_schedule.halts)} station halts"
+                            )
+                            # Log first few halts for debugging
+                            for i, halt in enumerate(trip_schedule.halts[:3]):
+                                logger.info(
+                                    f"[MOTION-RULES]   Halt {i+1}: {halt.station_name} ({halt.station_code}) - "
+                                    f"Arr: {halt.scheduled_arrival}, Dep: {halt.scheduled_departure}"
+                                )
+                            if len(trip_schedule.halts) > 3:
+                                logger.info(f"[MOTION-RULES]   ... and {len(trip_schedule.halts) - 3} more halts")
+                        else:
+                            logger.warning(
+                                f"[MOTION-RULES] ⚠️ Could not fetch trip schedule for train {train_number} "
+                                f"on {trip_date} - motion rules will use UNKNOWN state (all activities = violations)"
+                            )
+                    else:
+                        logger.warning("[MOTION-RULES] ⚠️ Trip data service not available - motion rules disabled")
+                except Exception as e:
+                    logger.warning(f"[MOTION-RULES] ⚠️ Error fetching trip schedule: {e} - motion rules will use UNKNOWN state")
+            else:
+                missing = []
+                if not train_number:
+                    missing.append("train_number")
+                if not trip_date:
+                    missing.append("trip_date")
+                if not settings.train_motion_rules_enabled:
+                    missing.append("rules_enabled=False")
+                logger.info(
+                    f"[MOTION-RULES] ❌ Skipping motion-based rules - missing: {', '.join(missing)}. "
+                    f"All detected activities will be treated as violations."
+                )
+
             # Create run directory ONCE at the top level
             run_dir = self.activity_repository.create_run_directory(base_name=f"run")
             logger.info(f"📁 Created run directory: {run_dir}")
@@ -206,7 +275,9 @@ class VideoProcessingService:
                         output_dir=settings.output_dir,
                         sample_fps=settings.sample_fps,
                         run_dir=run_dir,  # Pass existing run_dir to avoid nested directories
-                        save_clips=save_clips
+                        save_clips=save_clips,
+                        trip_schedule=trip_schedule,  # Pass trip schedule for motion rules
+                        video_start_time=video_start_time  # Pass video start time for motion rules
                     )
                 else:
                     activities = self.activity_detection_service._detect_activities_single_process(
@@ -218,7 +289,9 @@ class VideoProcessingService:
                         crew_role=crew_role,
                         output_dir=settings.output_dir,
                         sample_fps=settings.sample_fps,
-                        run_dir=run_dir  # Pass existing run_dir
+                        run_dir=run_dir,  # Pass existing run_dir
+                        trip_schedule=trip_schedule,  # Pass trip schedule for motion rules
+                        video_start_time=video_start_time  # Pass video start time for motion rules
                     )
             
             # Save activities to JSON
