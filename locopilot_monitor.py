@@ -6061,7 +6061,8 @@ class LocopilotActivityMonitor:
                         self.logger.info(f"[MOTION-RULES] Frame {frame_idx}: OCR extracted timestamp: {motion_timestamp}")
                 else:
                     # Convert video offset to real time (if video_start_time is set)
-                    video_seconds = float(timestamp) if isinstance(timestamp, (int, float, str)) else 0
+                    # Use timestamp_sec directly (it's already numeric) instead of parsing timestamp string
+                    video_seconds = timestamp_sec
                     motion_timestamp = self._convert_video_to_real_time(video_seconds)
                     has_start_time = hasattr(self, 'video_start_time') and self.video_start_time
                     # Log periodically (every 60 frames)
@@ -6522,7 +6523,8 @@ class LocopilotActivityMonitor:
                         self.logger.info(f"[MOTION-RULES] Frame {frame_idx}: OCR extracted: {motion_timestamp}")
                 else:
                     # Convert video offset to real time (if video_start_time is set)
-                    video_seconds = float(timestamp) if isinstance(timestamp, (int, float, str)) else 0
+                    # Use timestamp_sec directly (it's already numeric) instead of parsing timestamp string
+                    video_seconds = timestamp_sec
                     motion_timestamp = self._convert_video_to_real_time(video_seconds)
                     has_start_time = hasattr(self, 'video_start_time') and self.video_start_time
                     if frame_idx % 60 == 0:
