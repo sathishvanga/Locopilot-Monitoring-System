@@ -3,10 +3,13 @@ Train motion resolver service - Maps video timestamp to train motion state
 
 This service determines whether the train is running or stopped at a given
 timestamp by comparing against the trip schedule.
+
+Enhanced with optical flow verification for unscheduled stops.
 """
 
 import logging
-from typing import Optional
+import numpy as np
+from typing import Optional, Tuple, List
 
 from ..models.trip_models import (
     TrainMotionState,
@@ -17,6 +20,22 @@ from ..models.trip_models import (
 from ..utils.config import get_settings
 
 logger = logging.getLogger(__name__)
+
+# Lazy import for optical flow service
+_optical_flow_service = None
+
+
+def _get_optical_flow_service():
+    """Get the optical flow motion service (lazy import)."""
+    global _optical_flow_service
+    if _optical_flow_service is None:
+        try:
+            from .side_window_motion_service import get_side_window_motion_service
+            _optical_flow_service = get_side_window_motion_service()
+        except ImportError:
+            logger.warning("[MOTION-RESOLVER] side_window_motion_service not available")
+            _optical_flow_service = None
+    return _optical_flow_service
 
 
 class TrainMotionResolverService:
@@ -363,6 +382,200 @@ class TrainMotionResolverService:
             True if stopped (including grace period)
         """
         return context.motion_state == TrainMotionState.STOPPED
+
+    def resolve_motion_state_with_optical_flow(
+        self,
+        video_timestamp: str,
+        trip_schedule: Optional[TripSchedule],
+        frame: np.ndarray,
+        prev_frame: Optional[np.ndarray] = None
+    ) -> TrainMotionContext:
+        """
+        Resolve train motion state with optical flow verification.
+
+        Two-layer approach:
+        1. Check delay-adjusted schedule first
+        2. If schedule says RUNNING, verify with optical flow
+        3. Override to STOPPED if optical flow shows no motion
+
+        This catches unscheduled stops (signals, crossings) that schedule
+        data cannot detect.
+
+        Args:
+            video_timestamp: Timestamp in HH:MM:SS format
+            trip_schedule: Train schedule with delay adjustments
+            frame: Current video frame (BGR)
+            prev_frame: Previous video frame (optional)
+
+        Returns:
+            TrainMotionContext with final motion state
+        """
+        # Get schedule-based state first (with delay adjustments)
+        schedule_context = self.resolve_motion_state_with_delays(
+            video_timestamp, trip_schedule
+        )
+
+        # If disabled or schedule says STOPPED, return as-is
+        if not self.enabled:
+            return schedule_context
+
+        if schedule_context.motion_state == TrainMotionState.STOPPED:
+            return schedule_context
+
+        # Schedule says RUNNING - verify with optical flow
+        optical_flow_service = _get_optical_flow_service()
+        if optical_flow_service is None or not optical_flow_service.enabled:
+            return schedule_context
+
+        try:
+            # Run optical flow detection
+            motion_result = optical_flow_service.detect_motion(frame, prev_frame)
+
+            # Check if optical flow shows train is stopped
+            if motion_result.is_stopped() and motion_result.confidence >= 0.5:
+                # OVERRIDE: Schedule says RUNNING but optical flow shows STOPPED
+                logger.info(
+                    f"[MOTION-RESOLVER] OVERRIDE: Schedule says RUNNING but "
+                    f"optical flow shows STOPPED (magnitude={motion_result.magnitude:.2f}, "
+                    f"confidence={motion_result.confidence:.2f})"
+                )
+
+                return TrainMotionContext(
+                    motion_state=TrainMotionState.STOPPED,
+                    timestamp=video_timestamp,
+                    current_station=None,  # Unscheduled stop
+                    next_station=schedule_context.next_station,
+                    is_pre_arrival_window=False,
+                    seconds_to_arrival=schedule_context.seconds_to_arrival,
+                    seconds_since_departure=schedule_context.seconds_since_departure,
+                    in_grace_period=False,
+                    resolution_source=f"optical_flow_override (mag={motion_result.magnitude:.2f})"
+                )
+
+            # Optical flow confirms RUNNING
+            logger.debug(
+                f"[MOTION-RESOLVER] Optical flow confirms RUNNING "
+                f"(magnitude={motion_result.magnitude:.2f})"
+            )
+            return schedule_context
+
+        except Exception as e:
+            logger.warning(
+                f"[MOTION-RESOLVER] Optical flow error: {e}, "
+                f"falling back to schedule-based state"
+            )
+            return schedule_context
+
+    def resolve_motion_state_with_delays(
+        self,
+        video_timestamp: str,
+        trip_schedule: Optional[TripSchedule]
+    ) -> TrainMotionContext:
+        """
+        Resolve motion state using delay-adjusted arrival/departure times.
+
+        Uses actual_arrival_minutes and actual_departure_minutes from the
+        schedule if available (populated from etrain.info delay data).
+
+        Args:
+            video_timestamp: Timestamp in HH:MM:SS format
+            trip_schedule: Train schedule with delay data
+
+        Returns:
+            TrainMotionContext based on delay-adjusted times
+        """
+        # Default context
+        default_context = TrainMotionContext(
+            motion_state=TrainMotionState.UNKNOWN,
+            timestamp=video_timestamp,
+            resolution_source="fallback_default"
+        )
+
+        if not self.enabled:
+            default_context.resolution_source = "rules_disabled"
+            return default_context
+
+        if trip_schedule is None or not trip_schedule.halts:
+            default_context.resolution_source = "no_schedule"
+            return default_context
+
+        try:
+            query_minutes = self._time_to_minutes(video_timestamp)
+
+            # Check if at station using delay-adjusted times
+            current_halt, minutes_into_halt = self._find_current_halt_with_delays(
+                query_minutes, trip_schedule.halts
+            )
+
+            if current_halt is not None:
+                logger.info(
+                    f"[MOTION-RESOLVER] STOPPED at station (delay-adjusted) - "
+                    f"{current_halt.station_name} ({current_halt.station_code}), "
+                    f"delay: {current_halt.delay_minutes}min, "
+                    f"timestamp: {video_timestamp}"
+                )
+                return TrainMotionContext(
+                    motion_state=TrainMotionState.STOPPED,
+                    timestamp=video_timestamp,
+                    current_station=current_halt,
+                    next_station=self._find_next_halt(query_minutes, trip_schedule.halts),
+                    is_pre_arrival_window=False,
+                    seconds_to_arrival=None,
+                    seconds_since_departure=None,
+                    in_grace_period=False,
+                    resolution_source=f"at_station_delayed (delay={current_halt.delay_minutes}min)"
+                )
+
+            # Fall back to base implementation for running state
+            return self.resolve_motion_state(video_timestamp, trip_schedule)
+
+        except Exception as e:
+            logger.error(
+                f"[MOTION-RESOLVER] Error in delay-adjusted resolution: {e}",
+                exc_info=True
+            )
+            default_context.resolution_source = f"error: {str(e)}"
+            return default_context
+
+    def _find_current_halt_with_delays(
+        self,
+        query_minutes: int,
+        halts: list
+    ) -> tuple:
+        """
+        Find if train is currently at a station halt using delay-adjusted times.
+
+        Args:
+            query_minutes: Query time in minutes from midnight
+            halts: List of station halts (with delay data)
+
+        Returns:
+            Tuple of (StationHalt, minutes_into_halt) or (None, 0)
+        """
+        for halt in halts:
+            # Use actual times if available, otherwise fall back to scheduled
+            if hasattr(halt, 'actual_arrival_minutes') and halt.actual_arrival_minutes is not None:
+                arrival = halt.actual_arrival_minutes
+            else:
+                arrival = halt.arrival_minutes
+
+            if hasattr(halt, 'actual_departure_minutes') and halt.actual_departure_minutes is not None:
+                departure = halt.actual_departure_minutes
+            else:
+                departure = halt.departure_minutes
+
+            # Handle day rollover
+            if departure < arrival:
+                if query_minutes >= arrival or query_minutes <= departure:
+                    minutes_into_halt = query_minutes - arrival
+                    if minutes_into_halt < 0:
+                        minutes_into_halt += 24 * 60
+                    return halt, minutes_into_halt
+            else:
+                if arrival <= query_minutes <= departure:
+                    return halt, query_minutes - arrival
+
+        return None, 0
 
 
 # Global service instance

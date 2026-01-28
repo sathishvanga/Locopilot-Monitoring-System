@@ -201,22 +201,32 @@ class VideoProcessingService:
                 try:
                     if get_trip_data_service is not None:
                         trip_data_service = get_trip_data_service()
-                        logger.info(f"[MOTION-RULES] Calling TripDataService.fetch_trip_schedule()")
-                        trip_schedule = trip_data_service.fetch_trip_schedule(
-                            train_number=train_number,
-                            journey_date=trip_date,
-                            division=division
-                        )
+                        # Use delay-enhanced schedule fetch if etrain integration is enabled
+                        if hasattr(trip_data_service, 'fetch_trip_schedule_with_delays') and settings.etrain_enabled:
+                            logger.info(f"[MOTION-RULES] Calling TripDataService.fetch_trip_schedule_with_delays() (etrain.info enabled)")
+                            trip_schedule = trip_data_service.fetch_trip_schedule_with_delays(
+                                train_number=train_number,
+                                journey_date=trip_date,
+                                division=division
+                            )
+                        else:
+                            logger.info(f"[MOTION-RULES] Calling TripDataService.fetch_trip_schedule()")
+                            trip_schedule = trip_data_service.fetch_trip_schedule(
+                                train_number=train_number,
+                                journey_date=trip_date,
+                                division=division
+                            )
                         if trip_schedule:
                             logger.info(
                                 f"[MOTION-RULES] 🚂 Successfully fetched trip schedule for train {train_number}: "
                                 f"{len(trip_schedule.halts)} station halts"
                             )
-                            # Log first few halts for debugging
+                            # Log first few halts for debugging (include delay info if available)
                             for i, halt in enumerate(trip_schedule.halts[:3]):
+                                delay_info = f", Delay: {halt.delay_minutes}min" if hasattr(halt, 'delay_minutes') and halt.delay_minutes > 0 else ""
                                 logger.info(
                                     f"[MOTION-RULES]   Halt {i+1}: {halt.station_name} ({halt.station_code}) - "
-                                    f"Arr: {halt.scheduled_arrival}, Dep: {halt.scheduled_departure}"
+                                    f"Arr: {halt.scheduled_arrival}, Dep: {halt.scheduled_departure}{delay_info}"
                                 )
                             if len(trip_schedule.halts) > 3:
                                 logger.info(f"[MOTION-RULES]   ... and {len(trip_schedule.halts) - 3} more halts")

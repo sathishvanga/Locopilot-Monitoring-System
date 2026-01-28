@@ -37,6 +37,11 @@ class StationHalt(BaseModel):
     arrival_minutes: int = Field(default=0, description="Arrival time in minutes from midnight")
     departure_minutes: int = Field(default=0, description="Departure time in minutes from midnight")
 
+    # Delay-adjusted fields (from etrain.info)
+    actual_arrival_minutes: Optional[int] = Field(None, description="Actual arrival time with delay applied")
+    actual_departure_minutes: Optional[int] = Field(None, description="Actual departure time with delay applied")
+    delay_minutes: int = Field(default=0, description="Delay in minutes from etrain.info")
+
     class Config:
         json_schema_extra = {
             "example": {

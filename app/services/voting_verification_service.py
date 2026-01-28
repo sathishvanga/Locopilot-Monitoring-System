@@ -28,6 +28,22 @@ from logging.handlers import TimedRotatingFileHandler
 
 from ..utils.config import get_settings
 
+# Lazy imports for motion services
+_optical_flow_service = None
+_motion_resolver_service = None
+
+
+def _get_optical_flow_service():
+    """Get the optical flow motion service (lazy import)."""
+    global _optical_flow_service
+    if _optical_flow_service is None:
+        try:
+            from .side_window_motion_service import get_side_window_motion_service
+            _optical_flow_service = get_side_window_motion_service()
+        except ImportError:
+            pass
+    return _optical_flow_service
+
 
 class LRUCache:
     """
@@ -719,6 +735,135 @@ class VotingVerificationService:
                    f"hit_rate={cache_stats['hit_rate']:.1f}%")
         logger.info(f"[VOTING BATCH] =================================")
         logger.info("")
+
+        return results
+
+    def verify_batch_with_motion_check(
+        self,
+        video_path: str,
+        timestamp_sec: float,
+        activities: List[Dict],
+        trip_schedule: Optional[Any] = None,
+        motion_context: Optional[Any] = None
+    ) -> Dict[str, Tuple[bool, Dict]]:
+        """
+        Verify activities with optical flow motion check for exemptions.
+
+        This method:
+        1. Runs standard voting verification
+        2. For confirmed violations, checks optical flow motion
+        3. Exempts activities if train is STOPPED (optical flow)
+
+        Activities exempted when STOPPED:
+        - writing, packing_bags, mind_diversion
+        - cell_phone, lp_hand_gesture, alp_hand_gesture
+
+        Args:
+            video_path: Path to the source video file
+            timestamp_sec: Timestamp where activities were detected
+            activities: List of activity dicts to verify
+            trip_schedule: Optional TripSchedule for reference
+            motion_context: Optional pre-computed motion context
+
+        Returns:
+            Dict mapping activity keys to (is_confirmed, vote_details)
+            with motion exemptions applied
+        """
+        # Activities that can be exempted when train is stopped
+        MOTION_EXEMPTABLE = {
+            'writing', 'packing_bags', 'mind_diversion',
+            'cell_phone', 'lp_hand_gesture', 'alp_hand_gesture'
+        }
+
+        # First, run standard batch verification
+        results = self.verify_batch(video_path, timestamp_sec, activities)
+
+        # Check if optical flow service is available
+        optical_flow_service = _get_optical_flow_service()
+        if optical_flow_service is None or not optical_flow_service.enabled:
+            logger.debug("[VOTING MOTION] Optical flow disabled, returning standard results")
+            return results
+
+        # Check if any confirmed violations are motion-exemptable
+        confirmed_exemptable = []
+        for activity_key, (is_confirmed, details) in results.items():
+            if is_confirmed:
+                # Parse activity type from key (e.g., 'cell_phone_p0' -> 'cell_phone')
+                parts = activity_key.rsplit('_p', 1)
+                if len(parts) >= 1:
+                    activity_type = parts[0]
+                    if activity_type in MOTION_EXEMPTABLE:
+                        confirmed_exemptable.append(activity_key)
+
+        if not confirmed_exemptable:
+            logger.debug("[VOTING MOTION] No exemptable violations, returning standard results")
+            return results
+
+        # Extract frames for optical flow analysis
+        logger.info(
+            f"[VOTING MOTION] Checking optical flow for {len(confirmed_exemptable)} "
+            f"exemptable activities"
+        )
+
+        try:
+            # Use cached frames if available
+            num_frames = self.settings.voting_num_frames
+            cached_data = self._inference_cache.get(video_path, timestamp_sec, num_frames)
+
+            if cached_data is not None and 'frames' in cached_data:
+                frames = cached_data['frames']
+            else:
+                frames = self._extract_native_frames(
+                    video_path, timestamp_sec, num_frames, "motion_check"
+                )
+
+            if len(frames) < 2:
+                logger.warning(
+                    f"[VOTING MOTION] Not enough frames for optical flow "
+                    f"({len(frames)}), returning standard results"
+                )
+                return results
+
+            # Run optical flow motion detection with batch voting
+            motion_result = optical_flow_service.detect_motion_batch(frames)
+
+            logger.info(
+                f"[VOTING MOTION] Motion result: {motion_result.motion_state.value}, "
+                f"magnitude={motion_result.magnitude:.2f}, "
+                f"confidence={motion_result.confidence:.2f}"
+            )
+
+            # If train is stopped with high confidence, exempt activities
+            if motion_result.is_stopped() and motion_result.confidence >= 0.5:
+                logger.info(
+                    f"[VOTING MOTION] Train STOPPED (optical flow) - "
+                    f"exempting {len(confirmed_exemptable)} activities"
+                )
+
+                for activity_key in confirmed_exemptable:
+                    is_confirmed, details = results[activity_key]
+                    if is_confirmed:
+                        # Update result to exempt this violation
+                        details['motion_exempted'] = True
+                        details['motion_state'] = 'stopped'
+                        details['motion_magnitude'] = motion_result.magnitude
+                        details['motion_confidence'] = motion_result.confidence
+
+                        results[activity_key] = (False, details)
+
+                        logger.info(
+                            f"[VOTING MOTION] {activity_key} EXEMPTED: "
+                            f"Train stopped (optical flow magnitude={motion_result.magnitude:.2f})"
+                        )
+            else:
+                logger.info(
+                    f"[VOTING MOTION] Train RUNNING (optical flow) - "
+                    f"violations confirmed"
+                )
+
+        except Exception as e:
+            logger.error(f"[VOTING MOTION] Error in motion check: {e}")
+            # On error, return standard results (no exemptions)
 
         return results
 

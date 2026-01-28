@@ -688,12 +688,16 @@ class LocopilotActivityMonitor:
         seconds = int(video_seconds % 60)
         return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
 
-    def _resolve_motion_context(self, timestamp_str):
+    def _resolve_motion_context(self, timestamp_str, frame=None, prev_frame=None):
         """
         Resolve current train motion context from timestamp.
 
+        Enhanced with optical flow verification for unscheduled stops.
+
         Args:
             timestamp_str: Current timestamp in HH:MM:SS format
+            frame: Current video frame (optional, for optical flow)
+            prev_frame: Previous video frame (optional, for optical flow)
 
         Returns:
             TrainMotionContext or None
@@ -702,9 +706,16 @@ class LocopilotActivityMonitor:
             return None
 
         try:
-            context = self.motion_resolver.resolve_motion_state(
-                timestamp_str, self.trip_schedule
-            )
+            # Use optical flow-enhanced method if frame is provided
+            if frame is not None and hasattr(self.motion_resolver, 'resolve_motion_state_with_optical_flow'):
+                context = self.motion_resolver.resolve_motion_state_with_optical_flow(
+                    timestamp_str, self.trip_schedule, frame, prev_frame
+                )
+            else:
+                # Fall back to standard schedule-based resolution
+                context = self.motion_resolver.resolve_motion_state(
+                    timestamp_str, self.trip_schedule
+                )
             return context
         except Exception as e:
             self.logger.warning(f"Error resolving motion context: {e}")
@@ -4575,15 +4586,26 @@ class LocopilotActivityMonitor:
                 else:
                     person_activities['alp_hand_gesture'] = alp_gesture
 
-                # ============ BATCH VOTING VERIFICATION ============
+                # ============ BATCH VOTING VERIFICATION WITH MOTION CHECK ============
                 # Verify all collected activities in a single batch (shared inference)
+                # Uses optical flow motion detection to exempt violations when train is stopped
                 if voting_collector is not None and voting_collector.has_activities():
                     try:
-                        batch_results = self.voting_service.verify_batch(
-                            video_path=self.current_video_path,
-                            timestamp_sec=timestamp_sec,
-                            activities=voting_collector.get_activities()
-                        )
+                        # Use motion-aware verification if available
+                        if hasattr(self.voting_service, 'verify_batch_with_motion_check'):
+                            batch_results = self.voting_service.verify_batch_with_motion_check(
+                                video_path=self.current_video_path,
+                                timestamp_sec=timestamp_sec,
+                                activities=voting_collector.get_activities(),
+                                trip_schedule=self.trip_schedule,
+                                motion_context=self.current_motion_context
+                            )
+                        else:
+                            batch_results = self.voting_service.verify_batch(
+                                video_path=self.current_video_path,
+                                timestamp_sec=timestamp_sec,
+                                activities=voting_collector.get_activities()
+                            )
 
                         # Apply results to person_activities
                         for activity_key, (is_confirmed, vote_details) in batch_results.items():
@@ -4605,9 +4627,12 @@ class LocopilotActivityMonitor:
                                 person_key = activity_key_map.get(activity_type, activity_type)
                                 person_activities[person_key] = is_confirmed
 
-                                # Log result
+                                # Log result with motion exemption info
+                                motion_exempted = vote_details.get('motion_exempted', False)
                                 if is_confirmed:
                                     self.logger.info(f"[VOTING BATCH] {activity_type} CONFIRMED: {vote_details.get('vote_breakdown', [])}")
+                                elif motion_exempted:
+                                    self.logger.info(f"[VOTING MOTION] {activity_type} EXEMPTED: Train stopped (optical flow)")
                                 else:
                                     self.logger.info(f"[VOTING BATCH] {activity_type} REJECTED: {vote_details.get('vote_breakdown', [])}")
                     except Exception as e:
@@ -6075,13 +6100,21 @@ class LocopilotActivityMonitor:
                             self.logger.info(
                                 f"[MOTION-RULES] Frame {frame_idx}: No OCR/start_time - using video-relative: {motion_timestamp}"
                             )
-                self.current_motion_context = self._resolve_motion_context(motion_timestamp)
+                # Pass frame for optical flow-enhanced motion detection
+                # prev_motion_frame is set at end of loop
+                prev_motion_frame = getattr(self, '_prev_motion_frame', None)
+                self.current_motion_context = self._resolve_motion_context(
+                    motion_timestamp, frame=frame, prev_frame=prev_motion_frame
+                )
+                # Store current frame for next iteration's optical flow
+                self._prev_motion_frame = frame.copy()
 
                 # Log motion state periodically
                 if frame_idx % 60 == 0 and self.current_motion_context:
                     self.logger.info(
                         f"[MOTION-RULES] Frame {frame_idx}: State={self.current_motion_context.motion_state.value}, "
-                        f"Station={self.current_motion_context.current_station.station_code if self.current_motion_context.current_station else 'N/A'}"
+                        f"Station={self.current_motion_context.current_station.station_code if self.current_motion_context.current_station else 'N/A'}, "
+                        f"Source={self.current_motion_context.resolution_source}"
                     )
 
                 # 3. Check ALP pre-arrival alertness (if in pre-arrival window)
@@ -6530,13 +6563,18 @@ class LocopilotActivityMonitor:
                     if frame_idx % 60 == 0:
                         src = "video_start_time" if has_start_time else "video-relative"
                         self.logger.info(f"[MOTION-RULES] Frame {frame_idx}: Using {src}: {motion_timestamp}")
-                self.current_motion_context = self._resolve_motion_context(motion_timestamp)
+                # Pass frame for optical flow-enhanced motion detection
+                prev_motion_frame = getattr(self, '_prev_motion_frame', None)
+                self.current_motion_context = self._resolve_motion_context(
+                    motion_timestamp, frame=frame, prev_frame=prev_motion_frame
+                )
+                self._prev_motion_frame = frame.copy()
 
                 # Log motion state periodically
                 if frame_idx % 60 == 0 and self.current_motion_context:
                     ctx = self.current_motion_context
                     station = ctx.current_station.station_code if ctx.current_station else "N/A"
-                    self.logger.info(f"[MOTION-RULES] Frame {frame_idx}: State={ctx.motion_state.value}, Station={station}")
+                    self.logger.info(f"[MOTION-RULES] Frame {frame_idx}: State={ctx.motion_state.value}, Station={station}, Source={ctx.resolution_source}")
 
                 # 3. Check ALP pre-arrival alertness
                 alp_not_standing_detected = False

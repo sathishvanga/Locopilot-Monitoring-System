@@ -260,6 +260,41 @@ class Settings(BaseSettings):
     # Halt Grace Period - allow exemptions for short time after scheduled departure
     halt_grace_period: int = int(os.getenv("HALT_GRACE_PERIOD", "120"))  # 120s after departure
 
+    # ==========================================
+    # Optical Flow Motion Detection Settings
+    # ==========================================
+    # Enable/disable optical flow motion verification
+    optical_flow_enabled: bool = bool(int(os.getenv("OPTICAL_FLOW_ENABLED", "1")))
+
+    # Front window ROI configuration (ratios of frame dimensions)
+    # Captures the front windshield view for reliable motion detection
+    # Default: Top-center 25% of frame width, top 15% height (front window)
+    # Tested on ch03 camera angle - detects train motion via scenery passing
+    motion_roi_x_ratio: float = float(os.getenv("MOTION_ROI_X", "0.25"))
+    motion_roi_width_ratio: float = float(os.getenv("MOTION_ROI_WIDTH", "0.25"))
+    motion_roi_y_ratio: float = float(os.getenv("MOTION_ROI_Y", "0.0"))
+    motion_roi_height_ratio: float = float(os.getenv("MOTION_ROI_HEIGHT", "0.15"))
+
+    # Motion classification thresholds (optical flow magnitude - 90th percentile)
+    # Calibrated from video analysis:
+    #   - STOPPED: magnitude typically 0.5-1.5 (static platform/scenery)
+    #   - RUNNING: magnitude typically 5.0-10.0 (scenery moving)
+    motion_stopped_threshold: float = float(os.getenv("MOTION_STOPPED_THRESHOLD", "2.0"))
+    motion_running_threshold: float = float(os.getenv("MOTION_RUNNING_THRESHOLD", "5.0"))
+    motion_confidence_threshold: float = float(os.getenv("MOTION_CONFIDENCE_THRESHOLD", "0.7"))
+
+    # ==========================================
+    # etrain.info Delay Integration Settings
+    # ==========================================
+    # Enable/disable etrain.info delay data fetching
+    etrain_enabled: bool = bool(int(os.getenv("ETRAIN_ENABLED", "1")))
+
+    # etrain.info base URL for train live status
+    etrain_base_url: str = os.getenv("ETRAIN_BASE_URL", "https://etrain.info/train")
+
+    # Cache TTL for delay data (in seconds, default 30 minutes)
+    etrain_cache_ttl: int = int(os.getenv("ETRAIN_CACHE_TTL", "1800"))
+
 
 @lru_cache()
 def get_settings() -> Settings:

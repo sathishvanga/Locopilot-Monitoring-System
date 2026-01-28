@@ -3,6 +3,8 @@ Trip data service - Fetches train schedule from RailRadar API
 
 This service integrates with the RailRadar API to fetch train schedules
 for determining train motion state (running vs stopped).
+
+Enhanced with etrain.info delay integration for actual arrival/departure times.
 """
 
 import logging
@@ -16,6 +18,22 @@ from ..models.trip_models import TripSchedule, StationHalt
 from ..utils.config import get_settings
 
 logger = logging.getLogger(__name__)
+
+# Lazy import to avoid circular dependency
+_etrain_service = None
+
+
+def _get_etrain_service():
+    """Get the etrain delay service (lazy import)."""
+    global _etrain_service
+    if _etrain_service is None:
+        try:
+            from .etrain_delay_service import get_etrain_delay_service
+            _etrain_service = get_etrain_delay_service()
+        except ImportError:
+            logger.warning("[TRIP-DATA] etrain_delay_service not available")
+            _etrain_service = None
+    return _etrain_service
 
 # TTL cache for trip schedules (1 hour)
 _schedule_cache = TTLCache(maxsize=100, ttl=3600)
@@ -293,6 +311,74 @@ class TripDataService:
             total_distance_km=total_distance,
             fetched_at=datetime.now()
         )
+
+    def fetch_trip_schedule_with_delays(
+        self,
+        train_number: str,
+        journey_date: str,
+        division: Optional[str] = None
+    ) -> Optional[TripSchedule]:
+        """
+        Fetch train schedule with actual delay data merged in.
+
+        This method:
+        1. Fetches base schedule from RailRadar API
+        2. Fetches delay data from etrain.info
+        3. Merges delays to create adjusted schedule with actual times
+
+        Args:
+            train_number: 5-digit train number
+            journey_date: Journey date in YYYY-MM-DD format
+            division: Optional division identifier
+
+        Returns:
+            TripSchedule with actual_arrival_minutes and actual_departure_minutes
+            populated based on delay data
+        """
+        logger.info(
+            f"[TRIP-DATA] fetch_trip_schedule_with_delays() called - "
+            f"train: {train_number}, date: {journey_date}"
+        )
+
+        # 1. Fetch base schedule from RailRadar
+        base_schedule = self.fetch_trip_schedule(
+            train_number, journey_date, division
+        )
+
+        if base_schedule is None:
+            logger.warning("[TRIP-DATA] No base schedule fetched")
+            return None
+
+        # 2. Fetch delay data from etrain.info
+        etrain_service = _get_etrain_service()
+        if etrain_service is None or not etrain_service.enabled:
+            logger.info("[TRIP-DATA] etrain service disabled, returning base schedule")
+            return base_schedule
+
+        delay_data = etrain_service.fetch_delay_data(
+            train_number, journey_date
+        )
+
+        if delay_data.fetch_status != "success" and delay_data.fetch_status != "parsed":
+            logger.info(
+                f"[TRIP-DATA] Delay fetch status: {delay_data.fetch_status}, "
+                f"returning base schedule without delay adjustments"
+            )
+            return base_schedule
+
+        # 3. Merge delays into schedule
+        adjusted_schedule = etrain_service.get_adjusted_schedule(
+            base_schedule, delay_data
+        )
+
+        if adjusted_schedule:
+            logger.info(
+                f"[TRIP-DATA] Schedule adjusted with delay data - "
+                f"avg delay: {delay_data.get_average_delay()} min"
+            )
+            return adjusted_schedule
+
+        return base_schedule
 
     def clear_cache(self):
         """Clear the schedule cache"""
