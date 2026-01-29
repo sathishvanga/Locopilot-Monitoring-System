@@ -1,23 +1,49 @@
-GPU Server details
-ssh root@95.216.66.168
-Login@123@@@
+GPU Server Details
+==================
+
+Current Server (New):
+  IP:       103.116.80.162
+  Port:     3781
+  Username: admin1
+  Password: 9o\P`3#W(9}K
+  GPU:      NVIDIA RTX 4000 Ada Generation (20GB VRAM)
+  SSH:      ssh -p 3781 admin1@103.116.80.162
+  App URL:  http://103.116.80.162:8000
+  Health:   http://103.116.80.162:8000/health
+  App Path: /opt/poc2
+
+Old Server (Decommissioned):
+  IP:       95.216.66.168
+  Username: root
+  Password: Login@123@@@
+  GPU:      GTX 1080 (8GB VRAM)
+  Status:   locopilot service stopped and disabled
 
 Required System Dependencies (GPU Server):
   # Install ffmpeg for H.264 video encoding (required for browser playback)
-  apt-get update && apt-get install -y ffmpeg
+  sudo apt-get update && sudo apt-get install -y ffmpeg
 
   # Verify ffmpeg installation
   ffmpeg -version
 
 Useful Commands (GPU Server):
   # Check service status
-  ps aux | grep gunicorn
+  sudo systemctl status locopilot
 
   # View logs
   tail -f /opt/poc2/logs/LocopilotMonitoring.log
 
   # Restart service
-  cd /opt/poc2 && pkill -f gunicorn && source venv/bin/activate && nohup gunicorn -c gunicorn_config.py app.main:app > logs/gunicorn.log 2>&1 &
+  sudo systemctl restart locopilot
+
+  # Stop service
+  sudo systemctl stop locopilot
+
+  # View recent service logs
+  journalctl -u locopilot -n 50
+
+  # Check GPU status
+  nvidia-smi
 
   # Re-encode existing clips to H.264 (if needed)
   for dir in /opt/poc2/locopilot_evidence/run_*/clips; do cd "$dir" && for f in *.mp4; do ffmpeg -y -i "$f" -c:v libx264 -preset fast -crf 23 -pix_fmt yuv420p -movflags +faststart "${f%.mp4}_h264.mp4" && mv "${f%.mp4}_h264.mp4" "$f"; done; done

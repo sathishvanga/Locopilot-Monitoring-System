@@ -1,15 +1,15 @@
 #!/bin/bash
 # Locopilot Monitoring System - GPU Server Deployment Script
 # Usage: ./deploy-gpu.sh
-# Target: GPU Server (95.216.66.168) - GTX 1080 8GB
+# Target: GPU Server (103.116.80.162)
 
 set -e
 
 # Server Configuration
-SERVER_IP="95.216.66.168"
-SERVER_PORT="22"
-SERVER_USER="root"
-SERVER_PASS="Login@123@@@"
+SERVER_IP="103.116.80.162"
+SERVER_PORT="3781"
+SERVER_USER="admin1"
+SERVER_PASS='9o\P`3#W(9}K'
 REMOTE_PATH="/opt/poc2"
 
 # Colors for output
@@ -20,7 +20,7 @@ NC='\033[0m' # No Color
 
 echo "=========================================="
 echo "  Locopilot - GPU Server Deployer"
-echo "  Target: $SERVER_IP (GTX 1080)"
+echo "  Target: $SERVER_IP (New GPU Server)"
 echo "=========================================="
 echo ""
 
@@ -70,7 +70,7 @@ echo ""
 echo -e "${YELLOW}[3/6] Installing system dependencies (ffmpeg)...${NC}"
 sshpass -p "$SERVER_PASS" ssh -p "$SERVER_PORT" -o StrictHostKeyChecking=no \
     "$SERVER_USER@$SERVER_IP" \
-    "which ffmpeg > /dev/null 2>&1 || (apt-get update -qq && apt-get install -y ffmpeg -qq)"
+    "which ffmpeg > /dev/null 2>&1 || (echo \"$SERVER_PASS\" | sudo -S apt-get update -qq && echo \"$SERVER_PASS\" | sudo -S apt-get install -y ffmpeg -qq)"
 
 echo ""
 echo -e "${YELLOW}[4/6] Installing Python dependencies...${NC}"
@@ -81,16 +81,17 @@ sshpass -p "$SERVER_PASS" ssh -p "$SERVER_PORT" -o StrictHostKeyChecking=no \
 echo ""
 echo -e "${YELLOW}[5/6] Updating systemd service and restarting...${NC}"
 # Update systemd service with correct environment variables
+SUDO_PASS="$SERVER_PASS"
 sshpass -p "$SERVER_PASS" ssh -p "$SERVER_PORT" -o StrictHostKeyChecking=no \
-    "$SERVER_USER@$SERVER_IP" << 'EOF'
-cat > /etc/systemd/system/locopilot.service << 'SERVICE'
+    "$SERVER_USER@$SERVER_IP" "
+echo '$SUDO_PASS' | sudo -S tee /etc/systemd/system/locopilot.service > /dev/null << 'SERVICE'
 [Unit]
 Description=Locopilot Monitoring System
 After=network.target
 
 [Service]
 Type=simple
-User=root
+User=admin1
 WorkingDirectory=/opt/poc2
 EnvironmentFile=/opt/poc2/.env
 Environment=PATH=/opt/poc2/venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
@@ -106,9 +107,9 @@ RestartSec=10
 WantedBy=multi-user.target
 SERVICE
 
-systemctl daemon-reload
-systemctl restart locopilot
-EOF
+echo '$SUDO_PASS' | sudo -S systemctl daemon-reload
+echo '$SUDO_PASS' | sudo -S systemctl restart locopilot
+"
 
 echo ""
 echo -e "${YELLOW}[6/6] Verifying deployment...${NC}"
@@ -117,7 +118,7 @@ sleep 5
 # Check service status
 STATUS=$(sshpass -p "$SERVER_PASS" ssh -p "$SERVER_PORT" -o StrictHostKeyChecking=no \
     "$SERVER_USER@$SERVER_IP" \
-    "systemctl is-active locopilot")
+    "echo \"$SERVER_PASS\" | sudo -S systemctl is-active locopilot 2>/dev/null")
 
 if [ "$STATUS" = "active" ]; then
     echo -e "${GREEN}Service is running!${NC}"

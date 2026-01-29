@@ -50,7 +50,7 @@ class Settings(BaseSettings):
     port: int = 8000
     
     # File upload settings
-    max_upload_size: int = 500 * 1024 * 1024  # 500 MB
+    max_upload_size: int = 5 * 1024 * 1024 * 1024  # 5 GB
     allowed_video_extensions: List[str] = [".mp4", ".avi", ".mov", ".mkv"]
     # Use cross-platform temp directory (works on Windows, macOS, and Linux)
     upload_dir: str = os.getenv("UPLOAD_DIR", os.path.join(tempfile.gettempdir(), "locopilot_uploads"))
