@@ -35,6 +35,12 @@ scipy>=1.12.0
 pytesseract>=0.3.10  # OCR for timestamp extraction from video frames
 cachetools>=5.3.0    # TTL caching for trip schedule data
 
+# VLM verification dependencies (Qwen2.5-VL for hybrid YOLO+VLM pipeline)
+# Set VLM_ENABLED=1 to activate. Requires GPU with >= 20GB VRAM.
+transformers>=4.45.0
+accelerate>=0.34.0   # Required by transformers for device_map="auto"
+qwen-vl-utils>=0.0.8 # Qwen VL image/video processing utilities
+
 # Note: mediapipe requires numpy<2, which is incompatible with opencv-python>=4.12
 # Using opencv-contrib-python instead, which includes all opencv-python features
 

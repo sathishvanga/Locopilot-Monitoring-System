@@ -35,7 +35,7 @@ fi
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
-echo -e "${YELLOW}[1/6] Syncing files to GPU server...${NC}"
+echo -e "${YELLOW}[1/8] Syncing files to GPU server...${NC}"
 sshpass -p "$SERVER_PASS" rsync -avz --progress \
     --exclude 'venv' \
     --exclude '.venv' \
@@ -61,25 +61,54 @@ sshpass -p "$SERVER_PASS" rsync -avz --progress \
     "$SERVER_USER@$SERVER_IP:$REMOTE_PATH/"
 
 echo ""
-echo -e "${YELLOW}[2/6] Updating environment configuration...${NC}"
+echo -e "${YELLOW}[2/8] Updating environment configuration...${NC}"
 sshpass -p "$SERVER_PASS" ssh -p "$SERVER_PORT" -o StrictHostKeyChecking=no \
     "$SERVER_USER@$SERVER_IP" \
     "cp $REMOTE_PATH/.env.production $REMOTE_PATH/.env"
 
 echo ""
-echo -e "${YELLOW}[3/6] Installing system dependencies (ffmpeg)...${NC}"
+echo -e "${YELLOW}[3/8] Installing system dependencies (ffmpeg)...${NC}"
 sshpass -p "$SERVER_PASS" ssh -p "$SERVER_PORT" -o StrictHostKeyChecking=no \
     "$SERVER_USER@$SERVER_IP" \
     "which ffmpeg > /dev/null 2>&1 || (echo \"$SERVER_PASS\" | sudo -S apt-get update -qq && echo \"$SERVER_PASS\" | sudo -S apt-get install -y ffmpeg -qq)"
 
 echo ""
-echo -e "${YELLOW}[4/6] Installing Python dependencies...${NC}"
+echo -e "${YELLOW}[4/8] Installing Python dependencies...${NC}"
 sshpass -p "$SERVER_PASS" ssh -p "$SERVER_PORT" -o StrictHostKeyChecking=no \
     "$SERVER_USER@$SERVER_IP" \
     "cd $REMOTE_PATH && source venv/bin/activate && pip install -r requirements.txt -q"
 
 echo ""
-echo -e "${YELLOW}[5/6] Updating systemd service and restarting...${NC}"
+echo -e "${YELLOW}[5/8] Downloading YOLO nano models (yolo11n + yolo11n-pose)...${NC}"
+sshpass -p "$SERVER_PASS" ssh -p "$SERVER_PORT" -o StrictHostKeyChecking=no \
+    "$SERVER_USER@$SERVER_IP" \
+    "cd $REMOTE_PATH && source venv/bin/activate && python -c \"
+from ultralytics import YOLO
+import os
+for w in ['yolo11n.pt', 'yolo11n-pose.pt']:
+    if not os.path.exists(w):
+        print(f'Downloading {w}...')
+        YOLO(w)
+        print(f'{w} downloaded')
+    else:
+        print(f'{w} already exists')
+\""
+
+echo ""
+echo -e "${YELLOW}[6/8] Pre-downloading VLM model (Qwen2.5-VL-7B-Instruct FP16)...${NC}"
+sshpass -p "$SERVER_PASS" ssh -p "$SERVER_PORT" -o StrictHostKeyChecking=no \
+    "$SERVER_USER@$SERVER_IP" \
+    "cd $REMOTE_PATH && source venv/bin/activate && python -c \"
+from huggingface_hub import snapshot_download
+try:
+    snapshot_download('Qwen/Qwen2.5-VL-7B-Instruct', ignore_patterns=['*.md', '*.txt'])
+    print('VLM model downloaded successfully')
+except Exception as e:
+    print(f'VLM model download failed (will retry on first request): {e}')
+\""
+
+echo ""
+echo -e "${YELLOW}[7/8] Updating systemd service and restarting...${NC}"
 # Update systemd service with correct environment variables
 # Write the service file locally, then copy it over
 SERVICE_FILE=$(mktemp)
@@ -98,6 +127,7 @@ Environment=YOLO_DEVICE=0
 Environment=MP_MAX_WORKERS_CAP=2
 Environment=TORCH_THREADS=1
 Environment=OPENCV_THREADS=2
+Environment=VLM_ENABLED=1
 ExecStart=/opt/poc2/venv/bin/gunicorn -c gunicorn_config.py app.main:app
 Restart=always
 RestartSec=10
@@ -120,7 +150,7 @@ sshpass -p "$SERVER_PASS" ssh -p "$SERVER_PORT" -o StrictHostKeyChecking=no \
      rm -f /tmp/locopilot.service"
 
 echo ""
-echo -e "${YELLOW}[6/6] Verifying deployment...${NC}"
+echo -e "${YELLOW}[8/8] Verifying deployment...${NC}"
 sleep 5
 
 # Check service status

@@ -100,6 +100,11 @@ class GPUResourceManager:
         self._mp_face_mesh: Optional[Any] = None
         self._preprocessing_service: Optional[Any] = None
 
+        # VLM model instances (Qwen2.5-VL for semantic verification)
+        self._vlm_model: Optional[Any] = None
+        self._vlm_processor: Optional[Any] = None
+        self._vlm_loaded: bool = False
+
         # Concurrency control
         self._semaphore: Optional[asyncio.Semaphore] = None
         self._active_count: int = 0
@@ -346,6 +351,101 @@ class GPUResourceManager:
                 self._models_loaded = False
                 return False
 
+    def load_vlm_model(self, force_reload: bool = False) -> bool:
+        """
+        Load Qwen2.5-VL model for semantic verification.
+
+        The VLM is loaded separately from YOLO models since it's only needed
+        during the verification stage, not for every frame.
+
+        Args:
+            force_reload: If True, reload even if already loaded
+
+        Returns:
+            bool: True if model loaded successfully
+        """
+        logger.info("Entering load_vlm_model()", extra={"force_reload": force_reload})
+
+        if not self._settings.vlm_enabled:
+            logger.info("VLM disabled in config, skipping load")
+            return False
+
+        with self._initialization_lock:
+            if self._vlm_loaded and not force_reload:
+                logger.info("Exiting load_vlm_model() - already loaded")
+                return True
+
+            if self._device is None:
+                self.initialize()
+
+            try:
+                from transformers import Qwen2_5_VLForConditionalGeneration, AutoProcessor
+
+                model_name = self._settings.vlm_model_name
+                logger.info(f"Loading VLM model: {model_name}")
+                start_time = time.time()
+
+                # NOTE: trust_remote_code=True is required by Qwen2.5-VL architecture.
+                # Only use trusted model names (validated HuggingFace repos).
+                self._vlm_processor = AutoProcessor.from_pretrained(model_name)
+
+                if self._gpu_available:
+                    self._vlm_model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
+                        model_name,
+                        torch_dtype=torch.float16,
+                        device_map="auto",
+                    )
+                else:
+                    logger.warning(
+                        "Loading VLM on CPU with float32 — inference will be very slow. "
+                        "GPU is strongly recommended for VLM verification."
+                    )
+                    self._vlm_model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
+                        model_name,
+                        torch_dtype=torch.float32,
+                    )
+
+                load_time = time.time() - start_time
+                logger.info(
+                    f"VLM model loaded in {load_time:.2f}s on {self._device_name}"
+                )
+
+                if self._gpu_available:
+                    self._log_gpu_memory_stats()
+
+                self._vlm_loaded = True
+                return True
+
+            except ImportError:
+                logger.warning(
+                    "transformers or qwen-vl-utils not installed. "
+                    "Install with: pip install transformers qwen-vl-utils autoawq"
+                )
+                return False
+            except Exception as e:
+                logger.error(f"VLM model loading failed: {e}", exc_info=True)
+                self._vlm_loaded = False
+                return False
+
+    def get_vlm_model(self) -> Tuple[Optional[Any], Optional[Any]]:
+        """
+        Get the VLM model and processor.
+
+        Performs lazy initialization if not loaded yet.
+
+        Returns:
+            Tuple[model, processor] or (None, None) if unavailable
+        """
+        if not self._settings.vlm_enabled:
+            return None, None
+
+        if not self._vlm_loaded:
+            success = self.load_vlm_model()
+            if not success:
+                return None, None
+
+        return self._vlm_model, self._vlm_processor
+
     def get_models(self) -> Tuple[Any, Any]:
         """
         Get shared YOLO model instances (tuple format)
@@ -392,7 +492,9 @@ class GPUResourceManager:
             'yolo_pose': self._pose_model,
             'face_mesh': self._face_mesh,
             'mp_face_mesh': self._mp_face_mesh,
-            'preprocessing_service': self._preprocessing_service
+            'preprocessing_service': self._preprocessing_service,
+            'vlm_model': self._vlm_model,
+            'vlm_processor': self._vlm_processor
         }
 
         logger.debug("Exiting get_models_dict", extra={"num_models": len(models)})
@@ -798,7 +900,11 @@ class GPUResourceManager:
             "max_concurrent": self._settings.max_concurrent_videos,
             "oom_recovery_count": self._oom_recovery_count,
             "current_batch_size": self._current_batch_size,
-            "model_names": ["yolo", "yolo_pose", "face_mesh"] if self._models_loaded else [],
+            "model_names": (
+                ["yolo", "yolo_pose", "face_mesh"] +
+                (["vlm_qwen2.5_vl"] if self._vlm_loaded else [])
+            ) if self._models_loaded else [],
+            "vlm_loaded": self._vlm_loaded,
             "num_cuda_streams": len(self._streams),
             **memory_stats
         }
@@ -990,6 +1096,11 @@ class GPUResourceManager:
             self._pose_model = None
             self._mp_face_mesh = None
             self._preprocessing_service = None
+
+            # Clear VLM model
+            self._vlm_model = None
+            self._vlm_processor = None
+            self._vlm_loaded = False
 
             # Clear CUDA streams
             self._streams = []

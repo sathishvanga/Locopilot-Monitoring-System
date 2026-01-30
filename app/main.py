@@ -167,9 +167,39 @@ async def lifespan(app: FastAPI):
     logger.info(f"Upload directory: {settings.upload_dir}")
     logger.info(f"Sample FPS: {settings.sample_fps}")
     logger.info(f"YOLO weights: {settings.yolo_weights}")
+    logger.info(f"VLM enabled: {settings.vlm_enabled}")
+    logger.info(f"VLM model: {settings.vlm_model_name}")
     logger.info(f"Max concurrent videos: {settings.max_concurrent_videos}")
     logger.info(f"Job queue max size: {settings.job_queue_max_size}")
     logger.info("=" * 60)
+
+    # Pre-load VLM model for hybrid verification pipeline
+    # Use file lock to ensure only ONE gunicorn worker loads the VLM (15GB VRAM)
+    if settings.vlm_enabled:
+        import fcntl
+        vlm_lock_path = os.path.join(settings.output_dir, ".vlm_load.lock")
+        os.makedirs(os.path.dirname(vlm_lock_path), exist_ok=True)
+        try:
+            lock_fd = open(vlm_lock_path, "w")
+            fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            # Got the lock — this worker loads VLM
+            logger.info("Pre-loading VLM model for hybrid verification...")
+            print("[VLM] Loading Qwen2.5-VL model for semantic verification...")
+            success = gpu_manager.load_vlm_model()
+            if success:
+                print("[VLM] VLM model loaded successfully")
+                logger.info("VLM model pre-loaded successfully")
+            else:
+                print("[VLM] VLM model failed to load - falling back to YOLO voting")
+                logger.warning("VLM model failed to load - YOLO voting fallback active")
+            # Keep lock held for app lifetime (released on process exit)
+        except BlockingIOError:
+            # Another worker already holds the lock — skip VLM loading
+            logger.info("VLM already being loaded by another worker, skipping (will use YOLO voting)")
+            print("[VLM] Skipped (another worker is loading VLM)")
+        except Exception as e:
+            logger.warning(f"VLM pre-load failed: {e}", exc_info=True)
+            print(f"[VLM] VLM load failed: {e} - using YOLO voting fallback")
 
     # Store GPU manager and job manager in app state for access by endpoints
     app.state.gpu_manager = gpu_manager

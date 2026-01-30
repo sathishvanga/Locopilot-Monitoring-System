@@ -76,10 +76,10 @@ class Settings(BaseSettings):
     mp_max_workers: Optional[int] = None  # None = auto-detect (uses min(CPU count, max_workers_cap))
     mp_max_workers_cap: int = 12  # Maximum number of workers (11 cores + slight oversubscription)
     
-    # Model settings - YOLO11 (latest, better accuracy, faster, fewer parameters)
-    yolo_weights: str = os.getenv("YOLO_WEIGHTS_PRELOAD", "yolo11m.pt")  # YOLO11m for object detection
-    yolo_pose_weights: str = os.getenv("YOLO_POSE_WEIGHTS", "yolo11m-pose.pt")  # YOLO11m-pose for multi-person pose
-    yolo_pose_confidence: float = float(os.getenv("YOLO_POSE_CONFIDENCE", "0.45"))  # Pose detection confidence
+    # Model settings - YOLO11 nano (fast scanning, VLM handles verification accuracy)
+    yolo_weights: str = os.getenv("YOLO_WEIGHTS_PRELOAD", "yolo11n.pt")  # YOLO11n nano for fast object detection
+    yolo_pose_weights: str = os.getenv("YOLO_POSE_WEIGHTS", "yolo11n-pose.pt")  # YOLO11n-pose nano for fast pose
+    yolo_pose_confidence: float = float(os.getenv("YOLO_POSE_CONFIDENCE", "0.35"))  # Lowered for nano (VLM filters FPs)
 
     # Phase 2: Inference optimization settings
     # CHANGED from 416 to 640 for better accuracy on small objects (cell phones)
@@ -252,6 +252,15 @@ class Settings(BaseSettings):
 
     # GPU Memory Management Settings
     gpu_memory_warning_threshold: float = float(os.getenv("GPU_MEMORY_WARNING_THRESHOLD", "80.0"))  # Percentage
+
+    # ==========================================
+    # VLM Verification Settings (Qwen2.5-VL)
+    # ==========================================
+    # Hybrid pipeline: YOLO nano fast-scan → VLM semantic verification
+    vlm_enabled: bool = bool(int(os.getenv("VLM_ENABLED", "0")))  # Opt-in: set VLM_ENABLED=1 after installing transformers+autoawq
+    vlm_model_name: str = os.getenv("VLM_MODEL_NAME", "Qwen/Qwen2.5-VL-7B-Instruct")
+    vlm_max_new_tokens: int = int(os.getenv("VLM_MAX_NEW_TOKENS", "256"))
+    vlm_num_verification_frames: int = int(os.getenv("VLM_NUM_VERIFICATION_FRAMES", "5"))  # Frames sent to VLM per verification
 
     # ==========================================
     # Train Motion Rules Settings

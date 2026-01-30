@@ -552,9 +552,28 @@ class LocopilotActivityMonitor:
         self.current_video_path = video_path  # Track current video for voting
         if VotingVerificationService is not None:
             try:
+                # Load VLM model for hybrid verification (YOLO nano + VLM)
+                # NOTE: VLM uses CUDA handles that are NOT fork-safe.
+                # Only load VLM in the main process (not in multiprocessing workers).
+                vlm_model, vlm_processor = None, None
+                import multiprocessing
+                is_main_process = multiprocessing.current_process().name == "MainProcess"
+                if is_main_process:
+                    try:
+                        from app.services.gpu_resource_manager import gpu_resource_manager
+                        vlm_model, vlm_processor = gpu_resource_manager.get_vlm_model()
+                        if vlm_model is not None:
+                            self.logger.info("VLM model loaded for hybrid verification")
+                    except Exception as vlm_err:
+                        self.logger.warning(f"VLM not available, using YOLO voting fallback: {vlm_err}")
+                else:
+                    self.logger.info("Skipping VLM in worker process (not fork-safe), using YOLO voting")
+
                 self.voting_service = VotingVerificationService(
                     yolo_model=self.yolo_model,
-                    yolo_pose_model=self.yolo_pose
+                    yolo_pose_model=self.yolo_pose,
+                    vlm_model=vlm_model,
+                    vlm_processor=vlm_processor
                 )
                 self.logger.info("VotingVerificationService initialized successfully")
             except Exception as e:

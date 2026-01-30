@@ -97,7 +97,7 @@ proc_name = "locopilot-monitor"
 
 # Environment variables
 raw_env = [
-    "YOLO_WEIGHTS_PRELOAD=yolo11m.pt",  # YOLOv8m (medium) for faster CPU inference
+    "YOLO_WEIGHTS_PRELOAD=yolo11n.pt",  # YOLO11n nano (fast scan, VLM handles verification)
     f"YOLO_DEVICE={os.getenv('YOLO_DEVICE', 'cpu')}",  # Pass GPU device to workers
 ]
 

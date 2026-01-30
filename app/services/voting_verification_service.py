@@ -306,17 +306,32 @@ class VotingVerificationService:
     a configurable percentage of frames detect the activity.
     """
 
-    def __init__(self, yolo_model=None, yolo_pose_model=None):
+    def __init__(self, yolo_model=None, yolo_pose_model=None, vlm_model=None, vlm_processor=None):
         """
         Initialize the voting verification service.
 
         Args:
             yolo_model: Pre-loaded YOLO model for object detection
             yolo_pose_model: Pre-loaded YOLO-Pose model for pose estimation
+            vlm_model: Pre-loaded Qwen2.5-VL model (optional, for VLM verification)
+            vlm_processor: Pre-loaded VLM processor (optional, for VLM verification)
         """
         self.settings = get_settings()
         self.yolo_model = yolo_model
         self.yolo_pose_model = yolo_pose_model
+
+        # Initialize VLM verification service (hybrid pipeline)
+        self._vlm_service = None
+        if self.settings.vlm_enabled:
+            try:
+                from .vlm_verification_service import VLMVerificationService
+                self._vlm_service = VLMVerificationService(
+                    vlm_model=vlm_model,
+                    vlm_processor=vlm_processor
+                )
+                logger.info("[VOTING] VLM verification service initialized (hybrid mode)")
+            except Exception as e:
+                logger.warning(f"[VOTING] Failed to init VLM service, falling back to YOLO voting: {e}")
 
         # Activity thresholds (matching locopilot_monitor.py)
         self.cell_phone_margin = 100  # Hand-to-phone proximity
@@ -412,6 +427,20 @@ class VotingVerificationService:
             logger.info(f"[VOTING] Voting DISABLED - bypassing verification")
             return True, {'method': 'bypass', 'reason': 'voting_disabled'}
 
+        # VLM verification path (preferred)
+        if self._vlm_service is not None and self._vlm_service.available:
+            logger.info(f"[VOTING] Using VLM for {activity_type} verification")
+            num_vlm_frames = self.settings.vlm_num_verification_frames
+            vlm_frames = self._extract_native_frames(video_path, timestamp_sec, num_vlm_frames, activity_type)
+            if len(vlm_frames) >= 2:
+                return self._vlm_service.verify_activity(
+                    frames=vlm_frames,
+                    activity_type=activity_type,
+                    person_bbox=person_bbox,
+                )
+            logger.warning(f"[VOTING] VLM: insufficient frames ({len(vlm_frames)}), falling back to YOLO voting")
+
+        # YOLO voting fallback
         # Get threshold for this activity type
         threshold_attr = f'voting_threshold_{activity_type}'
         threshold = getattr(self.settings, threshold_attr, 0.5)
@@ -611,6 +640,47 @@ class VotingVerificationService:
                 f"{act['type']}_p{act.get('person_idx', 0)}": (True, {'method': 'bypass', 'reason': 'voting_disabled'})
                 for act in activities
             }
+
+        # ============================================================
+        # VLM VERIFICATION PATH (preferred when available)
+        # Uses semantic understanding instead of YOLO re-detection
+        # ============================================================
+        if self._vlm_service is not None and self._vlm_service.available:
+            try:
+                logger.info("[VOTING BATCH] Using VLM semantic verification (hybrid mode)")
+                num_vlm_frames = self.settings.vlm_num_verification_frames
+                vlm_frames = self._extract_native_frames(video_path, timestamp_sec, num_vlm_frames, "vlm_batch")
+
+                if len(vlm_frames) < 2:
+                    logger.warning(f"[VOTING BATCH] Only extracted {len(vlm_frames)} frames for VLM - BYPASSING ALL")
+                    return {
+                        f"{act['type']}_p{act.get('person_idx', 0)}": (True, {
+                            'method': 'vlm_bypass', 'reason': 'insufficient_frames',
+                            'frames_extracted': len(vlm_frames)
+                        })
+                        for act in activities
+                    }
+
+                vlm_results = self._vlm_service.verify_batch(
+                    frames=vlm_frames,
+                    activities=activities
+                )
+
+                elapsed = time.time() - start_time
+                logger.info(f"[VOTING BATCH] VLM verification completed in {elapsed*1000:.1f}ms")
+                return vlm_results
+
+            except Exception as vlm_err:
+                logger.error(
+                    f"[VOTING BATCH] VLM verification failed, falling back to YOLO voting: {vlm_err}",
+                    exc_info=True
+                )
+                # Fall through to YOLO voting path below
+
+        # ============================================================
+        # YOLO VOTING FALLBACK PATH (when VLM is not available)
+        # ============================================================
+        logger.info("[VOTING BATCH] VLM not available, falling back to YOLO voting")
 
         num_frames = self.settings.voting_num_frames
         results: Dict[str, Tuple[bool, Dict]] = {}
