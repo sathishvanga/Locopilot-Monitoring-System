@@ -2238,6 +2238,41 @@ class LocopilotActivityMonitor:
     # a batch of N frames, keeping the GPU busy and reducing overhead.
     # =========================================================================
 
+    def _preprocess_frames_for_detection(self, frames):
+        """Preprocess dark/IR frames to improve YOLO person detection.
+
+        Uses adaptive brightness check on a sample frame. If dark (brightness < threshold),
+        applies CLAHE + gamma correction to all frames in the batch.
+        Only creates copies when preprocessing is needed.
+
+        Returns: list of frames (preprocessed copies if dark, originals if not)
+        """
+        if not self.preprocessing_service or not frames:
+            return frames
+
+        # Quick brightness check on first frame
+        sample = frames[0]
+        gray = cv2.cvtColor(sample, cv2.COLOR_BGR2GRAY) if len(sample.shape) == 3 else sample
+        brightness = float(np.mean(gray)) / 255.0
+
+        threshold = getattr(self.settings, 'yolo_dark_frame_brightness_threshold', 0.4) if self.settings else 0.4
+        if brightness >= threshold:
+            return frames  # Well-lit, no preprocessing needed
+
+        self.logger.debug(f"[IR PREPROCESS] Dark frames detected (brightness={brightness:.2f}), applying CLAHE+gamma for YOLO")
+
+        try:
+            enhanced = []
+            for frame in frames:
+                rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                processed = self.preprocessing_service.preprocess_for_mediapipe(rgb)
+                bgr = cv2.cvtColor(processed, cv2.COLOR_RGB2BGR)
+                enhanced.append(bgr)
+            return enhanced
+        except Exception as e:
+            self.logger.warning(f"[IR PREPROCESS] Preprocessing failed, using original frames: {e}")
+            return frames
+
     def detect_objects_batch(self, frames, batch_size=8):
         """Run YOLO object detection on multiple frames in a single batch.
 
@@ -6569,8 +6604,8 @@ class LocopilotActivityMonitor:
                         if self.consecutive_detections[activity_name] >= required_consecutive:
                             # Start activity if not already active
                             if not self.activities[activity_name]['active']:
-                                self.start_activity(activity_name, timestamp, fps, frame_idx, person_roles=person_roles)
-                            
+                                self.start_activity(activity_name, timestamp, fps, frame_idx, person_roles=person_roles, ocr_timestamp=ocr_timestamp)
+
                             # Continue recording frames ONLY when activity is actively detected
                             if self.activities[activity_name]['active']:
                                 # Store raw frame (without annotations) for clean evidence clips
@@ -6596,13 +6631,15 @@ class LocopilotActivityMonitor:
                             else:
                                 # Grace period exceeded - end activity and reset counters
                                 if self.activities[activity_name]['active']:
+                                    # No ocr_timestamp: current frame is post-grace-period, not when activity ended.
+                                    # end_activity computes ocr_end from ocr_start + duration instead (more accurate).
                                     self.end_activity(activity_name, timestamp, fps, frame_idx, people_count)
                                 self.consecutive_detections[activity_name] = 0
                                 self.grace_counters[activity_name] = 0
                         else:
                             # Reset grace counter if nothing is being tracked
                             self.grace_counters[activity_name] = 0
-                
+
                 # Display progress with detection status
                 if sample_idx % 50 == 0:  # Show progress every 50 sampled frames
                     progress = (frame_idx / total_frames) * 100
@@ -6632,10 +6669,12 @@ class LocopilotActivityMonitor:
                     del rgb_frame
         
         # End any remaining active activities
+        # No ocr_timestamp: video ended, no specific end frame to OCR.
+        # end_activity computes ocr_end from ocr_start + duration instead.
         final_timestamp = str(timedelta(seconds=timestamp_sec))
         for activity_name in self.activities:
             if self.activities[activity_name]['active']:
-                self.end_activity(activity_name, final_timestamp, fps, frame_idx, people_count=1)  # Default to 1 person for final activities
+                self.end_activity(activity_name, final_timestamp, fps, frame_idx, people_count=1)
         
         # ✅ MEMORY FIX: Clear frame buffers and activity frames to free memory
         self.frame_buffer.clear()
@@ -6708,6 +6747,19 @@ class LocopilotActivityMonitor:
 
         self.logger.info(f"Processing frame range {start_frame}-{end_frame} (worker {os.getpid()})")
 
+        # Override required_consecutive thresholds for short multiprocessing chunks.
+        # Each chunk is processed by an isolated worker with fresh state, so consecutive
+        # counters cannot accumulate across chunks. Voting verification already provides
+        # temporal consistency, making the consecutive filter redundant here.
+        for activity_name in self.activity_thresholds:
+            if self.activity_thresholds[activity_name]['required_consecutive'] > 1:
+                self.logger.debug(
+                    f"[MP RANGE] Lowering required_consecutive for '{activity_name}' "
+                    f"from {self.activity_thresholds[activity_name]['required_consecutive']} to 1 "
+                    f"(isolated worker chunk)"
+                )
+                self.activity_thresholds[activity_name]['required_consecutive'] = 1
+
         # =========================================================================
         # GPU BATCH OPTIMIZATION: Collect frames, run batch inference, then process
         # =========================================================================
@@ -6733,8 +6785,12 @@ class LocopilotActivityMonitor:
         if batch_enabled and len(frames_data) > 1:
             # Run batch object detection
             frames_only = [fd[0] for fd in frames_data]
+
+            # Preprocess dark/IR frames for better YOLO person detection
+            detection_frames = self._preprocess_frames_for_detection(frames_only)
+
             self.logger.debug(f"[GPU BATCH] Running batch object detection on {len(frames_only)} frames")
-            batch_object_detections = self.detect_objects_batch(frames_only, batch_size)
+            batch_object_detections = self.detect_objects_batch(detection_frames, batch_size)
 
             # Run batch pose detection at normal confidence (for hand gestures, mind diversion, etc.)
             self.logger.debug(f"[GPU BATCH] Running batch pose detection on {len(frames_only)} frames")
@@ -6800,7 +6856,9 @@ class LocopilotActivityMonitor:
                     detections = batch_object_detections[idx]
                 else:
                     # Fallback: Run per-frame detection
-                    detections = self.detect_objects(frame, None, use_pose_guided=False)
+                    # Preprocess single frame for dark/IR conditions
+                    detection_frame = self._preprocess_frames_for_detection([frame])[0]
+                    detections = self.detect_objects(detection_frame, None, use_pose_guided=False)
 
                 # STEP 3: Identify person roles and count people
                 people_count = len(detections['person'])
@@ -7026,7 +7084,7 @@ class LocopilotActivityMonitor:
 
                         if self.consecutive_detections[activity_name] >= required_consecutive:
                             if not self.activities[activity_name]['active']:
-                                self.start_activity(activity_name, timestamp, fps, frame_idx, person_roles=person_roles)
+                                self.start_activity(activity_name, timestamp, fps, frame_idx, person_roles=person_roles, ocr_timestamp=ocr_timestamp)
 
                             if self.activities[activity_name]['active']:
                                 # Store raw frame (without annotations) for clean evidence clips
@@ -7046,6 +7104,8 @@ class LocopilotActivityMonitor:
                                 pass
                             else:
                                 if self.activities[activity_name]['active']:
+                                    # No ocr_timestamp: current frame is post-grace-period, not when activity ended.
+                                    # end_activity computes ocr_end from ocr_start + duration instead (more accurate).
                                     self.end_activity(activity_name, timestamp, fps, frame_idx, people_count, save_clips=save_clips)
                                 self.consecutive_detections[activity_name] = 0
                                 self.grace_counters[activity_name] = 0
@@ -7072,6 +7132,8 @@ class LocopilotActivityMonitor:
             return self.all_activities
 
         # End any remaining active activities
+        # No ocr_timestamp: video range ended, no specific end frame to OCR.
+        # end_activity computes ocr_end from ocr_start + duration instead.
         final_timestamp = str(timedelta(seconds=timestamp_sec))
         for activity_name in self.activities:
             if self.activities[activity_name]['active']:

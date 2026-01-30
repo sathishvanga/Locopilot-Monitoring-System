@@ -238,6 +238,9 @@ class Settings(BaseSettings):
     # Lower YOLO pose confidence for sleep analysis (sleeping persons have low YOLO confidence)
     yolo_pose_sleep_confidence: float = float(os.getenv("YOLO_POSE_SLEEP_CONFIDENCE", "0.30"))
 
+    # IR/dark frame preprocessing for YOLO detection
+    yolo_dark_frame_brightness_threshold: float = float(os.getenv("YOLO_DARK_BRIGHTNESS_THRESH", "0.4"))
+
     # No-pose sleep detection (for IR mode where YOLO pose fails)
     sleep_no_pose_enabled: bool = bool(int(os.getenv("SLEEP_NO_POSE_ENABLED", "1")))
     sleep_no_pose_min_duration: float = float(os.getenv("SLEEP_NO_POSE_MIN_DURATION", "30.0"))  # Seconds of stable no-pose person before flagging sleep
