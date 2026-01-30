@@ -329,23 +329,9 @@ class LocopilotActivityMonitor:
         self.recent_person_activities = {}
         self.temporal_suppression_window = 10.0  # Suppress hand gestures for 10 seconds after detecting work activity
 
-        # Hand gesture coordination temporal window (legacy - kept for reference)
+        # Hand gesture coordination temporal window
         # Suppress coordination failure alerts if both LP and ALP raised hands within this window
-        self.hand_gesture_coordination_window = float(os.getenv('HAND_GESTURE_COORDINATION_WINDOW', '5.0'))
-
-        # Session-based hand gesture coordination tracking
-        # Replaces rolling window approach to fix false positives when ALP raises multiple times
-        # after LP's single instruction raise
-        self.hand_coordination_session = {
-            'active': False,
-            'start_time': None,
-            'lp_raised': False,
-            'alp_raised': False,
-            'last_activity_time': None,
-            'lp_raise_count': 0,
-            'alp_raise_count': 0
-        }
-        self.hand_coordination_session_timeout = float(os.getenv('HAND_GESTURE_SESSION_TIMEOUT', '10.0'))
+        self.hand_gesture_coordination_window = float(os.getenv('HAND_GESTURE_COORDINATION_WINDOW', '4.0'))
 
         # Activity thresholds: minimum duration and required consecutive frames before recording starts
         # OPTIMIZED FOR 0.5 FPS SAMPLING (1 frame every 2 seconds)
@@ -1041,6 +1027,7 @@ class LocopilotActivityMonitor:
                 'nose_distance_history': deque(maxlen=int(10 * self.sample_fps)),
                 'torso_height_history': deque(maxlen=int(10 * self.sample_fps)),
                 'nose_y_norm_history': deque(maxlen=int(10 * self.sample_fps)),
+                'nose_above_shoulders_history': deque(maxlen=int(10 * self.sample_fps)),
             }
         return self.per_person_sleep_tracking[person_idx]
 
@@ -1091,24 +1078,30 @@ class LocopilotActivityMonitor:
             tracking['previous_landmarks']
         )
 
-        # --- Nose-to-shoulder pixel distance (primary signal for overhead cameras) ---
+        # --- Nose-to-shoulder signals (pixel distance + normalized vertical distance) ---
         nose_below_px = None
+        nose_above_shoulders_norm = None
         frame_height = frame_shape[0] if frame_shape is not None else None
         frame_width = frame_shape[1] if frame_shape is not None and len(frame_shape) > 1 else None
         try:
             nose = self.get_keypoint(pose_landmarks.landmark, 'nose')
             left_shoulder = self.get_keypoint(pose_landmarks.landmark, 'left_shoulder')
             right_shoulder = self.get_keypoint(pose_landmarks.landmark, 'right_shoulder')
-            shoulder_mid_y = (left_shoulder.y + right_shoulder.y) / 2
-            if frame_height is not None:
-                # Positive y is downward in image coords; nose below shoulders → positive delta
-                # We use negative convention: nose_below_px < 0 means nose is far below shoulders
-                nose_below_px = (nose.y - shoulder_mid_y) * frame_height
-            else:
-                # Fallback: use normalized coordinates scaled to a reference 720p frame
-                nose_below_px = (nose.y - shoulder_mid_y) * 720
+            if nose and left_shoulder and right_shoulder:
+                shoulder_mid_y = (left_shoulder.y + right_shoulder.y) / 2
+                if frame_height is not None:
+                    # Positive y is downward in image coords; nose below shoulders → positive delta
+                    # We use negative convention: nose_below_px < 0 means nose is far below shoulders
+                    nose_below_px = (nose.y - shoulder_mid_y) * frame_height
+                else:
+                    # Fallback: use normalized coordinates scaled to a reference 720p frame
+                    nose_below_px = (nose.y - shoulder_mid_y) * 720
+                # Normalized nose-above-shoulders: positive = nose above shoulders
+                # In side/overhead camera geometry, sleeping (reclined) posture pushes nose
+                # further above shoulder midpoint due to perspective foreshortening.
+                nose_above_shoulders_norm = shoulder_mid_y - nose.y
         except Exception:
-            nose_below_px = None
+            self.logger.debug("[POSE SLEEP] Failed to extract nose/shoulder keypoints for sleep signals")
 
         # --- Reclined posture signals (for leaning-back sleep in overhead cameras) ---
         torso_height_px = None
@@ -1171,6 +1164,9 @@ class LocopilotActivityMonitor:
         if nose_y_normalized is not None:
             tracking['nose_y_norm_history'].append(nose_y_normalized)
 
+        if nose_above_shoulders_norm is not None:
+            tracking['nose_above_shoulders_history'].append(nose_above_shoulders_norm)
+
         # Store current landmarks for next frame (per-person)
         tracking['previous_landmarks'] = pose_landmarks.landmark
 
@@ -1185,6 +1181,7 @@ class LocopilotActivityMonitor:
                 'head_tilt': head_tilt,
                 'movement': movement_score,
                 'nose_below_px': nose_below_px,
+                'nose_above_shoulders_norm': nose_above_shoulders_norm,
                 'torso_height_px': torso_height_px,
                 'nose_y_normalized': nose_y_normalized,
                 'shoulder_width_px': shoulder_width_px,
@@ -1199,11 +1196,21 @@ class LocopilotActivityMonitor:
         avg_nose_below_px = np.mean(list(tracking['nose_distance_history'])) if len(tracking['nose_distance_history']) > 0 else 0
         avg_torso_height = np.mean(list(tracking['torso_height_history'])) if len(tracking['torso_height_history']) > 0 else 0
         avg_nose_y_norm = np.mean(list(tracking['nose_y_norm_history'])) if len(tracking['nose_y_norm_history']) > 0 else 0.5
+        avg_nose_above_shoulders = np.mean(list(tracking['nose_above_shoulders_history'])) if len(tracking['nose_above_shoulders_history']) > 0 else 0.0
 
         # --- Compute sleep indicators ---
         # Legacy signals (forward head drop)
-        is_head_down = avg_head_tilt < -100  # Legacy frontal camera check
-        is_nose_drooping = nose_below_px is not None and nose_below_px < -85  # Nose far below shoulders (px)
+        head_tilt_thresh = getattr(self.settings, 'sleep_head_tilt_threshold', -155)
+        is_head_down = avg_head_tilt < head_tilt_thresh  # Tightened for side/overhead camera angles
+
+        nose_below_thresh = getattr(self.settings, 'sleep_nose_below_px_threshold', -55)
+        is_nose_drooping = nose_below_px is not None and nose_below_px < nose_below_thresh  # Nose far below shoulders (px)
+
+        # Nose above shoulders normalized: strongest discriminator for side/overhead cameras
+        # In side/overhead camera geometry, sleeping (reclined) posture pushes nose further above
+        # shoulder midpoint than upright posture due to perspective foreshortening.
+        nose_above_sh_thresh = getattr(self.settings, 'sleep_nose_above_shoulders_threshold', 0.08)
+        is_nose_above_shoulders = len(tracking['nose_above_shoulders_history']) > 0 and avg_nose_above_shoulders > nose_above_sh_thresh
 
         # Reclined posture signals (leaning back against wall — overhead/behind camera)
         # Torso elongation: strongest discriminator (Cohen's d=2.34 from analysis)
@@ -1211,7 +1218,7 @@ class LocopilotActivityMonitor:
         is_torso_elongated = torso_height_px is not None and torso_height_px > torso_thresh
 
         # Nose Y position: strong signal (d=1.60) — when reclined, nose moves higher in frame
-        nose_y_thresh = getattr(self.settings, 'sleep_reclined_nose_y_norm_threshold', 0.40)
+        nose_y_thresh = getattr(self.settings, 'sleep_nose_y_norm_threshold', 0.30)
         is_nose_high_in_frame = nose_y_normalized is not None and nose_y_normalized < nose_y_thresh
 
         # Shoulder width compression: moderate signal — shoulders appear narrower when reclined
@@ -1225,12 +1232,17 @@ class LocopilotActivityMonitor:
 
         # --- Weighted scoring approach ---
         # Two scoring paths: forward-drop (legacy) and reclined (new)
+        # Plus nose_above_shoulders as strongest discriminator for side/overhead cameras
         sleep_score = 0
 
         # Path 1: Forward head drop (legacy — frontal/side cameras)
         if is_nose_drooping:           # Head drooping (strong signal, works overhead)
             sleep_score += 2
-        if is_head_down:               # Legacy head tilt (strong signal for frontal cameras)
+        if is_head_down:               # Legacy head tilt (reduced weight, overlaps with awake in side cameras)
+            sleep_score += 1
+
+        # Nose above shoulders: strongest discriminator for side/overhead cameras (+2)
+        if is_nose_above_shoulders:
             sleep_score += 2
 
         # Path 2: Reclined posture (leaning back — overhead/behind cameras)
@@ -1249,7 +1261,8 @@ class LocopilotActivityMonitor:
         if is_stable_posture:          # Stable position (weak signal)
             sleep_score += 1
 
-        sleep_indicators_met = sleep_score >= 3  # Need at least 3 points
+        score_thresh = getattr(self.settings, 'sleep_score_threshold', 4)
+        sleep_indicators_met = sleep_score >= score_thresh  # Raised from 3 to 4 to reduce false positives
 
         debug_info = {
             'head_tilt': head_tilt,
@@ -1259,6 +1272,8 @@ class LocopilotActivityMonitor:
             'head_tilt_variance': head_tilt_variance,
             'nose_below_px': nose_below_px,
             'avg_nose_below_px': avg_nose_below_px,
+            'nose_above_shoulders_norm': nose_above_shoulders_norm,
+            'avg_nose_above_shoulders': avg_nose_above_shoulders,
             'torso_height_px': torso_height_px,
             'avg_torso_height': avg_torso_height,
             'nose_y_normalized': nose_y_normalized,
@@ -1266,8 +1281,10 @@ class LocopilotActivityMonitor:
             'shoulder_width_px': shoulder_width_px,
             'avg_eye_vis': avg_eye_vis,
             'sleep_score': sleep_score,
+            'sleep_score_threshold': score_thresh,
             'is_head_down': is_head_down,
             'is_nose_drooping': is_nose_drooping,
+            'is_nose_above_shoulders': is_nose_above_shoulders,
             'is_torso_elongated': is_torso_elongated,
             'is_nose_high_in_frame': is_nose_high_in_frame,
             'is_shoulders_compressed': is_shoulders_compressed,
@@ -2319,7 +2336,7 @@ class LocopilotActivityMonitor:
         self.logger.debug(f"[GPU BATCH] detect_objects_batch complete: {len(all_detections)} results")
         return all_detections
 
-    def detect_poses_batch(self, frames, batch_size=8):
+    def detect_poses_batch(self, frames, batch_size=8, conf_threshold=None):
         """Run YOLO pose detection on multiple frames in a single batch.
 
         This maximizes GPU utilization by processing multiple frames at once.
@@ -2327,6 +2344,7 @@ class LocopilotActivityMonitor:
         Args:
             frames: List of BGR frames (numpy arrays)
             batch_size: Maximum batch size for inference (default 8)
+            conf_threshold: Optional confidence threshold override (default: use model's conf_threshold)
 
         Returns:
             List of pose result dictionaries, one per frame.
@@ -2339,7 +2357,8 @@ class LocopilotActivityMonitor:
         if not frames:
             return []
 
-        self.logger.debug(f"[GPU BATCH] detect_poses_batch: {len(frames)} frames, batch_size={batch_size}")
+        effective_conf = conf_threshold if conf_threshold is not None else self.yolo_pose.conf_threshold
+        self.logger.debug(f"[GPU BATCH] detect_poses_batch: {len(frames)} frames, batch_size={batch_size}, conf={effective_conf}")
         all_poses = []
 
         # Process frames in batches
@@ -2351,7 +2370,7 @@ class LocopilotActivityMonitor:
                 batch_results = self.yolo_pose.model(
                     batch_frames,
                     verbose=False,
-                    conf=self.yolo_pose.conf_threshold,
+                    conf=effective_conf,
                     device=self.yolo_device
                 )
             except Exception as e:
@@ -3743,18 +3762,10 @@ class LocopilotActivityMonitor:
 
     def _check_hand_gesture_coordination(self, lp_detected, alp_detected, current_time):
         """
-        Check for hand gesture coordination failures using session-based tracking.
+        Check for hand gesture coordination failures with temporal window support.
 
-        Session-based approach:
-        - A session starts when either LP or ALP raises their hand
-        - Within a session, track if each person raised at least once
-        - Session ends after configurable timeout (no hand raises)
-        - Violation only if one person NEVER raised during the entire session
-
-        This fixes false positives when:
-        - LP raises hand once to instruct ALP
-        - ALP raises hand multiple times in response
-        - The old rolling window approach incorrectly flagged this as LP not coordinating
+        Prevents false positives when both people raise hands within a time window
+        (collaborative discussion) but not in the exact same frame.
 
         Args:
             lp_detected: LP hand gesture detected in current frame
@@ -3763,113 +3774,49 @@ class LocopilotActivityMonitor:
 
         Returns:
             tuple: (lp_not_coordinating, alp_not_coordinating)
-                - lp_not_coordinating: True if ALP raised hand but LP NEVER raised in session
-                - alp_not_coordinating: True if LP raised hand but ALP NEVER raised in session
+                - lp_not_coordinating: True if ALP raised hand but LP failed to coordinate
+                - alp_not_coordinating: True if LP raised hand but ALP failed to coordinate
         """
-        session = self.hand_coordination_session
-        timeout = self.hand_coordination_session_timeout
+        # Get last hand raise times from recent activities
+        lp_last_raise_time = None
+        alp_last_raise_time = None
 
-        # Case 1: No session active, check if we need to start one
-        if not session['active']:
-            if lp_detected or alp_detected:
-                # Start a new session
-                session['active'] = True
-                session['start_time'] = current_time
-                session['lp_raised'] = lp_detected
-                session['alp_raised'] = alp_detected
-                session['last_activity_time'] = current_time
-                session['lp_raise_count'] = 1 if lp_detected else 0
-                session['alp_raise_count'] = 1 if alp_detected else 0
-                self.logger.debug(f"[COORDINATION SESSION] Started at {current_time:.2f}s - "
-                                f"LP: {lp_detected}, ALP: {alp_detected}")
-            # No violation on session start or when nothing detected
-            return False, False
+        for person_idx, activities in self.recent_person_activities.items():
+            if 'lp_hand_raise' in activities:
+                t = activities['lp_hand_raise']
+                if lp_last_raise_time is None or t > lp_last_raise_time:
+                    lp_last_raise_time = t
+            if 'alp_hand_raise' in activities:
+                t = activities['alp_hand_raise']
+                if alp_last_raise_time is None or t > alp_last_raise_time:
+                    alp_last_raise_time = t
 
-        # Case 2: Session is active
-        # First, check if session has timed out
-        time_since_last = current_time - session['last_activity_time']
+        # Check coordination with temporal window logic
+        lp_not_coordinating = False
+        alp_not_coordinating = False
 
-        if time_since_last > timeout and not lp_detected and not alp_detected:
-            # Session timed out with no new activity
-            # Check if one person NEVER raised during the session
-            lp_not_coordinating = session['alp_raised'] and not session['lp_raised']
-            alp_not_coordinating = session['lp_raised'] and not session['alp_raised']
-
-            if lp_not_coordinating or alp_not_coordinating:
-                self.logger.info(f"[COORDINATION SESSION] Timeout violation at {current_time:.2f}s - "
-                               f"LP raised: {session['lp_raised']} ({session['lp_raise_count']}x), "
-                               f"ALP raised: {session['alp_raised']} ({session['alp_raise_count']}x), "
-                               f"Session duration: {current_time - session['start_time']:.2f}s")
+        if alp_detected and not lp_detected:
+            # ALP raised hand, LP didn't in current frame
+            # If LP has never raised, no violation yet — give them time to respond
+            if lp_last_raise_time is None:
+                lp_not_coordinating = False
+            # Check if LP raised recently (within window)
+            elif (current_time - lp_last_raise_time) <= self.hand_gesture_coordination_window:
+                lp_not_coordinating = False  # LP raised recently, coordinated
             else:
-                self.logger.debug(f"[COORDINATION SESSION] Ended at {current_time:.2f}s - "
-                                f"Both participated, no violation. "
-                                f"LP: {session['lp_raise_count']}x, ALP: {session['alp_raise_count']}x")
+                lp_not_coordinating = True  # LP didn't raise within window
 
-            # Reset session
-            self._reset_coordination_session()
-            return lp_not_coordinating, alp_not_coordinating
+        if lp_detected and not alp_detected:
+            # LP raised hand, ALP didn't in current frame
+            # If ALP has never raised, no violation yet — give them time to respond
+            if alp_last_raise_time is None:
+                alp_not_coordinating = False
+            # Check if ALP raised recently (within window)
+            elif (current_time - alp_last_raise_time) <= self.hand_gesture_coordination_window:
+                alp_not_coordinating = False  # ALP raised recently, coordinated
+            else:
+                alp_not_coordinating = True  # ALP didn't raise within window
 
-        # Session is active and not timed out
-        if lp_detected or alp_detected:
-            # Update session with new activity
-            session['lp_raised'] = session['lp_raised'] or lp_detected
-            session['alp_raised'] = session['alp_raised'] or alp_detected
-            session['last_activity_time'] = current_time
-            if lp_detected:
-                session['lp_raise_count'] += 1
-            if alp_detected:
-                session['alp_raise_count'] += 1
-            self.logger.debug(f"[COORDINATION SESSION] Activity at {current_time:.2f}s - "
-                            f"LP: {lp_detected} (total: {session['lp_raise_count']}), "
-                            f"ALP: {alp_detected} (total: {session['alp_raise_count']})")
-
-        # No violation while session is active with ongoing activity
-        return False, False
-
-    def _reset_coordination_session(self):
-        """Reset the hand coordination session to initial state."""
-        self.hand_coordination_session = {
-            'active': False,
-            'start_time': None,
-            'lp_raised': False,
-            'alp_raised': False,
-            'last_activity_time': None,
-            'lp_raise_count': 0,
-            'alp_raise_count': 0
-        }
-
-    def _finalize_coordination_session(self, current_time):
-        """
-        Finalize any active coordination session at video end.
-
-        Called when video processing completes to ensure pending sessions
-        are evaluated and violations are not missed.
-
-        Args:
-            current_time: Final timestamp in seconds
-
-        Returns:
-            tuple: (lp_not_coordinating, alp_not_coordinating) or (False, False) if no active session
-        """
-        session = self.hand_coordination_session
-
-        if not session['active']:
-            return False, False
-
-        # Session was active at video end - evaluate it
-        lp_not_coordinating = session['alp_raised'] and not session['lp_raised']
-        alp_not_coordinating = session['lp_raised'] and not session['alp_raised']
-
-        if lp_not_coordinating or alp_not_coordinating:
-            self.logger.info(f"[COORDINATION SESSION] Video-end violation at {current_time:.2f}s - "
-                           f"LP raised: {session['lp_raised']} ({session['lp_raise_count']}x), "
-                           f"ALP raised: {session['alp_raised']} ({session['alp_raise_count']}x)")
-        else:
-            self.logger.debug(f"[COORDINATION SESSION] Video-end evaluation at {current_time:.2f}s - "
-                            f"Both participated, no violation")
-
-        # Reset session
-        self._reset_coordination_session()
         return lp_not_coordinating, alp_not_coordinating
 
     def analyze_hand_velocity_and_trajectory(self, person_idx, landmarks, frame_shape, timestamp_sec):
@@ -4217,7 +4164,7 @@ class LocopilotActivityMonitor:
 
         return matched
 
-    def process_all_persons_activities(self, frame, detections, person_roles, timestamp_sec, face_results=None, frame_number=None, precomputed_pose_results=None):
+    def process_all_persons_activities(self, frame, detections, person_roles, timestamp_sec, face_results=None, frame_number=None, precomputed_pose_results=None, precomputed_sleep_pose_results=None):
         """Process all detected persons for ALL activity detections (mind diversion, sleep, etc.)
 
         This is the MAIN multi-person processing method that:
@@ -4234,6 +4181,7 @@ class LocopilotActivityMonitor:
             face_results: MediaPipe face mesh results (optional, for mind diversion detection)
             frame_number: Frame number for logging/debugging (optional)
             precomputed_pose_results: Pre-computed YOLO pose results (optional, for GPU batch optimization)
+            precomputed_sleep_pose_results: Low-confidence YOLO pose results for sleep detection fallback (optional)
             
         Returns:
             dict: {
@@ -4303,6 +4251,11 @@ class LocopilotActivityMonitor:
 
         # Match YOLO pose detections to person_roles by bounding box IoU
         matched_poses = self._match_pose_to_roles(yolo_pose_results, person_roles)
+
+        # Match low-confidence sleep poses as fallback for persons not found at normal confidence
+        matched_sleep_poses = {}
+        if precomputed_sleep_pose_results is not None and precomputed_sleep_pose_results:
+            matched_sleep_poses = self._match_pose_to_roles(precomputed_sleep_pose_results, person_roles)
 
         # Process each person individually
         for person_idx, person_data in person_roles.items():
@@ -4419,6 +4372,23 @@ class LocopilotActivityMonitor:
                                 f"[NO-POSE EATING/DRINKING] Person {person_idx}: cup/bottle overlaps bbox, "
                                 f"no pose available - flagging eating/drinking"
                             )
+
+                    # --- Low-confidence pose fallback for sleep detection ---
+                    # When normal confidence misses a sleeping person, try low-confidence poses
+                    if matched_sleep_poses and person_idx in matched_sleep_poses:
+                        sleep_fallback_landmarks = matched_sleep_poses[person_idx]
+                        if sleep_fallback_landmarks is not None and len(sleep_fallback_landmarks.landmark) > 0:
+                            visible_kps = sum(1 for lm in sleep_fallback_landmarks.landmark if lm.visibility > 0.3)
+                            if visible_kps >= 5:
+                                sleep_det, microsleep_det, sleep_info = self.detect_pose_based_sleep(
+                                    sleep_fallback_landmarks, timestamp_sec, person_idx=person_idx, frame_shape=frame.shape
+                                )
+                                if sleep_det:
+                                    no_pose_activities['sleep'] = True
+                                    no_pose_debug['sleep_info'] = sleep_info
+                                    no_pose_debug['sleep_info']['method'] = 'low_conf_pose_fallback'
+                                if microsleep_det:
+                                    no_pose_activities['microsleep'] = True
 
                     # --- No-pose sleep detection (bbox stability tracking) ---
                     sleep_no_pose_enabled = getattr(self.settings, 'sleep_no_pose_enabled', True)
@@ -4643,11 +4613,8 @@ class LocopilotActivityMonitor:
                         person_debug_info['head_pose']['sub_type'] = 'eating_drinking'
                         person_debug_info['head_pose']['detected'] = True
                         person_debug_info['head_pose']['method'] = 'object_proximity'
-
-                        # Stage 2: Collect for batch voting verification (if enabled)
-                        if voting_collector is not None:
-                            voting_collector.add('mind_diversion', person_idx, list(bbox),
-                                                 extra_data={'sub_type': 'eating_drinking'})
+                        # Skip voting for eating/drinking — voting re-checks head pose angles
+                        # which doesn't apply to cup-based detection, causing 0/10 false rejections
 
                 # 4. WRITING DETECTION (check if hand near book OR wrist/elbow proximity heuristic)
                 # MOVED BEFORE HAND GESTURE: Need to detect this first for context-aware filtering
@@ -6664,17 +6631,6 @@ class LocopilotActivityMonitor:
                 if 'rgb_frame' in locals():
                     del rgb_frame
         
-        # Finalize any pending hand coordination session at video end
-        lp_not_coordinating, alp_not_coordinating = self._finalize_coordination_session(timestamp_sec)
-        if lp_not_coordinating:
-            # Record LP coordination failure if session ended with violation
-            if not self.activities['lp_hand_gesture']['active']:
-                self.start_activity('lp_hand_gesture', str(timedelta(seconds=timestamp_sec)), fps, frame_idx, person_roles=None)
-        if alp_not_coordinating:
-            # Record ALP coordination failure if session ended with violation
-            if not self.activities['alp_hand_gesture']['active']:
-                self.start_activity('alp_hand_gesture', str(timedelta(seconds=timestamp_sec)), fps, frame_idx, person_roles=None)
-
         # End any remaining active activities
         final_timestamp = str(timedelta(seconds=timestamp_sec))
         for activity_name in self.activities:
@@ -6780,9 +6736,18 @@ class LocopilotActivityMonitor:
             self.logger.debug(f"[GPU BATCH] Running batch object detection on {len(frames_only)} frames")
             batch_object_detections = self.detect_objects_batch(frames_only, batch_size)
 
-            # Run batch pose detection
+            # Run batch pose detection at normal confidence (for hand gestures, mind diversion, etc.)
             self.logger.debug(f"[GPU BATCH] Running batch pose detection on {len(frames_only)} frames")
             batch_pose_results = self.detect_poses_batch(frames_only, batch_size)
+
+            # Run a second lower-confidence pose pass for sleep detection
+            # Sleeping persons often have low YOLO confidence; 0.30 captures more frames
+            sleep_pose_conf = getattr(self.settings, 'yolo_pose_sleep_confidence', 0.30) if self.settings else 0.30
+            if sleep_pose_conf < self.yolo_pose.conf_threshold:
+                self.logger.debug(f"[GPU BATCH] Running low-confidence pose pass for sleep detection (conf={sleep_pose_conf})")
+                batch_sleep_pose_results = self.detect_poses_batch(frames_only, batch_size, conf_threshold=sleep_pose_conf)
+            else:
+                batch_sleep_pose_results = None
 
             self.logger.info(f"[GPU BATCH] Batch inference complete: {len(batch_object_detections)} object results, {len(batch_pose_results)} pose results")
 
@@ -6793,6 +6758,7 @@ class LocopilotActivityMonitor:
             # Fallback: No batching (will compute per-frame)
             batch_object_detections = None
             batch_pose_results = None
+            batch_sleep_pose_results = None
 
         # PHASE 4: Sequential per-frame activity processing with pre-computed detections
         sampled_count = 0
@@ -6881,9 +6847,14 @@ class LocopilotActivityMonitor:
                 if batch_pose_results is not None and idx < len(batch_pose_results):
                     precomputed_poses = batch_pose_results[idx]
 
+                precomputed_sleep_poses = None
+                if batch_sleep_pose_results is not None and idx < len(batch_sleep_pose_results):
+                    precomputed_sleep_poses = batch_sleep_pose_results[idx]
+
                 multi_person_results = self.process_all_persons_activities(
                     frame, detections, person_roles, timestamp_sec, face_results, frame_idx,
-                    precomputed_pose_results=precomputed_poses
+                    precomputed_pose_results=precomputed_poses,
+                    precomputed_sleep_pose_results=precomputed_sleep_poses
                 )
 
                 # Extract aggregated detection flags
@@ -6968,8 +6939,8 @@ class LocopilotActivityMonitor:
                 # Activity Type 9 (ALP not exchanging): Triggers when LP raises hand BUT ALP does NOT
                 # This ensures we detect COORDINATION FAILURES, not individual gestures
                 #
-                # NOTE: With 15s chunk duration (> 10s coordination timeout), session-based
-                # tracking works reliably as most coordination events fit within a single chunk.
+                # Uses temporal window approach: checks if the counterpart raised within
+                # the coordination window (default 4s). No violation if counterpart has no history yet.
                 lp_not_coordinating, alp_not_coordinating = self._check_hand_gesture_coordination(
                     lp_hand_gesture_detected,
                     alp_hand_gesture_detected,
@@ -7099,13 +7070,6 @@ class LocopilotActivityMonitor:
             frame_idx = start_frame
             self.logger.warning(f"No frames sampled in range {start_frame}-{end_frame}, skipping activity finalization")
             return self.all_activities
-
-        # NOTE: Do NOT finalize coordination sessions in process_video_range()
-        # This method processes small chunks (~5s) in parallel, and session state
-        # doesn't carry across chunks. Coordination checking requires full video context.
-        # Coordination failures are detected during chunk processing via the session
-        # timeout mechanism, not at chunk boundaries. The _finalize_coordination_session()
-        # is only appropriate for process_video() which processes the entire video sequentially.
 
         # End any remaining active activities
         final_timestamp = str(timedelta(seconds=timestamp_sec))

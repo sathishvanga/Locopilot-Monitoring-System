@@ -122,7 +122,7 @@ class Settings(BaseSettings):
     cvvr_api_token: Optional[str] = os.getenv("CVVR_API_TOKEN", None)
     cvvr_api_timeout: int = int(os.getenv("CVVR_API_TIMEOUT", "30"))
     cvvr_api_enabled: bool = bool(int(os.getenv("CVVR_API_ENABLED", "1")))  # Enable by default
-    host_url: str = os.getenv("HOST_URL", "http://103.195.244.66:8000")  # URL for building fileUrl
+    host_url: str = os.getenv("HOST_URL", "https://celebxmedia.info")  # URL for building fileUrl
 
     # MinIO settings for video downloads
     minio_endpoint: str = os.getenv("MINIO_ENDPOINT", "mind.snikbtel.uk:9000")
@@ -225,8 +225,18 @@ class Settings(BaseSettings):
     # Sleep Detection - Reclined Posture Settings (overhead/behind camera angles)
     # When crew sleeps by leaning BACK against wall, torso elongates and nose moves higher in frame
     sleep_reclined_torso_height_threshold: float = float(os.getenv("SLEEP_TORSO_HEIGHT_THRESH", "175"))  # px, torso > this = reclined
-    sleep_reclined_nose_y_norm_threshold: float = float(os.getenv("SLEEP_NOSE_Y_NORM_THRESH", "0.40"))  # normalized, nose_y < this = reclined (higher in frame)
+    # NOTE: nose_y_norm threshold moved to sleep_nose_y_norm_threshold (tuned to 0.30) in the scoring section below
     sleep_reclined_shoulder_width_threshold: float = float(os.getenv("SLEEP_SHOULDER_WIDTH_THRESH", "60"))  # px, shoulders < this = compressed (reclined)
+
+    # Pose-based sleep scoring thresholds (tuned for side/overhead camera angles)
+    sleep_nose_above_shoulders_threshold: float = float(os.getenv("SLEEP_NOSE_ABOVE_SHOULDERS_THRESH", "0.08"))
+    sleep_nose_below_px_threshold: float = float(os.getenv("SLEEP_NOSE_BELOW_PX_THRESH", "-55"))
+    sleep_head_tilt_threshold: float = float(os.getenv("SLEEP_HEAD_TILT_THRESH", "-155"))
+    sleep_nose_y_norm_threshold: float = float(os.getenv("SLEEP_NOSE_Y_NORM_THRESH", "0.30"))
+    sleep_score_threshold: int = int(os.getenv("SLEEP_SCORE_THRESH", "4"))
+
+    # Lower YOLO pose confidence for sleep analysis (sleeping persons have low YOLO confidence)
+    yolo_pose_sleep_confidence: float = float(os.getenv("YOLO_POSE_SLEEP_CONFIDENCE", "0.30"))
 
     # No-pose sleep detection (for IR mode where YOLO pose fails)
     sleep_no_pose_enabled: bool = bool(int(os.getenv("SLEEP_NO_POSE_ENABLED", "1")))
