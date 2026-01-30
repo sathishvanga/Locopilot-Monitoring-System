@@ -246,6 +246,18 @@ class Settings(BaseSettings):
     sleep_no_pose_min_duration: float = float(os.getenv("SLEEP_NO_POSE_MIN_DURATION", "30.0"))  # Seconds of stable no-pose person before flagging sleep
     sleep_no_pose_bbox_stability_threshold: float = float(os.getenv("SLEEP_NO_POSE_BBOX_STABILITY", "0.15"))  # IoU change threshold for bbox stability
 
+    # IR Forward-Lean Sleep Detection (body-only keypoints for dark/IR frames)
+    ir_forward_lean_enabled: bool = bool(int(os.getenv("IR_FORWARD_LEAN_ENABLED", "1")))
+    ir_forward_lean_min_body_keypoints: int = int(os.getenv("IR_FORWARD_LEAN_MIN_BODY_KPS", "3"))
+    ir_forward_lean_head_vis_threshold: float = float(os.getenv("IR_FORWARD_LEAN_HEAD_VIS", "0.15"))
+    ir_forward_lean_body_vis_threshold: float = float(os.getenv("IR_FORWARD_LEAN_BODY_VIS", "0.2"))
+    ir_forward_lean_score_threshold: int = int(os.getenv("IR_FORWARD_LEAN_SCORE_THRESH", "3"))
+    ir_forward_lean_min_duration: float = float(os.getenv("IR_FORWARD_LEAN_MIN_DURATION", "5.0"))  # Microsleep threshold (seconds)
+    ir_forward_lean_sleep_duration: float = float(os.getenv("IR_FORWARD_LEAN_SLEEP_DURATION", "10.0"))  # Sleep threshold (seconds)
+
+    # IR-adjusted no-pose bbox stability duration (applies to existing no-pose sleep detector in dark frames)
+    ir_sleep_no_pose_min_duration: float = float(os.getenv("IR_SLEEP_NO_POSE_MIN_DURATION", "15.0"))  # Reduced from 30s for IR dark frames
+
     # Eating/Drinking Detection (mind diversion sub-type)
     eating_drinking_detection_enabled: bool = bool(int(os.getenv("EATING_DRINKING_ENABLED", "1")))
     eating_drinking_cup_confidence: float = float(os.getenv("EATING_DRINKING_CUP_CONF", "0.25"))  # Lower threshold for cups in IR
@@ -271,6 +283,10 @@ class Settings(BaseSettings):
     # ==========================================
     # Enable/disable train motion-based rule engine
     train_motion_rules_enabled: bool = bool(int(os.getenv("TRAIN_MOTION_RULES_ENABLED", "0")))
+
+    # Suppress no_person_detected when trip schedule is unavailable
+    # (cannot distinguish station halts from running without schedule)
+    suppress_no_person_without_schedule: bool = bool(int(os.getenv("SUPPRESS_NO_PERSON_WITHOUT_SCHEDULE", "1")))
 
     # Trip API Settings (RailRadar API)
     trip_api_url: str = os.getenv("TRIP_API_URL", "https://api.railradar.in/api/v1/trains")

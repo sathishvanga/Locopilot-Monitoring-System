@@ -10,6 +10,9 @@ SERVER_IP="103.116.80.162"
 SERVER_PORT="3781"
 SERVER_USER="admin1"
 SERVER_PASS='9o\P`3#W(9}K'
+# Base64-encode password to safely pass through SSH command strings
+# (password contains backtick which breaks double-quoted shell expansions)
+PASS_B64=$(printf '%s' "$SERVER_PASS" | base64)
 REMOTE_PATH="/opt/poc2"
 
 # Colors for output
@@ -70,7 +73,7 @@ echo ""
 echo -e "${YELLOW}[3/6] Installing system dependencies (ffmpeg)...${NC}"
 sshpass -p "$SERVER_PASS" ssh -p "$SERVER_PORT" -o StrictHostKeyChecking=no \
     "$SERVER_USER@$SERVER_IP" \
-    "which ffmpeg > /dev/null 2>&1 || (echo \"$SERVER_PASS\" | sudo -S apt-get update -qq && echo \"$SERVER_PASS\" | sudo -S apt-get install -y ffmpeg -qq)"
+    "which ffmpeg > /dev/null 2>&1 || (echo '$PASS_B64' | base64 -d | sudo -S apt-get update -qq && echo '$PASS_B64' | base64 -d | sudo -S apt-get install -y ffmpeg -qq)"
 
 echo ""
 echo -e "${YELLOW}[4/6] Installing Python dependencies...${NC}"
@@ -114,9 +117,9 @@ rm -f "$SERVICE_FILE"
 # Install service and restart
 sshpass -p "$SERVER_PASS" ssh -p "$SERVER_PORT" -o StrictHostKeyChecking=no \
     "$SERVER_USER@$SERVER_IP" \
-    "echo '$SERVER_PASS' | sudo -S cp /tmp/locopilot.service /etc/systemd/system/locopilot.service && \
-     echo '$SERVER_PASS' | sudo -S systemctl daemon-reload && \
-     echo '$SERVER_PASS' | sudo -S systemctl restart locopilot && \
+    "echo '$PASS_B64' | base64 -d | sudo -S cp /tmp/locopilot.service /etc/systemd/system/locopilot.service && \
+     echo '$PASS_B64' | base64 -d | sudo -S systemctl daemon-reload && \
+     echo '$PASS_B64' | base64 -d | sudo -S systemctl restart locopilot && \
      rm -f /tmp/locopilot.service"
 
 echo ""
@@ -126,7 +129,7 @@ sleep 5
 # Check service status
 STATUS=$(sshpass -p "$SERVER_PASS" ssh -p "$SERVER_PORT" -o StrictHostKeyChecking=no \
     "$SERVER_USER@$SERVER_IP" \
-    "echo \"$SERVER_PASS\" | sudo -S systemctl is-active locopilot 2>/dev/null")
+    "echo '$PASS_B64' | base64 -d | sudo -S systemctl is-active locopilot 2>/dev/null")
 
 if [ "$STATUS" = "active" ]; then
     echo -e "${GREEN}Service is running!${NC}"

@@ -148,6 +148,11 @@ def video_capture_context(video_path):
 
 
 class LocopilotActivityMonitor:
+    # YOLO pose keypoint index groups (shared across detection methods)
+    YOLO_HEAD_INDICES = [0, 1, 2, 3, 4]  # nose, left_eye, right_eye, left_ear, right_ear
+    YOLO_BODY_INDICES = [5, 6, 7, 8, 11, 12]  # left/right shoulders, elbows, hips
+    YOLO_MIN_KEYPOINTS = 13  # Minimum landmarks required (indices 0-12)
+
     def __init__(self, video_path, output_dir="evidence", save_annotated_frames=False, frame_save_interval=1, sample_fps=1.0, run_dir=None, create_run_dir=True, preloaded_models=None):
         """Initialize Locopilot Activity Monitor.
         
@@ -453,6 +458,10 @@ class LocopilotActivityMonitor:
         # No-pose sleep detection tracking (for IR mode where YOLO pose fails)
         # Format: {person_idx: {'first_seen': timestamp, 'last_bbox': [x1,y1,x2,y2], 'stable_since': timestamp}}
         self.no_pose_sleep_tracking = {}
+
+        # IR forward-lean sleep detection tracking (body-only keypoints in dark frames)
+        # Format: {person_idx: {'start_time': timestamp, 'previous_body_keypoints': [(x,y),...], 'score_history': deque}}
+        self.ir_forward_lean_tracking = {}
         
         # Wrist proximity tracking for writing detection (per person)
         # Format: {person_idx: {'start_time': timestamp, 'duration': seconds, 'consecutive_frames': int}}
@@ -553,6 +562,7 @@ class LocopilotActivityMonitor:
         # Initialize train motion rule engine services
         self.trip_schedule = None  # Will be set via set_trip_schedule()
         self.current_motion_context = None  # Current train motion state
+        self.suppress_no_person_without_schedule = getattr(self.settings, 'suppress_no_person_without_schedule', True) if self.settings else True
 
         # Rule engine service
         if get_rule_engine_service is not None:
@@ -623,7 +633,10 @@ class LocopilotActivityMonitor:
                 f"on {trip_schedule.journey_date} with {len(trip_schedule.halts)} halts"
             )
         else:
-            self.logger.info("Trip schedule cleared - motion rules will use UNKNOWN state")
+            self.logger.info(
+                "Trip schedule not available - no_person_detected will be suppressed "
+                "(cannot distinguish station halts from running without schedule)"
+            )
 
     def set_video_start_time(self, start_time_str: str):
         """
@@ -1030,6 +1043,227 @@ class LocopilotActivityMonitor:
                 'nose_above_shoulders_history': deque(maxlen=int(10 * self.sample_fps)),
             }
         return self.per_person_sleep_tracking[person_idx]
+
+    def _get_ir_forward_lean_tracking(self, person_idx):
+        """Get or initialize per-person IR forward-lean sleep tracking state."""
+        if person_idx not in self.ir_forward_lean_tracking:
+            self.ir_forward_lean_tracking[person_idx] = {
+                'start_time': None,
+                'previous_body_keypoints': None,
+                'sub_threshold_streak': 0,  # Consecutive frames below score threshold
+            }
+        return self.ir_forward_lean_tracking[person_idx]
+
+    def _calculate_body_movement(self, landmarks, tracking, body_indices):
+        """Calculate movement from body keypoints (shoulders, elbows, hips) across frames.
+
+        Args:
+            landmarks: Pose landmarks object with .landmark attribute
+            tracking: Per-person IR forward lean tracking dict
+            body_indices: List of YOLO keypoint indices for body parts
+
+        Returns:
+            float: Mean movement in normalized coords (0-1 scale), or None if no previous frame
+        """
+        body_vis_threshold = self.settings.ir_forward_lean_body_vis_threshold
+        current_kps = []
+        for idx in body_indices:
+            lm = landmarks.landmark[idx]
+            if getattr(lm, 'visibility', 0) > body_vis_threshold:
+                current_kps.append((lm.x, lm.y))
+            else:
+                current_kps.append(None)
+
+        prev_kps = tracking.get('previous_body_keypoints')
+        tracking['previous_body_keypoints'] = current_kps
+
+        if prev_kps is None:
+            return None
+
+        movements = []
+        for curr, prev in zip(current_kps, prev_kps):
+            if curr is not None and prev is not None:
+                dx = curr[0] - prev[0]
+                dy = curr[1] - prev[1]
+                movements.append((dx ** 2 + dy ** 2) ** 0.5)
+
+        if not movements:
+            return None
+        return sum(movements) / len(movements)
+
+    def detect_ir_forward_lean_sleep(self, landmarks, bbox, timestamp_sec, person_idx, frame_shape):
+        """Detect forward-lean sleep posture using body-only keypoints in IR/dark frames.
+
+        Uses shoulders, elbows, and hips (which remain visible in IR) plus the
+        disappearance of head keypoints as a strong signal of forward lean.
+
+        Scoring signals:
+        - Head keypoints invisible (+2): All 5 head keypoints below visibility threshold
+        - Shoulders high in bbox (+1): Shoulder midpoint in upper 40% of person bbox
+        - Bbox aspect ratio squashed (+1): height/width < 1.2 (forward lean = wider, shorter)
+        - Low body movement (+1): Body keypoints stable across frames
+        - Elbows below shoulders (+1): Arms hanging/braced = forward lean posture
+
+        Args:
+            landmarks: Pose landmarks (may have low-visibility head keypoints)
+            bbox: Person bounding box [x1, y1, x2, y2]
+            timestamp_sec: Current timestamp in seconds
+            person_idx: Person index for per-person tracking
+            frame_shape: Frame shape tuple (height, width, channels)
+
+        Returns:
+            tuple: (is_sleeping, is_microsleeping, debug_info)
+        """
+        if landmarks is None or not hasattr(landmarks, 'landmark') or len(landmarks.landmark) == 0:
+            return False, False, {}
+
+        # Guard: need at least 13 keypoints (indices 0-12) for body analysis
+        if len(landmarks.landmark) < self.YOLO_MIN_KEYPOINTS:
+            return False, False, {'ir_forward_lean': False, 'reason': 'insufficient_landmarks',
+                                  'landmark_count': len(landmarks.landmark)}
+
+        head_vis_thresh = self.settings.ir_forward_lean_head_vis_threshold
+        body_vis_thresh = self.settings.ir_forward_lean_body_vis_threshold
+        min_body_kps = self.settings.ir_forward_lean_min_body_keypoints
+        score_threshold = self.settings.ir_forward_lean_score_threshold
+        min_duration = self.settings.ir_forward_lean_min_duration
+        sleep_duration = self.settings.ir_forward_lean_sleep_duration
+
+        h, w = frame_shape[:2]
+
+        head_indices = self.YOLO_HEAD_INDICES
+        body_indices = self.YOLO_BODY_INDICES
+
+        # Count visible body keypoints
+        visible_body_count = 0
+        for idx in body_indices:
+            if getattr(landmarks.landmark[idx], 'visibility', 0) > body_vis_thresh:
+                visible_body_count += 1
+
+        if visible_body_count < min_body_kps:
+            # Not enough body keypoints visible, can't analyze
+            return False, False, {'ir_forward_lean': False, 'reason': 'insufficient_body_keypoints',
+                                  'visible_body': visible_body_count}
+
+        # --- Scoring ---
+        score = 0
+        score_breakdown = {}
+
+        # Signal 1: Head keypoints invisible (+2)
+        head_visible = 0
+        for idx in head_indices:
+            if getattr(landmarks.landmark[idx], 'visibility', 0) >= head_vis_thresh:
+                head_visible += 1
+        if head_visible == 0:
+            score += 2
+            score_breakdown['head_invisible'] = 2
+        else:
+            score_breakdown['head_invisible'] = 0
+
+        # Signal 2: Shoulders high in bbox (+1)
+        left_shoulder = landmarks.landmark[5]
+        right_shoulder = landmarks.landmark[6]
+        if (getattr(left_shoulder, 'visibility', 0) > body_vis_thresh and
+                getattr(right_shoulder, 'visibility', 0) > body_vis_thresh):
+            shoulder_mid_y_px = ((left_shoulder.y + right_shoulder.y) / 2) * h
+            x1, y1, x2, y2 = bbox
+            bbox_height = y2 - y1
+            # Check if shoulders are in upper 40% of bbox
+            shoulder_relative = (shoulder_mid_y_px - y1) / bbox_height if bbox_height > 0 else 0.5
+            if shoulder_relative < 0.4:
+                score += 1
+                score_breakdown['shoulders_high'] = 1
+            else:
+                score_breakdown['shoulders_high'] = 0
+        else:
+            score_breakdown['shoulders_high'] = 0
+
+        # Signal 3: Bbox aspect ratio squashed (+1)
+        x1, y1, x2, y2 = bbox
+        bbox_w = x2 - x1
+        bbox_h = y2 - y1
+        aspect_ratio = bbox_h / bbox_w if bbox_w > 0 else 1.5
+        if aspect_ratio < 1.2:
+            score += 1
+            score_breakdown['squashed_bbox'] = 1
+        else:
+            score_breakdown['squashed_bbox'] = 0
+        score_breakdown['aspect_ratio'] = round(aspect_ratio, 2)
+
+        # Signal 4: Low body movement (+1)
+        tracking = self._get_ir_forward_lean_tracking(person_idx)
+        body_movement = self._calculate_body_movement(landmarks, tracking, body_indices)
+        if body_movement is not None and body_movement < 0.02:
+            score += 1
+            score_breakdown['low_movement'] = 1
+        else:
+            score_breakdown['low_movement'] = 0
+        score_breakdown['body_movement'] = round(body_movement, 4) if body_movement is not None else None
+
+        # Signal 5: Elbows below shoulders (+1)
+        left_elbow = landmarks.landmark[7]
+        right_elbow = landmarks.landmark[8]
+        elbows_below = 0
+        elbows_checked = 0
+        for elbow, shoulder in [(left_elbow, left_shoulder), (right_elbow, right_shoulder)]:
+            if (getattr(elbow, 'visibility', 0) > body_vis_thresh and
+                    getattr(shoulder, 'visibility', 0) > body_vis_thresh):
+                elbows_checked += 1
+                if elbow.y > shoulder.y:  # In image coords, larger y = lower
+                    elbows_below += 1
+        if elbows_checked > 0 and elbows_below == elbows_checked:
+            score += 1
+            score_breakdown['elbows_below'] = 1
+        else:
+            score_breakdown['elbows_below'] = 0
+
+        # --- Duration gating ---
+        debug_info = {
+            'ir_forward_lean': True,
+            'score': score,
+            'threshold': score_threshold,
+            'score_breakdown': score_breakdown,
+            'visible_body': visible_body_count,
+            'head_visible': head_visible,
+        }
+
+        if score >= score_threshold:
+            # Score meets threshold -- reset sub-threshold streak, start/continue timer
+            tracking['sub_threshold_streak'] = 0
+            if tracking['start_time'] is None:
+                tracking['start_time'] = timestamp_sec
+
+            duration = timestamp_sec - tracking['start_time']
+            debug_info['duration'] = round(duration, 1)
+
+            if duration >= sleep_duration:
+                self.logger.info(
+                    f"[IR FORWARD LEAN] Person {person_idx}: SLEEP detected "
+                    f"(score={score}/{score_threshold}, duration={duration:.1f}s, breakdown={score_breakdown})"
+                )
+                return True, False, debug_info
+            elif duration >= min_duration:
+                self.logger.info(
+                    f"[IR FORWARD LEAN] Person {person_idx}: MICROSLEEP detected "
+                    f"(score={score}/{score_threshold}, duration={duration:.1f}s, breakdown={score_breakdown})"
+                )
+                return False, True, debug_info
+            else:
+                self.logger.debug(
+                    f"[IR FORWARD LEAN] Person {person_idx}: forward lean detected but duration too short "
+                    f"(score={score}, duration={duration:.1f}s, need {min_duration:.0f}s)"
+                )
+        else:
+            # Score below threshold -- only reset after 3 consecutive sub-threshold frames
+            # At 0.5 FPS, this tolerates up to ~4s of noise without losing accumulated duration
+            tracking['sub_threshold_streak'] = tracking.get('sub_threshold_streak', 0) + 1
+            if tracking['sub_threshold_streak'] >= 3:
+                tracking['start_time'] = None
+                tracking['sub_threshold_streak'] = 0
+            debug_info['duration'] = 0
+            debug_info['sub_threshold_streak'] = tracking['sub_threshold_streak']
+
+        return False, False, debug_info
 
     def detect_pose_based_sleep(self, pose_landmarks, timestamp_sec, person_idx=0, frame_shape=None):
         """Detect sleep based on pose analysis when face detection fails.
@@ -4199,7 +4433,7 @@ class LocopilotActivityMonitor:
 
         return matched
 
-    def process_all_persons_activities(self, frame, detections, person_roles, timestamp_sec, face_results=None, frame_number=None, precomputed_pose_results=None, precomputed_sleep_pose_results=None):
+    def process_all_persons_activities(self, frame, detections, person_roles, timestamp_sec, face_results=None, frame_number=None, precomputed_pose_results=None, precomputed_sleep_pose_results=None, is_dark_frame=None):
         """Process all detected persons for ALL activity detections (mind diversion, sleep, etc.)
 
         This is the MAIN multi-person processing method that:
@@ -4217,7 +4451,8 @@ class LocopilotActivityMonitor:
             frame_number: Frame number for logging/debugging (optional)
             precomputed_pose_results: Pre-computed YOLO pose results (optional, for GPU batch optimization)
             precomputed_sleep_pose_results: Low-confidence YOLO pose results for sleep detection fallback (optional)
-            
+            is_dark_frame: Whether the frame is dark/IR (optional, computed from brightness if None)
+
         Returns:
             dict: {
                 'persons': {
@@ -4291,6 +4526,16 @@ class LocopilotActivityMonitor:
         matched_sleep_poses = {}
         if precomputed_sleep_pose_results is not None and precomputed_sleep_pose_results:
             matched_sleep_poses = self._match_pose_to_roles(precomputed_sleep_pose_results, person_roles)
+
+        # Dark frame flag for IR forward lean detection (compute if not passed by caller)
+        if is_dark_frame is None:
+            is_dark_frame = False
+            try:
+                gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY) if len(frame.shape) == 3 else frame
+                frame_brightness = float(np.mean(gray)) / 255.0
+                is_dark_frame = frame_brightness < self.settings.yolo_dark_frame_brightness_threshold
+            except Exception:
+                pass
 
         # Process each person individually
         for person_idx, person_data in person_roles.items():
@@ -4425,10 +4670,37 @@ class LocopilotActivityMonitor:
                                 if microsleep_det:
                                     no_pose_activities['microsleep'] = True
 
+                    # --- IR forward-lean sleep detection (body-only keypoints in dark frames) ---
+                    ir_fl_enabled = self.settings.ir_forward_lean_enabled
+                    if is_dark_frame and ir_fl_enabled and not no_pose_activities.get('sleep', False):
+                        # Try to use low-confidence sleep landmarks for body-only analysis
+                        ir_landmarks = None
+                        if matched_sleep_poses and person_idx in matched_sleep_poses:
+                            ir_landmarks = matched_sleep_poses[person_idx]
+                        elif person_idx in matched_poses:
+                            ir_landmarks = matched_poses[person_idx]
+
+                        if ir_landmarks is not None and hasattr(ir_landmarks, 'landmark') and len(ir_landmarks.landmark) > 0:
+                            ir_sleep, ir_microsleep, ir_info = self.detect_ir_forward_lean_sleep(
+                                ir_landmarks, bbox, timestamp_sec, person_idx, frame.shape
+                            )
+                            if ir_sleep:
+                                no_pose_activities['sleep'] = True
+                                no_pose_debug['sleep_info'] = ir_info
+                                no_pose_debug['sleep_info']['method'] = 'ir_forward_lean'
+                            elif ir_microsleep:
+                                no_pose_activities['microsleep'] = True
+                                no_pose_debug['sleep_info'] = ir_info
+                                no_pose_debug['sleep_info']['method'] = 'ir_forward_lean'
+
                     # --- No-pose sleep detection (bbox stability tracking) ---
                     sleep_no_pose_enabled = getattr(self.settings, 'sleep_no_pose_enabled', True)
                     if sleep_no_pose_enabled:
-                        min_duration = getattr(self.settings, 'sleep_no_pose_min_duration', 30.0)
+                        # Use shorter duration for IR/dark frames (15s vs 30s)
+                        if is_dark_frame:
+                            min_duration = getattr(self.settings, 'ir_sleep_no_pose_min_duration', 15.0)
+                        else:
+                            min_duration = getattr(self.settings, 'sleep_no_pose_min_duration', 30.0)
                         stability_threshold = getattr(self.settings, 'sleep_no_pose_bbox_stability_threshold', 0.15)
 
                         if person_idx not in self.no_pose_sleep_tracking:
@@ -4542,7 +4814,23 @@ class LocopilotActivityMonitor:
                 person_debug_info['sleep_info'] = pose_sleep_info
                 person_activities['sleep'] = pose_sleep_detected
                 person_activities['microsleep'] = pose_microsleep_detected
-                
+
+                # 2b. IR FORWARD LEAN FALLBACK (when dark frame and normal sleep detection missed)
+                ir_fl_enabled = self.settings.ir_forward_lean_enabled
+                if (is_dark_frame and ir_fl_enabled and
+                        not pose_sleep_detected and not pose_microsleep_detected):
+                    ir_sleep, ir_microsleep, ir_info = self.detect_ir_forward_lean_sleep(
+                        translated_landmarks, bbox, timestamp_sec, person_idx, frame.shape
+                    )
+                    if ir_sleep:
+                        person_activities['sleep'] = True
+                        person_debug_info['sleep_info'] = ir_info
+                        person_debug_info['sleep_info']['method'] = 'ir_forward_lean_pose_fallback'
+                    elif ir_microsleep:
+                        person_activities['microsleep'] = True
+                        person_debug_info['sleep_info'] = ir_info
+                        person_debug_info['sleep_info']['method'] = 'ir_forward_lean_pose_fallback'
+
                 # 3. CELL PHONE DETECTION (check if hand near phone in THIS person's region)
                 # MOVED BEFORE HAND GESTURE: Need to detect this first for context-aware filtering
                 if len(detections['cell_phone']) > 0:
@@ -5094,6 +5382,11 @@ class LocopilotActivityMonitor:
         for person_idx in list(self.no_pose_sleep_tracking.keys()):
             if person_idx in persons_data and persons_data[person_idx].get('pose_landmarks') is not None:
                 del self.no_pose_sleep_tracking[person_idx]
+
+        # Clean up stale IR forward-lean tracking
+        stale_ir_fl = set(self.ir_forward_lean_tracking.keys()) - active_person_indices
+        for stale_idx in stale_ir_fl:
+            del self.ir_forward_lean_tracking[stale_idx]
 
         # ============ AGGREGATE RESULTS ACROSS ALL PERSONS ============
         aggregated = {
@@ -6589,6 +6882,15 @@ class LocopilotActivityMonitor:
                     'alp_not_standing': alp_not_standing_detected  # ALP not standing in pre-arrival
                 }
 
+                # 3.5. Suppress no_person_detected when trip schedule is unavailable
+                if self.suppress_no_person_without_schedule and self.trip_schedule is None:
+                    if activities_map.get('no_person_detected', False):
+                        activities_map['no_person_detected'] = False
+                        self.logger.debug(
+                            f"[{timestamp}] no_person_detected suppressed - "
+                            f"no trip schedule available to distinguish station halts"
+                        )
+
                 # 4. Apply motion-based rule engine to filter exempted activities
                 activities_map = self._apply_motion_rules(activities_map, self.current_motion_context)
 
@@ -6747,18 +7049,9 @@ class LocopilotActivityMonitor:
 
         self.logger.info(f"Processing frame range {start_frame}-{end_frame} (worker {os.getpid()})")
 
-        # Override required_consecutive thresholds for short multiprocessing chunks.
-        # Each chunk is processed by an isolated worker with fresh state, so consecutive
-        # counters cannot accumulate across chunks. Voting verification already provides
-        # temporal consistency, making the consecutive filter redundant here.
-        for activity_name in self.activity_thresholds:
-            if self.activity_thresholds[activity_name]['required_consecutive'] > 1:
-                self.logger.debug(
-                    f"[MP RANGE] Lowering required_consecutive for '{activity_name}' "
-                    f"from {self.activity_thresholds[activity_name]['required_consecutive']} to 1 "
-                    f"(isolated worker chunk)"
-                )
-                self.activity_thresholds[activity_name]['required_consecutive'] = 1
+        # NOTE: required_consecutive thresholds are preserved for multiprocessing chunks.
+        # Lowering them to 1 caused excessive false positives (e.g., no_person_detected
+        # triggering on single frames). Voting verification handles cross-chunk consistency.
 
         # =========================================================================
         # GPU BATCH OPTIMIZATION: Collect frames, run batch inference, then process
@@ -7071,6 +7364,15 @@ class LocopilotActivityMonitor:
                     'no_person_detected': no_person_detected_flag,
                     'alp_not_standing': alp_not_standing_detected  # ALP not standing in pre-arrival
                 }
+
+                # 3.5. Suppress no_person_detected when trip schedule is unavailable
+                if self.suppress_no_person_without_schedule and self.trip_schedule is None:
+                    if activities_map.get('no_person_detected', False):
+                        activities_map['no_person_detected'] = False
+                        self.logger.debug(
+                            f"[{timestamp}] no_person_detected suppressed - "
+                            f"no trip schedule available to distinguish station halts"
+                        )
 
                 # 4. Apply motion-based rule engine to filter exempted activities
                 activities_map = self._apply_motion_rules(activities_map, self.current_motion_context)

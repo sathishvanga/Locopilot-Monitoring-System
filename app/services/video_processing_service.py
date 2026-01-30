@@ -233,12 +233,12 @@ class VideoProcessingService:
                         else:
                             logger.warning(
                                 f"[MOTION-RULES] ⚠️ Could not fetch trip schedule for train {train_number} "
-                                f"on {trip_date} - motion rules will use UNKNOWN state (all activities = violations)"
+                                f"on {trip_date} - no_person_detected will be suppressed (cannot distinguish station halts)"
                             )
                     else:
                         logger.warning("[MOTION-RULES] ⚠️ Trip data service not available - motion rules disabled")
                 except Exception as e:
-                    logger.warning(f"[MOTION-RULES] ⚠️ Error fetching trip schedule: {e} - motion rules will use UNKNOWN state")
+                    logger.warning(f"[MOTION-RULES] ⚠️ Error fetching trip schedule: {e} - no_person_detected will be suppressed")
             else:
                 missing = []
                 if not train_number:
