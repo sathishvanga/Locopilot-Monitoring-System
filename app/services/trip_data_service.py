@@ -131,6 +131,15 @@ class TripDataService:
             )
             return None
 
+        # Validate train number format (Indian Railways: 1-5 digits)
+        train_num_clean = str(train_number).strip()
+        if not train_num_clean.isdigit() or not (1 <= len(train_num_clean) <= 5):
+            logger.warning(
+                f"[TRIP-DATA] ❌ Invalid train number format: '{train_number}' "
+                f"(must be 1-5 digits). Skipping API call."
+            )
+            return None
+
         # Check cache first
         cache_key = f"{train_number}_{journey_date}"
         if cache_key in _schedule_cache:

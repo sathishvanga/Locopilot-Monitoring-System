@@ -184,6 +184,13 @@ async def process_video(
             logger.info(f"📥 Downloading video from MinIO: {videoUrl}")
             try:
                 minio_svc = get_minio_service()
+                # Check if the object exists before attempting download
+                if not minio_svc.check_object_exists(videoUrl):
+                    logger.error(f"❌ Video not found in MinIO: {videoUrl}")
+                    raise HTTPException(
+                        status_code=404,
+                        detail=f"Video not found in MinIO storage. Please verify the URL: {videoUrl}"
+                    )
                 video_path = minio_svc.download_video(videoUrl, tripId)
                 video_filename = os.path.basename(video_path)
                 file_size = os.path.getsize(video_path)

@@ -487,7 +487,7 @@ class LocopilotActivityMonitor:
 
         # Hand gesture coordination temporal window
         # Suppress coordination failure alerts if both LP and ALP raised hands within this window
-        self.hand_gesture_coordination_window = float(os.getenv('HAND_GESTURE_COORDINATION_WINDOW', '4.0'))
+        self.hand_gesture_coordination_window = float(os.getenv('HAND_GESTURE_COORDINATION_WINDOW', '5.0'))
 
         # Activity thresholds: minimum duration and required consecutive frames before recording starts
         # OPTIMIZED FOR 0.5 FPS SAMPLING (1 frame every 2 seconds)
@@ -1681,7 +1681,7 @@ class LocopilotActivityMonitor:
             return None, None
 
         try:
-            landmarks = pose_landmarks.landmark
+            landmarks = pose_landmarks.landmark if hasattr(pose_landmarks, 'landmark') else pose_landmarks
             h, w = frame_shape[:2]
 
             # Get wrist landmarks
@@ -3507,14 +3507,16 @@ class LocopilotActivityMonitor:
         if pose_landmarks is None:
             return False
         
-        if not hasattr(pose_landmarks, 'landmark') or len(pose_landmarks.landmark) < min_landmarks:
+        # Support both YoloPoseLandmarks (has .landmark) and plain list
+        landmark_list = pose_landmarks.landmark if hasattr(pose_landmarks, 'landmark') else pose_landmarks if isinstance(pose_landmarks, list) else None
+        if landmark_list is None or len(landmark_list) < min_landmarks:
             return False
-        
+
         # Validate coordinates are within valid range (0-1 for normalized)
         valid_count = 0
         total_visibility = 0.0
-        
-        for landmark in pose_landmarks.landmark:
+
+        for landmark in landmark_list:
             # Check if coordinates are valid (normalized 0-1)
             if 0 <= landmark.x <= 1 and 0 <= landmark.y <= 1:
                 valid_count += 1
@@ -4202,31 +4204,29 @@ class LocopilotActivityMonitor:
                 if alp_last_raise_time is None or t > alp_last_raise_time:
                     alp_last_raise_time = t
 
+        # Helper: Check if both raised hands within coordination window
+        def both_within_window(lp_time, alp_time):
+            if lp_time is None or alp_time is None:
+                return False
+            lp_recent = (current_time - lp_time) <= self.hand_gesture_coordination_window
+            alp_recent = (current_time - alp_time) <= self.hand_gesture_coordination_window
+            return lp_recent and alp_recent
+
         # Check coordination with temporal window logic
         lp_not_coordinating = False
         alp_not_coordinating = False
 
         if alp_detected and not lp_detected:
             # ALP raised hand, LP didn't in current frame
-            # If LP has never raised, no violation yet — give them time to respond
-            if lp_last_raise_time is None:
-                lp_not_coordinating = False
             # Check if LP raised recently (within window)
-            elif (current_time - lp_last_raise_time) <= self.hand_gesture_coordination_window:
-                lp_not_coordinating = False  # LP raised recently, coordinated
-            else:
-                lp_not_coordinating = True  # LP didn't raise within window
+            if not both_within_window(lp_last_raise_time, alp_last_raise_time):
+                lp_not_coordinating = True  # True coordination failure
 
         if lp_detected and not alp_detected:
             # LP raised hand, ALP didn't in current frame
-            # If ALP has never raised, no violation yet — give them time to respond
-            if alp_last_raise_time is None:
-                alp_not_coordinating = False
             # Check if ALP raised recently (within window)
-            elif (current_time - alp_last_raise_time) <= self.hand_gesture_coordination_window:
-                alp_not_coordinating = False  # ALP raised recently, coordinated
-            else:
-                alp_not_coordinating = True  # ALP didn't raise within window
+            if not both_within_window(lp_last_raise_time, alp_last_raise_time):
+                alp_not_coordinating = True  # True coordination failure
 
         return lp_not_coordinating, alp_not_coordinating
 
