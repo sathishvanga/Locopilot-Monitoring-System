@@ -3,15 +3,111 @@ import json
 import numpy as np
 import time as time_module  # Renamed to avoid any potential shadowing issues
 from datetime import datetime, timedelta
-from collections import deque
+from collections import deque, defaultdict
+from dataclasses import dataclass, field
 import mediapipe as mp
 from ultralytics import YOLO
 import os
 import logging
+from typing import Optional, List, Dict, Tuple, Any, Union, Generator
 import gc
 import contextlib
 import sys
 import subprocess
+
+
+# ---------------------------------------------------------------------------
+# CR-004: ActivityConfig dataclass and ACTIVITY_REGISTRY
+# ---------------------------------------------------------------------------
+# Consolidates the parallel per-activity dictionaries (activities,
+# consecutive_detections, grace_counters, activity_thresholds) into a
+# single source of truth.  At runtime the same dict values are produced
+# from this registry so behaviour is unchanged.
+# ---------------------------------------------------------------------------
+
+@dataclass
+class ActivityConfig:
+    """Per-activity configuration used to seed runtime tracking dicts."""
+
+    # activity_thresholds fields
+    min_duration: float = 0.0
+    required_consecutive: int = 1
+    margin: Optional[int] = None
+    grace_frames: int = 5
+
+    # Extra threshold fields used by specific activities
+    region_margin: Optional[int] = None
+    wrist_inside_margin: Optional[int] = None
+    sustained_proximity_seconds: Optional[float] = None
+
+
+# Single registry that replaces the 4 hand-written parallel dicts.
+# The keys are the canonical activity names.
+ACTIVITY_REGISTRY: Dict[str, ActivityConfig] = {
+    'microsleep': ActivityConfig(
+        min_duration=3.0,
+        required_consecutive=2,
+        margin=None,
+        grace_frames=10,
+    ),
+    'sleep': ActivityConfig(
+        min_duration=20.0,
+        required_consecutive=4,
+        margin=None,
+        grace_frames=10,
+    ),
+    'cell_phone': ActivityConfig(
+        min_duration=0.1,
+        required_consecutive=1,
+        margin=180,
+        grace_frames=8,
+    ),
+    'writing': ActivityConfig(
+        min_duration=0.1,
+        required_consecutive=1,
+        margin=180,
+        grace_frames=10,
+    ),
+    'packing_bags': ActivityConfig(
+        min_duration=0.0,
+        required_consecutive=1,
+        margin=100,
+        grace_frames=5,
+        region_margin=150,
+        wrist_inside_margin=80,
+        sustained_proximity_seconds=4.0,
+    ),
+    'group_detected': ActivityConfig(
+        min_duration=0.0,
+        required_consecutive=3,
+        margin=None,
+        grace_frames=8,
+    ),
+    'lp_hand_gesture': ActivityConfig(
+        min_duration=0.0,
+        required_consecutive=1,
+        margin=None,
+        grace_frames=5,
+    ),
+    'alp_hand_gesture': ActivityConfig(
+        min_duration=0.0,
+        required_consecutive=1,
+        margin=None,
+        grace_frames=5,
+    ),
+    'mind_diversion': ActivityConfig(
+        min_duration=0.0,
+        required_consecutive=2,
+        margin=None,
+        grace_frames=5,
+    ),
+    'no_person_detected': ActivityConfig(
+        min_duration=5.0,
+        required_consecutive=3,
+        margin=None,
+        grace_frames=3,
+    ),
+}
 
 # Add app directory to path for importing preprocessing service
 script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -85,7 +181,7 @@ except ImportError:
     ActivityBatchCollector = None
 
 
-# ✅ WINDOWS FIX: Prevent Qt/GUI initialization in worker processes
+# [OK] WINDOWS FIX: Prevent Qt/GUI initialization in worker processes
 # If running in a worker process (detected by QT_QPA_PLATFORM=offscreen),
 # ensure no Qt imports happen that could create GUI windows
 if os.environ.get('QT_QPA_PLATFORM') == 'offscreen':
@@ -128,9 +224,7 @@ def _setup_module_logger(logger_name: str, level=logging.INFO) -> logging.Logger
         logger.setLevel(level)
     return logger
 
-# Module-level loggers (file-only output)
-gesture_logger = _setup_module_logger('HandGestureDetection')
-monitor_logger = _setup_module_logger('LocopilotMonitor')
+# Module-level loggers removed - consolidated to self.logger instance hierarchy
 
 
 @contextlib.contextmanager
@@ -153,7 +247,64 @@ class LocopilotActivityMonitor:
     YOLO_BODY_INDICES = [5, 6, 7, 8, 11, 12]  # left/right shoulders, elbows, hips
     YOLO_MIN_KEYPOINTS = 13  # Minimum landmarks required (indices 0-12)
 
-    def __init__(self, video_path, output_dir="evidence", save_annotated_frames=False, frame_save_interval=1, sample_fps=1.0, run_dir=None, create_run_dir=True, preloaded_models=None):
+    # === Wrist/Elbow Distance Thresholds (Writing Detection) ===
+    MAX_WRIST_DISTANCE = 300        # pixels - wrists close together during writing
+    MAX_ELBOW_DISTANCE = 450        # pixels - elbows typically wider apart during writing
+    MAX_SINGLE_WRIST_DISTANCE = 250 # pixels - wrist to shoulder center, tighter threshold
+    WRITING_WRIST_DISTANCE = 300    # pixels - wrist proximity for writing posture
+    RELAXED_WRIST_DISTANCE = 400    # pixels - relaxed wrist distance when head is down
+    ELBOW_VISIBILITY_THRESHOLD = 0.25  # lower threshold since elbows more reliable
+    WRIST_VISIBILITY_THRESHOLD = 0.3   # minimum visibility for wrist detection
+
+    # === Writing Detection Duration/Frame Thresholds ===
+    WRITING_MIN_DURATION = 1.0       # seconds - minimum duration for writing confirmation
+    WRITING_REQUIRED_CONSECUTIVE = 2  # frames - required consecutive detections
+    BOOK_POSTURE_MIN_DURATION = 2.0   # seconds - longer duration for book+posture fallback
+    BOOK_POSTURE_REQUIRED_CONSECUTIVE = 2  # frames - required consecutive for book+posture
+
+    # === Head Tilt / Sleep Detection Thresholds ===
+    HEAD_DOWN_THRESHOLD = 0.01       # normalized coords - nose below eye line for head-down
+    EAR_CLOSED_THRESHOLD = 0.2       # Eye Aspect Ratio below this = eyes closed
+    EYE_CLOSURE_MICROSLEEP_SECS = 5  # seconds - eye closure duration for microsleep
+    EYE_CLOSURE_SLEEP_SECS = 30      # seconds - eye closure duration for sleep alert
+
+    # === Pose-Based Sleep Detection Thresholds ===
+    SLEEP_STRONG_SCORE = 4           # sleep_score threshold for strong/unmistakable signal
+    SLEEP_STRONG_DURATION = 2        # seconds - duration with strong signal for sleep
+    SLEEP_MODERATE_DURATION = 4      # seconds - duration with moderate signal for sleep
+    SLEEP_MICROSLEEP_DURATION = 2    # seconds - duration for microsleep with moderate signal
+    MINIMAL_MOVEMENT_THRESHOLD = 0.15    # avg movement below this = minimal movement
+    STABLE_POSTURE_VARIANCE = 100    # head tilt variance below this = stable posture
+    EYES_NOT_VISIBLE_THRESHOLD = 0.4 # avg eye visibility below this = eyes not visible
+
+    # === IR Forward Lean Detection ===
+    IR_SHOULDER_RELATIVE_THRESHOLD = 0.4  # shoulders in upper 40% of bbox
+    IR_BBOX_ASPECT_RATIO_THRESHOLD = 1.2  # height/width below this = squashed (forward lean)
+    IR_LOW_MOVEMENT_THRESHOLD = 0.02      # body movement below this = low movement
+    SUB_THRESHOLD_STREAK_LIMIT = 3        # consecutive sub-threshold frames before reset
+
+    # === YOLO Confidence Thresholds ===
+    YOLO_PERSON_CONFIDENCE = 0.5     # minimum confidence for person detection
+    YOLO_BAG_CONFIDENCE = 0.45       # minimum confidence for bag detection
+    YOLO_BAG_LOG_CONFIDENCE = 0.25   # minimum confidence for bag detection logging
+    YOLO_BOOK_CONFIDENCE = 0.4       # minimum confidence for book detection
+    YOLO_CELL_PHONE_CONFIDENCE = 0.3 # minimum confidence for cell phone detection
+    YOLO_SLEEP_POSE_CONFIDENCE = 0.30  # lower confidence for sleep pose detection
+
+    # === Object Detection Geometry ===
+    BAG_MAX_ASPECT_RATIO = 1.2       # bags wider than this are likely seats
+    BAG_MIN_AREA = 5000              # minimum bag area in pixels
+    BAG_MAX_AREA = 100000            # maximum bag area in pixels
+    BOOK_PERSON_MARGIN = 150         # pixels - margin for book-to-person association (full frame)
+    PERSON_BOOK_OVERLAP_MARGIN = 250 # pixels - margin for book overlap with person bbox
+
+    # === Pose Validation ===
+    MIN_POSE_LANDMARKS = 10          # minimum landmarks for valid pose
+    MIN_POSE_VISIBILITY = 0.3        # minimum average visibility for valid pose
+    FACE_MESH_DETECTION_CONFIDENCE = 0.5   # MediaPipe face mesh detection confidence
+    FACE_MESH_TRACKING_CONFIDENCE = 0.5    # MediaPipe face mesh tracking confidence
+
+    def __init__(self, video_path: str, output_dir: str = "evidence", save_annotated_frames: bool = False, frame_save_interval: int = 1, sample_fps: float = 1.0, run_dir: Optional[str] = None, create_run_dir: bool = True, preloaded_models: Optional[Dict[str, Any]] = None) -> None:
         """Initialize Locopilot Activity Monitor.
         
         Args:
@@ -170,7 +321,12 @@ class LocopilotActivityMonitor:
         """
         self.video_path = video_path
         self.output_dir = output_dir
-        
+
+        # CR-011: Cached video metadata (lazily loaded to avoid opening VideoCapture at init)
+        self._video_total_frames = None
+        self._video_fps = None
+        self._video_duration_seconds = None
+
         # Initialize logger (file-only output, no console)
         self.logger = _setup_module_logger(f'{self.__class__.__name__}', logging.DEBUG)
         
@@ -220,7 +376,7 @@ class LocopilotActivityMonitor:
 
         # Initialize models - either use preloaded or load fresh
         if preloaded_models is not None:
-            # ✅ PERFORMANCE: Use pre-loaded models from worker pool (fast path)
+            # [OK] PERFORMANCE: Use pre-loaded models from worker pool (fast path)
             self.yolo_model = preloaded_models.get('yolo')
             self.yolo_pose = preloaded_models.get('yolo_pose')
             self.face_mesh = preloaded_models.get('face_mesh')
@@ -267,8 +423,8 @@ class LocopilotActivityMonitor:
             self.face_mesh = self.mp_face_mesh.FaceMesh(
                 max_num_faces=2,
                 refine_landmarks=True,
-                min_detection_confidence=0.5,
-                min_tracking_confidence=0.5
+                min_detection_confidence=self.FACE_MESH_DETECTION_CONFIDENCE,
+                min_tracking_confidence=self.FACE_MESH_TRACKING_CONFIDENCE
             )
 
             # Initialize image preprocessing service
@@ -314,21 +470,16 @@ class LocopilotActivityMonitor:
         # Track if models were pre-loaded (don't close them in cleanup)
         self._models_preloaded = preloaded_models is not None
 
+        # CR-004: Build the 4 parallel tracking dicts from ACTIVITY_REGISTRY
+        # This ensures all activity names stay in sync across dicts.
+
         # Activity tracking with temporal filtering
-        # Each activity now also tracks OCR timestamps (ocr_start_time, ocr_end_time) for embedded frame timestamps
+        # Each activity tracks OCR timestamps (ocr_start_time, ocr_end_time) for embedded frame timestamps
         self.activities = {
-            'microsleep': {'active': False, 'start_time': None, 'ocr_start_time': None, 'frames': [], 'duration': 0},
-            'sleep': {'active': False, 'start_time': None, 'ocr_start_time': None, 'frames': [], 'duration': 0},
-            'cell_phone': {'active': False, 'start_time': None, 'ocr_start_time': None, 'frames': [], 'duration': 0},
-            'writing': {'active': False, 'start_time': None, 'ocr_start_time': None, 'frames': [], 'duration': 0},
-            'packing_bags': {'active': False, 'start_time': None, 'ocr_start_time': None, 'frames': [], 'duration': 0},
-            'group_detected': {'active': False, 'start_time': None, 'ocr_start_time': None, 'frames': [], 'duration': 0},
-            'lp_hand_gesture': {'active': False, 'start_time': None, 'ocr_start_time': None, 'frames': [], 'duration': 0},
-            'alp_hand_gesture': {'active': False, 'start_time': None, 'ocr_start_time': None, 'frames': [], 'duration': 0},
-            'mind_diversion': {'active': False, 'start_time': None, 'ocr_start_time': None, 'frames': [], 'duration': 0},
-            'no_person_detected': {'active': False, 'start_time': None, 'ocr_start_time': None, 'frames': [], 'duration': 0}
+            name: {'active': False, 'start_time': None, 'ocr_start_time': None, 'frames': [], 'duration': 0}
+            for name in ACTIVITY_REGISTRY
         }
-        
+
         # TEMPORAL SUPPRESSION: Track recent activities per person for gesture suppression
         # Format: {person_idx: {'writing': last_timestamp, 'packing': last_timestamp, 'cell_phone': last_timestamp}}
         self.recent_person_activities = {}
@@ -340,107 +491,37 @@ class LocopilotActivityMonitor:
 
         # Activity thresholds: minimum duration and required consecutive frames before recording starts
         # OPTIMIZED FOR 0.5 FPS SAMPLING (1 frame every 2 seconds)
-        self.activity_thresholds = {
-            'packing_bags': {
-                'min_duration': 0.0,          # NO minimum duration - any detection creates activity
-                'required_consecutive': 1,    # Immediate detection when wrist inside backpack bbox
-                'margin': 100,                # Hand proximity margin in pixels (was 50)
-                'region_margin': 150,         # Region overlap margin for person-backpack association
-                'grace_frames': 5,            # Allow 5 samples (~10s) gap to group nearby detections
-                'wrist_inside_margin': 80,    # Margin for wrist-inside-bbox check (was 40 - INCREASED)
-                'sustained_proximity_seconds': 4.0  # If hand near backpack for 4+ seconds, detect as packing
-            },
-            'writing': {
-                'min_duration': 0.1,          # NO minimum duration - any detection creates activity
-                'required_consecutive': 1,    # Instant detection when book+hand seen
-                'margin': 180,                # Hand-to-book proximity - INCREASED from 100 to 150 for better capture
-                'grace_frames': 10,            # Allow 10 samples (~20s) gap to group nearby detections
-                # NOTE: Pose-based detection (wrist proximity + head down) uses separate internal
-                #       threshold in detect_writing_by_wrist_proximity()
-            },
-            'cell_phone': {
-                'min_duration': 0.1,          # NO minimum duration - any detection creates activity
-                'required_consecutive': 1,    # Instant detection on first frame
-                'margin': 180,                # MAXIMUM proximity for detecting phone near hand/ear/shoulder
-                'grace_frames': 8             # Allow 8 samples (~16s) gap to group nearby detections
-            },
-            'microsleep': {
-                'min_duration': 3.0,          # Must last 3 seconds minimum (reduced from 5.0 for early detection)
-                'required_consecutive': 2,    # 2 samples @ 0.5fps = 4 seconds (reduced from 3)
-                'margin': None,               # N/A for eye-based detection
-                'grace_frames': 10            # Allow 10 frames (~20s) of non-detection
-            },
-            'sleep': {
-                'min_duration': 20.0,         # Must last 20 seconds minimum (reduced from 30s)
-                'required_consecutive': 4,    # 4 samples @ 0.5fps = 8 seconds (reduced from 5)
-                'margin': None,               # N/A for eye-based detection
-                'grace_frames': 10            # Allow 10 frames (~20s) of non-detection
-            },
-            'group_detected': {
-                'min_duration': 0.0,          # NO minimum duration - any detection creates activity
-                'required_consecutive': 3,    # 3 samples @ 0.5fps = 6 seconds - INCREASED for temporal consistency
-                'margin': None,               # N/A for person count detection
-                'grace_frames': 8             # Allow 8 samples (~16s) gap
-            },
-            'lp_hand_gesture': {
-                'min_duration': 0.0,          # NO minimum duration - any coordination failure creates activity
-                'required_consecutive': 1,    # Instant detection on first frame
-                'margin': None,               # N/A for hand gesture detection
-                'grace_frames': 5             # Allow 5 samples (~10s) gap to handle multiple raises
-            },
-            'alp_hand_gesture': {
-                'min_duration': 0.0,          # NO minimum duration - any coordination failure creates activity
-                'required_consecutive': 1,    # Instant detection on first frame
-                'margin': None,               # N/A for hand gesture detection
-                'grace_frames': 5             # Allow 5 samples (~10s) gap to handle multiple raises
-            },
-            'mind_diversion': {
-                'min_duration': 0.0,          # NO minimum duration - any detection creates activity
-                'required_consecutive': 2,    # 2 samples @ 0.5fps = 4 seconds (reduced from 3)
-                'margin': None,               # N/A for head pose detection
-                'grace_frames': 5             # Allow 5 samples (~10s) gap
-            },
-            'no_person_detected': {
-                'min_duration': 5.0,          # Must last 5 seconds minimum (increased from 2.0)
-                'required_consecutive': 3,    # 3 samples @ 0.5fps = 6 seconds (increased from 1)
-                'margin': None,               # N/A for person detection
-                'grace_frames': 3             # Allow 3 samples (~6s) gap for brief detection failures (reduced from 5)
+        # CR-004: Built from ACTIVITY_REGISTRY so thresholds stay in sync with activity names
+        self.activity_thresholds = {}
+        for _name, _cfg in ACTIVITY_REGISTRY.items():
+            _entry: Dict[str, Any] = {
+                'min_duration': _cfg.min_duration,
+                'required_consecutive': _cfg.required_consecutive,
+                'margin': _cfg.margin,
+                'grace_frames': _cfg.grace_frames,
             }
-        }
-        
+            # Include optional fields only when set (preserves original dict shape per activity)
+            if _cfg.region_margin is not None:
+                _entry['region_margin'] = _cfg.region_margin
+            if _cfg.wrist_inside_margin is not None:
+                _entry['wrist_inside_margin'] = _cfg.wrist_inside_margin
+            if _cfg.sustained_proximity_seconds is not None:
+                _entry['sustained_proximity_seconds'] = _cfg.sustained_proximity_seconds
+            self.activity_thresholds[_name] = _entry
+
         # Consecutive detection counters for temporal filtering
-        self.consecutive_detections = {
-            'microsleep': 0,
-            'sleep': 0,
-            'cell_phone': 0,
-            'writing': 0,
-            'packing_bags': 0,
-            'group_detected': 0,
-            'lp_hand_gesture': 0,
-            'alp_hand_gesture': 0,
-            'mind_diversion': 0,
-            'no_person_detected': 0
-        }
-        
+        self.consecutive_detections = {name: 0 for name in ACTIVITY_REGISTRY}
+
         # Grace period counters - allows brief interruptions without resetting
-        self.grace_counters = {
-            'microsleep': 0,
-            'sleep': 0,
-            'cell_phone': 0,
-            'writing': 0,
-            'packing_bags': 0,
-            'group_detected': 0,
-            'lp_hand_gesture': 0,
-            'alp_hand_gesture': 0,
-            'mind_diversion': 0,
-            'no_person_detected': 0
-        }
+        self.grace_counters = {name: 0 for name in ACTIVITY_REGISTRY}
         
         # Buffer for pre-activity frames (5 seconds before at sampled rate)
         # Calculate buffer size based on sample_fps: 5 seconds * sample_fps
         buffer_size = max(5, int(5 * self.sample_fps))  # At least 5 frames
         self.frame_buffer = deque(maxlen=buffer_size)
-        
+        # CR-005: Parallel buffer storing frame indices (not frame copies) for activity tracking
+        self.frame_idx_buffer = deque(maxlen=buffer_size)
+
         # Eye closure tracking
         self.eye_closure_start = None
         self.eye_closure_duration = 0
@@ -468,14 +549,30 @@ class LocopilotActivityMonitor:
         self.wrist_proximity_tracking = {}
 
         # Per-person consecutive detection tracking for temporal filtering
-        # Format: {person_idx: {'cell_phone': count, 'writing': count, 'packing_bags': count}}
-        self.per_person_consecutive_detections = {}
-        self.per_person_grace_counters = {}
+        # Format: {person_idx: {activity_type: count}} - uses defaultdict to support all activity types
+        self.per_person_consecutive_detections = defaultdict(lambda: defaultdict(int))
+        self.per_person_grace_counters = defaultdict(lambda: defaultdict(int))
 
         # Hand position history for velocity/trajectory analysis
         # Format: {person_idx: {'right_wrist': deque([coords]), 'left_wrist': deque([coords]), 'timestamps': deque([t])}}
         self.hand_position_history = {}
         self.hand_history_max_length = 10  # Track last 10 positions (~20s at 0.5 fps)
+
+        # Packing motion history for bag interaction tracking (CR-015: moved from lazy init)
+        # Format: {person_idx: {'distances': deque, 'timestamps': deque, ...}}
+        self.packing_motion_history = {}
+
+        # Hand smoothing buffers for coordinate smoothing (CR-015: moved from lazy init)
+        # Format: {(person_idx, hand_side): {'positions': deque, 'timestamps': deque}}
+        self.hand_smoothing_buffers = {}
+
+        # Cached frame object detection results (CR-015: moved from lazy init)
+        self._cached_frame_objects = None
+        self._cached_frame_time = 0
+
+        # CR-007: Temporal role tracking state to prevent LP/ALP role flipping between frames
+        self._prev_person_boxes = []  # Previous frame's person bounding boxes
+        self._prev_person_roles = {}  # Previous frame's person roles {person_idx: role_info}
 
         # Landmark stability tracking to detect erratic jumps (poor detection quality)
         # Format: {person_idx: {'right_shoulder': deque([coords]), 'left_shoulder': deque([coords])}}
@@ -530,11 +627,11 @@ class LocopilotActivityMonitor:
             'alp_not_standing': 'alp_seated_during_pre_arrival_window'
         }
         
-        # Default crew/trip information
-        self.trip_id = "TRIP-123"
-        self.crew_name = "John Doe"
-        self.crew_id = "C-001"
-        self.crew_role = 1  # 1 for primary loco pilot
+        # Default crew/trip information (None until set by API input)
+        self.trip_id = None
+        self.crew_name = None
+        self.crew_id = None
+        self.crew_role = None
         
         # Crew members mapping: role (LP/ALP) -> {name, id, role}
         self.crew_members = {}  # Will be populated from API input
@@ -561,6 +658,8 @@ class LocopilotActivityMonitor:
 
         # Initialize train motion rule engine services
         self.trip_schedule = None  # Will be set via set_trip_schedule()
+        self.video_start_time = None  # Will be set via set_video_start_time()
+        self._prev_motion_frame = None  # Previous frame for optical flow
         self.current_motion_context = None  # Current train motion state
         self.suppress_no_person_without_schedule = getattr(self.settings, 'suppress_no_person_without_schedule', True) if self.settings else True
 
@@ -619,7 +718,7 @@ class LocopilotActivityMonitor:
             'grace_frames': 3
         }
 
-    def set_trip_schedule(self, trip_schedule):
+    def set_trip_schedule(self, trip_schedule: Any) -> None:
         """
         Set the trip schedule for motion-based rule evaluation.
 
@@ -638,7 +737,7 @@ class LocopilotActivityMonitor:
                 "(cannot distinguish station halts from running without schedule)"
             )
 
-    def set_video_start_time(self, start_time_str: str):
+    def set_video_start_time(self, start_time_str: str) -> None:
         """
         Set the video's actual start time (time of day when recording began).
 
@@ -666,7 +765,7 @@ class LocopilotActivityMonitor:
         Returns:
             Time string in HH:MM:SS format
         """
-        if hasattr(self, 'video_start_time') and self.video_start_time:
+        if self.video_start_time:
             try:
                 # Parse video start time
                 parts = self.video_start_time.split(':')
@@ -802,7 +901,7 @@ class LocopilotActivityMonitor:
         if person_data is None:
             return False
 
-        pose_keypoints = person_data.get('pose_keypoints')
+        pose_keypoints = person_data.get('pose_landmarks')
         if pose_keypoints is None:
             return False
 
@@ -816,7 +915,7 @@ class LocopilotActivityMonitor:
             self.logger.debug(f"ALP standing check failed: {e}")
             return False
 
-    def get_keypoint(self, landmarks, keypoint_name):
+    def get_keypoint(self, landmarks: Any, keypoint_name: str) -> Any:
         """Get a keypoint from landmarks by name (works with both YOLO and MediaPipe formats).
 
         This method provides backward compatibility for code that was written for MediaPipe
@@ -836,7 +935,7 @@ class LocopilotActivityMonitor:
         """
         return self._get_keypoint_by_name(landmarks, keypoint_name)
 
-    def update_per_person_detection(self, person_idx, activity_type, detected, timestamp_sec):
+    def update_per_person_detection(self, person_idx: int, activity_type: str, detected: bool, timestamp_sec: float) -> bool:
         """
         Update per-person consecutive detection counters with temporal filtering.
 
@@ -849,15 +948,7 @@ class LocopilotActivityMonitor:
         Returns:
             bool: True if activity should trigger alert (threshold met)
         """
-        # Initialize tracking for this person
-        if person_idx not in self.per_person_consecutive_detections:
-            self.per_person_consecutive_detections[person_idx] = {
-                'cell_phone': 0, 'writing': 0, 'packing_bags': 0
-            }
-            self.per_person_grace_counters[person_idx] = {
-                'cell_phone': 0, 'writing': 0, 'packing_bags': 0
-            }
-
+        # Access tracking for this person (defaultdict auto-initializes for any activity type)
         person_counters = self.per_person_consecutive_detections[person_idx]
         person_grace = self.per_person_grace_counters[person_idx]
 
@@ -880,7 +971,7 @@ class LocopilotActivityMonitor:
 
         return False
 
-    def sample_video_frames(self, video_path, start_frame=None, end_frame=None):
+    def sample_video_frames(self, video_path: str, start_frame: Optional[int] = None, end_frame: Optional[int] = None) -> Generator[Tuple[int, float, Any, int], None, None]:
         """Sample frames at fixed intervals based on sample_fps.
         
         Yields tuples: (sample_index, timestamp_sec, frame_bgr, frame_idx)
@@ -932,7 +1023,7 @@ class LocopilotActivityMonitor:
             
             self.logger.debug(f"[Frame Sampling] Completed sampling, total samples: {sampled_idx}")
         
-    def calculate_eye_aspect_ratio(self, landmarks):
+    def calculate_eye_aspect_ratio(self, landmarks: Any) -> Optional[float]:
         """Calculate Eye Aspect Ratio (EAR) for drowsiness detection"""
         try:
             left_eye_indices = [33, 160, 158, 133, 153, 144]
@@ -960,9 +1051,10 @@ class LocopilotActivityMonitor:
             return max(0.0, min(0.5, avg_ear))
             
         except Exception as e:
+            self.logger.debug(f"Exception in calculate_eye_aspect_ratio: {e}")
             return None
-    
-    def calculate_head_tilt_angle(self, landmarks):
+
+    def calculate_head_tilt_angle(self, landmarks: Any) -> Optional[float]:
         """Calculate head tilt angle from pose landmarks.
         
         Returns:
@@ -990,9 +1082,10 @@ class LocopilotActivityMonitor:
             return angle
 
         except Exception as e:
+            self.logger.debug(f"Exception in calculate_head_tilt_angle: {e}")
             return None
 
-    def calculate_movement_score(self, current_landmarks, previous_landmarks):
+    def calculate_movement_score(self, current_landmarks: Any, previous_landmarks: Any) -> float:
         """Calculate movement score between two sets of pose landmarks.
 
         Returns:
@@ -1026,8 +1119,9 @@ class LocopilotActivityMonitor:
             return movement_score
             
         except Exception as e:
+            self.logger.debug(f"Exception in calculate_movement_score: {e}")
             return 0.0
-    
+
     def _get_per_person_sleep_tracking(self, person_idx):
         """Get or initialize per-person sleep tracking state."""
         if person_idx not in self.per_person_sleep_tracking:
@@ -1091,7 +1185,7 @@ class LocopilotActivityMonitor:
             return None
         return sum(movements) / len(movements)
 
-    def detect_ir_forward_lean_sleep(self, landmarks, bbox, timestamp_sec, person_idx, frame_shape):
+    def detect_ir_forward_lean_sleep(self, landmarks: Any, bbox: List[int], timestamp_sec: float, person_idx: int, frame_shape: Tuple[int, ...]) -> Tuple[bool, bool, Dict[str, Any]]:
         """Detect forward-lean sleep posture using body-only keypoints in IR/dark frames.
 
         Uses shoulders, elbows, and hips (which remain visible in IR) plus the
@@ -1170,7 +1264,7 @@ class LocopilotActivityMonitor:
             bbox_height = y2 - y1
             # Check if shoulders are in upper 40% of bbox
             shoulder_relative = (shoulder_mid_y_px - y1) / bbox_height if bbox_height > 0 else 0.5
-            if shoulder_relative < 0.4:
+            if shoulder_relative < self.IR_SHOULDER_RELATIVE_THRESHOLD:
                 score += 1
                 score_breakdown['shoulders_high'] = 1
             else:
@@ -1183,7 +1277,7 @@ class LocopilotActivityMonitor:
         bbox_w = x2 - x1
         bbox_h = y2 - y1
         aspect_ratio = bbox_h / bbox_w if bbox_w > 0 else 1.5
-        if aspect_ratio < 1.2:
+        if aspect_ratio < self.IR_BBOX_ASPECT_RATIO_THRESHOLD:
             score += 1
             score_breakdown['squashed_bbox'] = 1
         else:
@@ -1193,7 +1287,7 @@ class LocopilotActivityMonitor:
         # Signal 4: Low body movement (+1)
         tracking = self._get_ir_forward_lean_tracking(person_idx)
         body_movement = self._calculate_body_movement(landmarks, tracking, body_indices)
-        if body_movement is not None and body_movement < 0.02:
+        if body_movement is not None and body_movement < self.IR_LOW_MOVEMENT_THRESHOLD:
             score += 1
             score_breakdown['low_movement'] = 1
         else:
@@ -1257,7 +1351,7 @@ class LocopilotActivityMonitor:
             # Score below threshold -- only reset after 3 consecutive sub-threshold frames
             # At 0.5 FPS, this tolerates up to ~4s of noise without losing accumulated duration
             tracking['sub_threshold_streak'] = tracking.get('sub_threshold_streak', 0) + 1
-            if tracking['sub_threshold_streak'] >= 3:
+            if tracking['sub_threshold_streak'] >= self.SUB_THRESHOLD_STREAK_LIMIT:
                 tracking['start_time'] = None
                 tracking['sub_threshold_streak'] = 0
             debug_info['duration'] = 0
@@ -1265,7 +1359,7 @@ class LocopilotActivityMonitor:
 
         return False, False, debug_info
 
-    def detect_pose_based_sleep(self, pose_landmarks, timestamp_sec, person_idx=0, frame_shape=None):
+    def detect_pose_based_sleep(self, pose_landmarks: Any, timestamp_sec: float, person_idx: int = 0, frame_shape: Optional[Tuple[int, ...]] = None) -> Tuple[bool, bool, Dict[str, Any]]:
         """Detect sleep based on pose analysis when face detection fails.
 
         Uses a weighted scoring approach with two detection paths:
@@ -1460,9 +1554,9 @@ class LocopilotActivityMonitor:
         is_shoulders_compressed = shoulder_width_px is not None and shoulder_width_px < sh_width_thresh
 
         # Common signals
-        is_minimal_movement = avg_movement < 0.15  # Relaxed from 0.1 — sleeping persons may shift slightly
-        is_stable_posture = head_tilt_variance < 100  # Low variance = stable position
-        is_eyes_not_visible = avg_eye_vis is not None and avg_eye_vis < 0.4  # Eyes pointing down / not visible
+        is_minimal_movement = avg_movement < self.MINIMAL_MOVEMENT_THRESHOLD  # Relaxed from 0.1 — sleeping persons may shift slightly
+        is_stable_posture = head_tilt_variance < self.STABLE_POSTURE_VARIANCE  # Low variance = stable position
+        is_eyes_not_visible = avg_eye_vis is not None and avg_eye_vis < self.EYES_NOT_VISIBLE_THRESHOLD  # Eyes pointing down / not visible
 
         # --- Weighted scoring approach ---
         # Two scoring paths: forward-drop (legacy) and reclined (new)
@@ -1546,14 +1640,14 @@ class LocopilotActivityMonitor:
             # layer. Within a chunk, we use shorter thresholds to detect sleep posture.
             # A strong sleep_score (>=4) can trigger sleep immediately (posture is very clear).
             # A moderate score (>=3) needs at least a few seconds of consistency.
-            if sleep_score >= 4:
+            if sleep_score >= self.SLEEP_STRONG_SCORE:
                 # Very strong signal — sleep posture is unmistakable
-                is_sleeping = tracking['pose_sleep_duration'] >= 2  # 2 seconds with strong signal
+                is_sleeping = tracking['pose_sleep_duration'] >= self.SLEEP_STRONG_DURATION  # strong signal
                 is_microsleeping = not is_sleeping  # Any duration with score>=4 is at least microsleep
             else:
                 # Moderate signal — need slightly more consistency
-                is_sleeping = tracking['pose_sleep_duration'] >= 4  # 4 seconds
-                is_microsleeping = tracking['pose_sleep_duration'] >= 2 and not is_sleeping  # 2 seconds
+                is_sleeping = tracking['pose_sleep_duration'] >= self.SLEEP_MODERATE_DURATION
+                is_microsleeping = tracking['pose_sleep_duration'] >= self.SLEEP_MICROSLEEP_DURATION and not is_sleeping
 
             debug_info['pose_sleep_duration'] = tracking['pose_sleep_duration']
 
@@ -1567,7 +1661,7 @@ class LocopilotActivityMonitor:
 
             return False, False, debug_info
     
-    def calculate_wrist_distance(self, pose_landmarks, frame_shape):
+    def calculate_wrist_distance(self, pose_landmarks: Any, frame_shape: Tuple[int, ...]) -> Tuple[Optional[float], Optional[str]]:
         """Calculate Euclidean distance between left and right wrists.
         Falls back to elbow distance if wrists are not visible.
 
@@ -1595,7 +1689,7 @@ class LocopilotActivityMonitor:
             left_wrist = self.get_keypoint(landmarks, 'left_wrist')
 
             # Try wrists first (primary method)
-            if right_wrist.visibility >= 0.3 and left_wrist.visibility >= 0.3:
+            if right_wrist.visibility >= self.WRIST_VISIBILITY_THRESHOLD and left_wrist.visibility >= self.WRIST_VISIBILITY_THRESHOLD:
                 # Convert normalized coordinates to pixel coordinates
                 right_wrist_px = (right_wrist.x * w, right_wrist.y * h)
                 left_wrist_px = (left_wrist.x * w, left_wrist.y * h)
@@ -1612,8 +1706,7 @@ class LocopilotActivityMonitor:
             right_elbow = self.get_keypoint(landmarks, 'right_elbow')
             left_elbow = self.get_keypoint(landmarks, 'left_elbow')
 
-            ELBOW_VISIBILITY_THRESHOLD = 0.25  # Lower threshold since elbows more reliable
-            if right_elbow.visibility >= ELBOW_VISIBILITY_THRESHOLD and left_elbow.visibility >= ELBOW_VISIBILITY_THRESHOLD:
+            if right_elbow.visibility >= self.ELBOW_VISIBILITY_THRESHOLD and left_elbow.visibility >= self.ELBOW_VISIBILITY_THRESHOLD:
                 right_elbow_px = (right_elbow.x * w, right_elbow.y * h)
                 left_elbow_px = (left_elbow.x * w, left_elbow.y * h)
                 distance = np.sqrt(
@@ -1651,9 +1744,10 @@ class LocopilotActivityMonitor:
 
             return None, None
         except Exception as e:
+            self.logger.debug(f"Exception in calculate_wrist_distance: {e}")
             return None, None
 
-    def detect_writing_posture(self, pose_landmarks, frame_shape):
+    def detect_writing_posture(self, pose_landmarks: Any, frame_shape: Tuple[int, ...]) -> bool:
         """Instantly detect writing posture based on hand position.
 
         Checks if hands are in typical writing position using multiple criteria:
@@ -1717,7 +1811,6 @@ class LocopilotActivityMonitor:
             # 1. Wrists close together (increased from 200 to 300 pixels)
             # 2. Either: hands in lap OR hands below shoulders
             # 3. Bonus: head looking down strengthens detection
-            WRITING_WRIST_DISTANCE = 300  # pixels - increased from 200
 
             # Hands in writing position (either strict lap OR relaxed below-shoulders)
             hands_in_lap = left_in_lap and right_in_lap
@@ -1725,7 +1818,7 @@ class LocopilotActivityMonitor:
             hands_in_writing_position = hands_in_lap or hands_below_shoulders
 
             # Detect if wrists are close enough
-            wrists_close = wrist_distance <= WRITING_WRIST_DISTANCE
+            wrists_close = wrist_distance <= self.WRITING_WRIST_DISTANCE
 
             # Writing detected if:
             # - Hands below shoulders + wrists close, OR
@@ -1734,16 +1827,16 @@ class LocopilotActivityMonitor:
                 return True
 
             # Extra: Head looking down with hands below shoulders (wider tolerance)
-            RELAXED_WRIST_DISTANCE = 400  # even more relaxed when head is down
-            if head_looking_down and hands_below_shoulders and wrist_distance <= RELAXED_WRIST_DISTANCE:
+            if head_looking_down and hands_below_shoulders and wrist_distance <= self.RELAXED_WRIST_DISTANCE:
                 return True
 
             return False
 
         except Exception as e:
+            self.logger.debug(f"Exception in detect_writing_posture: {e}")
             return False
 
-    def detect_head_looking_down(self, pose_landmarks):
+    def detect_head_looking_down(self, pose_landmarks: Any) -> bool:
         """Check if head is tilted down (looking at lap area).
 
         Uses nose position relative to eyes to detect downward head tilt,
@@ -1769,13 +1862,13 @@ class LocopilotActivityMonitor:
             # Head is looking down when nose is significantly below eye line
             # Using normalized coordinates (0-1), so 0.01 = ~1% of frame height
             # REDUCED from 0.02 to 0.01 to better capture slight head tilt while reading/writing
-            HEAD_DOWN_THRESHOLD = 0.01
-            return nose.y > eye_y + HEAD_DOWN_THRESHOLD
+            return nose.y > eye_y + self.HEAD_DOWN_THRESHOLD
 
         except Exception as e:
+            self.logger.debug(f"Exception in detect_head_looking_down: {e}")
             return False
 
-    def check_hands_below_shoulders(self, pose_landmarks):
+    def check_hands_below_shoulders(self, pose_landmarks: Any) -> bool:
         """Check if both hands are below shoulder level.
 
         A more relaxed check than "hands in lap" for various camera angles.
@@ -1799,9 +1892,10 @@ class LocopilotActivityMonitor:
             return left_wrist.y > shoulder_y and right_wrist.y > shoulder_y
 
         except Exception as e:
+            self.logger.debug(f"Exception in check_hands_below_shoulders: {e}")
             return False
 
-    def detect_writing_by_wrist_proximity(self, pose_landmarks, frame_shape, person_idx, timestamp_sec):
+    def detect_writing_by_wrist_proximity(self, pose_landmarks: Any, frame_shape: Tuple[int, ...], person_idx: int, timestamp_sec: float) -> bool:
         """Detect writing activity based on wrist/elbow proximity + head posture heuristic.
 
         When both wrists (or elbows as fallback) are close together AND head is tilted down
@@ -1849,19 +1943,14 @@ class LocopilotActivityMonitor:
             }
 
         # Configurable thresholds - different for wrist vs elbow
-        MAX_WRIST_DISTANCE = 300  # pixels - wrists close together during writing
-        MAX_ELBOW_DISTANCE = 450  # pixels - elbows typically wider apart during writing
-        MAX_SINGLE_WRIST_DISTANCE = 250  # pixels - wrist to shoulder center, tighter threshold
-        MIN_DURATION = 1.0  # seconds - for faster detection
-        REQUIRED_CONSECUTIVE = 2  # frames @ 0.5fps = 4 seconds total
 
         # Select threshold based on detection source
         if source == 'wrist':
-            max_distance = MAX_WRIST_DISTANCE
+            max_distance = self.MAX_WRIST_DISTANCE
         elif source == 'single_wrist':
-            max_distance = MAX_SINGLE_WRIST_DISTANCE
+            max_distance = self.MAX_SINGLE_WRIST_DISTANCE
         else:
-            max_distance = MAX_ELBOW_DISTANCE
+            max_distance = self.MAX_ELBOW_DISTANCE
 
         person_tracking = self.wrist_proximity_tracking[person_idx]
 
@@ -1906,8 +1995,8 @@ class LocopilotActivityMonitor:
                 )
 
             # Check if thresholds are met
-            if (person_tracking['consecutive_frames'] >= REQUIRED_CONSECUTIVE and
-                person_tracking['duration'] >= MIN_DURATION):
+            if (person_tracking['consecutive_frames'] >= self.WRITING_REQUIRED_CONSECUTIVE and
+                person_tracking['duration'] >= self.WRITING_MIN_DURATION):
                 self.logger.info(
                     f"Person {person_idx}: WRITING CONFIRMED via {source} - distance close + head down for "
                     f"{person_tracking['duration']:.1f}s ({person_tracking['consecutive_frames']} frames)"
@@ -1926,7 +2015,7 @@ class LocopilotActivityMonitor:
 
         return False
 
-    def detect_writing_by_book_and_posture(self, pose_landmarks, person_bbox, book_bboxes, person_idx, timestamp_sec):
+    def detect_writing_by_book_and_posture(self, pose_landmarks: Any, person_bbox: List[int], book_bboxes: List[List[int]], person_idx: int, timestamp_sec: float) -> bool:
         """Fallback writing detection when wrists are not visible.
 
         Detects writing based on:
@@ -1961,7 +2050,7 @@ class LocopilotActivityMonitor:
         person_tracking = self.wrist_proximity_tracking[tracking_key]
 
         # Check if any book is in person's region
-        person_book_margin = 250  # Same margin used elsewhere
+        person_book_margin = self.PERSON_BOOK_OVERLAP_MARGIN  # Same margin used elsewhere
         book_in_region = False
         for book_bbox in book_bboxes:
             if self.bbox_overlap_with_margin(book_bbox, person_bbox, person_book_margin):
@@ -1988,8 +2077,6 @@ class LocopilotActivityMonitor:
             return False
 
         # Both conditions met: book in region + head down
-        MIN_DURATION = 2.0  # Require longer duration for this fallback (more confidence needed)
-        REQUIRED_CONSECUTIVE = 2
 
         if person_tracking['start_time'] is None:
             person_tracking['start_time'] = timestamp_sec
@@ -2005,8 +2092,8 @@ class LocopilotActivityMonitor:
                 f"duration={person_tracking['duration']:.1f}s"
             )
 
-        if (person_tracking['consecutive_frames'] >= REQUIRED_CONSECUTIVE and
-            person_tracking['duration'] >= MIN_DURATION):
+        if (person_tracking['consecutive_frames'] >= self.BOOK_POSTURE_REQUIRED_CONSECUTIVE and
+            person_tracking['duration'] >= self.BOOK_POSTURE_MIN_DURATION):
             self.logger.info(
                 f"Person {person_idx}: WRITING CONFIRMED via book+posture fallback - "
                 f"book in region + head down for {person_tracking['duration']:.1f}s"
@@ -2015,7 +2102,7 @@ class LocopilotActivityMonitor:
 
         return False
 
-    def get_roi_around_keypoint(self, keypoint_coords, frame_shape, roi_size=150):
+    def get_roi_around_keypoint(self, keypoint_coords: Any, frame_shape: Tuple[int, ...], roi_size: int = 150) -> Optional[Tuple[int, int, int, int]]:
         """Create Region of Interest (ROI) box around a keypoint.
         
         Args:
@@ -2045,7 +2132,7 @@ class LocopilotActivityMonitor:
         
         return (int(x1), int(y1), int(x2), int(y2))
     
-    def detect_objects_in_roi(self, frame, roi_bbox, target_classes=['cell phone', 'book', 'pen', 'pencil']):
+    def detect_objects_in_roi(self, frame: Any, roi_bbox: Tuple[int, int, int, int], target_classes: List[str] = ['cell phone', 'book', 'pen', 'pencil']) -> List[Dict[str, Any]]:
         """Run YOLO detection on a specific ROI region.
         
         Args:
@@ -2094,26 +2181,23 @@ class LocopilotActivityMonitor:
                         detections.append((class_name, conf, global_x1, global_y1, global_x2, global_y2))
         
         # DEBUG LOGGING: Log what YOLO detected (especially for cell phone debugging)
-        # Use logging module instead of print for multiprocessing compatibility
-        import logging
-        debug_logger = logging.getLogger('locopilot_monitor')
         
         if 'cell phone' in target_classes:
             if len(debug_all_detections) > 0:
                 cell_phones = [d for d in debug_all_detections if d[0] == 'cell phone']
                 if cell_phones:
-                    debug_logger.info(f"[DEBUG ROI] ✓ Found {len(cell_phones)} cell phone(s): {cell_phones}")
+                    self.logger.info(f"[DEBUG ROI] [OK] Found {len(cell_phones)} cell phone(s): {cell_phones}")
                 else:
                     # Log what was detected instead of phone (top 5 by confidence)
                     top_detections = sorted(debug_all_detections, key=lambda x: -x[1])[:5]
-                    debug_logger.info(f"[DEBUG ROI] ✗ No phone, but YOLO found {len(debug_all_detections)} objects: {top_detections}")
+                    self.logger.info(f"[DEBUG ROI] [FAIL] No phone, but YOLO found {len(debug_all_detections)} objects: {top_detections}")
             else:
                 # YOLO detected absolutely nothing in this ROI
-                debug_logger.info(f"[DEBUG ROI] ⚠ YOLO detected NOTHING in this ROI (empty detection)")
+                self.logger.info(f"[DEBUG ROI] [WARN] YOLO detected NOTHING in this ROI (empty detection)")
         
         return detections
 
-    def detect_objects_in_rois_batch(self, frame, roi_bboxes, roi_names, target_classes=['cell phone', 'book', 'pen', 'pencil']):
+    def detect_objects_in_rois_batch(self, frame: Any, roi_bboxes: List[Tuple[int, int, int, int]], roi_names: List[str], target_classes: List[str] = ['cell phone', 'book', 'pen', 'pencil']) -> List[List[Dict[str, Any]]]:
         """Run YOLO detection on multiple ROI regions in a single batched call.
 
         PERFORMANCE OPTIMIZATION: This method processes all ROIs in a single YOLO
@@ -2195,26 +2279,24 @@ class LocopilotActivityMonitor:
                         detections.append((class_name, conf, global_x1, global_y1, global_x2, global_y2))
 
             # DEBUG LOGGING (same as original method)
-            import logging
-            debug_logger = logging.getLogger('locopilot_monitor')
 
             if 'cell phone' in target_classes:
                 roi_name = roi_names[roi_bbox_idx]
                 if len(debug_all_detections) > 0:
                     cell_phones = [d for d in debug_all_detections if d[0] == 'cell phone']
                     if cell_phones:
-                        debug_logger.info(f"[DEBUG ROI BATCH] {roi_name}: ✓ Found {len(cell_phones)} cell phone(s): {cell_phones}")
+                        self.logger.info(f"[DEBUG ROI BATCH] {roi_name}: [OK] Found {len(cell_phones)} cell phone(s): {cell_phones}")
                     else:
                         top_detections = sorted(debug_all_detections, key=lambda x: -x[1])[:5]
-                        debug_logger.info(f"[DEBUG ROI BATCH] {roi_name}: ✗ No phone, found {len(debug_all_detections)} objects: {top_detections}")
+                        self.logger.info(f"[DEBUG ROI BATCH] {roi_name}: [FAIL] No phone, found {len(debug_all_detections)} objects: {top_detections}")
                 else:
-                    debug_logger.info(f"[DEBUG ROI BATCH] {roi_name}: ⚠ YOLO detected NOTHING")
+                    self.logger.info(f"[DEBUG ROI BATCH] {roi_name}: [WARN] YOLO detected NOTHING")
 
             all_detections[roi_bbox_idx] = detections
 
         return all_detections
 
-    def validate_object_aspect_ratio(self, bbox, object_class):
+    def validate_object_aspect_ratio(self, bbox: List[int], object_class: str) -> bool:
         """
         Validate detected object based on aspect ratio to filter false positives.
 
@@ -2262,7 +2344,7 @@ class LocopilotActivityMonitor:
 
         return True
 
-    def detect_objects(self, frame, pose_landmarks=None, use_pose_guided=True):
+    def detect_objects(self, frame: Any, pose_landmarks: Any = None, use_pose_guided: bool = True) -> Dict[str, List[Any]]:
         """Detect objects using YOLO with pose-guided detection.
         
         MULTI-LAYERED DETECTION FLOW:
@@ -2315,14 +2397,14 @@ class LocopilotActivityMonitor:
                 
                 class_name = self.yolo_model.names[cls]
                 # Detect person and bag types (backpack, handbag, suitcase) from full frame
-                if class_name == 'person' and conf > 0.5:
+                if class_name == 'person' and conf > self.YOLO_PERSON_CONFIDENCE:
                     detections['person'].append(xyxy)
                     person_boxes.append(xyxy)
                 elif class_name in ['backpack', 'handbag', 'suitcase']:
                     # Log all bag detections for debugging
-                    if conf > 0.25:
+                    if conf > self.YOLO_BAG_LOG_CONFIDENCE:
                         self.logger.debug(f"BAG DETECTED: {class_name} conf={conf:.2f} bbox={xyxy}")
-                    if conf > 0.45:  # LOWERED from 0.75 to catch more bags (aspect ratio filter handles false positives)
+                    if conf > self.YOLO_BAG_CONFIDENCE:  # LOWERED from 0.75 to catch more bags (aspect ratio filter handles false positives)
                         # Validate aspect ratio and size to filter out seats/equipment
                         bag_width = xyxy[2] - xyxy[0]
                         bag_height = xyxy[3] - xyxy[1]
@@ -2333,14 +2415,14 @@ class LocopilotActivityMonitor:
                         # Train seats are wide (aspect ratio > 1.2)
                         # Also filter very large detections (> 100000 px area = ~316x316)
                         # And filter very small detections (< 5000 px area = ~70x70)
-                        if aspect_ratio < 1.2 and 5000 < bag_area < 100000:
+                        if aspect_ratio < self.BAG_MAX_ASPECT_RATIO and self.BAG_MIN_AREA < bag_area < self.BAG_MAX_AREA:
                             detections['backpack'].append(xyxy)
                             self.logger.info(f"BAG ADDED: {class_name} conf={conf:.2f} aspect={aspect_ratio:.2f} area={bag_area:.0f}")
                         else:
                             self.logger.debug(f"BAG REJECTED: {class_name} conf={conf:.2f} aspect={aspect_ratio:.2f} area={bag_area:.0f} (filtered)")
                 # OPTION 3: Re-enable book detection in full frame with moderate confidence
                 # But only if book is within reasonable distance of a person
-                elif class_name == 'book' and conf > 0.4:  # Increased to 0.4 to reduce false positives
+                elif class_name == 'book' and conf > self.YOLO_BOOK_CONFIDENCE:  # Increased to reduce false positives
                     # Check if book is near any detected person
                     if len(person_boxes) > 0:
                         book_near_person = False
@@ -2350,7 +2432,7 @@ class LocopilotActivityMonitor:
                         for person_box in person_boxes:
                             # Check if book center is within expanded person bounding box
                             person_x1, person_y1, person_x2, person_y2 = person_box
-                            margin = 150  # Reduced from 200px to 150px for stricter book-to-person association
+                            margin = self.BOOK_PERSON_MARGIN  # Stricter book-to-person association
                             if (person_x1 - margin <= book_center_x <= person_x2 + margin and
                                 person_y1 - margin <= book_center_y <= person_y2 + margin):
                                 book_near_person = True
@@ -2399,10 +2481,6 @@ class LocopilotActivityMonitor:
             roi_bboxes = []
             roi_names = []
 
-            import logging
-            import time
-            debug_logger = logging.getLogger('locopilot_monitor')
-
             for display_name, keypoint_name, roi_size in keypoints_of_interest:
                 try:
                     landmark = self.get_keypoint(pose_landmarks, keypoint_name)
@@ -2424,9 +2502,10 @@ class LocopilotActivityMonitor:
 
                         # DEBUG: Log ROI creation for key body parts
                         if display_name in ['RIGHT_WRIST', 'LEFT_WRIST', 'RIGHT_HIP', 'LEFT_HIP', 'NOSE']:
-                            debug_logger.info(f"[DEBUG ROI] Creating {display_name} ROI: size={roi_size}px, coords={keypoint_coords}")
+                            self.logger.info(f"[DEBUG ROI] Creating {display_name} ROI: size={roi_size}px, coords={keypoint_coords}")
 
                 except Exception as e:
+                    self.logger.debug(f"Exception in detect_objects: {e}")
                     roi_bboxes.append(None)
                     roi_names.append(display_name)
                     continue
@@ -2463,6 +2542,102 @@ class LocopilotActivityMonitor:
                             detections['book'].append([x1, y1, x2, y2])
         
         return detections
+
+    def detect_objects_person_rois(self, frame, pose_landmarks):
+        """Run ONLY pose-guided ROI detection for a single person (Stage 2 only).
+
+        CR-006 OPTIMIZATION: This method performs only the ROI-based detection
+        around a person's keypoints, WITHOUT re-running full-frame YOLO inference.
+        Full-frame detection (Stage 1) should be run once before the per-person
+        loop and its results reused via the 'detections' dict.
+
+        Args:
+            frame: Input frame (BGR)
+            pose_landmarks: Pose landmarks for this person
+
+        Returns:
+            Dictionary with 'cell_phone', 'book', 'roi_detections', 'roi_boxes' keys
+        """
+        person_roi_detections = {
+            'cell_phone': [],
+            'book': [],
+            'roi_detections': [],
+            'roi_boxes': []
+        }
+
+        if pose_landmarks is None:
+            return person_roi_detections
+
+        h, w = frame.shape[:2]
+
+        # Define keypoints of interest with ROI sizes (same as Stage 2 in detect_objects)
+        keypoints_of_interest = [
+            ('RIGHT_WRIST', 'right_wrist', 180),
+            ('LEFT_WRIST', 'left_wrist', 180),
+            ('RIGHT_INDEX', 'right_wrist', 180),
+            ('LEFT_INDEX', 'left_wrist', 180),
+            ('RIGHT_HIP', 'right_hip', 180),
+            ('LEFT_HIP', 'left_hip', 180),
+            ('RIGHT_EAR', 'right_ear', 180),
+            ('LEFT_EAR', 'left_ear', 180),
+        ]
+
+        roi_bboxes = []
+        roi_names = []
+
+        for display_name, keypoint_name, roi_size in keypoints_of_interest:
+            try:
+                landmark = self.get_keypoint(pose_landmarks, keypoint_name)
+
+                if landmark.visibility < 0.5:
+                    roi_bboxes.append(None)
+                    roi_names.append(display_name)
+                    continue
+
+                keypoint_coords = (int(landmark.x * w), int(landmark.y * h))
+                roi_bbox = self.get_roi_around_keypoint(keypoint_coords, frame.shape, roi_size)
+
+                roi_bboxes.append(roi_bbox)
+                roi_names.append(display_name)
+
+                if roi_bbox is not None:
+                    person_roi_detections['roi_boxes'].append((display_name, roi_bbox))
+
+                    if display_name in ['RIGHT_WRIST', 'LEFT_WRIST', 'RIGHT_HIP', 'LEFT_HIP', 'NOSE']:
+                        self.logger.info(f"[DEBUG ROI] Creating {display_name} ROI: size={roi_size}px, coords={keypoint_coords}")
+
+            except Exception as e:
+                self.logger.debug(f"Exception in detect_objects_person_rois: {e}")
+                roi_bboxes.append(None)
+                roi_names.append(display_name)
+                continue
+
+        valid_roi_count = sum(1 for bbox in roi_bboxes if bbox is not None)
+
+        if valid_roi_count > 0:
+            target_classes = ['cell phone', 'book', 'pen', 'pencil', 'paper', 'bottle', 'cup']
+            batch_detections = self.detect_objects_in_rois_batch(frame, roi_bboxes, roi_names, target_classes)
+
+            for idx, (keypoint_name, roi_dets) in enumerate(zip(roi_names, batch_detections)):
+                for det in roi_dets:
+                    class_name, conf, x1, y1, x2, y2 = det
+                    person_roi_detections['roi_detections'].append({
+                        'class': class_name,
+                        'confidence': conf,
+                        'bbox': [x1, y1, x2, y2],
+                        'keypoint': keypoint_name,
+                        'source': 'pose_guided_roi_batch'
+                    })
+
+                    hand_related_keypoints = ['RIGHT_WRIST', 'LEFT_WRIST', 'RIGHT_INDEX', 'LEFT_INDEX', 'RIGHT_EAR', 'LEFT_EAR']
+
+                    if class_name == 'cell phone':
+                        if keypoint_name in hand_related_keypoints:
+                            person_roi_detections['cell_phone'].append([x1, y1, x2, y2])
+                    elif class_name == 'book':
+                        person_roi_detections['book'].append([x1, y1, x2, y2])
+
+        return person_roi_detections
 
     # =========================================================================
     # BATCH INFERENCE METHODS - GPU OPTIMIZATION
@@ -2507,7 +2682,7 @@ class LocopilotActivityMonitor:
             self.logger.warning(f"[IR PREPROCESS] Preprocessing failed, using original frames: {e}")
             return frames
 
-    def detect_objects_batch(self, frames, batch_size=8):
+    def detect_objects_batch(self, frames: List[Any], batch_size: int = 8) -> List[Dict[str, List[Any]]]:
         """Run YOLO object detection on multiple frames in a single batch.
 
         This maximizes GPU utilization by processing multiple frames at once
@@ -2571,22 +2746,22 @@ class LocopilotActivityMonitor:
 
                         class_name = self.yolo_model.names[cls]
 
-                        if class_name == 'person' and conf > 0.5:
+                        if class_name == 'person' and conf > self.YOLO_PERSON_CONFIDENCE:
                             detections['person'].append(xyxy)
                             person_boxes.append(xyxy)
                         elif class_name in ['backpack', 'handbag', 'suitcase']:
-                            if conf > 0.45:
+                            if conf > self.YOLO_BAG_CONFIDENCE:
                                 bag_width = xyxy[2] - xyxy[0]
                                 bag_height = xyxy[3] - xyxy[1]
                                 aspect_ratio = bag_width / bag_height if bag_height > 0 else 999
                                 bag_area = bag_width * bag_height
 
-                                if aspect_ratio < 1.2 and 5000 < bag_area < 100000:
+                                if aspect_ratio < self.BAG_MAX_ASPECT_RATIO and self.BAG_MIN_AREA < bag_area < self.BAG_MAX_AREA:
                                     detections['backpack'].append(xyxy)
-                        elif class_name == 'book' and conf > 0.4:
+                        elif class_name == 'book' and conf > self.YOLO_BOOK_CONFIDENCE:
                             # Store book for later processing (after all persons found)
                             pending_books.append(xyxy)
-                        elif class_name == 'cell phone' and conf > 0.3:
+                        elif class_name == 'cell phone' and conf > self.YOLO_CELL_PHONE_CONFIDENCE:
                             detections['cell_phone'].append(xyxy)
 
                 # Process pending books - check proximity to persons
@@ -2605,7 +2780,7 @@ class LocopilotActivityMonitor:
         self.logger.debug(f"[GPU BATCH] detect_objects_batch complete: {len(all_detections)} results")
         return all_detections
 
-    def detect_poses_batch(self, frames, batch_size=8, conf_threshold=None):
+    def detect_poses_batch(self, frames: List[Any], batch_size: int = 8, conf_threshold: Optional[float] = None) -> List[Any]:
         """Run YOLO pose detection on multiple frames in a single batch.
 
         This maximizes GPU utilization by processing multiple frames at once.
@@ -2688,7 +2863,7 @@ class LocopilotActivityMonitor:
     # END BATCH INFERENCE METHODS
     # =========================================================================
 
-    def draw_bounding_boxes(self, frame, detections, show_roi_boxes=True, person_roles=None):
+    def draw_bounding_boxes(self, frame: Any, detections: Dict[str, List[Any]], show_roi_boxes: bool = True, person_roles: Optional[Dict[int, Dict[str, Any]]] = None) -> Any:
         """Draw bounding boxes on frame for detected objects and ROI regions.
         
         Args:
@@ -2846,7 +3021,7 @@ class LocopilotActivityMonitor:
         
         return annotated_frame
     
-    def draw_mediapipe_outputs(self, frame, pose_results, face_results, ear_value=None, eye_closure_duration=0, pose_sleep_info=None, head_pose_info=None):
+    def draw_mediapipe_outputs(self, frame: Any, pose_results: Any, face_results: Any, ear_value: Optional[float] = None, eye_closure_duration: float = 0, pose_sleep_info: Optional[Dict[str, Any]] = None, head_pose_info: Optional[Dict[str, Any]] = None) -> Any:
         """Draw MediaPipe pose and face mesh landmarks on frame"""
         annotated_frame = frame.copy()
         
@@ -2879,7 +3054,7 @@ class LocopilotActivityMonitor:
         
         if face_detected:
             if ear_value is not None:
-                if ear_value < 0.2:
+                if ear_value < self.EAR_CLOSED_THRESHOLD:
                     status = "EYES CLOSED"
                     color = (0, 0, 255)
                 else:
@@ -2890,7 +3065,7 @@ class LocopilotActivityMonitor:
                 cv2.putText(annotated_frame, ear_text, (10, 30), 
                            cv2.FONT_HERSHEY_SIMPLEX, 0.8, color, 2, cv2.LINE_AA)
                 
-                threshold_text = "Threshold: < 0.2 = Closed"
+                threshold_text = f"Threshold: < {self.EAR_CLOSED_THRESHOLD} = Closed"
                 cv2.putText(annotated_frame, threshold_text, (10, 60), 
                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2, cv2.LINE_AA)
                 
@@ -2898,10 +3073,10 @@ class LocopilotActivityMonitor:
                     duration_text = f"Closed Duration: {eye_closure_duration:.1f}s"
                     duration_color = (0, 165, 255)
                     
-                    if eye_closure_duration >= 30:
+                    if eye_closure_duration >= self.EYE_CLOSURE_SLEEP_SECS:
                         duration_text += " - SLEEP ALERT!"
                         duration_color = (0, 0, 255)
-                    elif eye_closure_duration >= 5:
+                    elif eye_closure_duration >= self.EYE_CLOSURE_MICROSLEEP_SECS:
                         duration_text += " - MICROSLEEP!"
                         duration_color = (0, 140, 255)
                     
@@ -2943,10 +3118,10 @@ class LocopilotActivityMonitor:
                 duration = pose_sleep_info['pose_sleep_duration']
                 duration_text = f"Pose Sleep: {duration:.1f}s"
                 
-                if duration >= 30:
+                if duration >= self.EYE_CLOSURE_SLEEP_SECS:
                     duration_text += " - SLEEP DETECTED!"
                     duration_color = (0, 0, 255)
-                elif duration >= 5:
+                elif duration >= self.EYE_CLOSURE_MICROSLEEP_SECS:
                     duration_text += " - MICROSLEEP!"
                     duration_color = (0, 140, 255)
                 else:
@@ -2980,7 +3155,7 @@ class LocopilotActivityMonitor:
             
             # Display mind diversion alert if detected
             if detected:
-                alert_text = "⚠️ MIND DIVERSION - ATTENTION DIVERTED!"
+                alert_text = "[WARN] MIND DIVERSION - ATTENTION DIVERTED!"
                 cv2.putText(annotated_frame, alert_text, (10, y_offset + 60), 
                            cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2, cv2.LINE_AA)
                 
@@ -2991,7 +3166,7 @@ class LocopilotActivityMonitor:
         
         return annotated_frame
     
-    def draw_multi_person_mediapipe_outputs(self, frame, persons_data, face_results, ear_value=None, eye_closure_duration=0):
+    def draw_multi_person_mediapipe_outputs(self, frame: Any, persons_data: Dict[int, Dict[str, Any]], face_results: Any, ear_value: Optional[float] = None, eye_closure_duration: float = 0) -> Any:
         """Draw MediaPipe pose landmarks for ALL detected persons
         
         Args:
@@ -3065,7 +3240,7 @@ class LocopilotActivityMonitor:
                             start_pt = (int(start.x * w), int(start.y * h))
                             end_pt = (int(end.x * w), int(end.y * h))
                             cv2.line(annotated_frame, start_pt, end_pt, (0, 255, 255), 3)
-                    except:
+                    except (cv2.error, ValueError, TypeError):
                         continue
 
                 # Draw keypoints
@@ -3075,7 +3250,7 @@ class LocopilotActivityMonitor:
                         if landmark.visibility > 0.5:
                             pt = (int(landmark.x * w), int(landmark.y * h))
                             cv2.circle(annotated_frame, pt, 8, (0, 255, 0), -1)
-                    except:
+                    except (cv2.error, ValueError, TypeError):
                         continue
 
                 # Draw labels for key landmarks
@@ -3102,7 +3277,7 @@ class LocopilotActivityMonitor:
                             cv2.putText(annotated_frame, label_name,
                                        (x, y),
                                        cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 255), 1, cv2.LINE_AA)
-                    except:
+                    except (cv2.error, ValueError, TypeError):
                         pass
 
                 # Add person label near their head
@@ -3128,7 +3303,7 @@ class LocopilotActivityMonitor:
                     cv2.putText(annotated_frame, label, 
                                (nose_x, nose_y - 10), 
                                cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2, cv2.LINE_AA)
-                except:
+                except (cv2.error, ValueError, TypeError):
                     pass
         
         # Draw face mesh (same as before)
@@ -3154,7 +3329,7 @@ class LocopilotActivityMonitor:
         # Draw status text for face/eye detection
         if face_detected:
             if ear_value is not None:
-                if ear_value < 0.2:
+                if ear_value < self.EAR_CLOSED_THRESHOLD:
                     status = "EYES CLOSED"
                     color = (0, 0, 255)
                 else:
@@ -3169,10 +3344,10 @@ class LocopilotActivityMonitor:
                     duration_text = f"Closed Duration: {eye_closure_duration:.1f}s"
                     duration_color = (0, 165, 255)
                     
-                    if eye_closure_duration >= 30:
+                    if eye_closure_duration >= self.EYE_CLOSURE_SLEEP_SECS:
                         duration_text += " - SLEEP ALERT!"
                         duration_color = (0, 0, 255)
-                    elif eye_closure_duration >= 5:
+                    elif eye_closure_duration >= self.EYE_CLOSURE_MICROSLEEP_SECS:
                         duration_text += " - MICROSLEEP!"
                         duration_color = (0, 140, 255)
                     
@@ -3257,7 +3432,7 @@ class LocopilotActivityMonitor:
 
         return annotated_frame
     
-    def check_hand_object_interaction(self, hand_coords, object_bbox, margin=50):
+    def check_hand_object_interaction(self, hand_coords: Tuple[float, float], object_bbox: List[int], margin: int = 50) -> bool:
         """Check if hand is interacting with an object
         
         Args:
@@ -3273,7 +3448,7 @@ class LocopilotActivityMonitor:
         return (x1 - margin <= hx <= x2 + margin and
                 y1 - margin <= hy <= y2 + margin)
 
-    def is_wrist_inside_backpack(self, wrist_coords, backpack_bbox, margin=30):
+    def is_wrist_inside_backpack(self, wrist_coords: Tuple[float, float], backpack_bbox: List[int], margin: int = 30) -> Tuple[bool, float]:
         """Check if wrist keypoint is inside or very close to backpack bounding box.
         
         SIMPLIFIED PACKING DETECTION: If wrist is inside/near backpack bbox → Packing detected!
@@ -3314,17 +3489,21 @@ class LocopilotActivityMonitor:
     # NOTE: detect_pose_per_person removed - replaced by YOLOv8-Pose
     # NOTE: translate_pose_landmarks removed - not needed with YOLOv8-Pose (native multi-person)
 
-    def validate_pose_landmarks(self, pose_landmarks, min_landmarks=10, min_visibility=0.3):
+    def validate_pose_landmarks(self, pose_landmarks: Any, min_landmarks: Optional[int] = None, min_visibility: Optional[float] = None) -> bool:
         """Validate that pose landmarks are valid and usable for activity detection.
         
         Args:
             pose_landmarks: MediaPipe pose landmarks
-            min_landmarks: Minimum number of landmarks required (default: 10)
-            min_visibility: Minimum average visibility score (default: 0.3)
+            min_landmarks: Minimum number of landmarks required (default: MIN_POSE_LANDMARKS)
+            min_visibility: Minimum average visibility score (default: MIN_POSE_VISIBILITY)
         
         Returns:
             bool: True if landmarks are valid, False otherwise
         """
+        if min_landmarks is None:
+            min_landmarks = self.MIN_POSE_LANDMARKS
+        if min_visibility is None:
+            min_visibility = self.MIN_POSE_VISIBILITY
         if pose_landmarks is None:
             return False
         
@@ -3353,7 +3532,7 @@ class LocopilotActivityMonitor:
         
         return True
 
-    def validate_anatomical_consistency(self, pose_landmarks, frame_shape):
+    def validate_anatomical_consistency(self, pose_landmarks: Any, frame_shape: Tuple[int, ...]) -> Tuple[bool, str]:
         """
         Validate that pose landmarks follow anatomical rules.
         Rejects physically impossible configurations.
@@ -3425,7 +3604,7 @@ class LocopilotActivityMonitor:
         except (IndexError, AttributeError) as e:
             return False, f"Missing landmarks: {e}"
 
-    def check_landmark_stability(self, person_idx, pose_landmarks, frame_shape):
+    def check_landmark_stability(self, person_idx: int, pose_landmarks: Any, frame_shape: Tuple[int, ...]) -> Tuple[bool, float]:
         """
         Check if landmarks are stable over time (not jumping erratically).
         Erratic jumps indicate poor detection quality.
@@ -3471,9 +3650,9 @@ class LocopilotActivityMonitor:
 
         return is_stable, max_jump
 
-    def detect_hand_gesture(self, pose_landmarks, frame_shape, person_roles, yolo_person_boxes=None, 
-                           person_activities=None, backpack_detections=None, 
-                           person_idx=None, current_timestamp=None, frame_number=None):
+    def detect_hand_gesture(self, pose_landmarks: Any, frame_shape: Tuple[int, ...], person_roles: Dict[int, Dict[str, Any]], yolo_person_boxes: Optional[List[List[int]]] = None, 
+                           person_activities: Optional[Dict[str, Any]] = None, backpack_detections: Optional[List[Any]] = None, 
+                           person_idx: Optional[int] = None, current_timestamp: Optional[float] = None, frame_number: Optional[int] = None) -> Tuple[bool, bool, Dict[str, Any]]:
         """Detect hand gesture (raised hand) for LP/ALP hand exchange signal.
         
         CRITICAL: This function ensures pose landmarks belong to the SAME person
@@ -3741,7 +3920,7 @@ class LocopilotActivityMonitor:
             proximity_threshold = 250  # Hand within 250px of backpack center (increased from 150px)
             
             frame_info = f"[Frame {frame_number}] " if frame_number is not None else ""
-            gesture_logger.debug(f"{frame_info}GESTURE DEBUG - Checking {len(backpack_detections)} backpack(s) for person {matched_person_idx} ({matched_role})")
+            self.logger.debug(f"{frame_info}GESTURE DEBUG - Checking {len(backpack_detections)} backpack(s) for person {matched_person_idx} ({matched_role})")
             
             for backpack_bbox in backpack_detections:
                 bx1, by1, bx2, by2 = backpack_bbox[:4]
@@ -3754,9 +3933,9 @@ class LocopilotActivityMonitor:
                 left_dist = ((left_wrist_coords[0] - backpack_center_x) ** 2 + 
                             (left_wrist_coords[1] - backpack_center_y) ** 2) ** 0.5
                 
-                gesture_logger.debug(f"{frame_info}GESTURE DEBUG - Backpack at ({backpack_center_x:.0f}, {backpack_center_y:.0f})")
-                gesture_logger.debug(f"{frame_info}GESTURE DEBUG - Right wrist at {right_wrist_coords}, dist: {right_dist:.0f}px")
-                gesture_logger.debug(f"{frame_info}GESTURE DEBUG - Left wrist at {left_wrist_coords}, dist: {left_dist:.0f}px")
+                self.logger.debug(f"{frame_info}GESTURE DEBUG - Backpack at ({backpack_center_x:.0f}, {backpack_center_y:.0f})")
+                self.logger.debug(f"{frame_info}GESTURE DEBUG - Right wrist at {right_wrist_coords}, dist: {right_dist:.0f}px")
+                self.logger.debug(f"{frame_info}GESTURE DEBUG - Left wrist at {left_wrist_coords}, dist: {left_dist:.0f}px")
                 
                 if right_dist < proximity_threshold or left_dist < proximity_threshold:
                     # gesture_logger.info(f"{frame_info}GESTURE SUPPRESSED - Person {matched_person_idx} ({matched_role}) - hand near backpack (right: {right_dist:.0f}px, left: {left_dist:.0f}px)")
@@ -3937,44 +4116,7 @@ class LocopilotActivityMonitor:
         
         # Either hand raised counts as gesture
         hand_gesture_detected = right_hand_raised or left_hand_raised
-        
-        # COMPREHENSIVE DEBUG LOGGING for all checks
-        frame_info = f"[Frame {frame_number}]" if frame_number is not None else ""
-        # DEBUG LOGGING ENABLED for hand gesture troubleshooting
-        gesture_logger.info(f"\n{'='*80}")
-        gesture_logger.info(f"{frame_info} HAND GESTURE DEBUG - Person {matched_person_idx} ({matched_role})")
-        gesture_logger.info(f"{'='*80}")
-        gesture_logger.info(f"MATCHED BBOX: {matched_bbox}")
-        gesture_logger.info(f"EXPANDED BBOX: x=[{expanded_x1:.0f}, {expanded_x2:.0f}], y=[{expanded_y1:.0f}, {expanded_y2:.0f}]")
-        gesture_logger.info(f"RIGHT HAND ANALYSIS:")
-        gesture_logger.info(f"  - Wrist coords: {right_wrist_coords}")
-        gesture_logger.info(f"  - Shoulder coords: {right_shoulder_coords}")
-        gesture_logger.info(f"  - Elbow coords: {right_elbow_coords}")
-        gesture_logger.info(f"  - Wrist above Shoulder: {right_wrist_shoulder_vertical:.1f}px (need >0)")
-        gesture_logger.info(f"  - Wrist above Elbow: {right_wrist_elbow_distance:.1f}px (need >-30)")
-        gesture_logger.info(f"  - Arm extension (lateral): {right_arm_extension:.1f}px (need >20)")
-        gesture_logger.info(f"  - Elbow position check: {right_elbow_coords[1] - right_shoulder_coords[1]:.1f}px (need <150)")
-        gesture_logger.info(f"  - Wrist in expanded bbox: {right_wrist_in_expanded}")
-        gesture_logger.info(f"  - Visibility - Wrist: {right_wrist.visibility:.2f} (need>0.3), Elbow: {right_elbow.visibility:.2f} (need>0.3), Shoulder: {right_shoulder.visibility:.2f} (need>0.4)")
-        gesture_logger.info(f"  - Within frame bounds: {0 < right_wrist_coords[0] < w and 0 < right_wrist_coords[1] < h}")
-        gesture_logger.info(f"  - RIGHT HAND RAISED: {right_hand_raised}")
 
-        gesture_logger.info(f"LEFT HAND ANALYSIS:")
-        gesture_logger.info(f"  - Wrist coords: {left_wrist_coords}")
-        gesture_logger.info(f"  - Shoulder coords: {left_shoulder_coords}")
-        gesture_logger.info(f"  - Elbow coords: {left_elbow_coords}")
-        gesture_logger.info(f"  - Wrist above Shoulder: {left_wrist_shoulder_vertical:.1f}px (need >0)")
-        gesture_logger.info(f"  - Wrist above Elbow: {left_wrist_elbow_distance:.1f}px (need >-30)")
-        gesture_logger.info(f"  - Arm extension (lateral): {left_arm_extension:.1f}px (need >20)")
-        gesture_logger.info(f"  - Elbow position check: {left_elbow_coords[1] - left_shoulder_coords[1]:.1f}px (need <150)")
-        gesture_logger.info(f"  - Wrist in expanded bbox: {left_wrist_in_expanded}")
-        gesture_logger.info(f"  - Visibility - Wrist: {left_wrist.visibility:.2f} (need>0.3), Elbow: {left_elbow.visibility:.2f} (need>0.3), Shoulder: {left_shoulder.visibility:.2f} (need>0.4)")
-        gesture_logger.info(f"  - Within frame bounds: {0 < left_wrist_coords[0] < w and 0 < left_wrist_coords[1] < h}")
-        gesture_logger.info(f"  - LEFT HAND RAISED: {left_hand_raised}")
-
-        gesture_logger.info(f"FINAL RESULT: {'GESTURE DETECTED' if hand_gesture_detected else 'NO GESTURE'}")
-        gesture_logger.info(f"{'='*80}\n")
-        
         if not hand_gesture_detected:
             return False, False, {}
 
@@ -3986,7 +4128,7 @@ class LocopilotActivityMonitor:
         # Log velocity analysis for debugging
         if velocity_analysis.get('analysis_quality') == 'good':
             rapid_raise = velocity_analysis['rapid_raise_detected']
-            gesture_logger.debug(
+            self.logger.debug(
                 f"[VELOCITY] Person {matched_person_idx}: "
                 f"R_vel={velocity_analysis['right_velocity']:.1f}px/s ({velocity_analysis['right_trajectory']}), "
                 f"L_vel={velocity_analysis['left_velocity']:.1f}px/s ({velocity_analysis['left_trajectory']}), "
@@ -3994,7 +4136,7 @@ class LocopilotActivityMonitor:
             )
 
             if not rapid_raise:
-                gesture_logger.debug(f"[VELOCITY] No rapid raise - may be control operation")
+                self.logger.debug(f"[VELOCITY] No rapid raise - may be control operation")
 
         # Return result based on the MATCHED person's role
         if matched_role == 'LP':
@@ -4088,7 +4230,7 @@ class LocopilotActivityMonitor:
 
         return lp_not_coordinating, alp_not_coordinating
 
-    def analyze_hand_velocity_and_trajectory(self, person_idx, landmarks, frame_shape, timestamp_sec):
+    def analyze_hand_velocity_and_trajectory(self, person_idx: int, landmarks: Any, frame_shape: Tuple[int, ...], timestamp_sec: float) -> Dict[str, Any]:
         """
         Analyze hand velocity and trajectory patterns to enhance gesture detection.
 
@@ -4185,7 +4327,7 @@ class LocopilotActivityMonitor:
             'analysis_quality': 'good' if len(history['timestamps']) >= 5 else 'limited'
         }
 
-    def analyze_packing_hand_motion(self, person_idx, landmarks, frame_shape, timestamp_sec, backpack_bbox):
+    def analyze_packing_hand_motion(self, person_idx: int, landmarks: Any, frame_shape: Tuple[int, ...], timestamp_sec: float, backpack_bbox: List[int]) -> Dict[str, Any]:
         """Analyze hand motion patterns to detect actual packing activity.
 
         Detects repeated back-and-forth movement between body and backpack:
@@ -4232,9 +4374,6 @@ class LocopilotActivityMonitor:
         active_hand = 'right' if right_dist < left_dist else 'left'
 
         # Initialize packing motion history for this person
-        if not hasattr(self, 'packing_motion_history'):
-            self.packing_motion_history = {}
-
         if person_idx not in self.packing_motion_history:
             self.packing_motion_history[person_idx] = {
                 'distances': deque(maxlen=6),  # Track last 6 frames (12 seconds @ 0.5fps)
@@ -4352,7 +4491,7 @@ class LocopilotActivityMonitor:
         matched = {}
         used_yolo_indices = set()
 
-        gesture_logger.info(f"[POSE MATCHING] Matching {len(yolo_pose_results)} YOLO poses to {len(person_roles)} person roles")
+        self.logger.info(f"[POSE MATCHING] Matching {len(yolo_pose_results)} YOLO poses to {len(person_roles)} person roles")
 
         for person_idx, role_data in person_roles.items():
             if 'bbox' not in role_data:
@@ -4382,17 +4521,17 @@ class LocopilotActivityMonitor:
 
             # Log all candidates
             for c in candidates:
-                gesture_logger.debug(f"  [{role_name}] Candidate YOLO {c['yolo_idx']}: IoU={c['iou']:.3f}")
+                self.logger.debug(f"  [{role_name}] Candidate YOLO {c['yolo_idx']}: IoU={c['iou']:.3f}")
 
             if not candidates:
-                gesture_logger.warning(f"[POSE MATCHING] No candidates for {role_name} (person {person_idx})")
+                self.logger.warning(f"[POSE MATCHING] No candidates for {role_name} (person {person_idx})")
                 continue
 
             best_candidate = candidates[0]
 
             # Check if top two candidates have similar IoU (within 0.15) - use torso center as tiebreaker
             if len(candidates) >= 2 and candidates[0]['iou'] - candidates[1]['iou'] < 0.15:
-                gesture_logger.info(f"[POSE MATCHING] Close IoU scores for {role_name}: {candidates[0]['iou']:.3f} vs {candidates[1]['iou']:.3f} - using torso center")
+                self.logger.info(f"[POSE MATCHING] Close IoU scores for {role_name}: {candidates[0]['iou']:.3f} vs {candidates[1]['iou']:.3f} - using torso center")
 
                 # Calculate torso center for each candidate using shoulders
                 best_dist = float('inf')
@@ -4415,25 +4554,25 @@ class LocopilotActivityMonitor:
                         # Distance from role bbox center to torso center
                         dist = ((torso_x - role_center_x) ** 2 + (torso_y - role_center_y) ** 2) ** 0.5
 
-                        gesture_logger.debug(f"    Candidate {c['yolo_idx']}: torso=({torso_x:.0f}, {torso_y:.0f}), dist={dist:.0f}px")
+                        self.logger.debug(f"    Candidate {c['yolo_idx']}: torso=({torso_x:.0f}, {torso_y:.0f}), dist={dist:.0f}px")
 
                         if dist < best_dist:
                             best_dist = dist
                             best_candidate = c
 
-                gesture_logger.info(f"[POSE MATCHING] Torso-based selection: YOLO {best_candidate['yolo_idx']} (dist={best_dist:.0f}px)")
+                self.logger.info(f"[POSE MATCHING] Torso-based selection: YOLO {best_candidate['yolo_idx']} (dist={best_dist:.0f}px)")
 
             # Match if IoU is above threshold (LOWERED from 0.3 to 0.2 for overlapping cases)
             if best_candidate['iou'] > 0.2:
                 matched[person_idx] = best_candidate['keypoints']
                 used_yolo_indices.add(best_candidate['yolo_idx'])
-                gesture_logger.info(f"[POSE MATCHING] Matched {role_name} (person {person_idx}) -> YOLO {best_candidate['yolo_idx']} (IoU={best_candidate['iou']:.3f})")
+                self.logger.info(f"[POSE MATCHING] Matched {role_name} (person {person_idx}) -> YOLO {best_candidate['yolo_idx']} (IoU={best_candidate['iou']:.3f})")
             else:
-                gesture_logger.warning(f"[POSE MATCHING] No match for {role_name} (person {person_idx}): best IoU={best_candidate['iou']:.3f} < 0.2")
+                self.logger.warning(f"[POSE MATCHING] No match for {role_name} (person {person_idx}): best IoU={best_candidate['iou']:.3f} < 0.2")
 
         return matched
 
-    def process_all_persons_activities(self, frame, detections, person_roles, timestamp_sec, face_results=None, frame_number=None, precomputed_pose_results=None, precomputed_sleep_pose_results=None, is_dark_frame=None):
+    def process_all_persons_activities(self, frame: Any, detections: Dict[str, List[Any]], person_roles: Dict[int, Dict[str, Any]], timestamp_sec: float, face_results: Any = None, frame_number: Optional[int] = None, precomputed_pose_results: Optional[Any] = None, precomputed_sleep_pose_results: Optional[Any] = None, is_dark_frame: Optional[bool] = None) -> Dict[str, Any]:
         """Process all detected persons for ALL activity detections (mind diversion, sleep, etc.)
 
         This is the MAIN multi-person processing method that:
@@ -4596,7 +4735,7 @@ class LocopilotActivityMonitor:
                     )
 
                     if not torso_in_bbox:
-                        gesture_logger.warning(
+                        self.logger.warning(
                             f"[KEYPOINT VALIDATION] Person {person_idx} ({person_data.get('role', 'UNKNOWN')}): "
                             f"Torso center ({torso_center_x:.0f}, {torso_center_y:.0f}) outside expanded bbox "
                             f"[{expanded_x1:.0f}-{expanded_x2:.0f}, {expanded_y1:.0f}-{expanded_y2:.0f}] - SKIPPING"
@@ -4604,7 +4743,7 @@ class LocopilotActivityMonitor:
                         has_pose = False
                         translated_landmarks = None
                     else:
-                        gesture_logger.debug(
+                        self.logger.debug(
                             f"[KEYPOINT VALIDATION] Person {person_idx} ({person_data.get('role', 'UNKNOWN')}): "
                             f"Torso center ({torso_center_x:.0f}, {torso_center_y:.0f}) VALID within bbox"
                         )
@@ -4768,10 +4907,11 @@ class LocopilotActivityMonitor:
                 if self.voting_service is not None and ActivityBatchCollector is not None:
                     voting_collector = ActivityBatchCollector()
                 
-                # ============ PER-PERSON OBJECT DETECTION ============
-                # Run ROI-based object detection around THIS person's hands/body parts
-                # This creates ROIs specifically for this person's pose landmarks
-                person_detections = self.detect_objects(frame, translated_landmarks, use_pose_guided=True)
+                # ============ PER-PERSON OBJECT DETECTION (ROI ONLY) ============
+                # CR-006: Run ONLY pose-guided ROI detection for this person's keypoints.
+                # Full-frame YOLO inference (Stage 1) is already done via the 'detections'
+                # parameter passed into this method -- no need to re-run it per person.
+                person_detections = self.detect_objects_person_rois(frame, translated_landmarks)
                 
                 # Merge person-specific detections into the main detections dict
                 # This ensures each person's hand ROIs are checked for cell phones
@@ -4781,10 +4921,8 @@ class LocopilotActivityMonitor:
                     detections['book'].extend(person_detections['book'])
                 
                 # DEBUG: Log per-person ROI detection results
-                import logging
-                debug_logger = logging.getLogger('locopilot_monitor')
                 if person_detections['cell_phone']:
-                    debug_logger.info(f"[MULTI-PERSON ROI] Person {person_idx} ({person_data.get('role', 'UNKNOWN')}): Found {len(person_detections['cell_phone'])} cell phone(s)")
+                    self.logger.info(f"[MULTI-PERSON ROI] Person {person_idx} ({person_data.get('role', 'UNKNOWN')}): Found {len(person_detections['cell_phone'])} cell phone(s)")
                 
                 # ============ ACTIVITY DETECTION FOR THIS PERSON ============
                 
@@ -4835,10 +4973,8 @@ class LocopilotActivityMonitor:
                 # MOVED BEFORE HAND GESTURE: Need to detect this first for context-aware filtering
                 if len(detections['cell_phone']) > 0:
                     # DEBUG: Log when cell phones are detected
-                    import logging
-                    debug_logger = logging.getLogger('locopilot_monitor')
                     if self.consecutive_detections.get('cell_phone', 0) == 0:
-                        debug_logger.info(f"[DEBUG CELL PHONE] {len(detections['cell_phone'])} phone(s) detected in frame")
+                        self.logger.info(f"[DEBUG CELL PHONE] {len(detections['cell_phone'])} phone(s) detected in frame")
                     right_hand = self.get_keypoint(translated_landmarks, 'right_wrist')
                     left_hand = self.get_keypoint(translated_landmarks, 'left_wrist')
 
@@ -5065,9 +5201,6 @@ class LocopilotActivityMonitor:
                         tuple: (smoothed_x, smoothed_y) coordinates
                     """
                     # Initialize smoothing buffers
-                    if not hasattr(self, 'hand_smoothing_buffers'):
-                        self.hand_smoothing_buffers = {}
-
                     key = (person_idx, hand_side)
                     if key not in self.hand_smoothing_buffers:
                         self.hand_smoothing_buffers[key] = {
@@ -5367,26 +5500,15 @@ class LocopilotActivityMonitor:
                 self.logger.error(f"Error processing person {person_idx}: {e}")
                 continue
         
-        # ============ CLEAN UP STALE PER-PERSON SLEEP TRACKING ============
+        # ============ CLEAN UP STALE PER-PERSON TRACKING (CR-012) ============
         # Remove tracking for persons no longer detected to prevent stale state
         active_person_indices = set(persons_data.keys())
-        stale_person_indices = set(self.per_person_sleep_tracking.keys()) - active_person_indices
-        for stale_idx in stale_person_indices:
-            del self.per_person_sleep_tracking[stale_idx]
+        self._cleanup_stale_person_tracking(active_person_indices)
 
-        # Clean up stale no-pose sleep tracking
-        stale_no_pose = set(self.no_pose_sleep_tracking.keys()) - active_person_indices
-        for stale_idx in stale_no_pose:
-            del self.no_pose_sleep_tracking[stale_idx]
         # Also clear no-pose tracking for persons that now have pose (they moved to the pose path)
         for person_idx in list(self.no_pose_sleep_tracking.keys()):
             if person_idx in persons_data and persons_data[person_idx].get('pose_landmarks') is not None:
                 del self.no_pose_sleep_tracking[person_idx]
-
-        # Clean up stale IR forward-lean tracking
-        stale_ir_fl = set(self.ir_forward_lean_tracking.keys()) - active_person_indices
-        for stale_idx in stale_ir_fl:
-            del self.ir_forward_lean_tracking[stale_idx]
 
         # ============ AGGREGATE RESULTS ACROSS ALL PERSONS ============
         aggregated = {
@@ -5433,7 +5555,7 @@ class LocopilotActivityMonitor:
             'aggregated': aggregated
         }
     
-    def bbox_overlap_with_margin(self, obj_bbox, person_bbox, margin):
+    def bbox_overlap_with_margin(self, obj_bbox: List[int], person_bbox: List[int], margin: int) -> bool:
         """Check if object bbox overlaps with person bbox (with margin)
         
         Args:
@@ -5485,7 +5607,7 @@ class LocopilotActivityMonitor:
             return 0.0
         return intersection / union
 
-    def calculate_head_pose_angles(self, pose_landmarks, face_landmarks, frame_shape):
+    def calculate_head_pose_angles(self, pose_landmarks: Any, face_landmarks: Any, frame_shape: Tuple[int, ...]) -> Dict[str, Any]:
         """Calculate head pose angles (yaw and pitch) to detect mind diversion.
 
         Detects three types of mind diversion:
@@ -5718,14 +5840,14 @@ class LocopilotActivityMonitor:
 
                 except Exception as e:
                     # If face mesh processing fails, keep pose-based result
-                    pass
+                    self.logger.debug(f"Exception in calculate_head_pose_angles: {e}")
             
             return result
             
         except (IndexError, AttributeError, ZeroDivisionError) as e:
             return {'yaw': 0, 'pitch': 0, 'detected': False, 'sub_type': None, 'method': 'error'}
 
-    def should_suppress_mind_diversion(self, person_idx, person_activities, pose_landmarks, detections, frame_shape, current_time=None):
+    def should_suppress_mind_diversion(self, person_idx: int, person_activities: Dict[str, Any], pose_landmarks: Any, detections: Dict[str, List[Any]], frame_shape: Tuple[int, ...], current_time: Optional[float] = None) -> Tuple[bool, str]:
         """
         Suppress mind diversion if person is doing legitimate work activity.
 
@@ -5789,7 +5911,7 @@ class LocopilotActivityMonitor:
         # 4. NO SUPPRESSION - Allow detection
         return False, None
 
-    def calculate_iou(self, bbox1, bbox2):
+    def calculate_iou(self, bbox1: List[int], bbox2: List[int]) -> float:
         """Calculate Intersection over Union (IoU) between two bounding boxes.
         
         Args:
@@ -5824,7 +5946,7 @@ class LocopilotActivityMonitor:
         iou = intersection_area / union_area
         return iou
     
-    def deduplicate_person_boxes(self, person_boxes, iou_threshold=0.3):
+    def deduplicate_person_boxes(self, person_boxes: List[List[int]], iou_threshold: float = 0.3) -> List[List[int]]:
         """De-duplicate overlapping person bounding boxes using Non-Maximum Suppression.
         
         Args:
@@ -5869,7 +5991,41 @@ class LocopilotActivityMonitor:
         
         return keep_boxes
 
-    def identify_person_roles(self, frame, person_boxes, detections):
+    def _compute_iou(self, box1: List[int], box2: List[int]) -> float:
+        """Compute Intersection over Union (IoU) between two bounding boxes.
+
+        CR-007: Helper for temporal role tracking to match persons across frames.
+
+        Args:
+            box1: First bounding box [x1, y1, x2, y2]
+            box2: Second bounding box [x1, y1, x2, y2]
+
+        Returns:
+            IoU value between 0.0 and 1.0
+        """
+        # Compute intersection coordinates
+        x1 = max(box1[0], box2[0])
+        y1 = max(box1[1], box2[1])
+        x2 = min(box1[2], box2[2])
+        y2 = min(box1[3], box2[3])
+
+        # Compute intersection area
+        intersection = max(0, x2 - x1) * max(0, y2 - y1)
+
+        if intersection == 0:
+            return 0.0
+
+        # Compute union area
+        area1 = (box1[2] - box1[0]) * (box1[3] - box1[1])
+        area2 = (box2[2] - box2[0]) * (box2[3] - box2[1])
+        union = area1 + area2 - intersection
+
+        if union <= 0:
+            return 0.0
+
+        return intersection / union
+
+    def identify_person_roles(self, frame: Any, person_boxes: List[List[int]], detections: Dict[str, List[Any]]) -> Dict[int, Dict[str, Any]]:
         """Identify LP (Loco Pilot) and ALP (Assistant Loco Pilot) based on objects near each person.
         
         Logic:
@@ -5896,9 +6052,8 @@ class LocopilotActivityMonitor:
             return {}
         
         # Phase 3: Check if we can reuse cached full-frame detection (avoid redundant inference)
-        cache_age = time_module.time() - getattr(self, '_cached_frame_time', 0)
-        if (hasattr(self, '_cached_frame_objects') and
-            hasattr(self, '_cached_frame_time') and
+        cache_age = time_module.time() - self._cached_frame_time
+        if (self._cached_frame_objects is not None and
             cache_age < 0.1):  # Cache valid for 100ms only
             # Reuse cached results instead of re-running inference
             yolo_results = self._cached_frame_objects
@@ -6128,10 +6283,69 @@ class LocopilotActivityMonitor:
                     'bbox': sorted_persons[i]['bbox'],
                     'objects': sorted_persons[i]['nearby_objects']
                 }
-        
+
+        # CR-007: Temporal role tracking via IoU matching to prevent role flipping
+        # If we have previous frame data, try to maintain role consistency
+        iou_threshold = 0.3
+        if self._prev_person_boxes and self._prev_person_roles and len(person_roles) >= 2:
+            # Build IoU matrix: current person_idx -> best matching prev person_idx
+            current_to_prev_match = {}  # current_idx -> (prev_idx, iou)
+            for curr_idx, curr_info in person_roles.items():
+                curr_box = curr_info['bbox']
+                best_iou = 0.0
+                best_prev_idx = None
+                for prev_idx, prev_box in enumerate(self._prev_person_boxes):
+                    iou = self._compute_iou(curr_box, prev_box)
+                    if iou > best_iou:
+                        best_iou = iou
+                        best_prev_idx = prev_idx
+                if best_iou >= iou_threshold and best_prev_idx is not None:
+                    current_to_prev_match[curr_idx] = (best_prev_idx, best_iou)
+
+            # Check if any LP/ALP roles need to be swapped based on temporal tracking
+            # Only apply when we have exactly 2 LP/ALP persons matched to previous frame
+            lp_alp_indices = [idx for idx, info in person_roles.items() if info['role'] in ('LP', 'ALP')]
+            matched_lp_alp = [idx for idx in lp_alp_indices if idx in current_to_prev_match]
+
+            if len(matched_lp_alp) == 2 and len(lp_alp_indices) == 2:
+                # Both LP/ALP persons have good IoU matches to previous frame
+                idx_a, idx_b = matched_lp_alp
+                prev_idx_a = current_to_prev_match[idx_a][0]
+                prev_idx_b = current_to_prev_match[idx_b][0]
+
+                # Get previous roles for the matched previous persons
+                prev_role_a = self._prev_person_roles.get(prev_idx_a, {}).get('role')
+                prev_role_b = self._prev_person_roles.get(prev_idx_b, {}).get('role')
+
+                # Check if current assignment differs from previous and needs correction
+                curr_role_a = person_roles[idx_a]['role']
+                curr_role_b = person_roles[idx_b]['role']
+
+                if (prev_role_a in ('LP', 'ALP') and prev_role_b in ('LP', 'ALP') and
+                        prev_role_a != prev_role_b):
+                    # Previous frame had valid distinct LP/ALP assignments
+                    # Check if current frame flipped them
+                    if curr_role_a != prev_role_a or curr_role_b != prev_role_b:
+                        # Roles flipped - restore previous assignment
+                        role_name_map = {'LP': 'Loco Pilot', 'ALP': 'Assistant Loco Pilot'}
+                        self.logger.debug(
+                            f"CR-007: Temporal role correction - restoring "
+                            f"Person {idx_a} as {prev_role_a} and Person {idx_b} as {prev_role_b} "
+                            f"(IoU: {current_to_prev_match[idx_a][1]:.2f}, {current_to_prev_match[idx_b][1]:.2f})"
+                        )
+                        person_roles[idx_a]['role'] = prev_role_a
+                        person_roles[idx_a]['role_name'] = role_name_map[prev_role_a]
+                        person_roles[idx_b]['role'] = prev_role_b
+                        person_roles[idx_b]['role_name'] = role_name_map[prev_role_b]
+
+        # CR-007: Update tracking state for next frame
+        self._prev_person_boxes = [info['bbox'] for idx, info in sorted(person_roles.items())]
+        self._prev_person_roles = {idx: {'role': info['role'], 'role_name': info['role_name']}
+                                   for idx, info in person_roles.items()}
+
         return person_roles
     
-    def start_activity(self, activity_name, timestamp, fps, frame_count, person_roles=None, ocr_timestamp=None):
+    def start_activity(self, activity_name: str, timestamp: float, fps: float, frame_count: int, person_roles: Optional[Dict[int, Dict[str, Any]]] = None, ocr_timestamp: Optional[str] = None) -> None:
         """Start tracking an activity
 
         Args:
@@ -6151,7 +6365,8 @@ class LocopilotActivityMonitor:
             self.activities[activity_name]['ocr_start_time'] = ocr_ts
             self.activities[activity_name]['start_frame_count'] = frame_count
             self.activities[activity_name]['last_frame_count'] = frame_count
-            self.activities[activity_name]['frames'] = list(self.frame_buffer)
+            # CR-005: Store frame indices instead of frame copies to reduce memory usage
+            self.activities[activity_name]['frames'] = list(self.frame_idx_buffer)
             self.activities[activity_name]['duration'] = 0
             self.activities[activity_name]['person_roles'] = person_roles if person_roles else {}
 
@@ -6165,7 +6380,56 @@ class LocopilotActivityMonitor:
             else:
                 self.logger.info(f"[{timestamp}] Activity started: {activity_name}")
     
-    def end_activity(self, activity_name, timestamp, fps, frame_count, people_count=1, save_clips=True, ocr_timestamp=None):
+    def _cleanup_stale_person_tracking(self, active_person_indices):
+        """CR-012: Remove entries from per-person tracking dicts for persons no longer detected.
+
+        This prevents unbounded memory growth when person indices change over time.
+
+        Args:
+            active_person_indices: Set of person indices currently detected in the frame.
+        """
+        active_set = set(active_person_indices)
+
+        # All per-person tracking dictionaries to clean up
+        tracking_dicts = [
+            ('per_person_sleep_tracking', self.per_person_sleep_tracking),
+            ('per_person_consecutive_detections', self.per_person_consecutive_detections),
+            ('per_person_grace_counters', self.per_person_grace_counters),
+            ('hand_position_history', self.hand_position_history),
+            ('landmark_stability_history', self.landmark_stability_history),
+            ('wrist_proximity_tracking', self.wrist_proximity_tracking),
+            ('no_pose_sleep_tracking', self.no_pose_sleep_tracking),
+            ('ir_forward_lean_tracking', self.ir_forward_lean_tracking),
+        ]
+
+        total_removed = 0
+        for dict_name, tracking_dict in tracking_dicts:
+            stale_keys = set(tracking_dict.keys()) - active_set
+            for stale_key in stale_keys:
+                del tracking_dict[stale_key]
+                total_removed += 1
+
+        if total_removed > 0:
+            self.logger.debug(f"[CR-012] Cleaned up {total_removed} stale person tracking entries "
+                              f"(active persons: {sorted(active_set)})")
+
+    def _get_video_metadata(self):
+        """CR-011: Lazily load and cache video metadata (total_frames, fps, duration).
+
+        Avoids reopening VideoCapture every time metadata is needed.
+        Returns:
+            tuple: (total_frames, fps, duration_seconds)
+        """
+        if self._video_total_frames is None:
+            with video_capture_context(self.video_path) as cap:
+                self._video_fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
+                self._video_total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+                self._video_duration_seconds = self._video_total_frames / self._video_fps
+            self.logger.debug(f"[CR-011] Cached video metadata: {self._video_total_frames} frames, "
+                              f"{self._video_fps:.2f} fps, {self._video_duration_seconds:.1f}s duration")
+        return self._video_total_frames, self._video_fps, self._video_duration_seconds
+
+    def end_activity(self, activity_name: str, timestamp: float, fps: float, frame_count: int, people_count: int = 1, save_clips: bool = True, ocr_timestamp: Optional[str] = None) -> None:
         """End tracking an activity and optionally save evidence (only if meets minimum duration)"""
         if self.activities[activity_name]['active']:
             activity = self.activities[activity_name]
@@ -6281,17 +6545,22 @@ class LocopilotActivityMonitor:
                 )
 
                 # Save activity image (middle frame of the activity)
+                # CR-005: frames now stores frame indices; extract frame on-demand from video
                 if len(activity['frames']) > 0:
-                    middle_frame_idx = len(activity['frames']) // 2
-                    activity_image = activity['frames'][middle_frame_idx]
-                    cv2.imwrite(image_path, activity_image)
+                    middle_list_idx = len(activity['frames']) // 2
+                    middle_frame_number = activity['frames'][middle_list_idx]
+                    # Extract the frame on-demand from the video file using the stored index
+                    cap = cv2.VideoCapture(self.video_path)
+                    cap.set(cv2.CAP_PROP_POS_FRAMES, middle_frame_number)
+                    ret, activity_image = cap.read()
+                    cap.release()
+                    if ret and activity_image is not None:
+                        cv2.imwrite(image_path, activity_image)
             
             # Get video duration in HH:MM:SS format
-            # ✅ MEMORY FIX: Use context manager to ensure video capture is released
-            with video_capture_context(self.video_path) as cap:
-                video_total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-                video_duration_seconds = video_total_frames / fps
-            
+            # CR-011: Use cached video metadata instead of reopening VideoCapture
+            video_total_frames, _cached_fps, video_duration_seconds = self._get_video_metadata()
+
             video_duration_formatted = str(timedelta(seconds=int(video_duration_seconds)))
             
             # Get current date and time
@@ -6305,6 +6574,15 @@ class LocopilotActivityMonitor:
             activity_crew_id = self.crew_id
             activity_crew_role = self.crew_role
             performing_role = 'LP'  # Default to LP
+
+            # CR-019: Warn if evidence is being created with unset crew/trip data
+            if any(v is None for v in (self.trip_id, self.crew_name, self.crew_id, self.crew_role)):
+                self.logger.warning(
+                    f"Creating evidence for '{activity_name}' with default (None) crew/trip data. "
+                    f"trip_id={self.trip_id}, crew_name={self.crew_name}, "
+                    f"crew_id={self.crew_id}, crew_role={self.crew_role}. "
+                    f"Ensure crew data is set via API input before processing."
+                )
             
             # If we have person_roles identified, determine who performed the activity
             if 'person_roles' in activity and activity['person_roles'] and self.crew_members:
@@ -6441,11 +6719,11 @@ class LocopilotActivityMonitor:
             if os.path.exists(temp_path):
                 try:
                     os.remove(temp_path)
-                except:
+                except Exception:
                     pass
         return False
 
-    def save_video_clip(self, frames, output_path, fps):
+    def save_video_clip(self, frames: List[Any], output_path: str, fps: float) -> None:
         """Save frames as video clip at sample FPS for full-duration playback.
         
         Args:
@@ -6473,7 +6751,7 @@ class LocopilotActivityMonitor:
         # (mp4v codec from OpenCV doesn't play in browsers)
         self._reencode_to_h264(output_path)
 
-    def extract_video_segment(self, source_video, output_path, start_seconds, end_seconds):
+    def extract_video_segment(self, source_video: str, output_path: str, start_seconds: float, end_seconds: float) -> bool:
         """Extract video segment directly from source using ffmpeg for smooth playback.
 
         This method extracts the original video segment instead of reconstructing from
@@ -6529,14 +6807,485 @@ class LocopilotActivityMonitor:
             self.logger.warning(f"Video segment extraction failed: {e}")
             return False
 
-    def process_video(self):
+    def _process_frames_core(
+        self,
+        frame,
+        frame_idx: int,
+        timestamp_sec: float,
+        sample_idx: int,
+        total_frames: int,
+        fps: float,
+        batch_object_detections=None,
+        batch_pose_results=None,
+        batch_sleep_pose_results=None,
+        batch_idx: int = 0,
+        save_clips: bool = True,
+        log_per_person_detections: bool = True,
+        enable_stale_cleanup: bool = True,
+    ) -> None:
+        """Core frame processing logic shared by process_video and process_video_range.
+
+        CR-003: Extracted from duplicated code in process_video() and process_video_range().
+        This method processes a single sampled frame through the full detection pipeline:
+        face mesh, YOLO detection, person deduplication, multi-person activity processing,
+        activity lifecycle management, and motion rule engine integration.
+
+        Args:
+            frame: The video frame (BGR numpy array)
+            frame_idx: Frame index in the source video
+            timestamp_sec: Timestamp in seconds for this frame
+            sample_idx: Sequential sample index
+            total_frames: Total frames in the video (for progress logging)
+            fps: Video native FPS
+            batch_object_detections: Pre-computed YOLO object detections (batch mode)
+            batch_pose_results: Pre-computed YOLO pose results (batch mode)
+            batch_sleep_pose_results: Pre-computed low-conf pose results for sleep (batch mode)
+            batch_idx: Index into batch results arrays
+            save_clips: Whether to pass save_clips to end_activity (False for multiprocessing)
+            log_per_person_detections: Whether to log per-person detection details
+            enable_stale_cleanup: Whether to call _cleanup_stale_person_tracking
+        """
+        # Initialize variables for memory cleanup in finally block
+        rgb_frame = None
+        annotated_frame_for_activity = None
+
+        try:
+            # Convert timestamp to HH:MM:SS format
+            timestamp = str(timedelta(seconds=timestamp_sec))
+
+            # Add frame to buffer
+            self.frame_buffer.append(frame.copy())
+            # CR-005: Track frame indices in parallel buffer for activity frame storage
+            self.frame_idx_buffer.append(frame_idx)
+
+            # STEP 1: Run MediaPipe Face Mesh on full frame (for face-based sleep/EAR detection)
+            rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            face_results = self.face_mesh.process(rgb_frame)
+
+            # Calculate EAR for all detected faces (check all people)
+            ear_value = None
+            min_ear_value = None  # Track the lowest EAR (most closed eyes)
+
+            if face_results.multi_face_landmarks:
+                # Check all detected faces
+                ear_values = []
+                for face_landmarks in face_results.multi_face_landmarks:
+                    ear = self.calculate_eye_aspect_ratio(face_landmarks.landmark)
+                    if ear is not None:
+                        ear_values.append(ear)
+
+                # Use the minimum EAR (most closed eyes) for microsleep detection
+                if ear_values:
+                    min_ear_value = min(ear_values)
+                    ear_value = min_ear_value
+
+            # STEP 2: Detect objects with YOLO
+            # GPU BATCH: Use pre-computed detections from batch inference if available
+            if batch_object_detections is not None and batch_idx < len(batch_object_detections):
+                detections = batch_object_detections[batch_idx]
+            else:
+                # Per-frame detection (process_video path or fallback)
+                # Preprocess single frame for dark/IR conditions if batch mode fallback
+                if batch_object_detections is not None:
+                    detection_frame = self._preprocess_frames_for_detection([frame])[0]
+                    detections = self.detect_objects(detection_frame, None, use_pose_guided=False)
+                else:
+                    detections = self.detect_objects(frame, None, use_pose_guided=False)
+
+            # STEP 3: Identify person roles and count people
+            people_count = len(detections['person'])
+            if people_count == 0:
+                people_count = 1  # Default to 1 if no person detected
+
+            # De-duplicate person boxes and identify roles
+            group_detected_flag = False
+            person_roles = {}
+
+            if len(detections['person']) > 0:
+                # De-duplicate person boxes to get accurate count
+                # Increased IOU threshold from 0.3 to 0.5 to better filter duplicate detections
+                deduplicated_persons = self.deduplicate_person_boxes(detections['person'], iou_threshold=0.5)
+
+                # Store deduplicated boxes in detections for visualization
+                # NOTE: Removed pose validation as it was filtering out legitimate people
+                # (MediaPipe struggles with back views, partial occlusions, overhead cameras)
+                detections['deduplicated_person'] = deduplicated_persons
+                deduplicated_count = len(deduplicated_persons)
+
+                # Identify person roles (LP, ALP, etc.)
+                person_roles = self.identify_person_roles(frame, deduplicated_persons, detections)
+
+                # Log role identification (only once per detection cycle)
+                if self.consecutive_detections['group_detected'] == 0 and person_roles:
+                    self.logger.debug(f"[{timestamp}] Person roles identified:")
+                    for person_idx in sorted(person_roles.keys()):
+                        role_info = person_roles[person_idx]
+                        self.logger.debug(f"  Person {person_idx+1}: {role_info['role_name']} (LP score: {role_info['lp_score']}, ALP score: {role_info['alp_score']})")
+
+                if deduplicated_count > 2:
+                    # Stage 2: Voting verification for group_detected (if enabled)
+                    if self.voting_service is not None:
+                        is_confirmed, vote_details = self.voting_service.verify_activity(
+                            video_path=self.current_video_path,
+                            timestamp_sec=timestamp_sec,
+                            activity_type='group_detected',
+                            person_bbox=[0, 0, frame.shape[1], frame.shape[0]]  # Full frame for group detection
+                        )
+                        if is_confirmed:
+                            group_detected_flag = True
+                            self.logger.info(f"[VOTING] group_detected CONFIRMED: {vote_details.get('vote_breakdown', [])}")
+                        else:
+                            group_detected_flag = False
+                            self.logger.info(f"[VOTING] group_detected REJECTED: {vote_details.get('vote_breakdown', [])}")
+                    else:
+                        group_detected_flag = True
+                    if group_detected_flag and self.consecutive_detections['group_detected'] == 0:
+                        self.logger.info(f"[{timestamp}] Group detected - {deduplicated_count} people (de-duplicated from {len(detections['person'])} raw detections)")
+            else:
+                # No person detected at all
+                detections['deduplicated_person'] = []
+                person_roles = {}
+                # DEBUG: Log when no person is detected (will be tracked as activity)
+                if self.consecutive_detections['no_person_detected'] == 0:
+                    raw_detections = len(detections['person'])
+                    self.logger.debug(f"[{timestamp}] NO PERSON detected in frame (raw YOLO detections: {raw_detections})")
+
+            # STEP 4: *** MULTI-PERSON PROCESSING ***
+            # Process ALL persons individually for ALL activities
+            # GPU BATCH: Pass pre-computed pose results if available
+            precomputed_poses = None
+            if batch_pose_results is not None and batch_idx < len(batch_pose_results):
+                precomputed_poses = batch_pose_results[batch_idx]
+
+            precomputed_sleep_poses = None
+            if batch_sleep_pose_results is not None and batch_idx < len(batch_sleep_pose_results):
+                precomputed_sleep_poses = batch_sleep_pose_results[batch_idx]
+
+            multi_person_results = self.process_all_persons_activities(
+                frame, detections, person_roles, timestamp_sec, face_results, frame_idx,
+                precomputed_pose_results=precomputed_poses,
+                precomputed_sleep_pose_results=precomputed_sleep_poses
+            )
+
+            # Extract aggregated detection flags
+            persons_data = multi_person_results['persons']
+            aggregated = multi_person_results['aggregated']
+
+            # Initialize detection flags from aggregated results
+            microsleep_detected = aggregated['microsleep_detected']
+            sleep_detected = aggregated['sleep_detected']
+            cell_phone_detected = aggregated['cell_phone_detected']
+            writing_detected = aggregated['writing_detected']
+            packing_detected = aggregated['packing_detected']
+            lp_hand_gesture_detected = aggregated['lp_hand_gesture_detected']
+            alp_hand_gesture_detected = aggregated['alp_hand_gesture_detected']
+            mind_diversion_detected = aggregated['mind_diversion_detected']
+
+            # Log detections for each person (only on first detection)
+            if log_per_person_detections:
+                for person_idx, person_data in persons_data.items():
+                    activities = person_data['activities']
+                    role_name = person_data['role_name']
+                    debug_info = person_data['debug_info']
+
+                    # Log mind diversion
+                    if activities.get('mind_diversion', False) and self.consecutive_detections.get('mind_diversion', 0) == 0:
+                        head_pose = debug_info.get('head_pose', {})
+                        yaw = head_pose.get('yaw', 0)
+                        pitch = head_pose.get('pitch', 0)
+                        method = head_pose.get('method', 'unknown')
+                        self.logger.info(f"[{timestamp}] MIND DIVERSION detected for {role_name} (Person {person_idx+1}) - Yaw={yaw:.1f}, Pitch={pitch:.1f} (method: {method})")
+
+                    # Log sleep detection
+                    if activities['sleep'] and self.consecutive_detections['sleep'] == 0:
+                        sleep_info = debug_info.get('sleep_info', {})
+                        self.logger.info(f"[{timestamp}] SLEEP detected for {role_name} (Person {person_idx+1}) - pose-based")
+
+                    # Log microsleep detection
+                    if activities['microsleep'] and self.consecutive_detections['microsleep'] == 0:
+                        self.logger.info(f"[{timestamp}] MICROSLEEP detected for {role_name} (Person {person_idx+1}) - pose-based")
+
+                    # Log hand gestures
+                    if activities['lp_hand_gesture'] and self.consecutive_detections['lp_hand_gesture'] == 0:
+                        gesture_debug = debug_info.get('gesture_debug', {})
+                        self.logger.info(f"[{timestamp}] LP hand gesture detected for {role_name} (Person {person_idx+1}) - {gesture_debug.get('hand_raised', 'unknown')} hand raised")
+
+                    if activities['alp_hand_gesture'] and self.consecutive_detections['alp_hand_gesture'] == 0:
+                        gesture_debug = debug_info.get('gesture_debug', {})
+                        self.logger.info(f"[{timestamp}] ALP hand gesture detected for {role_name} (Person {person_idx+1}) - {gesture_debug.get('hand_raised', 'unknown')} hand raised")
+
+                    # Log cell phone, writing, packing
+                    if activities['cell_phone'] and self.consecutive_detections['cell_phone'] == 0:
+                        self.logger.info(f"[{timestamp}] Cell phone ACTIVELY USED by {role_name} (Person {person_idx+1})")
+
+                    if activities['writing'] and self.consecutive_detections['writing'] == 0:
+                        self.logger.info(f"[{timestamp}] WRITING detected for {role_name} (Person {person_idx+1})")
+
+                    if activities.get('packing', False) and self.consecutive_detections.get('packing_bags', 0) == 0:
+                        self.logger.info(f"[{timestamp}] PACKING detected for {role_name} (Person {person_idx+1})")
+
+            # Face-based sleep detection (still use EAR as additional signal)
+            if face_results.multi_face_landmarks and ear_value is not None:
+                if ear_value < self.EAR_CLOSED_THRESHOLD:
+                    if self.eye_closure_start is None:
+                        self.eye_closure_start = timestamp_sec
+
+                    self.eye_closure_duration = timestamp_sec - self.eye_closure_start
+
+                    # Merge with pose-based detection
+                    if self.eye_closure_duration >= self.EYE_CLOSURE_SLEEP_SECS:
+                        sleep_detected = True
+                    elif self.eye_closure_duration >= self.EYE_CLOSURE_MICROSLEEP_SECS:
+                        microsleep_detected = True
+                else:
+                    self.eye_closure_start = None
+                    self.eye_closure_duration = 0
+
+            # CRITICAL: Exclude sleep detection if person is holding objects or in active posture
+            # If someone has a phone, book, or backpack in hand, they're clearly NOT sleeping
+            if cell_phone_detected or writing_detected or packing_detected:
+                if log_per_person_detections and (microsleep_detected or sleep_detected):
+                    reason = []
+                    if cell_phone_detected: reason.append("phone")
+                    if writing_detected: reason.append("book")
+                    if packing_detected: reason.append("backpack")
+                    self.logger.debug(f"[{timestamp}] Sleep detection OVERRIDDEN - person active ({', '.join(reason)})")
+                microsleep_detected = False
+                sleep_detected = False
+                # Reset sleep tracking counters
+                self.eye_closure_start = None
+                self.eye_closure_duration = 0
+                self.pose_sleep_start = None
+                self.pose_sleep_duration = 0
+
+            # Create annotated frame with all detections (pose landmarks + YOLO boxes)
+            # This annotated frame will be used for BOTH activity clips AND periodic frame saving
+            annotated_frame_for_activity = self.draw_bounding_boxes(
+                frame, detections, show_roi_boxes=True, person_roles=person_roles
+            )
+            # NEW: Draw MediaPipe outputs for ALL persons (not just one)
+            annotated_frame_for_activity = self.draw_multi_person_mediapipe_outputs(
+                annotated_frame_for_activity,
+                persons_data,  # All persons' pose landmarks and activities
+                face_results,
+                ear_value,
+                self.eye_closure_duration
+            )
+
+            # Save annotated frames periodically if enabled (AFTER all detections)
+            if (
+                self.save_annotated_frames
+                and self.frames_dir is not None
+                and sample_idx % self.frame_save_interval == 0
+            ):
+                try:
+                    # Save frame with unique filename
+                    frame_filename = f"frame_{frame_idx:08d}.jpg"
+                    frame_path = os.path.join(self.frames_dir, frame_filename)
+
+                    # Ensure directory exists (for multiprocessing safety)
+                    os.makedirs(self.frames_dir, exist_ok=True)
+
+                    # Save with high quality
+                    cv2.imwrite(frame_path, annotated_frame_for_activity, [cv2.IMWRITE_JPEG_QUALITY, 95])
+
+                except Exception as e:
+                    self.logger.error(f"[{timestamp}] Error saving frame {frame_idx}: {e}")
+
+            # CRITICAL: Hand gesture coordination check
+            # Activity Type 8 (LP not exchanging): Triggers when ALP raises hand BUT LP does NOT
+            # Activity Type 9 (ALP not exchanging): Triggers when LP raises hand BUT ALP does NOT
+            # This ensures we detect COORDINATION FAILURES, not individual gestures
+            # Uses temporal window to prevent false positives when both people raise hands within window
+            lp_not_coordinating, alp_not_coordinating = self._check_hand_gesture_coordination(
+                lp_hand_gesture_detected,
+                alp_hand_gesture_detected,
+                timestamp_sec
+            )
+
+            # Debug logging for coordination check
+            if lp_not_coordinating and self.consecutive_detections['lp_hand_gesture'] == 0:
+                self.logger.info(f"[{timestamp}] [Frame {frame_idx}] COORDINATION FAILURE: ALP raised hand but LP did NOT respond")
+            if alp_not_coordinating and self.consecutive_detections['alp_hand_gesture'] == 0:
+                self.logger.info(f"[{timestamp}] [Frame {frame_idx}] COORDINATION FAILURE: LP raised hand but ALP did NOT respond")
+
+            # Detect when no person is in frame
+            no_person_detected_flag = (len(detections.get('deduplicated_person', [])) == 0)
+
+            # ==========================================
+            # TRAIN MOTION RULE ENGINE INTEGRATION
+            # ==========================================
+            # 1. Extract OCR timestamp from frame (if enabled)
+            ocr_timestamp = self._extract_ocr_timestamp(frame)
+
+            # 2. Resolve train motion context
+            # Priority: OCR timestamp > video_start_time + offset > video-relative time
+            if ocr_timestamp:
+                motion_timestamp = ocr_timestamp
+                # Log OCR success periodically (every 30 frames to avoid spam)
+                if frame_idx % 30 == 0:
+                    self.logger.info(f"[MOTION-RULES] Frame {frame_idx}: OCR extracted timestamp: {motion_timestamp}")
+            else:
+                # Convert video offset to real time (if video_start_time is set)
+                # Use timestamp_sec directly (it's already numeric) instead of parsing timestamp string
+                video_seconds = timestamp_sec
+                motion_timestamp = self._convert_video_to_real_time(video_seconds)
+                has_start_time = hasattr(self, 'video_start_time') and self.video_start_time
+                # Log periodically (every 60 frames)
+                if frame_idx % 60 == 0:
+                    if has_start_time:
+                        self.logger.info(
+                            f"[MOTION-RULES] Frame {frame_idx}: Using video_start_time + offset = {motion_timestamp}"
+                        )
+                    else:
+                        self.logger.info(
+                            f"[MOTION-RULES] Frame {frame_idx}: No OCR/start_time - using video-relative: {motion_timestamp}"
+                        )
+            # Pass frame for optical flow-enhanced motion detection
+            # prev_motion_frame is set at end of loop
+            prev_motion_frame = self._prev_motion_frame
+            self.current_motion_context = self._resolve_motion_context(
+                motion_timestamp, frame=frame, prev_frame=prev_motion_frame
+            )
+            # Store current frame for next iteration's optical flow
+            self._prev_motion_frame = frame.copy()
+
+            # Log motion state periodically
+            if frame_idx % 60 == 0 and self.current_motion_context:
+                self.logger.info(
+                    f"[MOTION-RULES] Frame {frame_idx}: State={self.current_motion_context.motion_state.value}, "
+                    f"Station={self.current_motion_context.current_station.station_code if self.current_motion_context.current_station else 'N/A'}, "
+                    f"Source={self.current_motion_context.resolution_source}"
+                )
+
+            # 3. Check ALP pre-arrival alertness (if in pre-arrival window)
+            alp_not_standing_detected = False
+            if (self.rule_engine is not None and
+                self.current_motion_context is not None and
+                self.rule_engine.should_check_alp_alertness(self.current_motion_context)):
+                alp_not_standing_detected = self._check_alp_standing(
+                    persons_data, person_roles, frame.shape
+                )
+                if alp_not_standing_detected and self.consecutive_detections.get('alp_not_standing', 0) == 0:
+                    self.logger.info(
+                        f"[{timestamp}] ALP NOT STANDING in pre-arrival window - "
+                        f"{self.current_motion_context.seconds_to_arrival}s to arrival"
+                    )
+
+            # Update activity states with temporal filtering
+            activities_map = {
+                'microsleep': microsleep_detected and not sleep_detected,
+                'sleep': sleep_detected,
+                'cell_phone': cell_phone_detected,
+                'writing': writing_detected,
+                'packing_bags': packing_detected,
+                'group_detected': group_detected_flag,
+                'lp_hand_gesture': lp_not_coordinating,  # LP fails to respond when ALP raises hand
+                'alp_hand_gesture': alp_not_coordinating,  # ALP fails to respond when LP raises hand
+                'mind_diversion': mind_diversion_detected,
+                'no_person_detected': no_person_detected_flag,
+                'alp_not_standing': alp_not_standing_detected  # ALP not standing in pre-arrival
+            }
+
+            # 3.5. Suppress no_person_detected when trip schedule is unavailable
+            if self.suppress_no_person_without_schedule and self.trip_schedule is None:
+                if activities_map.get('no_person_detected', False):
+                    activities_map['no_person_detected'] = False
+                    self.logger.debug(
+                        f"[{timestamp}] no_person_detected suppressed - "
+                        f"no trip schedule available to distinguish station halts"
+                    )
+
+            # 4. Apply motion-based rule engine to filter exempted activities
+            activities_map = self._apply_motion_rules(activities_map, self.current_motion_context)
+
+            for activity_name, detected in activities_map.items():
+                if detected:
+                    # Activity detected - increment consecutive counter and reset grace period
+                    self.consecutive_detections[activity_name] += 1
+                    self.grace_counters[activity_name] = 0  # Reset grace period
+
+                    # Only start recording after required consecutive frames threshold is met
+                    required_consecutive = self.activity_thresholds[activity_name]['required_consecutive']
+
+                    if self.consecutive_detections[activity_name] >= required_consecutive:
+                        # Start activity if not already active
+                        if not self.activities[activity_name]['active']:
+                            self.start_activity(activity_name, timestamp, fps, frame_idx, person_roles=person_roles, ocr_timestamp=ocr_timestamp)
+
+                        # Continue recording frames ONLY when activity is actively detected
+                        if self.activities[activity_name]['active']:
+                            # CR-005: Store frame index instead of frame copy to reduce memory usage
+                            self.activities[activity_name]['frames'].append(frame_idx)
+                            self.activities[activity_name]['last_frame_count'] = frame_idx
+                            self.activities[activity_name]['last_detected_frame'] = frame_idx  # Track last actual detection
+                            self.activities[activity_name]['last_detection_time'] = timestamp  # Track for precise clip duration
+                            # Update person roles (in case they change during activity)
+                            if person_roles:
+                                self.activities[activity_name]['person_roles'] = person_roles
+                else:
+                    # Activity not detected - use grace period before resetting
+                    if self.consecutive_detections[activity_name] > 0 or self.activities[activity_name]['active']:
+                        # Increment grace counter
+                        self.grace_counters[activity_name] += 1
+                        grace_frames = self.activity_thresholds[activity_name]['grace_frames']
+
+                        # If still within grace period, keep activity alive but DON'T add frames
+                        if self.grace_counters[activity_name] <= grace_frames:
+                            # Still in grace period - keep activity active but don't record frames
+                            # This allows brief interruptions without ending the activity
+                            pass
+                        else:
+                            # Grace period exceeded - end activity and reset counters
+                            if self.activities[activity_name]['active']:
+                                # No ocr_timestamp: current frame is post-grace-period, not when activity ended.
+                                # end_activity computes ocr_end from ocr_start + duration instead (more accurate).
+                                if save_clips:
+                                    self.end_activity(activity_name, timestamp, fps, frame_idx, people_count)
+                                else:
+                                    self.end_activity(activity_name, timestamp, fps, frame_idx, people_count, save_clips=save_clips)
+                            self.consecutive_detections[activity_name] = 0
+                            self.grace_counters[activity_name] = 0
+                    else:
+                        # Reset grace counter if nothing is being tracked
+                        self.grace_counters[activity_name] = 0
+
+            # CR-012: Clean up stale per-person tracking dicts after each frame
+            if enable_stale_cleanup and persons_data:
+                self._cleanup_stale_person_tracking(set(persons_data.keys()))
+
+            # Display progress with detection status
+            if sample_idx % 50 == 0:  # Show progress every 50 sampled frames
+                progress = (frame_idx / total_frames) * 100
+                self.logger.info(f"Progress: {sample_idx} samples processed (frame {frame_idx}/{total_frames}, {progress:.1f}%)")
+
+                # Show current detection counts for debugging
+                active_detections = []
+                for act_name, count in self.consecutive_detections.items():
+                    if count > 0:
+                        threshold = self.activity_thresholds[act_name]['required_consecutive']
+                        status = "RECORDING" if self.activities[act_name]['active'] else f"building {count}/{threshold}"
+                        active_detections.append(f"{act_name}: {status}")
+
+                if active_detections:
+                    self.logger.debug(f"  Active detections: {', '.join(active_detections)}")
+
+        except Exception as e:
+            self.logger.error(f"Error processing sample {sample_idx} (frame {frame_idx}): {e}")
+        finally:
+            # MEMORY FIX: Explicitly delete frame after processing to free memory
+            if annotated_frame_for_activity is not None:
+                del annotated_frame_for_activity
+            if rgb_frame is not None:
+                del rgb_frame
+
+
+    def process_video(self) -> None:
         """Main video processing loop - SAMPLES FRAMES AT SPECIFIED RATE"""
         # Get video metadata
-        # ✅ MEMORY FIX: Use context manager to ensure video capture is released
-        with video_capture_context(self.video_path) as cap:
-            fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
-            total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-        
+        # CR-011: Use cached video metadata instead of reopening VideoCapture
+        total_frames, fps, _duration = self._get_video_metadata()
+
         # Calculate expected sampled frames
         step = max(1, int(round(fps / max(1e-6, float(self.sample_fps)))))
         expected_samples = (total_frames // step)
@@ -6564,412 +7313,21 @@ class LocopilotActivityMonitor:
         for sample_idx, timestamp_sec, frame, frame_idx in self.sample_video_frames(self.video_path):
             sampled_count += 1
 
-            try:
-                # Convert timestamp to HH:MM:SS format
-                timestamp = str(timedelta(seconds=timestamp_sec))
+            self._process_frames_core(
+                frame=frame,
+                frame_idx=frame_idx,
+                timestamp_sec=timestamp_sec,
+                sample_idx=sample_idx,
+                total_frames=total_frames,
+                fps=fps,
+                save_clips=True,
+                log_per_person_detections=True,
+                enable_stale_cleanup=True,
+            )
+            # MEMORY FIX: Explicitly delete frame after processing to free memory
+            if frame is not None:
+                del frame
 
-                # Add frame to buffer
-                self.frame_buffer.append(frame.copy())
-                
-                # STEP 1: Run MediaPipe Face Mesh on full frame (for face-based sleep/EAR detection)
-                rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                face_results = self.face_mesh.process(rgb_frame)
-                
-                # Calculate EAR for all detected faces (check all people)
-                ear_value = None
-                min_ear_value = None  # Track the lowest EAR (most closed eyes)
-                
-                if face_results.multi_face_landmarks:
-                    # Check all detected faces
-                    ear_values = []
-                    for face_landmarks in face_results.multi_face_landmarks:
-                        ear = self.calculate_eye_aspect_ratio(face_landmarks.landmark)
-                        if ear is not None:
-                            ear_values.append(ear)
-                    
-                    # Use the minimum EAR (most closed eyes) for microsleep detection
-                    if ear_values:
-                        min_ear_value = min(ear_values)
-                        ear_value = min_ear_value  # For display purposes
-                
-                # STEP 2: Detect objects with YOLO (without pose-guided detection yet)
-                # We need person boxes first before we can do per-person pose detection
-                detections = self.detect_objects(frame, None, use_pose_guided=False)
-                
-                # STEP 3: Identify person roles and count people
-                people_count = len(detections['person'])
-                if people_count == 0:
-                    people_count = 1  # Default to 1 if no person detected
-                
-                # De-duplicate person boxes and identify roles
-                group_detected_flag = False
-                person_roles = {}
-                
-                if len(detections['person']) > 0:
-                    # De-duplicate person boxes to get accurate count
-                    # Increased IOU threshold from 0.3 to 0.5 to better filter duplicate detections
-                    deduplicated_persons = self.deduplicate_person_boxes(detections['person'], iou_threshold=0.5)
-                    
-                    # Store deduplicated boxes in detections for visualization
-                    # NOTE: Removed pose validation as it was filtering out legitimate people
-                    # (MediaPipe struggles with back views, partial occlusions, overhead cameras)
-                    detections['deduplicated_person'] = deduplicated_persons
-                    deduplicated_count = len(deduplicated_persons)
-
-                    # Identify person roles (LP, ALP, etc.)
-                    person_roles = self.identify_person_roles(frame, deduplicated_persons, detections)
-                    
-                    # Log role identification (only once per detection cycle)
-                    if self.consecutive_detections['group_detected'] == 0 and person_roles:
-                        self.logger.debug(f"[{timestamp}] Person roles identified:")
-                        for person_idx in sorted(person_roles.keys()):
-                            role_info = person_roles[person_idx]
-                            self.logger.debug(f"  Person {person_idx+1}: {role_info['role_name']} (LP score: {role_info['lp_score']}, ALP score: {role_info['alp_score']})")
-                    
-                    if deduplicated_count > 2:
-                        # Stage 2: Voting verification for group_detected (if enabled)
-                        if self.voting_service is not None:
-                            is_confirmed, vote_details = self.voting_service.verify_activity(
-                                video_path=self.current_video_path,
-                                timestamp_sec=timestamp_sec,
-                                activity_type='group_detected',
-                                person_bbox=[0, 0, frame.shape[1], frame.shape[0]]  # Full frame for group detection
-                            )
-                            if is_confirmed:
-                                group_detected_flag = True
-                                self.logger.info(f"[VOTING] group_detected CONFIRMED: {vote_details.get('vote_breakdown', [])}")
-                            else:
-                                group_detected_flag = False
-                                self.logger.info(f"[VOTING] group_detected REJECTED: {vote_details.get('vote_breakdown', [])}")
-                        else:
-                            group_detected_flag = True
-                        if group_detected_flag and self.consecutive_detections['group_detected'] == 0:
-                            self.logger.info(f"[{timestamp}] Group detected - {deduplicated_count} people (de-duplicated from {len(detections['person'])} raw detections)")
-                else:
-                    # No person detected at all
-                    detections['deduplicated_person'] = []
-                    person_roles = {}
-                    # DEBUG: Log when no person is detected (will be tracked as activity)
-                    if self.consecutive_detections['no_person_detected'] == 0:
-                        raw_detections = len(detections['person'])
-                        self.logger.debug(f"[{timestamp}] NO PERSON detected in frame (raw YOLO detections: {raw_detections})")
-                
-                # STEP 4: *** NEW MULTI-PERSON PROCESSING ***
-                # Process ALL persons individually for ALL activities
-                multi_person_results = self.process_all_persons_activities(
-                    frame, detections, person_roles, timestamp_sec, face_results, frame_idx
-                )
-                
-                # Extract aggregated detection flags
-                persons_data = multi_person_results['persons']
-                aggregated = multi_person_results['aggregated']
-                
-                # Initialize detection flags from aggregated results
-                microsleep_detected = aggregated['microsleep_detected']
-                sleep_detected = aggregated['sleep_detected']
-                cell_phone_detected = aggregated['cell_phone_detected']
-                writing_detected = aggregated['writing_detected']
-                packing_detected = aggregated['packing_detected']
-                lp_hand_gesture_detected = aggregated['lp_hand_gesture_detected']
-                alp_hand_gesture_detected = aggregated['alp_hand_gesture_detected']
-                mind_diversion_detected = aggregated['mind_diversion_detected']
-                
-                # Log detections for each person (only on first detection)
-                for person_idx, person_data in persons_data.items():
-                    activities = person_data['activities']
-                    role_name = person_data['role_name']
-                    debug_info = person_data['debug_info']
-                    
-                    # Log mind diversion
-                    if activities.get('mind_diversion', False) and self.consecutive_detections.get('mind_diversion', 0) == 0:
-                        head_pose = debug_info.get('head_pose', {})
-                        yaw = head_pose.get('yaw', 0)
-                        pitch = head_pose.get('pitch', 0)
-                        method = head_pose.get('method', 'unknown')
-                        self.logger.info(f"[{timestamp}] MIND DIVERSION detected for {role_name} (Person {person_idx+1}) - Yaw={yaw:.1f}°, Pitch={pitch:.1f}° (method: {method})")
-                    
-                    # Log sleep detection
-                    if activities['sleep'] and self.consecutive_detections['sleep'] == 0:
-                        sleep_info = debug_info.get('sleep_info', {})
-                        self.logger.info(f"[{timestamp}] SLEEP detected for {role_name} (Person {person_idx+1}) - pose-based")
-                    
-                    # Log microsleep detection
-                    if activities['microsleep'] and self.consecutive_detections['microsleep'] == 0:
-                        self.logger.info(f"[{timestamp}] MICROSLEEP detected for {role_name} (Person {person_idx+1}) - pose-based")
-                    
-                    # Log hand gestures
-                    if activities['lp_hand_gesture'] and self.consecutive_detections['lp_hand_gesture'] == 0:
-                        gesture_debug = debug_info.get('gesture_debug', {})
-                        self.logger.info(f"[{timestamp}] LP hand gesture detected for {role_name} (Person {person_idx+1}) - {gesture_debug.get('hand_raised', 'unknown')} hand raised")
-                    
-                    if activities['alp_hand_gesture'] and self.consecutive_detections['alp_hand_gesture'] == 0:
-                        gesture_debug = debug_info.get('gesture_debug', {})
-                        self.logger.info(f"[{timestamp}] ALP hand gesture detected for {role_name} (Person {person_idx+1}) - {gesture_debug.get('hand_raised', 'unknown')} hand raised")
-                    
-                    # Log cell phone, writing, packing
-                    if activities['cell_phone'] and self.consecutive_detections['cell_phone'] == 0:
-                        self.logger.info(f"[{timestamp}] Cell phone ACTIVELY USED by {role_name} (Person {person_idx+1})")
-                    
-                    if activities['writing'] and self.consecutive_detections['writing'] == 0:
-                        self.logger.info(f"[{timestamp}] WRITING detected for {role_name} (Person {person_idx+1})")
-                    
-                    if activities.get('packing', False) and self.consecutive_detections.get('packing_bags', 0) == 0:
-                        self.logger.info(f"[{timestamp}] PACKING detected for {role_name} (Person {person_idx+1})")
-                
-                # Face-based sleep detection (still use EAR as additional signal)
-                if face_results.multi_face_landmarks and ear_value is not None:
-                    if ear_value < 0.2:
-                        if self.eye_closure_start is None:
-                            self.eye_closure_start = timestamp_sec
-                        
-                        self.eye_closure_duration = timestamp_sec - self.eye_closure_start
-                        
-                        # Merge with pose-based detection
-                        if self.eye_closure_duration >= 30:
-                            sleep_detected = True
-                        elif self.eye_closure_duration >= 5:
-                            microsleep_detected = True
-                    else:
-                        self.eye_closure_start = None
-                        self.eye_closure_duration = 0
-                
-                # DEPRECATED: Old single-person detection code removed
-                # The new process_all_persons_activities() method above handles all detections
-                
-                # CRITICAL: Exclude sleep detection if person is holding objects or in active posture
-                # If someone has a phone, book, or backpack in hand, they're clearly NOT sleeping
-                if cell_phone_detected or writing_detected or packing_detected:
-                    if microsleep_detected or sleep_detected:
-                        reason = []
-                        if cell_phone_detected: reason.append("phone")
-                        if writing_detected: reason.append("book")
-                        if packing_detected: reason.append("backpack")
-                        self.logger.debug(f"[{timestamp}] Sleep detection OVERRIDDEN - person active ({', '.join(reason)})")
-                    microsleep_detected = False
-                    sleep_detected = False
-                    # Reset sleep tracking counters
-                    self.eye_closure_start = None
-                    self.eye_closure_duration = 0
-                    self.pose_sleep_start = None
-                    self.pose_sleep_duration = 0
-                
-                # Create annotated frame with all detections (pose landmarks + YOLO boxes)
-                # This annotated frame will be used for BOTH activity clips AND periodic frame saving
-                annotated_frame_for_activity = self.draw_bounding_boxes(
-                    frame, detections, show_roi_boxes=True, person_roles=person_roles
-                )
-                # NEW: Draw MediaPipe outputs for ALL persons (not just one)
-                annotated_frame_for_activity = self.draw_multi_person_mediapipe_outputs(
-                    annotated_frame_for_activity,
-                    persons_data,  # All persons' pose landmarks and activities
-                    face_results,
-                    ear_value,
-                    self.eye_closure_duration
-                )
-                
-                # Save annotated frames periodically if enabled (AFTER all detections)
-                if (
-                    self.save_annotated_frames 
-                    and self.frames_dir is not None
-                    and sample_idx % self.frame_save_interval == 0
-                ):
-                    try:
-                        # Save frame with unique filename
-                        frame_filename = f"frame_{frame_idx:08d}.jpg"
-                        frame_path = os.path.join(self.frames_dir, frame_filename)
-                        
-                        # Ensure directory exists (for multiprocessing safety)
-                        os.makedirs(self.frames_dir, exist_ok=True)
-                        
-                        # Save with high quality
-                        cv2.imwrite(frame_path, annotated_frame_for_activity, [cv2.IMWRITE_JPEG_QUALITY, 95])
-                            
-                    except Exception as e:
-                        self.logger.error(f"[{timestamp}] Error saving frame {frame_idx}: {e}")
-
-                # CRITICAL: Hand gesture coordination check
-                # Activity Type 8 (LP not exchanging): Triggers when ALP raises hand BUT LP does NOT
-                # Activity Type 9 (ALP not exchanging): Triggers when LP raises hand BUT ALP does NOT
-                # This ensures we detect COORDINATION FAILURES, not individual gestures
-                # Uses temporal window to prevent false positives when both people raise hands within window
-                lp_not_coordinating, alp_not_coordinating = self._check_hand_gesture_coordination(
-                    lp_hand_gesture_detected,
-                    alp_hand_gesture_detected,
-                    timestamp_sec
-                )
-
-                # Debug logging for coordination check
-                if lp_not_coordinating and self.consecutive_detections['lp_hand_gesture'] == 0:
-                    self.logger.info(f"[{timestamp}] [Frame {frame_idx}] COORDINATION FAILURE: ALP raised hand but LP did NOT respond")
-                if alp_not_coordinating and self.consecutive_detections['alp_hand_gesture'] == 0:
-                    self.logger.info(f"[{timestamp}] [Frame {frame_idx}] COORDINATION FAILURE: LP raised hand but ALP did NOT respond")
-
-                # Detect when no person is in frame
-                no_person_detected_flag = (len(detections.get('deduplicated_person', [])) == 0)
-
-                # ==========================================
-                # TRAIN MOTION RULE ENGINE INTEGRATION
-                # ==========================================
-                # 1. Extract OCR timestamp from frame (if enabled)
-                ocr_timestamp = self._extract_ocr_timestamp(frame)
-
-                # 2. Resolve train motion context
-                # Priority: OCR timestamp > video_start_time + offset > video-relative time
-                if ocr_timestamp:
-                    motion_timestamp = ocr_timestamp
-                    # Log OCR success periodically (every 30 frames to avoid spam)
-                    if frame_idx % 30 == 0:
-                        self.logger.info(f"[MOTION-RULES] Frame {frame_idx}: OCR extracted timestamp: {motion_timestamp}")
-                else:
-                    # Convert video offset to real time (if video_start_time is set)
-                    # Use timestamp_sec directly (it's already numeric) instead of parsing timestamp string
-                    video_seconds = timestamp_sec
-                    motion_timestamp = self._convert_video_to_real_time(video_seconds)
-                    has_start_time = hasattr(self, 'video_start_time') and self.video_start_time
-                    # Log periodically (every 60 frames)
-                    if frame_idx % 60 == 0:
-                        if has_start_time:
-                            self.logger.info(
-                                f"[MOTION-RULES] Frame {frame_idx}: Using video_start_time + offset = {motion_timestamp}"
-                            )
-                        else:
-                            self.logger.info(
-                                f"[MOTION-RULES] Frame {frame_idx}: No OCR/start_time - using video-relative: {motion_timestamp}"
-                            )
-                # Pass frame for optical flow-enhanced motion detection
-                # prev_motion_frame is set at end of loop
-                prev_motion_frame = getattr(self, '_prev_motion_frame', None)
-                self.current_motion_context = self._resolve_motion_context(
-                    motion_timestamp, frame=frame, prev_frame=prev_motion_frame
-                )
-                # Store current frame for next iteration's optical flow
-                self._prev_motion_frame = frame.copy()
-
-                # Log motion state periodically
-                if frame_idx % 60 == 0 and self.current_motion_context:
-                    self.logger.info(
-                        f"[MOTION-RULES] Frame {frame_idx}: State={self.current_motion_context.motion_state.value}, "
-                        f"Station={self.current_motion_context.current_station.station_code if self.current_motion_context.current_station else 'N/A'}, "
-                        f"Source={self.current_motion_context.resolution_source}"
-                    )
-
-                # 3. Check ALP pre-arrival alertness (if in pre-arrival window)
-                alp_not_standing_detected = False
-                if (self.rule_engine is not None and
-                    self.current_motion_context is not None and
-                    self.rule_engine.should_check_alp_alertness(self.current_motion_context)):
-                    alp_not_standing_detected = self._check_alp_standing(
-                        persons_data, person_roles, frame.shape
-                    )
-                    if alp_not_standing_detected and self.consecutive_detections.get('alp_not_standing', 0) == 0:
-                        self.logger.info(
-                            f"[{timestamp}] ALP NOT STANDING in pre-arrival window - "
-                            f"{self.current_motion_context.seconds_to_arrival}s to arrival"
-                        )
-
-                # Update activity states with temporal filtering
-                activities_map = {
-                    'microsleep': microsleep_detected and not sleep_detected,
-                    'sleep': sleep_detected,
-                    'cell_phone': cell_phone_detected,
-                    'writing': writing_detected,
-                    'packing_bags': packing_detected,
-                    'group_detected': group_detected_flag,
-                    'lp_hand_gesture': lp_not_coordinating,  # LP fails to respond when ALP raises hand
-                    'alp_hand_gesture': alp_not_coordinating,  # ALP fails to respond when LP raises hand
-                    'mind_diversion': mind_diversion_detected,
-                    'no_person_detected': no_person_detected_flag,
-                    'alp_not_standing': alp_not_standing_detected  # ALP not standing in pre-arrival
-                }
-
-                # 3.5. Suppress no_person_detected when trip schedule is unavailable
-                if self.suppress_no_person_without_schedule and self.trip_schedule is None:
-                    if activities_map.get('no_person_detected', False):
-                        activities_map['no_person_detected'] = False
-                        self.logger.debug(
-                            f"[{timestamp}] no_person_detected suppressed - "
-                            f"no trip schedule available to distinguish station halts"
-                        )
-
-                # 4. Apply motion-based rule engine to filter exempted activities
-                activities_map = self._apply_motion_rules(activities_map, self.current_motion_context)
-
-                for activity_name, detected in activities_map.items():
-                    if detected:
-                        # Activity detected - increment consecutive counter and reset grace period
-                        self.consecutive_detections[activity_name] += 1
-                        self.grace_counters[activity_name] = 0  # Reset grace period
-
-                        # Only start recording after required consecutive frames threshold is met
-                        required_consecutive = self.activity_thresholds[activity_name]['required_consecutive']
-
-                        if self.consecutive_detections[activity_name] >= required_consecutive:
-                            # Start activity if not already active
-                            if not self.activities[activity_name]['active']:
-                                self.start_activity(activity_name, timestamp, fps, frame_idx, person_roles=person_roles, ocr_timestamp=ocr_timestamp)
-
-                            # Continue recording frames ONLY when activity is actively detected
-                            if self.activities[activity_name]['active']:
-                                # Store raw frame (without annotations) for clean evidence clips
-                                self.activities[activity_name]['frames'].append(frame.copy())
-                                self.activities[activity_name]['last_frame_count'] = frame_idx
-                                self.activities[activity_name]['last_detected_frame'] = frame_idx  # Track last actual detection
-                                self.activities[activity_name]['last_detection_time'] = timestamp  # Track for precise clip duration
-                                # Update person roles (in case they change during activity)
-                                if person_roles:
-                                    self.activities[activity_name]['person_roles'] = person_roles
-                    else:
-                        # Activity not detected - use grace period before resetting
-                        if self.consecutive_detections[activity_name] > 0 or self.activities[activity_name]['active']:
-                            # Increment grace counter
-                            self.grace_counters[activity_name] += 1
-                            grace_frames = self.activity_thresholds[activity_name]['grace_frames']
-                            
-                            # If still within grace period, keep activity alive but DON'T add frames
-                            if self.grace_counters[activity_name] <= grace_frames:
-                                # Still in grace period - keep activity active but don't record frames
-                                # This allows brief interruptions without ending the activity
-                                pass
-                            else:
-                                # Grace period exceeded - end activity and reset counters
-                                if self.activities[activity_name]['active']:
-                                    # No ocr_timestamp: current frame is post-grace-period, not when activity ended.
-                                    # end_activity computes ocr_end from ocr_start + duration instead (more accurate).
-                                    self.end_activity(activity_name, timestamp, fps, frame_idx, people_count)
-                                self.consecutive_detections[activity_name] = 0
-                                self.grace_counters[activity_name] = 0
-                        else:
-                            # Reset grace counter if nothing is being tracked
-                            self.grace_counters[activity_name] = 0
-
-                # Display progress with detection status
-                if sample_idx % 50 == 0:  # Show progress every 50 sampled frames
-                    progress = (frame_idx / total_frames) * 100
-                    self.logger.info(f"Progress: {sample_idx} samples processed (frame {frame_idx}/{total_frames}, {progress:.1f}%)")
-                    
-                    # Show current detection counts for debugging
-                    active_detections = []
-                    for act_name, count in self.consecutive_detections.items():
-                        if count > 0:
-                            threshold = self.activity_thresholds[act_name]['required_consecutive']
-                            status = "RECORDING" if self.activities[act_name]['active'] else f"building {count}/{threshold}"
-                            active_detections.append(f"{act_name}: {status}")
-                    
-                    if active_detections:
-                        self.logger.debug(f"  Active detections: {', '.join(active_detections)}")
-            
-            except Exception as e:
-                self.logger.error(f"Error processing sample {sample_idx} (frame {frame_idx}): {e}")
-                continue
-            finally:
-                # ✅ MEMORY FIX: Explicitly delete frame after processing to free memory
-                if 'frame' in locals():
-                    del frame
-                if 'annotated_frame_for_activity' in locals():
-                    del annotated_frame_for_activity
-                if 'rgb_frame' in locals():
-                    del rgb_frame
-        
         # End any remaining active activities
         # No ocr_timestamp: video ended, no specific end frame to OCR.
         # end_activity computes ocr_end from ocr_start + duration instead.
@@ -6977,14 +7335,15 @@ class LocopilotActivityMonitor:
         for activity_name in self.activities:
             if self.activities[activity_name]['active']:
                 self.end_activity(activity_name, final_timestamp, fps, frame_idx, people_count=1)
-        
-        # ✅ MEMORY FIX: Clear frame buffers and activity frames to free memory
+
+        # [OK] MEMORY FIX: Clear frame buffers and activity frames to free memory
         self.frame_buffer.clear()
+        self.frame_idx_buffer.clear()
         for activity_name in self.activities:
             if 'frames' in self.activities[activity_name]:
                 self.activities[activity_name]['frames'].clear()
-        
-        # ✅ MEMORY FIX: Force garbage collection
+
+        # [OK] MEMORY FIX: Force garbage collection
         gc.collect()
         
         self.logger.info("=" * 60)
@@ -7042,10 +7401,8 @@ class LocopilotActivityMonitor:
             List of detected activities in this range
         """
         # Get video metadata
-        # ✅ MEMORY FIX: Use context manager to ensure video capture is released
-        with video_capture_context(self.video_path) as cap:
-            fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
-            total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        # CR-011: Use cached video metadata instead of reopening VideoCapture
+        total_frames, fps, _duration = self._get_video_metadata()
 
         self.logger.info(f"Processing frame range {start_frame}-{end_frame} (worker {os.getpid()})")
 
@@ -7060,6 +7417,28 @@ class LocopilotActivityMonitor:
         # Get batch settings from instance variables
         batch_size = self.gpu_batch_size
         batch_enabled = self.gpu_batch_enabled
+
+        # CR-013: Initialize optical flow state for chunk boundaries
+        # In multiprocessing mode, each worker starts with _prev_motion_frame = None,
+        # so the first frame(s) of each chunk produce no optical flow results.
+        # Fix: read the frame immediately before this chunk's start to seed optical flow.
+        if start_frame > 0 and self._prev_motion_frame is None:
+            try:
+                with video_capture_context(self.video_path) as _init_cap:
+                    _init_cap.set(cv2.CAP_PROP_POS_FRAMES, int(start_frame - 1))
+                    _init_ret, _init_frame = _init_cap.read()
+                    if _init_ret and _init_frame is not None:
+                        self._prev_motion_frame = _init_frame.copy()
+                        self.logger.debug(
+                            f"[CR-013] Initialized optical flow with frame {start_frame - 1} "
+                            f"for chunk starting at {start_frame} (worker {os.getpid()})"
+                        )
+                    else:
+                        self.logger.debug(
+                            f"[CR-013] Could not read frame {start_frame - 1} for optical flow init"
+                        )
+            except Exception as e:
+                self.logger.debug(f"[CR-013] Optical flow pre-init failed: {e}")
 
         # PHASE 1: Collect all frames for this chunk
         frames_data = []  # List of (frame, frame_idx, timestamp_sec, sample_idx)
@@ -7091,7 +7470,7 @@ class LocopilotActivityMonitor:
 
             # Run a second lower-confidence pose pass for sleep detection
             # Sleeping persons often have low YOLO confidence; 0.30 captures more frames
-            sleep_pose_conf = getattr(self.settings, 'yolo_pose_sleep_confidence', 0.30) if self.settings else 0.30
+            sleep_pose_conf = getattr(self.settings, 'yolo_pose_sleep_confidence', self.YOLO_SLEEP_POSE_CONFIDENCE) if self.settings else self.YOLO_SLEEP_POSE_CONFIDENCE
             if sleep_pose_conf < self.yolo_pose.conf_threshold:
                 self.logger.debug(f"[GPU BATCH] Running low-confidence pose pass for sleep detection (conf={sleep_pose_conf})")
                 batch_sleep_pose_results = self.detect_poses_batch(frames_only, batch_size, conf_threshold=sleep_pose_conf)
@@ -7117,314 +7496,24 @@ class LocopilotActivityMonitor:
         for idx, (frame, frame_idx, timestamp_sec, sample_idx) in enumerate(frames_data):
             sampled_count += 1
 
-            try:
-                # Convert timestamp to HH:MM:SS format
-                timestamp = str(timedelta(seconds=timestamp_sec))
-
-                # Add frame to buffer
-                self.frame_buffer.append(frame.copy())
-                
-                # STEP 1: Run MediaPipe Face Mesh on full frame (for face-based sleep/EAR detection)
-                rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                face_results = self.face_mesh.process(rgb_frame)
-                
-                # Calculate EAR for all detected faces
-                ear_value = None
-                min_ear_value = None
-                
-                if face_results.multi_face_landmarks:
-                    ear_values = []
-                    for face_landmarks in face_results.multi_face_landmarks:
-                        ear = self.calculate_eye_aspect_ratio(face_landmarks.landmark)
-                        if ear is not None:
-                            ear_values.append(ear)
-                    
-                    if ear_values:
-                        min_ear_value = min(ear_values)
-                        ear_value = min_ear_value
-
-                # STEP 2: Detect objects with YOLO (use pre-computed batch results if available)
-                # GPU BATCH: Use pre-computed detections from batch inference
-                if batch_object_detections is not None and idx < len(batch_object_detections):
-                    detections = batch_object_detections[idx]
-                else:
-                    # Fallback: Run per-frame detection
-                    # Preprocess single frame for dark/IR conditions
-                    detection_frame = self._preprocess_frames_for_detection([frame])[0]
-                    detections = self.detect_objects(detection_frame, None, use_pose_guided=False)
-
-                # STEP 3: Identify person roles and count people
-                people_count = len(detections['person'])
-                if people_count == 0:
-                    people_count = 1
-
-                # De-duplicate person boxes and identify roles
-                group_detected_flag = False
-                person_roles = {}
-                
-                if len(detections['person']) > 0:
-                    deduplicated_persons = self.deduplicate_person_boxes(detections['person'], iou_threshold=0.5)
-                    
-                    # Store deduplicated boxes (no pose validation - it filters out legitimate people)
-                    deduplicated_count = len(deduplicated_persons)
-                    detections['deduplicated_person'] = deduplicated_persons
-                    person_roles = self.identify_person_roles(frame, deduplicated_persons, detections)
-                    
-                    if deduplicated_count > 2:
-                        # Stage 2: Voting verification for group_detected (if enabled)
-                        if self.voting_service is not None:
-                            is_confirmed, vote_details = self.voting_service.verify_activity(
-                                video_path=self.current_video_path,
-                                timestamp_sec=timestamp_sec,
-                                activity_type='group_detected',
-                                person_bbox=[0, 0, frame.shape[1], frame.shape[0]]
-                            )
-                            if is_confirmed:
-                                group_detected_flag = True
-                                self.logger.info(f"[VOTING] group_detected CONFIRMED: {vote_details.get('vote_breakdown', [])}")
-                            else:
-                                group_detected_flag = False
-                                self.logger.info(f"[VOTING] group_detected REJECTED: {vote_details.get('vote_breakdown', [])}")
-                        else:
-                            group_detected_flag = True
-                else:
-                    detections['deduplicated_person'] = []
-                    person_roles = {}
-
-                # STEP 4: *** NEW MULTI-PERSON PROCESSING ***
-                # Process ALL persons individually for ALL activities
-                # GPU BATCH: Pass pre-computed pose results if available
-                precomputed_poses = None
-                if batch_pose_results is not None and idx < len(batch_pose_results):
-                    precomputed_poses = batch_pose_results[idx]
-
-                precomputed_sleep_poses = None
-                if batch_sleep_pose_results is not None and idx < len(batch_sleep_pose_results):
-                    precomputed_sleep_poses = batch_sleep_pose_results[idx]
-
-                multi_person_results = self.process_all_persons_activities(
-                    frame, detections, person_roles, timestamp_sec, face_results, frame_idx,
-                    precomputed_pose_results=precomputed_poses,
-                    precomputed_sleep_pose_results=precomputed_sleep_poses
-                )
-
-                # Extract aggregated detection flags
-                persons_data = multi_person_results['persons']
-                aggregated = multi_person_results['aggregated']
-
-                # Initialize detection flags from aggregated results
-                microsleep_detected = aggregated['microsleep_detected']
-                sleep_detected = aggregated['sleep_detected']
-                cell_phone_detected = aggregated['cell_phone_detected']
-                writing_detected = aggregated['writing_detected']
-                packing_detected = aggregated['packing_detected']
-                lp_hand_gesture_detected = aggregated['lp_hand_gesture_detected']
-                alp_hand_gesture_detected = aggregated['alp_hand_gesture_detected']
-                mind_diversion_detected = aggregated['mind_diversion_detected']
-
-                # Face-based sleep detection (still use EAR as additional signal)
-                if face_results.multi_face_landmarks and ear_value is not None:
-                    if ear_value < 0.2:
-                        if self.eye_closure_start is None:
-                            self.eye_closure_start = timestamp_sec
-                        
-                        self.eye_closure_duration = timestamp_sec - self.eye_closure_start
-                        
-                        # Merge with pose-based detection
-                        if self.eye_closure_duration >= 30:
-                            sleep_detected = True
-                        elif self.eye_closure_duration >= 5:
-                            microsleep_detected = True
-                    else:
-                        self.eye_closure_start = None
-                        self.eye_closure_duration = 0
-                
-                # DEPRECATED: Old single-person detection code removed
-                # The new process_all_persons_activities() method above handles all detections
-                
-                # Exclude sleep detection if person is holding objects or in active posture
-                if cell_phone_detected or writing_detected or packing_detected:
-                    microsleep_detected = False
-                    sleep_detected = False
-                    self.eye_closure_start = None
-                    self.eye_closure_duration = 0
-                    self.pose_sleep_start = None
-                    self.pose_sleep_duration = 0
-                
-                # Create annotated frame with all detections (pose landmarks + YOLO boxes)
-                # This annotated frame will be used for BOTH activity clips AND periodic frame saving
-                annotated_frame_for_activity = self.draw_bounding_boxes(
-                    frame, detections, show_roi_boxes=True, person_roles=person_roles
-                )
-                # NEW: Draw MediaPipe outputs for ALL persons (not just one)
-                annotated_frame_for_activity = self.draw_multi_person_mediapipe_outputs(
-                    annotated_frame_for_activity,
-                    persons_data,  # All persons' pose landmarks and activities
-                    face_results,
-                    ear_value,
-                    self.eye_closure_duration
-                )
-                
-                # Save annotated frames periodically if enabled (in process_video_range for multiprocessing)
-                if (
-                    self.save_annotated_frames
-                    and self.frames_dir is not None
-                    and sample_idx % self.frame_save_interval == 0
-                ):
-                    try:
-                        # Save frame with unique filename
-                        frame_filename = f"frame_{frame_idx:08d}.jpg"
-                        frame_path = os.path.join(self.frames_dir, frame_filename)
-
-                        # Ensure directory exists (for multiprocessing safety)
-                        os.makedirs(self.frames_dir, exist_ok=True)
-
-                        # Save with high quality
-                        cv2.imwrite(frame_path, annotated_frame_for_activity, [cv2.IMWRITE_JPEG_QUALITY, 95])
-
-                    except Exception as e:
-                        self.logger.error(f"[{timestamp}] Error saving frame {frame_idx}: {e}")
-
-                # CRITICAL: Hand gesture coordination check
-                # Activity Type 8 (LP not exchanging): Triggers when ALP raises hand BUT LP does NOT
-                # Activity Type 9 (ALP not exchanging): Triggers when LP raises hand BUT ALP does NOT
-                # This ensures we detect COORDINATION FAILURES, not individual gestures
-                #
-                # Uses temporal window approach: checks if the counterpart raised within
-                # the coordination window (default 4s). No violation if counterpart has no history yet.
-                lp_not_coordinating, alp_not_coordinating = self._check_hand_gesture_coordination(
-                    lp_hand_gesture_detected,
-                    alp_hand_gesture_detected,
-                    timestamp_sec
-                )
-
-                # Debug logging for coordination check
-                if lp_not_coordinating and self.consecutive_detections['lp_hand_gesture'] == 0:
-                    self.logger.info(f"[{timestamp}] [Frame {frame_idx}] COORDINATION FAILURE: ALP raised hand but LP did NOT respond")
-                if alp_not_coordinating and self.consecutive_detections['alp_hand_gesture'] == 0:
-                    self.logger.info(f"[{timestamp}] [Frame {frame_idx}] COORDINATION FAILURE: LP raised hand but ALP did NOT respond")
-
-                # Detect when no person is in frame
-                no_person_detected_flag = (len(detections.get('deduplicated_person', [])) == 0)
-
-                # ==========================================
-                # TRAIN MOTION RULE ENGINE INTEGRATION (process_video_range)
-                # ==========================================
-                # 1. Extract OCR timestamp from frame (if enabled)
-                ocr_timestamp = self._extract_ocr_timestamp(frame)
-
-                # 2. Resolve train motion context
-                # Priority: OCR timestamp > video_start_time + offset > video-relative time
-                if ocr_timestamp:
-                    motion_timestamp = ocr_timestamp
-                    if frame_idx % 30 == 0:
-                        self.logger.info(f"[MOTION-RULES] Frame {frame_idx}: OCR extracted: {motion_timestamp}")
-                else:
-                    # Convert video offset to real time (if video_start_time is set)
-                    # Use timestamp_sec directly (it's already numeric) instead of parsing timestamp string
-                    video_seconds = timestamp_sec
-                    motion_timestamp = self._convert_video_to_real_time(video_seconds)
-                    has_start_time = hasattr(self, 'video_start_time') and self.video_start_time
-                    if frame_idx % 60 == 0:
-                        src = "video_start_time" if has_start_time else "video-relative"
-                        self.logger.info(f"[MOTION-RULES] Frame {frame_idx}: Using {src}: {motion_timestamp}")
-                # Pass frame for optical flow-enhanced motion detection
-                prev_motion_frame = getattr(self, '_prev_motion_frame', None)
-                self.current_motion_context = self._resolve_motion_context(
-                    motion_timestamp, frame=frame, prev_frame=prev_motion_frame
-                )
-                self._prev_motion_frame = frame.copy()
-
-                # Log motion state periodically
-                if frame_idx % 60 == 0 and self.current_motion_context:
-                    ctx = self.current_motion_context
-                    station = ctx.current_station.station_code if ctx.current_station else "N/A"
-                    self.logger.info(f"[MOTION-RULES] Frame {frame_idx}: State={ctx.motion_state.value}, Station={station}, Source={ctx.resolution_source}")
-
-                # 3. Check ALP pre-arrival alertness
-                alp_not_standing_detected = False
-                if (self.rule_engine is not None and
-                    self.current_motion_context is not None and
-                    self.rule_engine.should_check_alp_alertness(self.current_motion_context)):
-                    alp_not_standing_detected = self._check_alp_standing(
-                        persons_data, person_roles, frame.shape
-                    )
-
-                # Update activity states with temporal filtering
-                activities_map = {
-                    'microsleep': microsleep_detected and not sleep_detected,
-                    'sleep': sleep_detected,
-                    'cell_phone': cell_phone_detected,
-                    'writing': writing_detected,
-                    'packing_bags': packing_detected,
-                    'group_detected': group_detected_flag,
-                    'lp_hand_gesture': lp_not_coordinating,  # LP fails to respond when ALP raises hand
-                    'alp_hand_gesture': alp_not_coordinating,  # ALP fails to respond when LP raises hand
-                    'mind_diversion': mind_diversion_detected,
-                    'no_person_detected': no_person_detected_flag,
-                    'alp_not_standing': alp_not_standing_detected  # ALP not standing in pre-arrival
-                }
-
-                # 3.5. Suppress no_person_detected when trip schedule is unavailable
-                if self.suppress_no_person_without_schedule and self.trip_schedule is None:
-                    if activities_map.get('no_person_detected', False):
-                        activities_map['no_person_detected'] = False
-                        self.logger.debug(
-                            f"[{timestamp}] no_person_detected suppressed - "
-                            f"no trip schedule available to distinguish station halts"
-                        )
-
-                # 4. Apply motion-based rule engine to filter exempted activities
-                activities_map = self._apply_motion_rules(activities_map, self.current_motion_context)
-
-                for activity_name, detected in activities_map.items():
-                    if detected:
-                        self.consecutive_detections[activity_name] += 1
-                        self.grace_counters[activity_name] = 0
-
-                        required_consecutive = self.activity_thresholds[activity_name]['required_consecutive']
-
-                        if self.consecutive_detections[activity_name] >= required_consecutive:
-                            if not self.activities[activity_name]['active']:
-                                self.start_activity(activity_name, timestamp, fps, frame_idx, person_roles=person_roles, ocr_timestamp=ocr_timestamp)
-
-                            if self.activities[activity_name]['active']:
-                                # Store raw frame (without annotations) for clean evidence clips
-                                self.activities[activity_name]['frames'].append(frame.copy())
-                                self.activities[activity_name]['last_frame_count'] = frame_idx
-                                self.activities[activity_name]['last_detected_frame'] = frame_idx
-                                self.activities[activity_name]['last_detection_time'] = timestamp  # Track for precise clip duration
-                                # Update person roles (in case they change during activity)
-                                if person_roles:
-                                    self.activities[activity_name]['person_roles'] = person_roles
-                    else:
-                        if self.consecutive_detections[activity_name] > 0 or self.activities[activity_name]['active']:
-                            self.grace_counters[activity_name] += 1
-                            grace_frames = self.activity_thresholds[activity_name]['grace_frames']
-
-                            if self.grace_counters[activity_name] <= grace_frames:
-                                pass
-                            else:
-                                if self.activities[activity_name]['active']:
-                                    # No ocr_timestamp: current frame is post-grace-period, not when activity ended.
-                                    # end_activity computes ocr_end from ocr_start + duration instead (more accurate).
-                                    self.end_activity(activity_name, timestamp, fps, frame_idx, people_count, save_clips=save_clips)
-                                self.consecutive_detections[activity_name] = 0
-                                self.grace_counters[activity_name] = 0
-                        else:
-                            self.grace_counters[activity_name] = 0
-
-            except Exception as e:
-                self.logger.error(f"Error processing sample {sample_idx} (frame {frame_idx}): {e}")
-                continue
-            finally:
-                # ✅ MEMORY FIX: Explicitly delete frame after processing to free memory
-                if 'frame' in locals():
-                    del frame
-                if 'annotated_frame_for_activity' in locals():
-                    del annotated_frame_for_activity
-                if 'rgb_frame' in locals():
-                    del rgb_frame
+            self._process_frames_core(
+                frame=frame,
+                frame_idx=frame_idx,
+                timestamp_sec=timestamp_sec,
+                sample_idx=sample_idx,
+                total_frames=total_frames,
+                fps=fps,
+                batch_object_detections=batch_object_detections,
+                batch_pose_results=batch_pose_results,
+                batch_sleep_pose_results=batch_sleep_pose_results,
+                batch_idx=idx,
+                save_clips=save_clips,
+                log_per_person_detections=False,
+                enable_stale_cleanup=False,
+            )
+            # MEMORY FIX: Explicitly delete frame after processing to free memory
+            if frame is not None:
+                del frame
 
         # Guard against empty frame ranges where timestamp_sec/frame_idx may not be set
         if sampled_count == 0:
@@ -7441,13 +7530,14 @@ class LocopilotActivityMonitor:
             if self.activities[activity_name]['active']:
                 self.end_activity(activity_name, final_timestamp, fps, frame_idx, people_count=1, save_clips=save_clips)
 
-        # ✅ MEMORY FIX: Clear frame buffers and activity frames to free memory
+        # [OK] MEMORY FIX: Clear frame buffers and activity frames to free memory
         self.frame_buffer.clear()
+        self.frame_idx_buffer.clear()
         for activity_name in self.activities:
             if 'frames' in self.activities[activity_name]:
                 self.activities[activity_name]['frames'].clear()
 
-        # ✅ MEMORY FIX: Force garbage collection
+        # [OK] MEMORY FIX: Force garbage collection
         gc.collect()
 
         self.logger.info(f"Frame range {start_frame}-{end_frame} completed: {len(self.all_activities)} activities")
@@ -7455,9 +7545,9 @@ class LocopilotActivityMonitor:
         # Return detected activities (without generating summary reports)
         return self.all_activities
 
-    def cleanup(self):
+    def cleanup(self) -> None:
         """
-        ✅ MEMORY FIX: Cleanup method to release model resources
+        [OK] MEMORY FIX: Cleanup method to release model resources
 
         This method mirrors POC_2's MediaPipeService.close() pattern.
         Call this after processing to free GPU/CPU resources.
@@ -7485,7 +7575,9 @@ class LocopilotActivityMonitor:
             # Clear frame buffers (always)
             if hasattr(self, 'frame_buffer'):
                 self.frame_buffer.clear()
-            
+            if hasattr(self, 'frame_idx_buffer'):
+                self.frame_idx_buffer.clear()
+
             # Clear activity frames (always)
             if hasattr(self, 'activities'):
                 for activity_name in self.activities:
@@ -7501,14 +7593,14 @@ class LocopilotActivityMonitor:
     
     def __del__(self):
         """
-        ✅ MEMORY FIX: Destructor to ensure cleanup on object deletion
+        [OK] MEMORY FIX: Destructor to ensure cleanup on object deletion
         """
         try:
             self.cleanup()
         except Exception:
             pass
     
-    def generate_summary_report(self):
+    def generate_summary_report(self) -> None:
         """Generate activities.json in the run directory"""
         # Save the activities array in the run directory
         activities_json_path = os.path.join(self.run_dir, "activities.json")
