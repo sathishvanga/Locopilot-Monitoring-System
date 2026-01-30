@@ -80,10 +80,11 @@ s3_upload_service = get_s3_upload_service()
     """
 )
 async def process_video(
+    request: Request,
     background_tasks: BackgroundTasks,
     video: Optional[UploadFile] = File(default=None, description="Video file to process (optional if videoUrl provided)"),
     videoUrl: Optional[str] = Form(default=None, description="MinIO URL to download video from (e.g., https://mind.snikbtel.uk:9000/cvss/video.mp4)"),
-    tripId: str = Form(..., description="Unique trip identifier"),
+    tripId: Optional[str] = Form(default=None, description="Unique trip identifier"),
     division: Optional[str] = Form(default=None, description="Division identifier"),
     lpCrewName: Optional[str] = Form(default=None, description="Loco Pilot crew member name"),
     lpCrewId: Optional[str] = Form(default=None, description="Loco Pilot crew member ID"),
@@ -101,20 +102,42 @@ async def process_video(
 
     This endpoint handles video upload or MinIO download, validation, processing,
     and activity detection. The video is saved temporarily, processed, and then cleaned up.
+
+    Accepts both multipart/form-data and application/json content types.
+    Use JSON when sending only a videoUrl (no file upload needed).
     """
     video_path = None
     video_filename = None
 
     try:
-        logger.info(f"📥 Received video processing request for trip: {tripId}, division: {division}, train: {trainNumber}, date: {tripDate}")
+        # If JSON body was sent, override form fields with JSON values
+        content_type = request.headers.get("content-type", "")
+        if "application/json" in content_type:
+            try:
+                body = await request.json()
+                tripId = body.get("tripId", tripId)
+                videoUrl = body.get("videoUrl", videoUrl)
+                division = body.get("division", division)
+                lpCrewName = body.get("lpCrewName", lpCrewName)
+                lpCrewId = body.get("lpCrewId", lpCrewId)
+                alpCrewName = body.get("alpCrewName", alpCrewName)
+                alpCrewId = body.get("alpCrewId", alpCrewId)
+                trainNumber = body.get("trainNumber", trainNumber)
+                tripDate = body.get("tripDate", tripDate)
+                videoStartTime = body.get("videoStartTime", videoStartTime)
+                useMockDetection = body.get("useMockDetection", useMockDetection)
+                useMultiprocessing = body.get("useMultiprocessing", useMultiprocessing)
+                saveClips = body.get("saveClips", saveClips)
+                logger.info(f"📥 Received JSON request body for trip: {tripId}")
+            except Exception as e:
+                logger.warning(f"⚠️ Failed to parse JSON body: {e}")
+                raise HTTPException(status_code=400, detail=f"Invalid JSON body: {str(e)}")
 
         # Validate tripId
         if not tripId or not tripId.strip():
-            logger.warning(f"⚠️ Invalid request: tripId is empty")
-            raise HTTPException(
-                status_code=400,
-                detail="tripId is required and cannot be empty"
-            )
+            raise HTTPException(status_code=400, detail="tripId is required and cannot be empty")
+
+        logger.info(f"📥 Received video processing request for trip: {tripId}, division: {division}, train: {trainNumber}, date: {tripDate}")
 
         # Validate that either video OR videoUrl is provided (not both, not neither)
         has_video = video is not None and video.filename

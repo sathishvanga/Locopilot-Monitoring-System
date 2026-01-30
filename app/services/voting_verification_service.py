@@ -358,6 +358,7 @@ class VotingVerificationService:
         logger.info(f"    lp_hand_gesture: {self.settings.voting_threshold_lp_hand_gesture}")
         logger.info(f"    alp_hand_gesture: {self.settings.voting_threshold_alp_hand_gesture}")
         logger.info(f"    mind_diversion: {self.settings.voting_threshold_mind_diversion}")
+        logger.info(f"    eating_drinking: {self.settings.voting_threshold_eating_drinking}")
         logger.info(f"    group_detected: {self.settings.voting_threshold_group_detected}")
         logger.info(f"  Packing Bags Strict Settings:")
         logger.info(f"    packing_min_bag_area: {self.packing_min_bag_area}")
@@ -663,8 +664,14 @@ class VotingVerificationService:
             activity_key = f"{activity_type}_p{person_idx}"
 
             # Get threshold for this activity type
-            threshold_attr = f'voting_threshold_{activity_type}'
-            threshold = getattr(self.settings, threshold_attr, 0.5)
+            # Use lower threshold for eating/drinking sub-type (cups harder to detect in IR)
+            extra = act.get('extra', {})
+            sub_type = extra.get('sub_type') if extra else None
+            if activity_type == 'mind_diversion' and sub_type == 'eating_drinking':
+                threshold = getattr(self.settings, 'voting_threshold_eating_drinking', 0.4)
+            else:
+                threshold_attr = f'voting_threshold_{activity_type}'
+                threshold = getattr(self.settings, threshold_attr, 0.5)
 
             # Vote on each frame
             votes = []

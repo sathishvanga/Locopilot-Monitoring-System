@@ -81,10 +81,9 @@ sshpass -p "$SERVER_PASS" ssh -p "$SERVER_PORT" -o StrictHostKeyChecking=no \
 echo ""
 echo -e "${YELLOW}[5/6] Updating systemd service and restarting...${NC}"
 # Update systemd service with correct environment variables
-SUDO_PASS="$SERVER_PASS"
-sshpass -p "$SERVER_PASS" ssh -p "$SERVER_PORT" -o StrictHostKeyChecking=no \
-    "$SERVER_USER@$SERVER_IP" "
-echo '$SUDO_PASS' | sudo -S tee /etc/systemd/system/locopilot.service > /dev/null << 'SERVICE'
+# Write the service file locally, then copy it over
+SERVICE_FILE=$(mktemp)
+cat > "$SERVICE_FILE" << 'SERVICE'
 [Unit]
 Description=Locopilot Monitoring System
 After=network.target
@@ -107,9 +106,18 @@ RestartSec=10
 WantedBy=multi-user.target
 SERVICE
 
-echo '$SUDO_PASS' | sudo -S systemctl daemon-reload
-echo '$SUDO_PASS' | sudo -S systemctl restart locopilot
-"
+# Copy service file to remote server
+sshpass -p "$SERVER_PASS" scp -P "$SERVER_PORT" -o StrictHostKeyChecking=no \
+    "$SERVICE_FILE" "$SERVER_USER@$SERVER_IP:/tmp/locopilot.service"
+rm -f "$SERVICE_FILE"
+
+# Install service and restart
+sshpass -p "$SERVER_PASS" ssh -p "$SERVER_PORT" -o StrictHostKeyChecking=no \
+    "$SERVER_USER@$SERVER_IP" \
+    "echo '$SERVER_PASS' | sudo -S cp /tmp/locopilot.service /etc/systemd/system/locopilot.service && \
+     echo '$SERVER_PASS' | sudo -S systemctl daemon-reload && \
+     echo '$SERVER_PASS' | sudo -S systemctl restart locopilot && \
+     rm -f /tmp/locopilot.service"
 
 echo ""
 echo -e "${YELLOW}[6/6] Verifying deployment...${NC}"

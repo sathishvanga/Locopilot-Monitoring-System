@@ -454,12 +454,19 @@ class LocopilotActivityMonitor:
         self.eye_closure_start = None
         self.eye_closure_duration = 0
         
-        # Pose-based sleep detection tracking
+        # Pose-based sleep detection tracking (legacy global state for single-person fallback)
         self.pose_sleep_start = None
         self.pose_sleep_duration = 0
         self.previous_pose_landmarks = None
         self.movement_history = deque(maxlen=int(30 * self.sample_fps))  # 30 seconds of movement data
         self.head_tilt_history = deque(maxlen=int(10 * self.sample_fps))  # 10 seconds of head tilt data
+
+        # Per-person pose-based sleep detection tracking (for multi-person processing)
+        self.per_person_sleep_tracking = {}
+
+        # No-pose sleep detection tracking (for IR mode where YOLO pose fails)
+        # Format: {person_idx: {'first_seen': timestamp, 'last_bbox': [x1,y1,x2,y2], 'stable_since': timestamp}}
+        self.no_pose_sleep_tracking = {}
         
         # Wrist proximity tracking for writing detection (per person)
         # Format: {person_idx: {'start_time': timestamp, 'duration': seconds, 'consecutive_frames': int}}
@@ -1022,105 +1029,291 @@ class LocopilotActivityMonitor:
         except Exception as e:
             return 0.0
     
-    def detect_pose_based_sleep(self, pose_landmarks, timestamp_sec):
+    def _get_per_person_sleep_tracking(self, person_idx):
+        """Get or initialize per-person sleep tracking state."""
+        if person_idx not in self.per_person_sleep_tracking:
+            self.per_person_sleep_tracking[person_idx] = {
+                'pose_sleep_start': None,
+                'pose_sleep_duration': 0,
+                'previous_landmarks': None,
+                'movement_history': deque(maxlen=int(30 * self.sample_fps)),
+                'head_tilt_history': deque(maxlen=int(10 * self.sample_fps)),
+                'nose_distance_history': deque(maxlen=int(10 * self.sample_fps)),
+                'torso_height_history': deque(maxlen=int(10 * self.sample_fps)),
+                'nose_y_norm_history': deque(maxlen=int(10 * self.sample_fps)),
+            }
+        return self.per_person_sleep_tracking[person_idx]
+
+    def detect_pose_based_sleep(self, pose_landmarks, timestamp_sec, person_idx=0, frame_shape=None):
         """Detect sleep based on pose analysis when face detection fails.
-        
-        Criteria:
-        - Head tilted significantly forward/down (< -20 degrees)
-        - Minimal movement over extended period
-        - Stable posture maintained
-        
+
+        Uses a weighted scoring approach with two detection paths:
+
+        Path 1 - Forward head drop (legacy, frontal/side cameras):
+        - Nose-to-shoulder pixel distance (strong signal)
+        - Head tilt angle (strong signal)
+
+        Path 2 - Reclined posture (overhead/behind cameras):
+        - Torso height elongation (strongest signal, Cohen's d=2.34)
+        - Nose Y position in frame (strong signal, d=1.60)
+        - Shoulder width compression (moderate signal)
+
+        Common signals (both paths):
+        - Eye landmark visibility (moderate signal)
+        - Movement level (moderate signal)
+        - Posture stability (weak signal)
+
+        Args:
+            pose_landmarks: Pose landmarks object with .landmark attribute
+            timestamp_sec: Current timestamp in seconds
+            person_idx: Person index for per-person tracking (default 0)
+            frame_shape: Frame shape tuple (height, width, channels) for pixel distance calc
+
         Returns:
             tuple: (is_sleeping, is_microsleeping, debug_info)
         """
         if not pose_landmarks:
             return False, False, {}
-        
+
         # Validate pose landmarks before using
         if not self.validate_pose_landmarks(pose_landmarks):
             return False, False, {}
-        
-        # Calculate head tilt angle
+
+        # Get per-person tracking state
+        tracking = self._get_per_person_sleep_tracking(person_idx)
+
+        # Calculate head tilt angle (legacy metric)
         head_tilt = self.calculate_head_tilt_angle(pose_landmarks.landmark)
-        
-        # Calculate movement score
+
+        # Calculate movement score using per-person previous landmarks
         movement_score = self.calculate_movement_score(
             pose_landmarks.landmark,
-            self.previous_pose_landmarks
+            tracking['previous_landmarks']
         )
-        
-        # Update history
+
+        # --- Nose-to-shoulder pixel distance (primary signal for overhead cameras) ---
+        nose_below_px = None
+        frame_height = frame_shape[0] if frame_shape is not None else None
+        frame_width = frame_shape[1] if frame_shape is not None and len(frame_shape) > 1 else None
+        try:
+            nose = self.get_keypoint(pose_landmarks.landmark, 'nose')
+            left_shoulder = self.get_keypoint(pose_landmarks.landmark, 'left_shoulder')
+            right_shoulder = self.get_keypoint(pose_landmarks.landmark, 'right_shoulder')
+            shoulder_mid_y = (left_shoulder.y + right_shoulder.y) / 2
+            if frame_height is not None:
+                # Positive y is downward in image coords; nose below shoulders → positive delta
+                # We use negative convention: nose_below_px < 0 means nose is far below shoulders
+                nose_below_px = (nose.y - shoulder_mid_y) * frame_height
+            else:
+                # Fallback: use normalized coordinates scaled to a reference 720p frame
+                nose_below_px = (nose.y - shoulder_mid_y) * 720
+        except Exception:
+            nose_below_px = None
+
+        # --- Reclined posture signals (for leaning-back sleep in overhead cameras) ---
+        torso_height_px = None
+        nose_y_normalized = None
+        shoulder_width_px = None
+        try:
+            nose = self.get_keypoint(pose_landmarks.landmark, 'nose')
+            left_shoulder = self.get_keypoint(pose_landmarks.landmark, 'left_shoulder')
+            right_shoulder = self.get_keypoint(pose_landmarks.landmark, 'right_shoulder')
+            left_hip = self.get_keypoint(pose_landmarks.landmark, 'left_hip')
+            right_hip = self.get_keypoint(pose_landmarks.landmark, 'right_hip')
+
+            h_ref = frame_height if frame_height is not None else 720
+            w_ref = frame_width if frame_width is not None else 1280
+
+            # Torso height: distance from shoulder midpoint to hip midpoint in pixels
+            # When reclined/leaning back, torso elongates in the overhead camera view
+            if (left_hip and right_hip and left_shoulder and right_shoulder and
+                    getattr(left_hip, 'visibility', 0) > 0.2 and getattr(right_hip, 'visibility', 0) > 0.2 and
+                    getattr(left_shoulder, 'visibility', 0) > 0.2 and getattr(right_shoulder, 'visibility', 0) > 0.2):
+                sh_mid_y = (left_shoulder.y + right_shoulder.y) / 2
+                hip_mid_y = (left_hip.y + right_hip.y) / 2
+                torso_height_px = abs(hip_mid_y - sh_mid_y) * h_ref
+
+            # Nose Y normalized: position of nose in frame (0=top, 1=bottom)
+            # When leaning back, nose moves higher in frame (lower Y value)
+            if nose and getattr(nose, 'visibility', 0) > 0.3:
+                nose_y_normalized = nose.y  # Already 0-1 normalized
+
+            # Shoulder width: compressed when reclined
+            if (left_shoulder and right_shoulder and
+                    getattr(left_shoulder, 'visibility', 0) > 0.2 and getattr(right_shoulder, 'visibility', 0) > 0.2):
+                shoulder_width_px = abs(left_shoulder.x - right_shoulder.x) * w_ref
+        except Exception:
+            pass
+
+        # --- Eye visibility (supplementary signal) ---
+        avg_eye_vis = None
+        try:
+            left_eye = self.get_keypoint(pose_landmarks.landmark, 'left_eye')
+            right_eye = self.get_keypoint(pose_landmarks.landmark, 'right_eye')
+            left_vis = getattr(left_eye, 'visibility', 0.0) or 0.0
+            right_vis = getattr(right_eye, 'visibility', 0.0) or 0.0
+            avg_eye_vis = (left_vis + right_vis) / 2
+        except Exception:
+            avg_eye_vis = None
+
+        # Update per-person history
         if head_tilt is not None:
-            self.head_tilt_history.append(head_tilt)
-        
-        self.movement_history.append(movement_score)
-        
-        # Store current landmarks for next frame
-        self.previous_pose_landmarks = pose_landmarks.landmark
-        
+            tracking['head_tilt_history'].append(head_tilt)
+
+        tracking['movement_history'].append(movement_score)
+
+        if nose_below_px is not None:
+            tracking['nose_distance_history'].append(nose_below_px)
+
+        if torso_height_px is not None:
+            tracking['torso_height_history'].append(torso_height_px)
+
+        if nose_y_normalized is not None:
+            tracking['nose_y_norm_history'].append(nose_y_normalized)
+
+        # Store current landmarks for next frame (per-person)
+        tracking['previous_landmarks'] = pose_landmarks.landmark
+
         # Need sufficient history to make determination
-        min_samples = max(5, int(5 * self.sample_fps))  # At least 5 seconds
-        
-        if len(self.head_tilt_history) < min_samples or len(self.movement_history) < min_samples:
+        # NOTE: In multiprocessing mode, each worker processes a ~6s chunk independently.
+        # At sample_fps=0.5, that yields ~3 samples per chunk. We need min_samples low
+        # enough to work within a single chunk while still having some history.
+        min_samples = max(2, int(2 * self.sample_fps))  # At least 2 samples (~4s at 0.5 FPS)
+
+        if len(tracking['movement_history']) < min_samples:
             return False, False, {
                 'head_tilt': head_tilt,
                 'movement': movement_score,
+                'nose_below_px': nose_below_px,
+                'torso_height_px': torso_height_px,
+                'nose_y_normalized': nose_y_normalized,
+                'shoulder_width_px': shoulder_width_px,
+                'avg_eye_vis': avg_eye_vis,
                 'status': 'building_history'
             }
-        
-        # Calculate average head tilt over recent period
-        avg_head_tilt = np.mean(list(self.head_tilt_history))
-        
-        # Calculate average movement over recent period
-        avg_movement = np.mean(list(self.movement_history))
-        
-        # Sleep indicators:
-        # 1. Head tilted forward VERY significantly (< -100 degrees) - stricter to avoid false positives during normal work
-        # 2. Low movement (< 0.05) - allows some minimal working movement
-        # 3. Consistent over time (low variance)
-        
-        head_tilt_variance = np.var(list(self.head_tilt_history))
-        movement_variance = np.var(list(self.movement_history))
-        
-        is_head_down = avg_head_tilt < -100  # Changed from -15 to -100 (stricter)
-        is_minimal_movement = avg_movement < 0.1  # Changed from 0.02 to 0.05 (more lenient)
-        is_stable_posture = head_tilt_variance < 100  # Low variance = stable position (increased from 50)
-        
+
+        # Calculate averages over recent period
+        avg_head_tilt = np.mean(list(tracking['head_tilt_history'])) if len(tracking['head_tilt_history']) > 0 else 0
+        avg_movement = np.mean(list(tracking['movement_history']))
+        head_tilt_variance = np.var(list(tracking['head_tilt_history'])) if len(tracking['head_tilt_history']) > 0 else 999
+        avg_nose_below_px = np.mean(list(tracking['nose_distance_history'])) if len(tracking['nose_distance_history']) > 0 else 0
+        avg_torso_height = np.mean(list(tracking['torso_height_history'])) if len(tracking['torso_height_history']) > 0 else 0
+        avg_nose_y_norm = np.mean(list(tracking['nose_y_norm_history'])) if len(tracking['nose_y_norm_history']) > 0 else 0.5
+
+        # --- Compute sleep indicators ---
+        # Legacy signals (forward head drop)
+        is_head_down = avg_head_tilt < -100  # Legacy frontal camera check
+        is_nose_drooping = nose_below_px is not None and nose_below_px < -85  # Nose far below shoulders (px)
+
+        # Reclined posture signals (leaning back against wall — overhead/behind camera)
+        # Torso elongation: strongest discriminator (Cohen's d=2.34 from analysis)
+        torso_thresh = getattr(self.settings, 'sleep_reclined_torso_height_threshold', 175)
+        is_torso_elongated = torso_height_px is not None and torso_height_px > torso_thresh
+
+        # Nose Y position: strong signal (d=1.60) — when reclined, nose moves higher in frame
+        nose_y_thresh = getattr(self.settings, 'sleep_reclined_nose_y_norm_threshold', 0.40)
+        is_nose_high_in_frame = nose_y_normalized is not None and nose_y_normalized < nose_y_thresh
+
+        # Shoulder width compression: moderate signal — shoulders appear narrower when reclined
+        sh_width_thresh = getattr(self.settings, 'sleep_reclined_shoulder_width_threshold', 60)
+        is_shoulders_compressed = shoulder_width_px is not None and shoulder_width_px < sh_width_thresh
+
+        # Common signals
+        is_minimal_movement = avg_movement < 0.15  # Relaxed from 0.1 — sleeping persons may shift slightly
+        is_stable_posture = head_tilt_variance < 100  # Low variance = stable position
+        is_eyes_not_visible = avg_eye_vis is not None and avg_eye_vis < 0.4  # Eyes pointing down / not visible
+
+        # --- Weighted scoring approach ---
+        # Two scoring paths: forward-drop (legacy) and reclined (new)
+        sleep_score = 0
+
+        # Path 1: Forward head drop (legacy — frontal/side cameras)
+        if is_nose_drooping:           # Head drooping (strong signal, works overhead)
+            sleep_score += 2
+        if is_head_down:               # Legacy head tilt (strong signal for frontal cameras)
+            sleep_score += 2
+
+        # Path 2: Reclined posture (leaning back — overhead/behind cameras)
+        if is_torso_elongated:         # Torso elongation (strongest reclined signal, +2)
+            sleep_score += 2
+        if is_nose_high_in_frame:      # Nose high in frame = head tilted back (+1)
+            sleep_score += 1
+        if is_shoulders_compressed:    # Shoulders narrower when reclined (+1)
+            sleep_score += 1
+
+        # Common signals (apply to both paths)
+        if is_eyes_not_visible:        # Eyes not visible (moderate signal)
+            sleep_score += 1
+        if is_minimal_movement:        # Low movement (moderate signal)
+            sleep_score += 1
+        if is_stable_posture:          # Stable position (weak signal)
+            sleep_score += 1
+
+        sleep_indicators_met = sleep_score >= 3  # Need at least 3 points
+
         debug_info = {
             'head_tilt': head_tilt,
             'avg_head_tilt': avg_head_tilt,
             'movement': movement_score,
             'avg_movement': avg_movement,
             'head_tilt_variance': head_tilt_variance,
+            'nose_below_px': nose_below_px,
+            'avg_nose_below_px': avg_nose_below_px,
+            'torso_height_px': torso_height_px,
+            'avg_torso_height': avg_torso_height,
+            'nose_y_normalized': nose_y_normalized,
+            'avg_nose_y_norm': avg_nose_y_norm,
+            'shoulder_width_px': shoulder_width_px,
+            'avg_eye_vis': avg_eye_vis,
+            'sleep_score': sleep_score,
             'is_head_down': is_head_down,
+            'is_nose_drooping': is_nose_drooping,
+            'is_torso_elongated': is_torso_elongated,
+            'is_nose_high_in_frame': is_nose_high_in_frame,
+            'is_shoulders_compressed': is_shoulders_compressed,
+            'is_eyes_not_visible': is_eyes_not_visible,
             'is_minimal_movement': is_minimal_movement,
             'is_stable_posture': is_stable_posture
         }
-        
+
         # Detect sleep condition
-        sleep_indicators_met = is_head_down and is_minimal_movement and is_stable_posture
-        
         if sleep_indicators_met:
-            if self.pose_sleep_start is None:
-                self.pose_sleep_start = timestamp_sec
-                self.logger.debug(f"[Pose-Based Sleep] Started tracking - head_tilt={avg_head_tilt:.1f}°, movement={avg_movement:.4f}")
-            
-            self.pose_sleep_duration = timestamp_sec - self.pose_sleep_start
-            
+            if tracking['pose_sleep_start'] is None:
+                tracking['pose_sleep_start'] = timestamp_sec
+                self.logger.debug(
+                    f"[Pose-Based Sleep] Person {person_idx} started tracking - "
+                    f"score={sleep_score}, nose_px={nose_below_px}, head_tilt={avg_head_tilt:.1f}°, "
+                    f"torso_h={torso_height_px}, nose_y={nose_y_normalized}, sh_w={shoulder_width_px}, "
+                    f"eye_vis={avg_eye_vis}, movement={avg_movement:.4f}"
+                )
+
+            tracking['pose_sleep_duration'] = timestamp_sec - tracking['pose_sleep_start']
+
             # Check thresholds
-            is_sleeping = self.pose_sleep_duration >= 30  # 30 seconds
-            is_microsleeping = self.pose_sleep_duration >= 5 and not is_sleeping  # 5 seconds
-            
-            debug_info['pose_sleep_duration'] = self.pose_sleep_duration
-            
+            # NOTE: In multiprocessing mode, each worker processes ~6s chunks independently.
+            # Duration-based accumulation across chunks is handled by the activity aggregation
+            # layer. Within a chunk, we use shorter thresholds to detect sleep posture.
+            # A strong sleep_score (>=4) can trigger sleep immediately (posture is very clear).
+            # A moderate score (>=3) needs at least a few seconds of consistency.
+            if sleep_score >= 4:
+                # Very strong signal — sleep posture is unmistakable
+                is_sleeping = tracking['pose_sleep_duration'] >= 2  # 2 seconds with strong signal
+                is_microsleeping = not is_sleeping  # Any duration with score>=4 is at least microsleep
+            else:
+                # Moderate signal — need slightly more consistency
+                is_sleeping = tracking['pose_sleep_duration'] >= 4  # 4 seconds
+                is_microsleeping = tracking['pose_sleep_duration'] >= 2 and not is_sleeping  # 2 seconds
+
+            debug_info['pose_sleep_duration'] = tracking['pose_sleep_duration']
+
             return is_sleeping, is_microsleeping, debug_info
         else:
             # Reset if conditions not met
-            if self.pose_sleep_start is not None:
-                self.logger.debug("[Pose-Based Sleep] Stopped - indicators not met")
-            self.pose_sleep_start = None
-            self.pose_sleep_duration = 0
-            
+            if tracking['pose_sleep_start'] is not None:
+                self.logger.debug(f"[Pose-Based Sleep] Person {person_idx} stopped - score={sleep_score}")
+            tracking['pose_sleep_start'] = None
+            tracking['pose_sleep_duration'] = 0
+
             return False, False, debug_info
     
     def calculate_wrist_distance(self, pose_landmarks, frame_shape):
@@ -1151,7 +1344,7 @@ class LocopilotActivityMonitor:
             left_wrist = self.get_keypoint(landmarks, 'left_wrist')
 
             # Try wrists first (primary method)
-            if right_wrist.visibility >= 0.5 and left_wrist.visibility >= 0.5:
+            if right_wrist.visibility >= 0.3 and left_wrist.visibility >= 0.3:
                 # Convert normalized coordinates to pixel coordinates
                 right_wrist_px = (right_wrist.x * w, right_wrist.y * h)
                 left_wrist_px = (left_wrist.x * w, left_wrist.y * h)
@@ -1168,7 +1361,7 @@ class LocopilotActivityMonitor:
             right_elbow = self.get_keypoint(landmarks, 'right_elbow')
             left_elbow = self.get_keypoint(landmarks, 'left_elbow')
 
-            ELBOW_VISIBILITY_THRESHOLD = 0.4  # Lower threshold since elbows more reliable
+            ELBOW_VISIBILITY_THRESHOLD = 0.25  # Lower threshold since elbows more reliable
             if right_elbow.visibility >= ELBOW_VISIBILITY_THRESHOLD and left_elbow.visibility >= ELBOW_VISIBILITY_THRESHOLD:
                 right_elbow_px = (right_elbow.x * w, right_elbow.y * h)
                 left_elbow_px = (left_elbow.x * w, left_elbow.y * h)
@@ -1178,6 +1371,32 @@ class LocopilotActivityMonitor:
                 )
                 # Return elbow distance (elbows are typically wider apart)
                 return distance, 'elbow'
+
+            # FALLBACK: Single wrist to shoulder midpoint
+            # When one side is occluded (common in overhead cabin angle),
+            # measure visible wrist distance to shoulder center
+            right_shoulder = self.get_keypoint(landmarks, 'right_shoulder')
+            left_shoulder = self.get_keypoint(landmarks, 'left_shoulder')
+            SINGLE_WRIST_VIS = 0.5
+            SHOULDER_VIS = 0.3
+
+            visible_wrist = None
+            if right_wrist.visibility >= SINGLE_WRIST_VIS and left_wrist.visibility < SINGLE_WRIST_VIS:
+                visible_wrist = right_wrist
+            elif left_wrist.visibility >= SINGLE_WRIST_VIS and right_wrist.visibility < SINGLE_WRIST_VIS:
+                visible_wrist = left_wrist
+
+            if visible_wrist is not None and right_shoulder.visibility >= SHOULDER_VIS and left_shoulder.visibility >= SHOULDER_VIS:
+                wrist_px = (visible_wrist.x * w, visible_wrist.y * h)
+                shoulder_mid_px = (
+                    (right_shoulder.x + left_shoulder.x) / 2 * w,
+                    (right_shoulder.y + left_shoulder.y) / 2 * h
+                )
+                distance = np.sqrt(
+                    (wrist_px[0] - shoulder_mid_px[0])**2 +
+                    (wrist_px[1] - shoulder_mid_px[1])**2
+                )
+                return distance, 'single_wrist'
 
             return None, None
         except Exception as e:
@@ -1381,11 +1600,17 @@ class LocopilotActivityMonitor:
         # Configurable thresholds - different for wrist vs elbow
         MAX_WRIST_DISTANCE = 300  # pixels - wrists close together during writing
         MAX_ELBOW_DISTANCE = 450  # pixels - elbows typically wider apart during writing
+        MAX_SINGLE_WRIST_DISTANCE = 250  # pixels - wrist to shoulder center, tighter threshold
         MIN_DURATION = 1.0  # seconds - for faster detection
         REQUIRED_CONSECUTIVE = 2  # frames @ 0.5fps = 4 seconds total
 
         # Select threshold based on detection source
-        max_distance = MAX_WRIST_DISTANCE if source == 'wrist' else MAX_ELBOW_DISTANCE
+        if source == 'wrist':
+            max_distance = MAX_WRIST_DISTANCE
+        elif source == 'single_wrist':
+            max_distance = MAX_SINGLE_WRIST_DISTANCE
+        else:
+            max_distance = MAX_ELBOW_DISTANCE
 
         person_tracking = self.wrist_proximity_tracking[person_idx]
 
@@ -1822,6 +2047,7 @@ class LocopilotActivityMonitor:
             'cell_phone': [],
             'book': [],
             'backpack': [],
+            'cup_bottle': [],  # Cup/bottle detections for eating/drinking detection
             'roi_detections': [],  # ROI-based detections (main activity detection)
             'roi_boxes': []  # ROI boxes for visualization
         }
@@ -1885,7 +2111,12 @@ class LocopilotActivityMonitor:
                         # No person detected, add book anyway (fallback) if aspect ratio is valid
                         if self.validate_object_aspect_ratio(xyxy, 'book'):
                             detections['book'].append(xyxy)
-        
+                # Cup/bottle detection from full frame (for eating/drinking detection)
+                # Use configurable floor threshold (default 0.20) so the per-activity
+                # eating_drinking_cup_confidence (0.25) is the actual filter, not this pre-filter
+                elif class_name in ['cup', 'bottle'] and conf > getattr(self.settings, 'eating_drinking_cup_floor_confidence', 0.20):
+                    detections['cup_bottle'].append(xyxy)
+
         # Stage 2: Pose-guided ROI detection (if pose landmarks available)
         if use_pose_guided and pose_landmarks is not None:
             h, w = frame.shape[:2]
@@ -4083,61 +4314,157 @@ class LocopilotActivityMonitor:
             # Get matched pose keypoints for this person
             # YOLOv8-Pose provides full-frame coordinates directly (no cropping/translation needed)
             try:
+                has_pose = True
+                translated_landmarks = None
+
                 if person_idx not in matched_poses:
-                    # No pose detected for this person, skip
-                    continue
-
-                # Get the matched YoloPoseLandmarks (MediaPipe-compatible interface)
-                translated_landmarks = matched_poses[person_idx]
-
-                # Validate landmarks are valid before using for activity detection
-                if translated_landmarks is None or len(translated_landmarks.landmark) == 0:
-                    continue
-
-                # Check if at least some keypoints have good visibility
-                visible_count = sum(1 for lm in translated_landmarks.landmark if lm.visibility > 0.3)
-                if visible_count < 5:
-                    # Not enough visible keypoints, skip this person
-                    continue
-
-                # ============ KEYPOINT CONSISTENCY VALIDATION ============
-                # Verify that torso center falls within (or near) the person's bbox
-                # This catches cases where pose matching assigned wrong skeleton to person
-                h, w = frame.shape[:2]
-                left_shoulder = translated_landmarks.landmark[5]  # YOLO index
-                right_shoulder = translated_landmarks.landmark[6]  # YOLO index
-
-                # Calculate torso center in pixel coords
-                torso_center_x = ((left_shoulder.x + right_shoulder.x) / 2) * w
-                torso_center_y = ((left_shoulder.y + right_shoulder.y) / 2) * h
-
-                # Check if torso center is within expanded bbox (1.5x margin)
-                bbox_margin = 0.5  # 50% expansion
-                x1, y1, x2, y2 = bbox
-                bbox_width = x2 - x1
-                bbox_height = y2 - y1
-                expanded_x1 = x1 - bbox_width * bbox_margin
-                expanded_x2 = x2 + bbox_width * bbox_margin
-                expanded_y1 = y1 - bbox_height * bbox_margin
-                expanded_y2 = y2 + bbox_height * bbox_margin
-
-                torso_in_bbox = (
-                    expanded_x1 <= torso_center_x <= expanded_x2 and
-                    expanded_y1 <= torso_center_y <= expanded_y2
-                )
-
-                if not torso_in_bbox:
-                    gesture_logger.warning(
-                        f"[KEYPOINT VALIDATION] Person {person_idx} ({person_data.get('role', 'UNKNOWN')}): "
-                        f"Torso center ({torso_center_x:.0f}, {torso_center_y:.0f}) outside expanded bbox "
-                        f"[{expanded_x1:.0f}-{expanded_x2:.0f}, {expanded_y1:.0f}-{expanded_y2:.0f}] - SKIPPING"
-                    )
-                    continue
+                    has_pose = False
                 else:
-                    gesture_logger.debug(
-                        f"[KEYPOINT VALIDATION] Person {person_idx} ({person_data.get('role', 'UNKNOWN')}): "
-                        f"Torso center ({torso_center_x:.0f}, {torso_center_y:.0f}) VALID within bbox"
+                    # Get the matched YoloPoseLandmarks (MediaPipe-compatible interface)
+                    translated_landmarks = matched_poses[person_idx]
+
+                    # Validate landmarks are valid before using for activity detection
+                    if translated_landmarks is None or len(translated_landmarks.landmark) == 0:
+                        has_pose = False
+                        translated_landmarks = None
+                    else:
+                        # Check if at least some keypoints have good visibility
+                        visible_count = sum(1 for lm in translated_landmarks.landmark if lm.visibility > 0.3)
+                        if visible_count < 5:
+                            has_pose = False
+                            translated_landmarks = None
+
+                h, w = frame.shape[:2]
+
+                if has_pose and translated_landmarks is not None:
+                    # ============ KEYPOINT CONSISTENCY VALIDATION ============
+                    # Verify that torso center falls within (or near) the person's bbox
+                    # This catches cases where pose matching assigned wrong skeleton to person
+                    left_shoulder = translated_landmarks.landmark[5]  # YOLO index
+                    right_shoulder = translated_landmarks.landmark[6]  # YOLO index
+
+                    # Calculate torso center in pixel coords
+                    torso_center_x = ((left_shoulder.x + right_shoulder.x) / 2) * w
+                    torso_center_y = ((left_shoulder.y + right_shoulder.y) / 2) * h
+
+                    # Check if torso center is within expanded bbox (1.5x margin)
+                    bbox_margin = 0.5  # 50% expansion
+                    x1, y1, x2, y2 = bbox
+                    bbox_width = x2 - x1
+                    bbox_height = y2 - y1
+                    expanded_x1 = x1 - bbox_width * bbox_margin
+                    expanded_x2 = x2 + bbox_width * bbox_margin
+                    expanded_y1 = y1 - bbox_height * bbox_margin
+                    expanded_y2 = y2 + bbox_height * bbox_margin
+
+                    torso_in_bbox = (
+                        expanded_x1 <= torso_center_x <= expanded_x2 and
+                        expanded_y1 <= torso_center_y <= expanded_y2
                     )
+
+                    if not torso_in_bbox:
+                        gesture_logger.warning(
+                            f"[KEYPOINT VALIDATION] Person {person_idx} ({person_data.get('role', 'UNKNOWN')}): "
+                            f"Torso center ({torso_center_x:.0f}, {torso_center_y:.0f}) outside expanded bbox "
+                            f"[{expanded_x1:.0f}-{expanded_x2:.0f}, {expanded_y1:.0f}-{expanded_y2:.0f}] - SKIPPING"
+                        )
+                        has_pose = False
+                        translated_landmarks = None
+                    else:
+                        gesture_logger.debug(
+                            f"[KEYPOINT VALIDATION] Person {person_idx} ({person_data.get('role', 'UNKNOWN')}): "
+                            f"Torso center ({torso_center_x:.0f}, {torso_center_y:.0f}) VALID within bbox"
+                        )
+
+                # ============ NO-POSE PATH: Limited detection for persons without pose ============
+                if not has_pose:
+                    # Run object-based eating/drinking detection and no-pose sleep tracking
+                    no_pose_activities = {
+                        'mind_diversion': False,
+                        'sleep': False,
+                        'microsleep': False,
+                        'cell_phone': False,
+                        'writing': False,
+                        'packing': False,
+                        'lp_hand_gesture': False,
+                        'alp_hand_gesture': False
+                    }
+                    no_pose_debug = {
+                        'head_pose': {},
+                        'sleep_info': {'no_pose': True},
+                        'gesture_debug': {}
+                    }
+
+                    # --- Object-based eating/drinking (cup directly overlaps person bbox) ---
+                    if getattr(self.settings, 'eating_drinking_detection_enabled', True):
+                        cup_bottle_bboxes = []
+                        cup_conf_threshold = getattr(self.settings, 'eating_drinking_cup_confidence', 0.25)
+                        for roi_det in detections.get('roi_detections', []):
+                            if roi_det['class'] in ('cup', 'bottle') and roi_det['confidence'] > cup_conf_threshold:
+                                det_bbox = roi_det['bbox']
+                                if self.bbox_overlap_with_margin(det_bbox, bbox, 50):
+                                    cup_bottle_bboxes.append(det_bbox)
+                        for cb_xyxy in detections.get('cup_bottle', []):
+                            cb_bbox = [float(cb_xyxy[0]), float(cb_xyxy[1]), float(cb_xyxy[2]), float(cb_xyxy[3])]
+                            if self.bbox_overlap_with_margin(cb_bbox, bbox, 50):
+                                cup_bottle_bboxes.append(cb_bbox)
+
+                        if cup_bottle_bboxes:
+                            # Cup overlaps person bbox directly → eating/drinking (no hand-face check possible)
+                            no_pose_activities['mind_diversion'] = True
+                            no_pose_debug['head_pose']['sub_type'] = 'eating_drinking'
+                            no_pose_debug['head_pose']['detected'] = True
+                            no_pose_debug['head_pose']['method'] = 'no_pose_cup_overlap'
+                            self.logger.info(
+                                f"[NO-POSE EATING/DRINKING] Person {person_idx}: cup/bottle overlaps bbox, "
+                                f"no pose available - flagging eating/drinking"
+                            )
+
+                    # --- No-pose sleep detection (bbox stability tracking) ---
+                    sleep_no_pose_enabled = getattr(self.settings, 'sleep_no_pose_enabled', True)
+                    if sleep_no_pose_enabled:
+                        min_duration = getattr(self.settings, 'sleep_no_pose_min_duration', 30.0)
+                        stability_threshold = getattr(self.settings, 'sleep_no_pose_bbox_stability_threshold', 0.15)
+
+                        if person_idx not in self.no_pose_sleep_tracking:
+                            self.no_pose_sleep_tracking[person_idx] = {
+                                'first_seen': timestamp_sec,
+                                'last_bbox': list(bbox),
+                                'stable_since': timestamp_sec
+                            }
+                        else:
+                            tracker = self.no_pose_sleep_tracking[person_idx]
+                            # Calculate IoU between current and last bbox to measure stability
+                            last_bbox = tracker['last_bbox']
+                            iou = self._calculate_bbox_iou(bbox, last_bbox)
+                            bbox_change = 1.0 - iou  # How much the bbox moved
+
+                            if bbox_change > stability_threshold:
+                                # Person moved significantly, reset stability timer
+                                tracker['stable_since'] = timestamp_sec
+
+                            tracker['last_bbox'] = list(bbox)
+
+                            # Check if person has been stable (not moving) for min_duration
+                            stable_duration = timestamp_sec - tracker['stable_since']
+                            if stable_duration >= min_duration:
+                                no_pose_activities['sleep'] = True
+                                no_pose_debug['sleep_info']['no_pose_sleep'] = True
+                                no_pose_debug['sleep_info']['stable_duration'] = stable_duration
+                                self.logger.info(
+                                    f"[NO-POSE SLEEP] Person {person_idx}: no pose for {stable_duration:.1f}s "
+                                    f"with stable bbox (change={bbox_change:.3f}) - flagging sleep"
+                                )
+
+                    persons_data[person_idx] = {
+                        'pose_landmarks': None,
+                        'role': person_data.get('role', 'UNKNOWN'),
+                        'role_name': person_data.get('role_name', 'Unknown'),
+                        'bbox': bbox,
+                        'activities': no_pose_activities,
+                        'debug_info': no_pose_debug
+                    }
+                    continue
 
                 # Initialize activity detection results for this person
                 person_activities = {
@@ -4205,7 +4532,7 @@ class LocopilotActivityMonitor:
                 
                 # 2. SLEEP / MICROSLEEP DETECTION (pose-based)
                 pose_sleep_detected, pose_microsleep_detected, pose_sleep_info = self.detect_pose_based_sleep(
-                    translated_landmarks, timestamp_sec
+                    translated_landmarks, timestamp_sec, person_idx=person_idx, frame_shape=frame.shape
                 )
                 person_debug_info['sleep_info'] = pose_sleep_info
                 person_activities['sleep'] = pose_sleep_detected
@@ -4250,7 +4577,78 @@ class LocopilotActivityMonitor:
                                 else:
                                     person_activities['cell_phone'] = should_trigger
                                 break
-                
+
+                # 3b. EATING/DRINKING DETECTION (cup/bottle near face = mind diversion)
+                eating_drinking_detected = False
+                if getattr(self.settings, 'eating_drinking_detection_enabled', True) and not person_activities.get('mind_diversion', False):
+                    # Check if cup/bottle detected in ROI near this person
+                    cup_bottle_bboxes = []
+                    cup_conf_threshold = getattr(self.settings, 'eating_drinking_cup_confidence', 0.25)
+                    for roi_det in detections.get('roi_detections', []):
+                        if roi_det['class'] in ('cup', 'bottle') and roi_det['confidence'] > cup_conf_threshold:
+                            det_bbox = roi_det['bbox']
+                            if self.bbox_overlap_with_margin(det_bbox, bbox, 100):
+                                cup_bottle_bboxes.append(det_bbox)
+
+                    # Also check full-frame cup/bottle detections
+                    for cb_xyxy in detections.get('cup_bottle', []):
+                        cb_bbox = [float(cb_xyxy[0]), float(cb_xyxy[1]), float(cb_xyxy[2]), float(cb_xyxy[3])]
+                        if self.bbox_overlap_with_margin(cb_bbox, bbox, 100):
+                            cup_bottle_bboxes.append(cb_bbox)
+
+                    if cup_bottle_bboxes:
+                        # Check if hand is near face level AND holding cup/bottle
+                        right_wrist = self.get_keypoint(translated_landmarks, 'right_wrist')
+                        left_wrist = self.get_keypoint(translated_landmarks, 'left_wrist')
+                        nose = self.get_keypoint(translated_landmarks, 'nose')
+
+                        hand_face_margin = getattr(self.settings, 'eating_drinking_hand_face_margin', 80)
+                        hand_obj_margin = getattr(self.settings, 'eating_drinking_hand_object_margin', 150)
+
+                        if nose and nose.visibility > 0.3:
+                            nose_y = nose.y * h
+                            for wrist in [right_wrist, left_wrist]:
+                                if wrist and wrist.visibility > 0.3:
+                                    wrist_y = wrist.y * h
+                                    wrist_coords = (int(wrist.x * w), int(wrist.y * h))
+                                    # Hand is at or above shoulder/chin level (drinking position)
+                                    if wrist_y < nose_y + hand_face_margin:
+                                        for cb_bbox in cup_bottle_bboxes:
+                                            if self.check_hand_object_interaction(wrist_coords, cb_bbox, hand_obj_margin):
+                                                eating_drinking_detected = True
+                                                break
+                                if eating_drinking_detected:
+                                    break
+
+                        # Fallback: cup directly overlaps person bbox AND at least one wrist visible
+                        # Handles overhead camera angles where hand-face proximity is unreliable
+                        if not eating_drinking_detected:
+                            any_wrist_visible = any(
+                                w_kp and w_kp.visibility > 0.3
+                                for w_kp in [right_wrist, left_wrist]
+                            )
+                            if any_wrist_visible:
+                                for cb_bbox in cup_bottle_bboxes:
+                                    # Cup must directly overlap person bbox (no margin = stricter spatial check)
+                                    if self.bbox_overlap_with_margin(cb_bbox, bbox, 0):
+                                        eating_drinking_detected = True
+                                        self.logger.info(
+                                            f"[EATING/DRINKING FALLBACK] Cup/bottle directly overlaps person {person_idx} bbox "
+                                            f"with wrist visible - flagging eating/drinking"
+                                        )
+                                        break
+
+                    if eating_drinking_detected:
+                        person_activities['mind_diversion'] = True
+                        person_debug_info['head_pose']['sub_type'] = 'eating_drinking'
+                        person_debug_info['head_pose']['detected'] = True
+                        person_debug_info['head_pose']['method'] = 'object_proximity'
+
+                        # Stage 2: Collect for batch voting verification (if enabled)
+                        if voting_collector is not None:
+                            voting_collector.add('mind_diversion', person_idx, list(bbox),
+                                                 extra_data={'sub_type': 'eating_drinking'})
+
                 # 4. WRITING DETECTION (check if hand near book OR wrist/elbow proximity heuristic)
                 # MOVED BEFORE HAND GESTURE: Need to detect this first for context-aware filtering
                 writing_detected_by_book = False
@@ -4340,22 +4738,25 @@ class LocopilotActivityMonitor:
                 # 3. Book/document present in frame
                 # 4. Hands in writing position (wrists close together, below face)
                 if person_activities['mind_diversion']:
-                    should_suppress, suppress_reason = self.should_suppress_mind_diversion(
-                        person_idx=person_idx,
-                        person_activities=person_activities,
-                        pose_landmarks=translated_landmarks,
-                        detections=detections,
-                        frame_shape=frame.shape,
-                        current_time=timestamp_sec
-                    )
+                    # Don't suppress eating/drinking detections — they are object-based, not head-pose
+                    sub_type = person_debug_info.get('head_pose', {}).get('sub_type')
+                    if sub_type != 'eating_drinking':
+                        should_suppress, suppress_reason = self.should_suppress_mind_diversion(
+                            person_idx=person_idx,
+                            person_activities=person_activities,
+                            pose_landmarks=translated_landmarks,
+                            detections=detections,
+                            frame_shape=frame.shape,
+                            current_time=timestamp_sec
+                        )
 
-                    if should_suppress:
-                        person_activities['mind_diversion'] = False
-                        person_debug_info['head_pose']['suppressed'] = True
-                        person_debug_info['head_pose']['suppressed_reason'] = suppress_reason
-                    else:
-                        person_debug_info['head_pose']['suppressed'] = False
-                        person_debug_info['head_pose']['suppressed_reason'] = None
+                        if should_suppress:
+                            person_activities['mind_diversion'] = False
+                            person_debug_info['head_pose']['suppressed'] = True
+                            person_debug_info['head_pose']['suppressed_reason'] = suppress_reason
+                        else:
+                            person_debug_info['head_pose']['suppressed'] = False
+                            person_debug_info['head_pose']['suppressed_reason'] = None
 
                 # Helper method for temporal smoothing of hand positions
                 def _get_smoothed_hand_position(person_idx, hand_side, landmark, w, h, timestamp_sec):
@@ -4676,6 +5077,22 @@ class LocopilotActivityMonitor:
                 self.logger.error(f"Error processing person {person_idx}: {e}")
                 continue
         
+        # ============ CLEAN UP STALE PER-PERSON SLEEP TRACKING ============
+        # Remove tracking for persons no longer detected to prevent stale state
+        active_person_indices = set(persons_data.keys())
+        stale_person_indices = set(self.per_person_sleep_tracking.keys()) - active_person_indices
+        for stale_idx in stale_person_indices:
+            del self.per_person_sleep_tracking[stale_idx]
+
+        # Clean up stale no-pose sleep tracking
+        stale_no_pose = set(self.no_pose_sleep_tracking.keys()) - active_person_indices
+        for stale_idx in stale_no_pose:
+            del self.no_pose_sleep_tracking[stale_idx]
+        # Also clear no-pose tracking for persons that now have pose (they moved to the pose path)
+        for person_idx in list(self.no_pose_sleep_tracking.keys()):
+            if person_idx in persons_data and persons_data[person_idx].get('pose_landmarks') is not None:
+                del self.no_pose_sleep_tracking[person_idx]
+
         # ============ AGGREGATE RESULTS ACROSS ALL PERSONS ============
         aggregated = {
             'mind_diversion_detected': False,
@@ -4748,7 +5165,31 @@ class LocopilotActivityMonitor:
             return False
         
         return True
-    
+
+    def _calculate_bbox_iou(self, bbox1, bbox2):
+        """Calculate Intersection over Union (IoU) between two bounding boxes.
+
+        Args:
+            bbox1: [x1, y1, x2, y2]
+            bbox2: [x1, y1, x2, y2]
+
+        Returns:
+            float: IoU value between 0.0 and 1.0
+        """
+        x1 = max(bbox1[0], bbox2[0])
+        y1 = max(bbox1[1], bbox2[1])
+        x2 = min(bbox1[2], bbox2[2])
+        y2 = min(bbox1[3], bbox2[3])
+
+        intersection = max(0, x2 - x1) * max(0, y2 - y1)
+        area1 = (bbox1[2] - bbox1[0]) * (bbox1[3] - bbox1[1])
+        area2 = (bbox2[2] - bbox2[0]) * (bbox2[3] - bbox2[1])
+        union = area1 + area2 - intersection
+
+        if union <= 0:
+            return 0.0
+        return intersection / union
+
     def calculate_head_pose_angles(self, pose_landmarks, face_landmarks, frame_shape):
         """Calculate head pose angles (yaw and pitch) to detect mind diversion.
 
@@ -6216,8 +6657,10 @@ class LocopilotActivityMonitor:
                 continue
             finally:
                 # ✅ MEMORY FIX: Explicitly delete frame after processing to free memory
-                del frame
-                del annotated_frame_for_activity
+                if 'frame' in locals():
+                    del frame
+                if 'annotated_frame_for_activity' in locals():
+                    del annotated_frame_for_activity
                 if 'rgb_frame' in locals():
                     del rgb_frame
         

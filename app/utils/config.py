@@ -183,6 +183,7 @@ class Settings(BaseSettings):
     voting_threshold_lp_hand_gesture: float = float(os.getenv("VOTING_THRESHOLD_LP_GESTURE", "0.6"))
     voting_threshold_alp_hand_gesture: float = float(os.getenv("VOTING_THRESHOLD_ALP_GESTURE", "0.6"))
     voting_threshold_mind_diversion: float = float(os.getenv("VOTING_THRESHOLD_MIND_DIVERSION", "0.5"))
+    voting_threshold_eating_drinking: float = float(os.getenv("VOTING_THRESHOLD_EATING_DRINKING", "0.4"))  # Lower threshold - cups harder to detect in IR
     voting_threshold_group_detected: float = float(os.getenv("VOTING_THRESHOLD_GROUP", "0.5"))
 
     # Hand Gesture Coordination Session Settings
@@ -191,7 +192,7 @@ class Settings(BaseSettings):
     hand_gesture_session_timeout: float = float(os.getenv("HAND_GESTURE_SESSION_TIMEOUT", "10.0"))
 
     # Voting debug settings - save annotated frames for troubleshooting
-    voting_save_debug_frames: bool = bool(int(os.getenv("VOTING_SAVE_DEBUG_FRAMES", "1")))  # Enable by default
+    voting_save_debug_frames: bool = bool(int(os.getenv("VOTING_SAVE_DEBUG_FRAMES", "0")))  # Disabled by default (enable locally for debugging)
     voting_debug_frames_dir: str = os.getenv("VOTING_DEBUG_FRAMES_DIR", "voting_debug_frames")
 
     # Packing bags verification thresholds (stricter than initial detection)
@@ -220,6 +221,24 @@ class Settings(BaseSettings):
     # - Positive yaw = looking RIGHT away from track (POTENTIAL DIVERSION)
     # When enabled, only positive yaw triggers mind diversion (exempts looking at track)
     mind_diversion_exempt_forward_looking: bool = os.getenv("MIND_DIV_EXEMPT_FORWARD", "true").lower() == "true"
+
+    # Sleep Detection - Reclined Posture Settings (overhead/behind camera angles)
+    # When crew sleeps by leaning BACK against wall, torso elongates and nose moves higher in frame
+    sleep_reclined_torso_height_threshold: float = float(os.getenv("SLEEP_TORSO_HEIGHT_THRESH", "175"))  # px, torso > this = reclined
+    sleep_reclined_nose_y_norm_threshold: float = float(os.getenv("SLEEP_NOSE_Y_NORM_THRESH", "0.40"))  # normalized, nose_y < this = reclined (higher in frame)
+    sleep_reclined_shoulder_width_threshold: float = float(os.getenv("SLEEP_SHOULDER_WIDTH_THRESH", "60"))  # px, shoulders < this = compressed (reclined)
+
+    # No-pose sleep detection (for IR mode where YOLO pose fails)
+    sleep_no_pose_enabled: bool = bool(int(os.getenv("SLEEP_NO_POSE_ENABLED", "1")))
+    sleep_no_pose_min_duration: float = float(os.getenv("SLEEP_NO_POSE_MIN_DURATION", "30.0"))  # Seconds of stable no-pose person before flagging sleep
+    sleep_no_pose_bbox_stability_threshold: float = float(os.getenv("SLEEP_NO_POSE_BBOX_STABILITY", "0.15"))  # IoU change threshold for bbox stability
+
+    # Eating/Drinking Detection (mind diversion sub-type)
+    eating_drinking_detection_enabled: bool = bool(int(os.getenv("EATING_DRINKING_ENABLED", "1")))
+    eating_drinking_cup_confidence: float = float(os.getenv("EATING_DRINKING_CUP_CONF", "0.25"))  # Lower threshold for cups in IR
+    eating_drinking_hand_face_margin: int = int(os.getenv("EATING_DRINKING_HAND_FACE_MARGIN", "80"))  # Wrist within 80px of nose height
+    eating_drinking_hand_object_margin: int = int(os.getenv("EATING_DRINKING_HAND_OBJ_MARGIN", "150"))  # Hand-to-cup proximity
+    eating_drinking_cup_floor_confidence: float = float(os.getenv("EATING_DRINKING_CUP_FLOOR_CONF", "0.20"))  # Pre-filter floor for cup/bottle in full-frame detection
 
     # Mind Diversion Suppression Settings
     # Suppress false positives when LP is doing legitimate document work
@@ -264,30 +283,31 @@ class Settings(BaseSettings):
     # Optical Flow Motion Detection Settings
     # ==========================================
     # Enable/disable optical flow motion verification
-    optical_flow_enabled: bool = bool(int(os.getenv("OPTICAL_FLOW_ENABLED", "1")))
+    optical_flow_enabled: bool = bool(int(os.getenv("OPTICAL_FLOW_ENABLED", "0")))
 
-    # Front window ROI configuration (ratios of frame dimensions)
-    # Captures the front windshield view for reliable motion detection
-    # Default: Top-center 25% of frame width, top 15% height (front window)
-    # Tested on ch03 camera angle - detects train motion via scenery passing
-    motion_roi_x_ratio: float = float(os.getenv("MOTION_ROI_X", "0.25"))
-    motion_roi_width_ratio: float = float(os.getenv("MOTION_ROI_WIDTH", "0.25"))
-    motion_roi_y_ratio: float = float(os.getenv("MOTION_ROI_Y", "0.0"))
-    motion_roi_height_ratio: float = float(os.getenv("MOTION_ROI_HEIGHT", "0.15"))
+    # Side window ROI configuration (ratios of frame dimensions)
+    # Captures the narrow left side window/door opening for motion detection
+    # IPCamera 02 cabin view: outside scenery visible through left side bars/window
+    # Calibrated from "Writing 13 25.mp4" (1280x720, 25fps)
+    motion_roi_x_ratio: float = float(os.getenv("MOTION_ROI_X", "0.0"))
+    motion_roi_width_ratio: float = float(os.getenv("MOTION_ROI_WIDTH", "0.08"))
+    motion_roi_y_ratio: float = float(os.getenv("MOTION_ROI_Y", "0.15"))
+    motion_roi_height_ratio: float = float(os.getenv("MOTION_ROI_HEIGHT", "0.50"))
 
     # Motion classification thresholds (optical flow magnitude - 90th percentile)
-    # Calibrated from video analysis:
-    #   - STOPPED: magnitude typically 0.5-1.5 (static platform/scenery)
-    #   - RUNNING: magnitude typically 5.0-10.0 (scenery moving)
-    motion_stopped_threshold: float = float(os.getenv("MOTION_STOPPED_THRESHOLD", "2.0"))
-    motion_running_threshold: float = float(os.getenv("MOTION_RUNNING_THRESHOLD", "5.0"))
+    # Calibrated from video analysis (consecutive frames at 25fps):
+    #   - STOPPED: p90 magnitude typically 0.13-0.14
+    #   - RUNNING: p90 magnitude typically 1.0-2.4
+    #   - TRANSITION: p90 magnitude 0.5-0.7
+    motion_stopped_threshold: float = float(os.getenv("MOTION_STOPPED_THRESHOLD", "0.3"))
+    motion_running_threshold: float = float(os.getenv("MOTION_RUNNING_THRESHOLD", "0.8"))
     motion_confidence_threshold: float = float(os.getenv("MOTION_CONFIDENCE_THRESHOLD", "0.7"))
 
     # ==========================================
     # etrain.info Delay Integration Settings
     # ==========================================
     # Enable/disable etrain.info delay data fetching
-    etrain_enabled: bool = bool(int(os.getenv("ETRAIN_ENABLED", "1")))
+    etrain_enabled: bool = bool(int(os.getenv("ETRAIN_ENABLED", "0")))
 
     # etrain.info base URL for train live status
     etrain_base_url: str = os.getenv("ETRAIN_BASE_URL", "https://etrain.info/train")

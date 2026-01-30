@@ -63,9 +63,9 @@ class SideWindowMotionService:
     - Batch processing with voting for multi-frame analysis
     - Configurable thresholds for stopped/running classification
 
-    ROI Configuration (Side Window 2 - Default):
-        Left 18% of frame width, 30-70% of frame height
-        x=0.0, width=0.18, y=0.30, height=0.40
+    ROI Configuration (Side Window - IPCamera 02):
+        Left 8% of frame width, 15-65% of frame height
+        x=0.0, width=0.08, y=0.15, height=0.50
     """
 
     def __init__(self):
@@ -77,9 +77,9 @@ class SideWindowMotionService:
 
         # ROI configuration (ratios of frame dimensions)
         self.roi_x_ratio = getattr(self.settings, 'motion_roi_x_ratio', 0.0)
-        self.roi_width_ratio = getattr(self.settings, 'motion_roi_width_ratio', 0.18)
-        self.roi_y_ratio = getattr(self.settings, 'motion_roi_y_ratio', 0.30)
-        self.roi_height_ratio = getattr(self.settings, 'motion_roi_height_ratio', 0.40)
+        self.roi_width_ratio = getattr(self.settings, 'motion_roi_width_ratio', 0.08)
+        self.roi_y_ratio = getattr(self.settings, 'motion_roi_y_ratio', 0.15)
+        self.roi_height_ratio = getattr(self.settings, 'motion_roi_height_ratio', 0.50)
 
         # Thresholds for motion classification
         self.stopped_threshold = getattr(self.settings, 'motion_stopped_threshold', 2.0)
