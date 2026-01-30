@@ -318,10 +318,10 @@ class VotingVerificationService:
         self.yolo_model = yolo_model
         self.yolo_pose_model = yolo_pose_model
 
-        # Activity thresholds (matching locopilot_monitor.py)
-        self.cell_phone_margin = 100  # Hand-to-phone proximity
-        self.book_hand_margin = 180   # Hand-to-book proximity
-        self.person_book_margin = 250 # Person-to-book region
+        # Activity thresholds (from config, matching locopilot_monitor.py)
+        self.cell_phone_margin = self.settings.voting_cell_phone_margin
+        self.book_hand_margin = self.settings.voting_book_hand_margin
+        self.person_book_margin = self.settings.voting_person_book_margin
 
         # Packing bags verification thresholds (stricter for voting)
         self.packing_wrist_visibility = self.settings.packing_wrist_visibility_threshold  # 0.4 min visibility

@@ -43,71 +43,86 @@ class ActivityConfig:
 
 # Single registry that replaces the 4 hand-written parallel dicts.
 # The keys are the canonical activity names.
-ACTIVITY_REGISTRY: Dict[str, ActivityConfig] = {
-    'microsleep': ActivityConfig(
-        min_duration=3.0,
-        required_consecutive=2,
-        margin=None,
-        grace_frames=10,
-    ),
-    'sleep': ActivityConfig(
-        min_duration=20.0,
-        required_consecutive=4,
-        margin=None,
-        grace_frames=10,
-    ),
-    'cell_phone': ActivityConfig(
-        min_duration=0.1,
-        required_consecutive=1,
-        margin=180,
-        grace_frames=8,
-    ),
-    'writing': ActivityConfig(
-        min_duration=0.1,
-        required_consecutive=1,
-        margin=180,
-        grace_frames=10,
-    ),
-    'packing_bags': ActivityConfig(
-        min_duration=0.0,
-        required_consecutive=1,
-        margin=100,
-        grace_frames=5,
-        region_margin=150,
-        wrist_inside_margin=80,
-        sustained_proximity_seconds=4.0,
-    ),
-    'group_detected': ActivityConfig(
-        min_duration=0.0,
-        required_consecutive=3,
-        margin=None,
-        grace_frames=8,
-    ),
-    'lp_hand_gesture': ActivityConfig(
-        min_duration=0.0,
-        required_consecutive=1,
-        margin=None,
-        grace_frames=5,
-    ),
-    'alp_hand_gesture': ActivityConfig(
-        min_duration=0.0,
-        required_consecutive=1,
-        margin=None,
-        grace_frames=5,
-    ),
-    'mind_diversion': ActivityConfig(
-        min_duration=0.0,
-        required_consecutive=2,
-        margin=None,
-        grace_frames=5,
-    ),
-    'no_person_detected': ActivityConfig(
-        min_duration=5.0,
-        required_consecutive=3,
-        margin=None,
-        grace_frames=3,
-    ),
-}
+# Built via function so config-driven margins are resolved at first access.
+def _build_activity_registry() -> Dict[str, ActivityConfig]:
+    """Build activity registry with config-driven margins."""
+    try:
+        _settings = get_settings() if get_settings is not None else None
+    except Exception:
+        _settings = None
+
+    cell_phone_margin = _settings.activity_cell_phone_margin if _settings else 180
+    writing_margin = _settings.activity_writing_margin if _settings else 180
+    packing_margin = _settings.activity_packing_margin if _settings else 100
+    packing_region_margin = _settings.activity_packing_region_margin if _settings else 150
+    packing_wrist_inside_margin = _settings.activity_packing_wrist_inside_margin if _settings else 80
+
+    return {
+        'microsleep': ActivityConfig(
+            min_duration=3.0,
+            required_consecutive=2,
+            margin=None,
+            grace_frames=10,
+        ),
+        'sleep': ActivityConfig(
+            min_duration=20.0,
+            required_consecutive=4,
+            margin=None,
+            grace_frames=10,
+        ),
+        'cell_phone': ActivityConfig(
+            min_duration=0.1,
+            required_consecutive=1,
+            margin=cell_phone_margin,
+            grace_frames=8,
+        ),
+        'writing': ActivityConfig(
+            min_duration=0.1,
+            required_consecutive=1,
+            margin=writing_margin,
+            grace_frames=10,
+        ),
+        'packing_bags': ActivityConfig(
+            min_duration=0.0,
+            required_consecutive=1,
+            margin=packing_margin,
+            grace_frames=5,
+            region_margin=packing_region_margin,
+            wrist_inside_margin=packing_wrist_inside_margin,
+            sustained_proximity_seconds=4.0,
+        ),
+        'group_detected': ActivityConfig(
+            min_duration=0.0,
+            required_consecutive=3,
+            margin=None,
+            grace_frames=8,
+        ),
+        'lp_hand_gesture': ActivityConfig(
+            min_duration=0.0,
+            required_consecutive=1,
+            margin=None,
+            grace_frames=5,
+        ),
+        'alp_hand_gesture': ActivityConfig(
+            min_duration=0.0,
+            required_consecutive=1,
+            margin=None,
+            grace_frames=5,
+        ),
+        'mind_diversion': ActivityConfig(
+            min_duration=0.0,
+            required_consecutive=2,
+            margin=None,
+            grace_frames=5,
+        ),
+        'no_person_detected': ActivityConfig(
+            min_duration=5.0,
+            required_consecutive=3,
+            margin=None,
+            grace_frames=3,
+        ),
+    }
+
 
 # Add app directory to path for importing preprocessing service
 script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -180,6 +195,9 @@ except ImportError:
     VotingVerificationService = None
     ActivityBatchCollector = None
 
+# Build activity registry now that get_settings is available
+ACTIVITY_REGISTRY: Dict[str, ActivityConfig] = _build_activity_registry()
+
 
 # [OK] WINDOWS FIX: Prevent Qt/GUI initialization in worker processes
 # If running in a worker process (detected by QT_QPA_PLATFORM=offscreen),
@@ -246,63 +264,6 @@ class LocopilotActivityMonitor:
     YOLO_HEAD_INDICES = [0, 1, 2, 3, 4]  # nose, left_eye, right_eye, left_ear, right_ear
     YOLO_BODY_INDICES = [5, 6, 7, 8, 11, 12]  # left/right shoulders, elbows, hips
     YOLO_MIN_KEYPOINTS = 13  # Minimum landmarks required (indices 0-12)
-
-    # === Wrist/Elbow Distance Thresholds (Writing Detection) ===
-    MAX_WRIST_DISTANCE = 300        # pixels - wrists close together during writing
-    MAX_ELBOW_DISTANCE = 450        # pixels - elbows typically wider apart during writing
-    MAX_SINGLE_WRIST_DISTANCE = 250 # pixels - wrist to shoulder center, tighter threshold
-    WRITING_WRIST_DISTANCE = 300    # pixels - wrist proximity for writing posture
-    RELAXED_WRIST_DISTANCE = 400    # pixels - relaxed wrist distance when head is down
-    ELBOW_VISIBILITY_THRESHOLD = 0.25  # lower threshold since elbows more reliable
-    WRIST_VISIBILITY_THRESHOLD = 0.3   # minimum visibility for wrist detection
-
-    # === Writing Detection Duration/Frame Thresholds ===
-    WRITING_MIN_DURATION = 1.0       # seconds - minimum duration for writing confirmation
-    WRITING_REQUIRED_CONSECUTIVE = 2  # frames - required consecutive detections
-    BOOK_POSTURE_MIN_DURATION = 2.0   # seconds - longer duration for book+posture fallback
-    BOOK_POSTURE_REQUIRED_CONSECUTIVE = 2  # frames - required consecutive for book+posture
-
-    # === Head Tilt / Sleep Detection Thresholds ===
-    HEAD_DOWN_THRESHOLD = 0.01       # normalized coords - nose below eye line for head-down
-    EAR_CLOSED_THRESHOLD = 0.2       # Eye Aspect Ratio below this = eyes closed
-    EYE_CLOSURE_MICROSLEEP_SECS = 5  # seconds - eye closure duration for microsleep
-    EYE_CLOSURE_SLEEP_SECS = 30      # seconds - eye closure duration for sleep alert
-
-    # === Pose-Based Sleep Detection Thresholds ===
-    SLEEP_STRONG_SCORE = 4           # sleep_score threshold for strong/unmistakable signal
-    SLEEP_STRONG_DURATION = 2        # seconds - duration with strong signal for sleep
-    SLEEP_MODERATE_DURATION = 4      # seconds - duration with moderate signal for sleep
-    SLEEP_MICROSLEEP_DURATION = 2    # seconds - duration for microsleep with moderate signal
-    MINIMAL_MOVEMENT_THRESHOLD = 0.15    # avg movement below this = minimal movement
-    STABLE_POSTURE_VARIANCE = 100    # head tilt variance below this = stable posture
-    EYES_NOT_VISIBLE_THRESHOLD = 0.4 # avg eye visibility below this = eyes not visible
-
-    # === IR Forward Lean Detection ===
-    IR_SHOULDER_RELATIVE_THRESHOLD = 0.4  # shoulders in upper 40% of bbox
-    IR_BBOX_ASPECT_RATIO_THRESHOLD = 1.2  # height/width below this = squashed (forward lean)
-    IR_LOW_MOVEMENT_THRESHOLD = 0.02      # body movement below this = low movement
-    SUB_THRESHOLD_STREAK_LIMIT = 3        # consecutive sub-threshold frames before reset
-
-    # === YOLO Confidence Thresholds ===
-    YOLO_PERSON_CONFIDENCE = 0.5     # minimum confidence for person detection
-    YOLO_BAG_CONFIDENCE = 0.45       # minimum confidence for bag detection
-    YOLO_BAG_LOG_CONFIDENCE = 0.25   # minimum confidence for bag detection logging
-    YOLO_BOOK_CONFIDENCE = 0.4       # minimum confidence for book detection
-    YOLO_CELL_PHONE_CONFIDENCE = 0.3 # minimum confidence for cell phone detection
-    YOLO_SLEEP_POSE_CONFIDENCE = 0.30  # lower confidence for sleep pose detection
-
-    # === Object Detection Geometry ===
-    BAG_MAX_ASPECT_RATIO = 1.2       # bags wider than this are likely seats
-    BAG_MIN_AREA = 5000              # minimum bag area in pixels
-    BAG_MAX_AREA = 100000            # maximum bag area in pixels
-    BOOK_PERSON_MARGIN = 150         # pixels - margin for book-to-person association (full frame)
-    PERSON_BOOK_OVERLAP_MARGIN = 250 # pixels - margin for book overlap with person bbox
-
-    # === Pose Validation ===
-    MIN_POSE_LANDMARKS = 10          # minimum landmarks for valid pose
-    MIN_POSE_VISIBILITY = 0.3        # minimum average visibility for valid pose
-    FACE_MESH_DETECTION_CONFIDENCE = 0.5   # MediaPipe face mesh detection confidence
-    FACE_MESH_TRACKING_CONFIDENCE = 0.5    # MediaPipe face mesh tracking confidence
 
     def __init__(self, video_path: str, output_dir: str = "evidence", save_annotated_frames: bool = False, frame_save_interval: int = 1, sample_fps: float = 1.0, run_dir: Optional[str] = None, create_run_dir: bool = True, preloaded_models: Optional[Dict[str, Any]] = None) -> None:
         """Initialize Locopilot Activity Monitor.
@@ -373,6 +334,64 @@ class LocopilotActivityMonitor:
         # Get settings early (needed for both preloaded and fresh model paths)
         settings = get_settings() if get_settings is not None else None
         self.settings = settings  # Store for use in end_activity() clip buffer settings
+
+        # === Config-driven thresholds (replace former class-level constants) ===
+        # Wrist/Elbow Detection
+        self.MAX_WRIST_DISTANCE = settings.max_wrist_distance if settings else 300
+        self.MAX_ELBOW_DISTANCE = settings.max_elbow_distance if settings else 450
+        self.MAX_SINGLE_WRIST_DISTANCE = settings.max_single_wrist_distance if settings else 250
+        self.WRITING_WRIST_DISTANCE = settings.writing_wrist_distance if settings else 300
+        self.RELAXED_WRIST_DISTANCE = settings.relaxed_wrist_distance if settings else 400
+        self.ELBOW_VISIBILITY_THRESHOLD = settings.elbow_visibility_threshold if settings else 0.25
+        self.WRIST_VISIBILITY_THRESHOLD = settings.wrist_visibility_threshold if settings else 0.3
+
+        # Writing Detection
+        self.WRITING_MIN_DURATION = settings.writing_min_duration if settings else 1.0
+        self.WRITING_REQUIRED_CONSECUTIVE = settings.writing_required_consecutive if settings else 2
+        self.BOOK_POSTURE_MIN_DURATION = settings.book_posture_min_duration if settings else 2.0
+        self.BOOK_POSTURE_REQUIRED_CONSECUTIVE = settings.book_posture_required_consecutive if settings else 2
+
+        # Head Tilt / Sleep Detection
+        self.HEAD_DOWN_THRESHOLD = settings.head_down_threshold if settings else 0.01
+        self.EAR_CLOSED_THRESHOLD = settings.ear_closed_threshold if settings else 0.2
+        self.EYE_CLOSURE_MICROSLEEP_SECS = settings.eye_closure_microsleep_secs if settings else 5
+        self.EYE_CLOSURE_SLEEP_SECS = settings.eye_closure_sleep_secs if settings else 30
+
+        # Pose-Based Sleep Detection
+        self.SLEEP_STRONG_SCORE = settings.sleep_strong_score if settings else 4
+        self.SLEEP_STRONG_DURATION = settings.sleep_strong_duration if settings else 2
+        self.SLEEP_MODERATE_DURATION = settings.sleep_moderate_duration if settings else 4
+        self.SLEEP_MICROSLEEP_DURATION = settings.sleep_microsleep_duration if settings else 2
+        self.MINIMAL_MOVEMENT_THRESHOLD = settings.minimal_movement_threshold if settings else 0.15
+        self.STABLE_POSTURE_VARIANCE = settings.stable_posture_variance if settings else 100
+        self.EYES_NOT_VISIBLE_THRESHOLD = settings.eyes_not_visible_threshold if settings else 0.4
+
+        # IR Forward Lean Detection
+        self.IR_SHOULDER_RELATIVE_THRESHOLD = settings.ir_shoulder_relative_threshold if settings else 0.4
+        self.IR_BBOX_ASPECT_RATIO_THRESHOLD = settings.ir_bbox_aspect_ratio_threshold if settings else 1.2
+        self.IR_LOW_MOVEMENT_THRESHOLD = settings.ir_low_movement_threshold if settings else 0.02
+        self.SUB_THRESHOLD_STREAK_LIMIT = settings.sub_threshold_streak_limit if settings else 3
+
+        # YOLO Confidence Thresholds
+        self.YOLO_PERSON_CONFIDENCE = settings.yolo_person_confidence if settings else 0.5
+        self.YOLO_BAG_CONFIDENCE = settings.yolo_bag_confidence if settings else 0.45
+        self.YOLO_BAG_LOG_CONFIDENCE = settings.yolo_bag_log_confidence if settings else 0.25
+        self.YOLO_BOOK_CONFIDENCE = settings.yolo_book_confidence if settings else 0.4
+        self.YOLO_CELL_PHONE_CONFIDENCE = settings.yolo_cell_phone_confidence if settings else 0.3
+        self.YOLO_SLEEP_POSE_CONFIDENCE = settings.yolo_pose_sleep_confidence if settings else 0.30
+
+        # Object Detection Geometry
+        self.BAG_MAX_ASPECT_RATIO = settings.bag_max_aspect_ratio if settings else 1.2
+        self.BAG_MIN_AREA = settings.bag_min_area if settings else 5000
+        self.BAG_MAX_AREA = settings.bag_max_area if settings else 100000
+        self.BOOK_PERSON_MARGIN = settings.book_person_margin if settings else 150
+        self.PERSON_BOOK_OVERLAP_MARGIN = settings.person_book_overlap_margin if settings else 250
+
+        # Pose Validation
+        self.MIN_POSE_LANDMARKS = settings.min_pose_landmarks if settings else 10
+        self.MIN_POSE_VISIBILITY = settings.min_pose_visibility if settings else 0.3
+        self.FACE_MESH_DETECTION_CONFIDENCE = settings.face_mesh_detection_confidence if settings else 0.5
+        self.FACE_MESH_TRACKING_CONFIDENCE = settings.face_mesh_tracking_confidence if settings else 0.5
 
         # Initialize models - either use preloaded or load fresh
         if preloaded_models is not None:
@@ -459,7 +478,7 @@ class LocopilotActivityMonitor:
         self.cell_phone_confidence = float(os.getenv("CELL_PHONE_CONFIDENCE", "0.40"))
 
         # Phase 2: Load inference optimization settings (1.5-1.8x speedup)
-        self.yolo_imgsz = settings.yolo_imgsz if settings else 416
+        self.yolo_imgsz = settings.yolo_imgsz if settings else 640
         self.yolo_device = settings.yolo_device if settings else 'cpu'
 
         # GPU Batch Processing Settings - maximize GPU utilization

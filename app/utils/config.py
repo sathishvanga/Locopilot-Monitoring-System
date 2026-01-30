@@ -279,6 +279,90 @@ class Settings(BaseSettings):
     gpu_memory_warning_threshold: float = float(os.getenv("GPU_MEMORY_WARNING_THRESHOLD", "80.0"))  # Percentage
 
     # ==========================================
+    # YOLO Confidence Thresholds
+    # ==========================================
+    yolo_person_confidence: float = float(os.getenv("YOLO_PERSON_CONFIDENCE", "0.5"))
+    yolo_bag_confidence: float = float(os.getenv("YOLO_BAG_CONFIDENCE", "0.45"))
+    yolo_bag_log_confidence: float = float(os.getenv("YOLO_BAG_LOG_CONFIDENCE", "0.25"))
+    yolo_book_confidence: float = float(os.getenv("YOLO_BOOK_CONFIDENCE", "0.4"))
+    yolo_cell_phone_confidence: float = float(os.getenv("YOLO_CELL_PHONE_CONFIDENCE", "0.3"))
+
+    # ==========================================
+    # Wrist/Elbow Detection Thresholds
+    # ==========================================
+    max_wrist_distance: int = int(os.getenv("MAX_WRIST_DISTANCE", "300"))
+    max_elbow_distance: int = int(os.getenv("MAX_ELBOW_DISTANCE", "450"))
+    max_single_wrist_distance: int = int(os.getenv("MAX_SINGLE_WRIST_DISTANCE", "250"))
+    writing_wrist_distance: int = int(os.getenv("WRITING_WRIST_DISTANCE", "300"))
+    relaxed_wrist_distance: int = int(os.getenv("RELAXED_WRIST_DISTANCE", "400"))
+    elbow_visibility_threshold: float = float(os.getenv("ELBOW_VISIBILITY_THRESHOLD", "0.25"))
+    wrist_visibility_threshold: float = float(os.getenv("WRIST_VISIBILITY_THRESHOLD", "0.3"))
+
+    # ==========================================
+    # Writing Detection Thresholds
+    # ==========================================
+    writing_min_duration: float = float(os.getenv("WRITING_MIN_DURATION", "1.0"))
+    writing_required_consecutive: int = int(os.getenv("WRITING_REQUIRED_CONSECUTIVE", "2"))
+    book_posture_min_duration: float = float(os.getenv("BOOK_POSTURE_MIN_DURATION", "2.0"))
+    book_posture_required_consecutive: int = int(os.getenv("BOOK_POSTURE_REQUIRED_CONSECUTIVE", "2"))
+
+    # ==========================================
+    # Head Tilt / Sleep Detection Thresholds
+    # ==========================================
+    head_down_threshold: float = float(os.getenv("HEAD_DOWN_THRESHOLD", "0.01"))
+    ear_closed_threshold: float = float(os.getenv("EAR_CLOSED_THRESHOLD", "0.2"))
+    eye_closure_microsleep_secs: int = int(os.getenv("EYE_CLOSURE_MICROSLEEP_SECS", "5"))
+    eye_closure_sleep_secs: int = int(os.getenv("EYE_CLOSURE_SLEEP_SECS", "30"))
+    sleep_strong_score: int = int(os.getenv("SLEEP_STRONG_SCORE", "4"))
+    sleep_strong_duration: int = int(os.getenv("SLEEP_STRONG_DURATION", "2"))
+    sleep_moderate_duration: int = int(os.getenv("SLEEP_MODERATE_DURATION", "4"))
+    sleep_microsleep_duration: int = int(os.getenv("SLEEP_MICROSLEEP_DURATION", "2"))
+    minimal_movement_threshold: float = float(os.getenv("MINIMAL_MOVEMENT_THRESHOLD", "0.15"))
+    stable_posture_variance: int = int(os.getenv("STABLE_POSTURE_VARIANCE", "100"))
+    eyes_not_visible_threshold: float = float(os.getenv("EYES_NOT_VISIBLE_THRESHOLD", "0.4"))
+
+    # ==========================================
+    # IR Forward Lean Detection Thresholds
+    # ==========================================
+    ir_shoulder_relative_threshold: float = float(os.getenv("IR_SHOULDER_RELATIVE_THRESHOLD", "0.4"))
+    ir_bbox_aspect_ratio_threshold: float = float(os.getenv("IR_BBOX_ASPECT_RATIO_THRESHOLD", "1.2"))
+    ir_low_movement_threshold: float = float(os.getenv("IR_LOW_MOVEMENT_THRESHOLD", "0.02"))
+    sub_threshold_streak_limit: int = int(os.getenv("SUB_THRESHOLD_STREAK_LIMIT", "3"))
+
+    # ==========================================
+    # Object Detection Geometry
+    # ==========================================
+    bag_max_aspect_ratio: float = float(os.getenv("BAG_MAX_ASPECT_RATIO", "1.2"))
+    bag_min_area: int = int(os.getenv("BAG_MIN_AREA", "5000"))
+    bag_max_area: int = int(os.getenv("BAG_MAX_AREA", "100000"))
+    book_person_margin: int = int(os.getenv("BOOK_PERSON_MARGIN", "150"))
+    person_book_overlap_margin: int = int(os.getenv("PERSON_BOOK_OVERLAP_MARGIN", "250"))
+
+    # ==========================================
+    # Pose Validation
+    # ==========================================
+    min_pose_landmarks: int = int(os.getenv("MIN_POSE_LANDMARKS", "10"))
+    min_pose_visibility: float = float(os.getenv("MIN_POSE_VISIBILITY", "0.3"))
+    face_mesh_detection_confidence: float = float(os.getenv("FACE_MESH_DETECTION_CONFIDENCE", "0.5"))
+    face_mesh_tracking_confidence: float = float(os.getenv("FACE_MESH_TRACKING_CONFIDENCE", "0.5"))
+
+    # ==========================================
+    # Activity Registry Defaults (margins/regions)
+    # ==========================================
+    activity_cell_phone_margin: int = int(os.getenv("ACTIVITY_CELL_PHONE_MARGIN", "180"))
+    activity_writing_margin: int = int(os.getenv("ACTIVITY_WRITING_MARGIN", "180"))
+    activity_packing_margin: int = int(os.getenv("ACTIVITY_PACKING_MARGIN", "100"))
+    activity_packing_region_margin: int = int(os.getenv("ACTIVITY_PACKING_REGION_MARGIN", "150"))
+    activity_packing_wrist_inside_margin: int = int(os.getenv("ACTIVITY_PACKING_WRIST_INSIDE_MARGIN", "80"))
+
+    # ==========================================
+    # Voting Service Margins
+    # ==========================================
+    voting_cell_phone_margin: int = int(os.getenv("VOTING_CELL_PHONE_MARGIN", "100"))
+    voting_book_hand_margin: int = int(os.getenv("VOTING_BOOK_HAND_MARGIN", "180"))
+    voting_person_book_margin: int = int(os.getenv("VOTING_PERSON_BOOK_MARGIN", "250"))
+
+    # ==========================================
     # Train Motion Rules Settings
     # ==========================================
     # Enable/disable train motion-based rule engine
