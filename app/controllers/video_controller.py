@@ -72,6 +72,7 @@ s3_upload_service = get_s3_upload_service()
     - useMockDetection: Use mock detection for testing (optional, default: false)
     - useMultiprocessing: Enable parallel processing (optional, default: from config)
     - saveClips: Save annotated frames for debugging (optional, default: false). Clips and images are always saved for UI evidence.
+    - cameraAngle: Camera angle for LP/ALP role assignment (1 = LP Side, 2 = ALP Side, default: 1)
 
     Returns:
     - Processing results with detected activities
@@ -95,7 +96,8 @@ async def process_video(
     videoStartTime: Optional[str] = Form(default=None, description="Video recording start time in HH:MM:SS format (for motion rules when OCR unavailable)"),
     useMockDetection: Optional[bool] = Form(default=False, description="Use mock detection for testing"),
     useMultiprocessing: Optional[bool] = Form(default=None, description="Enable multiprocessing (default: from config)"),
-    saveClips: Optional[bool] = Form(default=False, description="Save annotated frames for debugging (default: false). Clips/images always saved.")
+    saveClips: Optional[bool] = Form(default=False, description="Save annotated frames for debugging (default: false). Clips/images always saved."),
+    cameraAngle: Optional[int] = Form(default=1, description="Camera angle: 1 = LP Side (default), 2 = ALP Side")
 ):
     """
     Process uploaded video and detect activities
@@ -128,6 +130,7 @@ async def process_video(
                 useMockDetection = body.get("useMockDetection", useMockDetection)
                 useMultiprocessing = body.get("useMultiprocessing", useMultiprocessing)
                 saveClips = body.get("saveClips", saveClips)
+                cameraAngle = body.get("cameraAngle", cameraAngle)
                 logger.info(f"📥 Received JSON request body for trip: {tripId}")
             except Exception as e:
                 logger.warning(f"⚠️ Failed to parse JSON body: {e}")
@@ -236,6 +239,9 @@ async def process_video(
         )
         
         # Process video (synchronous for now, can be made async)
+        # Validate cameraAngle (must be 1 or 2)
+        camera_angle = cameraAngle if cameraAngle in (1, 2) else 1
+
         result = video_processing_service.process_video(
             video_path=video_path,
             trip_id=tripId,
@@ -249,7 +255,8 @@ async def process_video(
             division=division,
             train_number=trainNumber,
             trip_date=tripDate,
-            video_start_time=videoStartTime
+            video_start_time=videoStartTime,
+            camera_angle=camera_angle
         )
 
         # Schedule cleanup of uploaded video after processing (production mode)

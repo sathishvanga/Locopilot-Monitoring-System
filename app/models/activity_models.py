@@ -31,10 +31,9 @@ class EvidenceModel(BaseModel):
 class PersonRoleModel(BaseModel):
     """Person role information with LP/ALP identification"""
     personIndex: int = Field(..., description="Index of the person (0, 1, 2, ...)")
-    role: str = Field(..., description="Role code (LP, ALP, SUPERVISOR, TRAINEE, VISITOR)")
+    role: str = Field(..., description="Role code (LP, ALP, VISITOR)")
     roleName: str = Field(..., description="Human-readable role name")
-    lpScore: int = Field(..., description="Loco Pilot score based on detected objects")
-    alpScore: int = Field(..., description="Assistant Loco Pilot score based on detected objects")
+    bboxArea: float = Field(..., description="Bounding box area used for camera proximity-based role assignment")
 
 
 class ActivityModel(BaseModel):
@@ -94,8 +93,7 @@ class ActivityModel(BaseModel):
                         "personIndex": 0,
                         "role": "LP",
                         "roleName": "Loco Pilot",
-                        "lpScore": 5,
-                        "alpScore": 1
+                        "bboxArea": 12345.0
                     }
                 ]
             }

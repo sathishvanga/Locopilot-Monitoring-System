@@ -238,7 +238,8 @@ class ActivityDetectionService:
         sample_fps: float = 1.0,
         run_dir: str = None,
         trip_schedule = None,
-        video_start_time: str = None
+        video_start_time: str = None,
+        camera_angle: int = 1
     ) -> List[Dict[str, Any]]:
         """
         Single-process activity detection (original implementation)
@@ -254,6 +255,7 @@ class ActivityDetectionService:
             run_dir: Run directory to use (if None, creates new one)
             trip_schedule: TripSchedule object for motion-based rule engine (optional)
             video_start_time: Video recording start time in HH:MM:SS format (optional)
+            camera_angle: Camera angle for LP/ALP role assignment (1 = LP Side, 2 = ALP Side)
 
         Returns:
             List[Dict[str, Any]]: List of detected activities
@@ -291,6 +293,9 @@ class ActivityDetectionService:
         # Set crew members mapping if provided
         if crew_members:
             monitor.crew_members = crew_members
+
+        # Set camera angle for LP/ALP role assignment
+        monitor.camera_angle = camera_angle
 
         # Set trip schedule for motion-based rule engine
         if trip_schedule is not None and hasattr(monitor, 'set_trip_schedule'):
@@ -334,7 +339,8 @@ class ActivityDetectionService:
         run_dir: str = None,
         save_clips: bool = True,
         trip_schedule = None,
-        video_start_time: str = None
+        video_start_time: str = None,
+        camera_angle: int = 1
     ) -> List[Dict[str, Any]]:
         """
         Multi-process activity detection using parallel processing
@@ -351,6 +357,7 @@ class ActivityDetectionService:
             save_clips: Whether to save video clips and images (default: True)
             trip_schedule: TripSchedule object for motion-based rule engine (optional)
             video_start_time: Video recording start time in HH:MM:SS format (optional)
+            camera_angle: Camera angle for LP/ALP role assignment (1 = LP Side, 2 = ALP Side)
 
         Returns:
             List[Dict[str, Any]]: List of detected activities
@@ -401,7 +408,8 @@ class ActivityDetectionService:
                 run_dir=run_dir,
                 save_clips=save_clips,
                 trip_schedule=trip_schedule,
-                video_start_time=video_start_time
+                video_start_time=video_start_time,
+                camera_angle=camera_angle
             )
             
             # ✅ MEMORY FIX: Force garbage collection after processing

@@ -351,7 +351,8 @@ def process_frame_range(
     run_dir: str = None,
     save_clips: bool = True,
     trip_schedule_dict: Dict[str, Any] = None,
-    video_start_time: str = None
+    video_start_time: str = None,
+    camera_angle: int = 1
 ) -> Dict[str, Any]:
     """
     Process a specific frame range (worker task function)
@@ -428,6 +429,9 @@ def process_frame_range(
         # Set crew members mapping if provided
         if crew_members:
             monitor.crew_members = crew_members
+
+        # Set camera angle for LP/ALP role assignment
+        monitor.camera_angle = camera_angle
 
         # Reconstruct trip_schedule from dict if provided
         if trip_schedule_dict is not None and hasattr(monitor, 'set_trip_schedule'):
@@ -627,7 +631,8 @@ class VideoMultiprocessingOrchestrator:
         run_dir: str = None,
         save_clips: bool = True,
         trip_schedule = None,
-        video_start_time: str = None
+        video_start_time: str = None,
+        camera_angle: int = 1
     ) -> List[Dict[str, Any]]:
         """
         Process video in parallel using multiple workers
@@ -644,6 +649,7 @@ class VideoMultiprocessingOrchestrator:
             trip_schedule: TripSchedule object for motion-based rules (optional)
                            Note: Serialized to dict for multiprocessing workers
             video_start_time: Video recording start time in HH:MM:SS format (optional)
+            camera_angle: Camera angle for LP/ALP role assignment (1 = LP Side, 2 = ALP Side)
 
         Returns:
             List of detected activities (merged from all ranges)
@@ -708,7 +714,8 @@ class VideoMultiprocessingOrchestrator:
                 run_dir=run_dir,  # Pass run_dir for clip saving
                 save_clips=save_clips,
                 trip_schedule_dict=trip_schedule_dict,  # Pass serialized schedule
-                video_start_time=video_start_time  # Pass video start time for motion rules
+                video_start_time=video_start_time,  # Pass video start time for motion rules
+                camera_angle=camera_angle
             )
             futures[future] = frame_range
         

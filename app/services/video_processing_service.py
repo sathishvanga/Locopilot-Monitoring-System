@@ -142,7 +142,8 @@ class VideoProcessingService:
         division: Optional[str] = None,
         train_number: Optional[str] = None,
         trip_date: Optional[str] = None,
-        video_start_time: Optional[str] = None
+        video_start_time: Optional[str] = None,
+        camera_angle: int = 1
     ) -> Dict[str, Any]:
         """
         Process video and detect activities
@@ -162,6 +163,7 @@ class VideoProcessingService:
             train_number: Train number for motion-based rule engine (optional)
             trip_date: Trip date in YYYY-MM-DD format for schedule lookup (optional)
             video_start_time: Video recording start time in HH:MM:SS format (optional, for motion rules when OCR unavailable)
+            camera_angle: Camera angle for LP/ALP role assignment (1 = LP Side, 2 = ALP Side)
 
         Returns:
             Dict[str, Any]: Processing results with activities
@@ -287,7 +289,8 @@ class VideoProcessingService:
                         run_dir=run_dir,  # Pass existing run_dir to avoid nested directories
                         save_clips=save_clips,
                         trip_schedule=trip_schedule,  # Pass trip schedule for motion rules
-                        video_start_time=video_start_time  # Pass video start time for motion rules
+                        video_start_time=video_start_time,  # Pass video start time for motion rules
+                        camera_angle=camera_angle
                     )
                 else:
                     activities = self.activity_detection_service._detect_activities_single_process(
@@ -301,7 +304,8 @@ class VideoProcessingService:
                         sample_fps=settings.sample_fps,
                         run_dir=run_dir,  # Pass existing run_dir
                         trip_schedule=trip_schedule,  # Pass trip schedule for motion rules
-                        video_start_time=video_start_time  # Pass video start time for motion rules
+                        video_start_time=video_start_time,  # Pass video start time for motion rules
+                        camera_angle=camera_angle
                     )
             
             # Save activities to JSON

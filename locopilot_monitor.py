@@ -651,7 +651,10 @@ class LocopilotActivityMonitor:
         self.crew_name = None
         self.crew_id = None
         self.crew_role = None
-        
+
+        # Camera angle for LP/ALP role assignment (1 = LP Side, 2 = ALP Side)
+        self.camera_angle = 1  # Default to LP side
+
         # Crew members mapping: role (LP/ALP) -> {name, id, role}
         self.crew_members = {}  # Will be populated from API input
 
@@ -2983,14 +2986,13 @@ class LocopilotActivityMonitor:
                     role_info = person_roles[idx]
                     role = role_info['role']
                     role_name = role_info['role_name']
-                    lp_score = role_info['lp_score']
-                    alp_score = role_info['alp_score']
-                    
+                    bbox_area = role_info.get('bbox_area', 0)
+
                     # Use role-specific color
                     box_color = colors.get(role, (0, 255, 0))
-                    
+
                     # Create detailed label
-                    label = f"{role_name} (LP:{lp_score}/ALP:{alp_score})"
+                    label = f"{role_name} (area:{bbox_area:.0f})"
                 else:
                     # Default label if no role info
                     box_color = (0, 255, 0)
@@ -3030,7 +3032,7 @@ class LocopilotActivityMonitor:
                 y_offset = 60
                 for idx in sorted(person_roles.keys()):
                     role_info = person_roles[idx]
-                    role_text = f"{role_info['role_name']}: LP={role_info['lp_score']}, ALP={role_info['alp_score']}"
+                    role_text = f"{role_info['role_name']} (area:{role_info.get('bbox_area', 0):.0f})"
                     role_color = colors.get(role_info['role'], (255, 255, 255))
                     cv2.putText(annotated_frame, role_text, 
                                (frame.shape[1] - 400, y_offset), 
@@ -6055,262 +6057,115 @@ class LocopilotActivityMonitor:
         return intersection / union
 
     def identify_person_roles(self, frame: Any, person_boxes: List[List[int]], detections: Dict[str, List[Any]]) -> Dict[int, Dict[str, Any]]:
-        """Identify LP (Loco Pilot) and ALP (Assistant Loco Pilot) based on objects near each person.
-        
+        """Identify LP (Loco Pilot) and ALP (Assistant Loco Pilot) based on camera angle and proximity.
+
         Logic:
-        - For each person, detect objects in front using YOLO
-        - lp_score = monitors + keyboards + cell_phone + panel-like boxes
-        - alp_score = book + empty_desk (approximated by lack of control objects)
-        - LP = person with higher lp_score
-        - ALP = the other person
-        - Third person = "Supervisor", "Trainee", or "Visitor"
-        
+        - camera_angle=1 (LP Side): closest person (largest bbox) = LP, further = ALP
+        - camera_angle=2 (ALP Side): closest person (largest bbox) = ALP, further = LP
+        - Third+ persons = "Visitor"
+
         Args:
             frame: Current video frame
             person_boxes: List of de-duplicated person bounding boxes [[x1, y1, x2, y2], ...]
             detections: Dictionary of all detected objects from YOLO
-            
+
         Returns:
             Dictionary mapping person index to role info: {
-                0: {'role': 'LP', 'lp_score': 5, 'alp_score': 1, 'bbox': [x1, y1, x2, y2]},
-                1: {'role': 'ALP', 'lp_score': 2, 'alp_score': 4, 'bbox': [x1, y1, x2, y2]},
+                0: {'role': 'LP', 'bbox': [x1, y1, x2, y2], 'bbox_area': 12345.0},
+                1: {'role': 'ALP', 'bbox': [x1, y1, x2, y2], 'bbox_area': 9876.0},
                 ...
             }
         """
         if len(person_boxes) == 0:
             return {}
-        
-        # Phase 3: Check if we can reuse cached full-frame detection (avoid redundant inference)
-        cache_age = time_module.time() - self._cached_frame_time
-        if (self._cached_frame_objects is not None and
-            cache_age < 0.1):  # Cache valid for 100ms only
-            # Reuse cached results instead of re-running inference
-            yolo_results = self._cached_frame_objects
-        else:
-            # Cache miss or stale - run full-frame YOLO detection
-            # Look for: tv/monitor, keyboard, mouse, laptop, book, backpack, cell phone
-            yolo_results = self.yolo_model(frame, verbose=False, conf=0.3,
-                                            imgsz=self.yolo_imgsz, device=self.yolo_device)
-        
-        # Collect all detected objects with their class names
-        all_objects = []
-        for r in yolo_results:
-            boxes = r.boxes
-            for box in boxes:
-                cls = int(box.cls[0])
-                conf = float(box.conf[0])
-                xyxy = box.xyxy[0].cpu().numpy()
-                class_name = self.yolo_model.names[cls]
-                
-                all_objects.append({
-                    'class': class_name,
-                    'confidence': conf,
-                    'bbox': [float(xyxy[0]), float(xyxy[1]), float(xyxy[2]), float(xyxy[3])]
-                })
-        
-        # For each person, calculate scores based on nearby objects
-        person_scores = []
-        
+
+        def get_bbox_area(bbox):
+            width = bbox[2] - bbox[0]
+            height = bbox[3] - bbox[1]
+            return width * height
+
+        # Build person list with bbox areas
+        persons = []
         for person_idx, person_bbox in enumerate(person_boxes):
-            px1, py1, px2, py2 = person_bbox
-            person_center_x = (px1 + px2) / 2
-            person_width = px2 - px1
-            person_height = py2 - py1
-            
-            # Define "in front of person" as region ahead of them
-            # Assuming people face the camera/controls, "in front" is area below person's upper body
-            # and within reasonable horizontal distance
-            search_margin = person_width * 1.5  # Search 1.5x person width on each side
-            search_x1 = person_center_x - search_margin
-            search_x2 = person_center_x + search_margin
-            search_y1 = py1 + (person_height * 0.3)  # Start from chest level
-            search_y2 = py2 + (person_height * 0.5)  # Extend below person (desk/console area)
-            
-            # Count relevant objects in search region
-            lp_objects = {
-                'tv': 0,
-                'laptop': 0, 
-                'keyboard': 0,
-                'mouse': 0,
-                'cell phone': 0,
-                'remote': 0  # Can act as control panel
-            }
-            
-            alp_objects = {
-                'book': 0,
-                'notebook': 0,
-                'backpack': 0
-            }
-            
-            nearby_objects = []
-            
-            for obj in all_objects:
-                obj_bbox = obj['bbox']
-                ox1, oy1, ox2, oy2 = obj_bbox
-                obj_center_x = (ox1 + ox2) / 2
-                obj_center_y = (oy1 + oy2) / 2
-                
-                # Check if object is in the search region
-                if (search_x1 <= obj_center_x <= search_x2 and 
-                    search_y1 <= obj_center_y <= search_y2):
-                    nearby_objects.append(obj)
-                    
-                    # Count LP-related objects
-                    obj_class = obj['class']
-                    if obj_class in lp_objects:
-                        lp_objects[obj_class] += 1
-                    
-                    # Count ALP-related objects
-                    if obj_class in alp_objects:
-                        alp_objects[obj_class] += 1
-            
-            # Calculate scores
-            lp_score = (
-                lp_objects['tv'] * 3 +  # Monitors are strong indicators
-                lp_objects['laptop'] * 2 +
-                lp_objects['keyboard'] * 2 +
-                lp_objects['mouse'] * 1 +
-                lp_objects['cell phone'] * 1 +
-                lp_objects['remote'] * 2  # Control panels/remotes
-            )
-            
-            alp_score = (
-                alp_objects['book'] * 3 +  # Books/logs are strong indicators
-                alp_objects['notebook'] * 3 +
-                alp_objects['backpack'] * 1
-            )
-            
-            # If no LP objects detected, consider "empty desk" as ALP indicator
-            if lp_score == 0 and alp_score == 0:
-                alp_score = 1  # Slight preference for ALP if nothing detected
-            
-            person_scores.append({
+            persons.append({
                 'person_idx': person_idx,
                 'bbox': person_bbox,
-                'lp_score': lp_score,
-                'alp_score': alp_score,
-                'lp_objects': lp_objects,
-                'alp_objects': alp_objects,
-                'nearby_objects': nearby_objects
+                'bbox_area': get_bbox_area(person_bbox)
             })
-        
-        # Assign roles based on scores
+
+        # Sort by bounding box area (largest first = closest to camera)
+        sorted_persons = sorted(persons, key=lambda x: x['bbox_area'], reverse=True)
+
+        # Determine role assignment based on camera angle
+        # camera_angle=1 (LP Side): closest to camera = LP, further = ALP
+        # camera_angle=2 (ALP Side): closest to camera = ALP, further = LP
+        is_lp_side = self.camera_angle == 1
+        closest_role = 'LP' if is_lp_side else 'ALP'
+        closest_role_name = 'Loco Pilot' if is_lp_side else 'Assistant Loco Pilot'
+        further_role = 'ALP' if is_lp_side else 'LP'
+        further_role_name = 'Assistant Loco Pilot' if is_lp_side else 'Loco Pilot'
+
+        camera_side = "LP Side" if is_lp_side else "ALP Side"
+
+        # Assign roles based on camera proximity
         person_roles = {}
-        
-        if len(person_scores) == 1:
-            # Only one person - default to LP
+
+        if len(sorted_persons) == 1:
+            # Only one person - assign based on camera side
             person_roles[0] = {
-                'role': 'LP',
-                'role_name': 'Loco Pilot',
-                'lp_score': person_scores[0]['lp_score'],
-                'alp_score': person_scores[0]['alp_score'],
-                'bbox': person_scores[0]['bbox'],
-                'objects': person_scores[0]['nearby_objects']
-            }
-        
-        elif len(person_scores) == 2:
-            # Two people - assign LP and ALP based on camera position
-            # Logic: Person CLOSER to camera = LP (driver), person FURTHER from camera = ALP (assistant)
-            #
-            # How to determine "closer to camera":
-            # 1. Bounding box area - larger area means person appears bigger (closer)
-            # 2. Bottom Y coordinate - higher Y value means lower in frame (closer to camera)
-            #
-            # We use bounding box area as primary indicator (more reliable)
-
-            def get_bbox_area(person):
-                bbox = person['bbox']
-                width = bbox[2] - bbox[0]
-                height = bbox[3] - bbox[1]
-                return width * height
-
-            def get_bottom_y(person):
-                return person['bbox'][3]  # y2 = bottom of bounding box
-
-            # Sort by bounding box area (largest first = closest to camera = LP)
-            sorted_persons = sorted(person_scores, key=lambda x: get_bbox_area(x), reverse=True)
-
-            self.logger.debug(f"Role assignment by camera position: "
-                            f"Person {sorted_persons[0]['person_idx']} (area={get_bbox_area(sorted_persons[0]):.0f}) -> LP, "
-                            f"Person {sorted_persons[1]['person_idx']} (area={get_bbox_area(sorted_persons[1]):.0f}) -> ALP")
-
-            # Person with higher lp_score (or leftmost position) is LP
-            person_roles[sorted_persons[0]['person_idx']] = {
-                'role': 'LP',
-                'role_name': 'Loco Pilot',
-                'lp_score': sorted_persons[0]['lp_score'],
-                'alp_score': sorted_persons[0]['alp_score'],
+                'role': closest_role,
+                'role_name': closest_role_name,
                 'bbox': sorted_persons[0]['bbox'],
-                'objects': sorted_persons[0]['nearby_objects']
+                'bbox_area': sorted_persons[0]['bbox_area']
             }
 
-            # Other person is ALP
-            person_roles[sorted_persons[1]['person_idx']] = {
-                'role': 'ALP',
-                'role_name': 'Assistant Loco Pilot',
-                'lp_score': sorted_persons[1]['lp_score'],
-                'alp_score': sorted_persons[1]['alp_score'],
-                'bbox': sorted_persons[1]['bbox'],
-                'objects': sorted_persons[1]['nearby_objects']
+        elif len(sorted_persons) == 2:
+            self.logger.debug(f"Role assignment (camera: {camera_side}): "
+                            f"Person {sorted_persons[0]['person_idx']} (area={sorted_persons[0]['bbox_area']:.0f}) -> {closest_role}, "
+                            f"Person {sorted_persons[1]['person_idx']} (area={sorted_persons[1]['bbox_area']:.0f}) -> {further_role}")
+
+            person_roles[sorted_persons[0]['person_idx']] = {
+                'role': closest_role,
+                'role_name': closest_role_name,
+                'bbox': sorted_persons[0]['bbox'],
+                'bbox_area': sorted_persons[0]['bbox_area']
             }
-        
+
+            person_roles[sorted_persons[1]['person_idx']] = {
+                'role': further_role,
+                'role_name': further_role_name,
+                'bbox': sorted_persons[1]['bbox'],
+                'bbox_area': sorted_persons[1]['bbox_area']
+            }
+
         else:
             # Three or more people
-            # Sort by bounding box area (largest first = closest to camera)
-            def get_bbox_area(person):
-                bbox = person['bbox']
-                width = bbox[2] - bbox[0]
-                height = bbox[3] - bbox[1]
-                return width * height
+            self.logger.debug(f"Role assignment (3+ people, camera: {camera_side}) - areas: {[p['bbox_area'] for p in sorted_persons]}")
 
-            sorted_persons = sorted(person_scores, key=lambda x: get_bbox_area(x), reverse=True)
-            self.logger.debug(f"Role assignment (3+ people) by camera position - areas: {[get_bbox_area(p) for p in sorted_persons]}")
-            
-            # First person is LP
+            # First person (largest bbox / closest to camera)
             person_roles[sorted_persons[0]['person_idx']] = {
-                'role': 'LP',
-                'role_name': 'Loco Pilot',
-                'lp_score': sorted_persons[0]['lp_score'],
-                'alp_score': sorted_persons[0]['alp_score'],
+                'role': closest_role,
+                'role_name': closest_role_name,
                 'bbox': sorted_persons[0]['bbox'],
-                'objects': sorted_persons[0]['nearby_objects']
+                'bbox_area': sorted_persons[0]['bbox_area']
             }
-            
-            # Second person is ALP
+
+            # Second person
             person_roles[sorted_persons[1]['person_idx']] = {
-                'role': 'ALP',
-                'role_name': 'Assistant Loco Pilot',
-                'lp_score': sorted_persons[1]['lp_score'],
-                'alp_score': sorted_persons[1]['alp_score'],
+                'role': further_role,
+                'role_name': further_role_name,
                 'bbox': sorted_persons[1]['bbox'],
-                'objects': sorted_persons[1]['nearby_objects']
+                'bbox_area': sorted_persons[1]['bbox_area']
             }
-            
-            # Additional people - assign contextual roles
+
+            # Additional people - assign as Visitor
             for i in range(2, len(sorted_persons)):
                 person_idx = sorted_persons[i]['person_idx']
-                
-                # Determine role based on context
-                # If they have books/backpacks, likely trainee
-                # If they have control objects, likely supervisor
-                # Otherwise, visitor
-                if sorted_persons[i]['alp_score'] > 0:
-                    role = 'TRAINEE'
-                    role_name = 'Trainee'
-                elif sorted_persons[i]['lp_score'] > 2:
-                    role = 'SUPERVISOR'
-                    role_name = 'Supervisor'
-                else:
-                    role = 'VISITOR'
-                    role_name = 'Visitor'
-                
                 person_roles[person_idx] = {
-                    'role': role,
-                    'role_name': role_name,
-                    'lp_score': sorted_persons[i]['lp_score'],
-                    'alp_score': sorted_persons[i]['alp_score'],
+                    'role': 'VISITOR',
+                    'role_name': 'Visitor',
                     'bbox': sorted_persons[i]['bbox'],
-                    'objects': sorted_persons[i]['nearby_objects']
+                    'bbox_area': sorted_persons[i]['bbox_area']
                 }
 
         # CR-007: Temporal role tracking via IoU matching to prevent role flipping
@@ -6684,8 +6539,7 @@ class LocopilotActivityMonitor:
                         "personIndex": person_idx,
                         "role": role_info['role'],
                         "roleName": role_info['role_name'],
-                        "lpScore": role_info['lp_score'],
-                        "alpScore": role_info['alp_score']
+                        "bboxArea": role_info.get('bbox_area', 0)
                     })
                 json_data["personRoles"] = person_roles_list
             
@@ -6949,7 +6803,7 @@ class LocopilotActivityMonitor:
                     self.logger.debug(f"[{timestamp}] Person roles identified:")
                     for person_idx in sorted(person_roles.keys()):
                         role_info = person_roles[person_idx]
-                        self.logger.debug(f"  Person {person_idx+1}: {role_info['role_name']} (LP score: {role_info['lp_score']}, ALP score: {role_info['alp_score']})")
+                        self.logger.debug(f"  Person {person_idx+1}: {role_info['role_name']} (bbox_area: {role_info.get('bbox_area', 0):.0f})")
 
                 if deduplicated_count > 2:
                     # Stage 2: Voting verification for group_detected (if enabled)
