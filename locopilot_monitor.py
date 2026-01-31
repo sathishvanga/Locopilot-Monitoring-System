@@ -3919,6 +3919,16 @@ class LocopilotActivityMonitor:
                     'matched_role': matched_role
                 }
             
+            # Suppress for eating/drinking (hand raised to mouth)
+            if person_activities.get('eating_drinking', False):
+                frame_info = f"[Frame {frame_number}] " if frame_number is not None else ""
+                return False, False, {
+                    'suppressed': True,
+                    'reason': 'Person engaged in eating/drinking activity',
+                    'matched_person_idx': matched_person_idx,
+                    'matched_role': matched_role
+                }
+
             # Suppress for cell phone use (hand raised to ear or viewing phone)
             if person_activities.get('cell_phone', False):
                 frame_info = f"[Frame {frame_number}] " if frame_number is not None else ""
@@ -4072,12 +4082,12 @@ class LocopilotActivityMonitor:
             # CRITICAL: Wrist must belong to the same person (within expanded bbox)
             right_wrist_in_expanded and
 
-            # REMOVED: Control zone filter - we now want to detect hand-to-face actions
-            # not right_in_control_zone and
+            # Control zone filter - reject if wrist is inside control zone
+            not right_in_control_zone and
 
-            # Hand at or above shoulder level (includes face-level actions like drinking)
-            # >0 means wrist is at or above shoulder height
-            right_wrist_shoulder_vertical > 0 and
+            # Hand significantly above shoulder level (filters minor arm movements)
+            # >80 means wrist must be well above shoulder height
+            right_wrist_shoulder_vertical > 80 and
 
             # RELAXED: Allow bent arm (drinking position has wrist near elbow level)
             # >-30 allows wrist to be slightly below elbow (bent arm holding cup)
@@ -4107,12 +4117,12 @@ class LocopilotActivityMonitor:
             # CRITICAL: Wrist must belong to the same person (within expanded bbox)
             left_wrist_in_expanded and
 
-            # REMOVED: Control zone filter - we now want to detect hand-to-face actions
-            # not left_in_control_zone and
+            # Control zone filter - reject if wrist is inside control zone
+            not left_in_control_zone and
 
-            # Hand at or above shoulder level (includes face-level actions like drinking)
-            # >0 means wrist is at or above shoulder height
-            left_wrist_shoulder_vertical > 0 and
+            # Hand significantly above shoulder level (filters minor arm movements)
+            # >80 means wrist must be well above shoulder height
+            left_wrist_shoulder_vertical > 80 and
 
             # RELAXED: Allow bent arm (drinking position has wrist near elbow level)
             # >-30 allows wrist to be slightly below elbow (bent arm holding cup)
