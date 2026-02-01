@@ -59,14 +59,14 @@ def _build_activity_registry() -> Dict[str, ActivityConfig]:
 
     return {
         'microsleep': ActivityConfig(
-            min_duration=3.0,
-            required_consecutive=2,
+            min_duration=2.0,
+            required_consecutive=1,
             margin=None,
             grace_frames=10,
         ),
         'sleep': ActivityConfig(
-            min_duration=20.0,
-            required_consecutive=4,
+            min_duration=2.0,
+            required_consecutive=1,
             margin=None,
             grace_frames=10,
         ),
@@ -353,10 +353,6 @@ class LocopilotActivityMonitor:
 
         # Head Tilt / Sleep Detection
         self.HEAD_DOWN_THRESHOLD = settings.head_down_threshold if settings else 0.01
-        self.EAR_CLOSED_THRESHOLD = settings.ear_closed_threshold if settings else 0.2
-        self.EYE_CLOSURE_MICROSLEEP_SECS = settings.eye_closure_microsleep_secs if settings else 5
-        self.EYE_CLOSURE_SLEEP_SECS = settings.eye_closure_sleep_secs if settings else 30
-
         # Pose-Based Sleep Detection
         self.SLEEP_STRONG_SCORE = settings.sleep_strong_score if settings else 4
         self.SLEEP_STRONG_DURATION = settings.sleep_strong_duration if settings else 2
@@ -365,6 +361,48 @@ class LocopilotActivityMonitor:
         self.MINIMAL_MOVEMENT_THRESHOLD = settings.minimal_movement_threshold if settings else 0.15
         self.STABLE_POSTURE_VARIANCE = settings.stable_posture_variance if settings else 100
         self.EYES_NOT_VISIBLE_THRESHOLD = settings.eyes_not_visible_threshold if settings else 0.4
+
+        # Baseline calibration for camera-angle adaptation
+        self.SLEEP_BASELINE_ENABLED = settings.sleep_baseline_enabled if settings else True
+        self.SLEEP_BASELINE_CALIBRATION_WINDOW = settings.sleep_baseline_calibration_window if settings else 10.0
+        self.SLEEP_BASELINE_MIN_SAMPLES = settings.sleep_baseline_min_samples if settings else 5
+
+        # Delta-from-baseline thresholds
+        self.SLEEP_BASELINE_NOSE_BELOW_DELTA = settings.sleep_baseline_nose_below_delta if settings else 40
+        self.SLEEP_BASELINE_HEAD_TILT_DELTA = settings.sleep_baseline_head_tilt_delta if settings else 25
+        self.SLEEP_BASELINE_TORSO_HEIGHT_DELTA = settings.sleep_baseline_torso_height_delta if settings else 40
+        self.SLEEP_BASELINE_SHOULDER_WIDTH_DELTA = settings.sleep_baseline_shoulder_width_delta if settings else 20
+
+        # New discriminating signals
+        self.SLEEP_SUSTAINED_STILLNESS_THRESHOLD = settings.sleep_sustained_stillness_threshold if settings else 0.02
+        self.SLEEP_SUSTAINED_STILLNESS_FRAMES = settings.sleep_sustained_stillness_frames if settings else 3
+        self.SLEEP_HANDS_CLASPED_THRESHOLD = settings.sleep_hands_clasped_threshold if settings else 100
+        self.SLEEP_HANDS_CLASPED_FRAMES = settings.sleep_hands_clasped_frames if settings else 3
+        self.SLEEP_SUSTAINED_LOW_EYE_FRAMES = settings.sleep_sustained_low_eye_frames if settings else 3
+        self.SLEEP_HANDS_SPREAD_THRESHOLD = settings.sleep_hands_spread_threshold if settings else 180
+
+        # Head Bob Detection
+        self.SLEEP_HEAD_BOB_DRIFT_MAX_RATE = settings.sleep_head_bob_drift_max_rate if settings else 15.0
+        self.SLEEP_HEAD_BOB_JERK_MIN_RATE = settings.sleep_head_bob_jerk_min_rate if settings else 20.0
+        self.SLEEP_HEAD_BOB_MIN_DRIFT_FRAMES = settings.sleep_head_bob_min_drift_frames if settings else 2
+        self.SLEEP_HEAD_BOB_MIN_AMPLITUDE = settings.sleep_head_bob_min_amplitude if settings else 10.0
+        self.SLEEP_HEAD_BOB_SCORE_BONUS = settings.sleep_head_bob_score_bonus if settings else 2
+        self.SLEEP_HEAD_BOB_BYPASS_EYE_GATE = settings.sleep_head_bob_bypass_eye_gate if settings else True
+
+        # Wrist Velocity Tracking
+        self.SLEEP_WRIST_VEL_STILL = settings.sleep_wrist_velocity_still_threshold if settings else 0.005
+        self.SLEEP_WRIST_VEL_ACTIVE = settings.sleep_wrist_velocity_active_threshold if settings else 0.03
+        self.SLEEP_WRIST_VEL_STILL_FRAMES = settings.sleep_wrist_velocity_still_frames if settings else 2
+
+        # Temporal State Machine
+        self.SLEEP_STATE_MACHINE_ENABLED = settings.sleep_state_machine_enabled if settings else True
+        self.SLEEP_STATE_HAND_ACTIVITY_THRESHOLD = settings.sleep_state_hand_activity_threshold if settings else 0.02
+        self.SLEEP_DROWSY_TO_MICROSLEEP_SEC = settings.sleep_state_drowsy_to_microsleep_sec if settings else 2.0
+        self.SLEEP_MICROSLEEP_TO_SLEEP_SEC = settings.sleep_state_microsleep_to_sleep_sec if settings else 4.0
+
+        # Shoulder Slump Rate
+        self.SLEEP_SHOULDER_SLUMP_RATE_THRESHOLD = settings.sleep_shoulder_slump_rate_threshold if settings else 0.005
+        self.SLEEP_SHOULDER_SLUMP_MIN_FRAMES = settings.sleep_shoulder_slump_min_frames if settings else 3
 
         # IR Forward Lean Detection
         self.IR_SHOULDER_RELATIVE_THRESHOLD = settings.ir_shoulder_relative_threshold if settings else 0.4
@@ -474,6 +512,17 @@ class LocopilotActivityMonitor:
             else:
                 self.preprocessing_service = None
 
+        # Haar cascade classifiers for eye closure detection
+        if self.settings and self.settings.haar_eye_detection_enabled:
+            self.face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
+            self.profile_face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_profileface.xml')
+            self.eye_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_eye.xml')
+            self.logger.info("Haar cascade classifiers loaded for eye closure detection")
+        else:
+            self.face_cascade = None
+            self.profile_face_cascade = None
+            self.eye_cascade = None
+
         # Cell phone detection confidence threshold (configurable)
         self.cell_phone_confidence = float(os.getenv("CELL_PHONE_CONFIDENCE", "0.40"))
 
@@ -541,10 +590,6 @@ class LocopilotActivityMonitor:
         # CR-005: Parallel buffer storing frame indices (not frame copies) for activity tracking
         self.frame_idx_buffer = deque(maxlen=buffer_size)
 
-        # Eye closure tracking
-        self.eye_closure_start = None
-        self.eye_closure_duration = 0
-        
         # Pose-based sleep detection tracking (legacy global state for single-person fallback)
         self.pose_sleep_start = None
         self.pose_sleep_duration = 0
@@ -634,8 +679,8 @@ class LocopilotActivityMonitor:
         # Evidence rules
         self.evidence_rules = {
             'cell_phone': 'phone_in_hand',
-            'microsleep': 'eyes_closed_5s_or_pose_indicators',
-            'sleep': 'eyes_closed_30s_or_pose_indicators',
+            'microsleep': 'pose_indicators',
+            'sleep': 'pose_indicators',
             'writing': 'hand_near_book_or_wrist_proximity',
             'packing_bags': 'wrist_inside_backpack_bbox_or_hand_near_backpack',
             'group_detected': 'more_than_2_deduplicated_persons',
@@ -1045,37 +1090,6 @@ class LocopilotActivityMonitor:
             
             self.logger.debug(f"[Frame Sampling] Completed sampling, total samples: {sampled_idx}")
         
-    def calculate_eye_aspect_ratio(self, landmarks: Any) -> Optional[float]:
-        """Calculate Eye Aspect Ratio (EAR) for drowsiness detection"""
-        try:
-            left_eye_indices = [33, 160, 158, 133, 153, 144]
-            right_eye_indices = [362, 385, 387, 263, 373, 380]
-            
-            def get_ear(eye_indices):
-                points = [landmarks[i] for i in eye_indices]
-                v1 = np.linalg.norm(np.array([points[1].x, points[1].y]) - 
-                                   np.array([points[5].x, points[5].y]))
-                v2 = np.linalg.norm(np.array([points[2].x, points[2].y]) - 
-                                   np.array([points[4].x, points[4].y]))
-                h = np.linalg.norm(np.array([points[0].x, points[0].y]) - 
-                                  np.array([points[3].x, points[3].y]))
-                
-                if h == 0:
-                    return 0.3
-                
-                ear = (v1 + v2) / (2.0 * h)
-                return ear
-            
-            left_ear = get_ear(left_eye_indices)
-            right_ear = get_ear(right_eye_indices)
-            avg_ear = (left_ear + right_ear) / 2.0
-            
-            return max(0.0, min(0.5, avg_ear))
-            
-        except Exception as e:
-            self.logger.debug(f"Exception in calculate_eye_aspect_ratio: {e}")
-            return None
-
     def calculate_head_tilt_angle(self, landmarks: Any) -> Optional[float]:
         """Calculate head tilt angle from pose landmarks.
         
@@ -1157,8 +1171,112 @@ class LocopilotActivityMonitor:
                 'torso_height_history': deque(maxlen=int(10 * self.sample_fps)),
                 'nose_y_norm_history': deque(maxlen=int(10 * self.sample_fps)),
                 'nose_above_shoulders_history': deque(maxlen=int(10 * self.sample_fps)),
+                # Baseline calibration
+                'baseline_calibrating': self.SLEEP_BASELINE_ENABLED,
+                'baseline_start_time': None,
+                'baseline_samples': {
+                    'nose_below_px': [], 'head_tilt': [], 'torso_height_px': [],
+                    'shoulder_width_px': [], 'nose_above_shoulders_norm': [],
+                    'nose_y_normalized': [], 'movement': [], 'eye_vis': [],
+                },
+                'baseline': None,  # Dict of medians once calibration completes
+                # Sustained-signal counters
+                'sustained_stillness_count': 0,
+                'hands_clasped_count': 0,
+                'low_eye_vis_count': 0,
+                'wrist_distance_history': deque(maxlen=int(10 * self.sample_fps)),
+                'face_not_visible_count': 0,
+                # Head bob
+                'head_tilt_deltas': deque(maxlen=int(10 * self.sample_fps)),
+                'head_bob_count': 0,
+                # Wrist velocity
+                'previous_wrist_positions': None,
+                'wrist_velocity_history': deque(maxlen=int(10 * self.sample_fps)),
+                # State machine
+                'sleep_state': 'ALERT',
+                'state_enter_time': None,
+                'state_history': deque(maxlen=10),
+                # Shoulder slump
+                'shoulder_y_history': deque(maxlen=int(10 * self.sample_fps)),
+                'shoulder_y_timestamps': deque(maxlen=int(10 * self.sample_fps)),
+                # Haar cascade eye closure tracking
+                'haar_eyes_closed_start': None,
+                'haar_eyes_closed_count': 0,
+                'haar_eyes_open_count': 0,
+                'haar_face_detected_in_roi': False,
             }
         return self.per_person_sleep_tracking[person_idx]
+
+    def _update_sleep_state_machine(self, tracking, timestamp_sec, is_head_down,
+                                     is_sustained_low_eyes, is_minimal_movement,
+                                     head_bob_detected, avg_wrist_velocity):
+        """Temporal state machine for sleep detection.
+
+        States: ALERT, LOOKING_DOWN_WORKING, DROWSY, MICROSLEEP, SLEEPING
+
+        Args:
+            tracking: Per-person sleep tracking dict
+            timestamp_sec: Current timestamp in seconds
+            is_head_down: Whether head is tilted down
+            is_sustained_low_eyes: Whether eyes have been low-visibility for sustained frames
+            is_minimal_movement: Whether body movement is minimal
+            head_bob_detected: Whether a head bob pattern was detected
+            avg_wrist_velocity: Average wrist velocity from recent history
+
+        Returns:
+            str: Current sleep state after transition
+        """
+        current_state = tracking.get('sleep_state', 'ALERT')
+        has_hand_activity = avg_wrist_velocity > self.SLEEP_STATE_HAND_ACTIVITY_THRESHOLD
+
+        # Calculate time in current state
+        if tracking.get('state_enter_time') is not None:
+            time_in_state = timestamp_sec - tracking['state_enter_time']
+        else:
+            time_in_state = 0.0
+            tracking['state_enter_time'] = timestamp_sec
+
+        new_state = current_state
+
+        if current_state == 'ALERT':
+            if is_head_down and has_hand_activity:
+                new_state = 'LOOKING_DOWN_WORKING'
+            elif ((is_sustained_low_eyes and is_minimal_movement and not has_hand_activity)
+                  or head_bob_detected):
+                new_state = 'DROWSY'
+
+        elif current_state == 'LOOKING_DOWN_WORKING':
+            if not is_head_down or not has_hand_activity:
+                new_state = 'ALERT'
+
+        elif current_state == 'DROWSY':
+            if has_hand_activity or (not is_sustained_low_eyes and not head_bob_detected):
+                new_state = 'ALERT'
+            elif time_in_state >= self.SLEEP_DROWSY_TO_MICROSLEEP_SEC:
+                new_state = 'MICROSLEEP'
+
+        elif current_state == 'MICROSLEEP':
+            if has_hand_activity or (not is_sustained_low_eyes and not head_bob_detected):
+                new_state = 'ALERT'
+            elif time_in_state >= self.SLEEP_MICROSLEEP_TO_SLEEP_SEC:
+                new_state = 'SLEEPING'
+
+        elif current_state == 'SLEEPING':
+            if has_hand_activity:
+                new_state = 'ALERT'
+
+        # Handle state transition
+        if new_state != current_state:
+            tracking['state_history'].append((current_state, new_state, timestamp_sec))
+            tracking['sleep_state'] = new_state
+            tracking['state_enter_time'] = timestamp_sec
+            self.logger.debug(
+                f"[Sleep State Machine] {current_state} -> {new_state} "
+                f"(time_in_prev={time_in_state:.1f}s, hand_activity={has_hand_activity}, "
+                f"head_bob={head_bob_detected})"
+            )
+
+        return tracking['sleep_state']
 
     def _get_ir_forward_lean_tracking(self, person_idx):
         """Get or initialize per-person IR forward-lean sleep tracking state."""
@@ -1381,7 +1499,175 @@ class LocopilotActivityMonitor:
 
         return False, False, debug_info
 
-    def detect_pose_based_sleep(self, pose_landmarks: Any, timestamp_sec: float, person_idx: int = 0, frame_shape: Optional[Tuple[int, ...]] = None) -> Tuple[bool, bool, Dict[str, Any]]:
+    def detect_eye_closure_haar(self, frame, pose_landmarks, person_idx, bbox, timestamp_sec):
+        """Detect eye closure using Haar cascade within pose-estimated face ROI.
+
+        Strategy:
+        1. Use YOLO pose keypoints (nose, eyes, ears) to estimate face bounding box
+        2. Crop -> grayscale -> histogram equalize (for low-light)
+        3. Try Haar frontal face, then profile face as fallback
+        4. Within detected face, run eye cascade
+        5. Face found but NO eyes -> eyes closed
+
+        Returns:
+            dict with keys: eyes_closed, face_detected, num_eyes, is_microsleep,
+                           is_sleep, duration, consecutive_closed
+        """
+        result = {
+            'eyes_closed': False,
+            'face_detected': False,
+            'num_eyes': 0,
+            'is_microsleep': False,
+            'is_sleep': False,
+            'duration': 0.0,
+            'consecutive_closed': 0,
+        }
+
+        if frame is None or pose_landmarks is None or self.eye_cascade is None or self.settings is None:
+            return result
+
+        if not hasattr(pose_landmarks, 'landmark') or len(pose_landmarks.landmark) == 0:
+            return result
+
+        tracking = self._get_per_person_sleep_tracking(person_idx)
+        h, w = frame.shape[:2]
+        settings = self.settings
+
+        # --- Build face ROI from YOLO pose keypoints ---
+        # Keypoint indices: nose=0, left_eye=1, right_eye=2, left_ear=3, right_ear=4
+        face_kp_indices = [0, 1, 2, 3, 4]
+        face_points_x = []
+        face_points_y = []
+
+        for idx in face_kp_indices:
+            if idx < len(pose_landmarks.landmark):
+                lm = pose_landmarks.landmark[idx]
+                if lm.visibility > 0.1:
+                    px = int(lm.x * w)
+                    py = int(lm.y * h)
+                    face_points_x.append(px)
+                    face_points_y.append(py)
+
+        if len(face_points_x) < 2:
+            # Not enough keypoints to estimate face ROI
+            return result
+
+        # Compute bounding box with padding
+        cx = int(np.mean(face_points_x))
+        cy = int(np.mean(face_points_y))
+        spread_x = max(max(face_points_x) - min(face_points_x), 30)
+        spread_y = max(max(face_points_y) - min(face_points_y), 30)
+        padding = settings.haar_eye_roi_padding
+
+        roi_x1 = max(0, int(cx - spread_x * (0.5 + padding)))
+        roi_y1 = max(0, int(cy - spread_y * (0.5 + padding)))
+        roi_x2 = min(w, int(cx + spread_x * (0.5 + padding)))
+        roi_y2 = min(h, int(cy + spread_y * (0.5 + padding)))
+
+        # Clip to person bbox if available
+        if bbox is not None and len(bbox) >= 4:
+            bx1, by1, bx2, by2 = int(bbox[0]), int(bbox[1]), int(bbox[2]), int(bbox[3])
+            roi_x1 = max(roi_x1, bx1)
+            roi_y1 = max(roi_y1, by1)
+            roi_x2 = min(roi_x2, bx2)
+            roi_y2 = min(roi_y2, by2)
+
+        if roi_x2 - roi_x1 < 20 or roi_y2 - roi_y1 < 20:
+            return result
+
+        # Crop face ROI and convert to grayscale with histogram equalization
+        face_roi = frame[roi_y1:roi_y2, roi_x1:roi_x2]
+        if face_roi.size == 0:
+            return result
+
+        gray_roi = cv2.cvtColor(face_roi, cv2.COLOR_BGR2GRAY) if len(face_roi.shape) == 3 else face_roi
+        gray_roi = cv2.equalizeHist(gray_roi)
+
+        # --- Detect face within ROI using Haar cascades ---
+        scale_factor = settings.haar_eye_scale_factor
+        min_neighbors = settings.haar_eye_min_neighbors
+
+        # Try frontal face first
+        faces = self.face_cascade.detectMultiScale(
+            gray_roi, scaleFactor=scale_factor, minNeighbors=min_neighbors,
+            minSize=(30, 30)
+        )
+
+        # Fallback to profile face if frontal fails
+        if len(faces) == 0:
+            faces = self.profile_face_cascade.detectMultiScale(
+                gray_roi, scaleFactor=scale_factor, minNeighbors=max(1, min_neighbors - 1),
+                minSize=(30, 30)
+            )
+            # Also try flipped image for opposite-side profile
+            if len(faces) == 0:
+                flipped_roi = cv2.flip(gray_roi, 1)
+                faces = self.profile_face_cascade.detectMultiScale(
+                    flipped_roi, scaleFactor=scale_factor, minNeighbors=max(1, min_neighbors - 1),
+                    minSize=(30, 30)
+                )
+
+        if len(faces) == 0:
+            # No face detected in ROI - cannot determine eye state
+            tracking['haar_face_detected_in_roi'] = False
+            return result
+
+        result['face_detected'] = True
+        tracking['haar_face_detected_in_roi'] = True
+
+        # Use the largest detected face
+        largest_face = max(faces, key=lambda f: f[2] * f[3])
+        fx, fy, fw, fh = largest_face
+
+        # Extract upper half of face (eye region)
+        eye_region_y1 = fy + int(fh * 0.15)
+        eye_region_y2 = fy + int(fh * 0.55)
+        eye_roi = gray_roi[eye_region_y1:eye_region_y2, fx:fx + fw]
+
+        if eye_roi.size == 0:
+            return result
+
+        # --- Detect eyes within face region ---
+        eyes = self.eye_cascade.detectMultiScale(
+            eye_roi, scaleFactor=1.1, minNeighbors=2,
+            minSize=(15, 15)
+        )
+        num_eyes = len(eyes)
+        result['num_eyes'] = num_eyes
+
+        # --- Temporal tracking ---
+        consecutive_threshold = settings.haar_eye_closed_consecutive_frames
+
+        if num_eyes >= 1:
+            # Eyes detected = open
+            tracking['haar_eyes_open_count'] += 1
+            tracking['haar_eyes_closed_count'] = 0
+            tracking['haar_eyes_closed_start'] = None
+        else:
+            # Face found but no eyes = eyes closed
+            tracking['haar_eyes_closed_count'] += 1
+            tracking['haar_eyes_open_count'] = 0
+            if tracking['haar_eyes_closed_start'] is None:
+                tracking['haar_eyes_closed_start'] = timestamp_sec
+
+        result['consecutive_closed'] = tracking['haar_eyes_closed_count']
+
+        # Require consecutive closed frames to confirm
+        if tracking['haar_eyes_closed_count'] >= consecutive_threshold:
+            result['eyes_closed'] = True
+
+            if tracking['haar_eyes_closed_start'] is not None:
+                duration = timestamp_sec - tracking['haar_eyes_closed_start']
+                result['duration'] = duration
+
+                if duration >= settings.haar_eye_sleep_duration:
+                    result['is_sleep'] = True
+                elif duration >= settings.haar_eye_microsleep_duration:
+                    result['is_microsleep'] = True
+
+        return result
+
+    def detect_pose_based_sleep(self, pose_landmarks: Any, timestamp_sec: float, person_idx: int = 0, frame_shape: Optional[Tuple[int, ...]] = None, haar_result: Optional[Dict[str, Any]] = None) -> Tuple[bool, bool, Dict[str, Any]]:
         """Detect sleep based on pose analysis when face detection fails.
 
         Uses a weighted scoring approach with two detection paths:
@@ -1499,9 +1785,71 @@ class LocopilotActivityMonitor:
         except Exception:
             avg_eye_vis = None
 
+        # --- Wrist distance (for hands-clasped signal) ---
+        wrist_dist = None
+        wrist_below_shoulder = False
+        try:
+            wd, _wd_source = self.calculate_wrist_distance(pose_landmarks, frame_shape)
+            if wd is not None:
+                wrist_dist = wd
+                tracking['wrist_distance_history'].append(wrist_dist)
+
+            # Check if hands are at console level (active work, not sleep)
+            landmarks_list = pose_landmarks.landmark if hasattr(pose_landmarks, 'landmark') else pose_landmarks
+            rw = self.get_keypoint(landmarks_list, 'right_wrist')
+            lw = self.get_keypoint(landmarks_list, 'left_wrist')
+            rs = self.get_keypoint(landmarks_list, 'right_shoulder')
+            ls = self.get_keypoint(landmarks_list, 'left_shoulder')
+            if (rw and lw and rs and ls and
+                    getattr(rw, 'visibility', 0) > 0.2 and getattr(lw, 'visibility', 0) > 0.2 and
+                    getattr(rs, 'visibility', 0) > 0.2 and getattr(ls, 'visibility', 0) > 0.2):
+                avg_wrist_y = (rw.y + lw.y) / 2
+                avg_shoulder_y = (rs.y + ls.y) / 2
+                # If wrists are significantly below shoulders (hands at console), person is active
+                wrist_below_shoulder = (avg_wrist_y - avg_shoulder_y) > 0.08  # normalized
+        except Exception:
+            pass
+
+        # Initialize variables used in debug_info (must be set before any early return)
+        wrist_velocity = 0.0
+        avg_wrist_velocity = 0.0
+        is_wrists_still = False
+        is_wrists_active = False
+        head_bob_detected = False
+        shoulder_slump_rate = 0.0
+        is_shoulder_slumping = False
+        current_sleep_state = 'ALERT'
+        is_face_not_visible = False
+        is_face_gone_with_body_signals = False
+
+        # --- Wrist velocity tracking (5a) ---
+        try:
+            landmarks_list = pose_landmarks.landmark if hasattr(pose_landmarks, 'landmark') else pose_landmarks
+            rw = self.get_keypoint(landmarks_list, 'right_wrist')
+            lw = self.get_keypoint(landmarks_list, 'left_wrist')
+            if (rw and lw and
+                    getattr(rw, 'visibility', 0) > 0.2 and getattr(lw, 'visibility', 0) > 0.2):
+                current_wrist_pos = ((lw.x, lw.y), (rw.x, rw.y))
+                prev_wrist_pos = tracking.get('previous_wrist_positions')
+                if prev_wrist_pos is not None:
+                    left_disp = ((current_wrist_pos[0][0] - prev_wrist_pos[0][0]) ** 2 +
+                                 (current_wrist_pos[0][1] - prev_wrist_pos[0][1]) ** 2) ** 0.5
+                    right_disp = ((current_wrist_pos[1][0] - prev_wrist_pos[1][0]) ** 2 +
+                                  (current_wrist_pos[1][1] - prev_wrist_pos[1][1]) ** 2) ** 0.5
+                    wrist_velocity = (left_disp + right_disp) / 2.0
+                tracking['wrist_velocity_history'].append(wrist_velocity)
+                tracking['previous_wrist_positions'] = current_wrist_pos
+        except Exception:
+            pass
+
         # Update per-person history
         if head_tilt is not None:
             tracking['head_tilt_history'].append(head_tilt)
+            # Head tilt delta for bob detection (5b)
+            if len(tracking['head_tilt_history']) >= 2:
+                tilt_list = tracking['head_tilt_history']
+                delta = tilt_list[-1] - tilt_list[-2]
+                tracking['head_tilt_deltas'].append(delta)
 
         tracking['movement_history'].append(movement_score)
 
@@ -1517,8 +1865,136 @@ class LocopilotActivityMonitor:
         if nose_above_shoulders_norm is not None:
             tracking['nose_above_shoulders_history'].append(nose_above_shoulders_norm)
 
+        # --- Shoulder Y tracking (5c) ---
+        try:
+            landmarks_list_sh = pose_landmarks.landmark if hasattr(pose_landmarks, 'landmark') else pose_landmarks
+            ls_sh = self.get_keypoint(landmarks_list_sh, 'left_shoulder')
+            rs_sh = self.get_keypoint(landmarks_list_sh, 'right_shoulder')
+            if (ls_sh and rs_sh and
+                    getattr(ls_sh, 'visibility', 0) > 0.2 and getattr(rs_sh, 'visibility', 0) > 0.2):
+                avg_sh_y = (ls_sh.y + rs_sh.y) / 2.0
+                tracking['shoulder_y_history'].append(avg_sh_y)
+                tracking['shoulder_y_timestamps'].append(timestamp_sec)
+        except Exception:
+            pass
+
         # Store current landmarks for next frame (per-person)
         tracking['previous_landmarks'] = pose_landmarks.landmark
+
+        # --- Baseline calibration logic ---
+        if tracking.get('baseline_calibrating') and self.SLEEP_BASELINE_ENABLED:
+            if tracking['baseline_start_time'] is None:
+                tracking['baseline_start_time'] = timestamp_sec
+
+            # Collect signal values during calibration window
+            bs = tracking['baseline_samples']
+            if nose_below_px is not None:
+                bs['nose_below_px'].append(nose_below_px)
+            if head_tilt is not None:
+                bs['head_tilt'].append(head_tilt)
+            if torso_height_px is not None:
+                bs['torso_height_px'].append(torso_height_px)
+            if shoulder_width_px is not None:
+                bs['shoulder_width_px'].append(shoulder_width_px)
+            if nose_above_shoulders_norm is not None:
+                bs['nose_above_shoulders_norm'].append(nose_above_shoulders_norm)
+            if nose_y_normalized is not None:
+                bs['nose_y_normalized'].append(nose_y_normalized)
+            if movement_score is not None:
+                bs['movement'].append(movement_score)
+            if avg_eye_vis is not None:
+                bs['eye_vis'].append(avg_eye_vis)
+
+            elapsed = timestamp_sec - tracking['baseline_start_time']
+            min_samples_met = len(bs['nose_below_px']) >= self.SLEEP_BASELINE_MIN_SAMPLES
+            if elapsed >= self.SLEEP_BASELINE_CALIBRATION_WINDOW and min_samples_met:
+                # Compute median baseline
+                tracking['baseline'] = {
+                    k: float(np.median(v)) if len(v) > 0 else None
+                    for k, v in bs.items()
+                }
+                tracking['baseline_calibrating'] = False
+                self.logger.debug(
+                    f"[POSE SLEEP] Person {person_idx}: baseline established after {elapsed:.1f}s "
+                    f"({len(bs['nose_below_px'])} samples) — {tracking['baseline']}"
+                )
+
+        # --- Sustained-signal counter updates ---
+        # Sustained stillness
+        if movement_score is not None and movement_score < self.SLEEP_SUSTAINED_STILLNESS_THRESHOLD:
+            tracking['sustained_stillness_count'] = tracking.get('sustained_stillness_count', 0) + 1
+        else:
+            tracking['sustained_stillness_count'] = 0
+
+        # Hands clasped (wrists close together)
+        if wrist_dist is not None and wrist_dist < self.SLEEP_HANDS_CLASPED_THRESHOLD:
+            tracking['hands_clasped_count'] = tracking.get('hands_clasped_count', 0) + 1
+        else:
+            tracking['hands_clasped_count'] = 0
+
+        # Sustained low eye visibility
+        # Only count when eyes are detected but appear closed (0.15 <= eye_vis < 0.30),
+        # NOT when eyes are absent from frame entirely (overhead camera, eye_vis < 0.15)
+        # Also suppress when nose_y < 0.10 (overhead camera sees top of head, not face)
+        eyes_not_in_frame_thresh = getattr(self.settings, 'eyes_not_in_frame_threshold', 0.15)
+        overhead_nose_y_thresh = getattr(self.settings, 'sleep_overhead_nose_y_threshold', 0.10)
+        is_overhead_camera = nose_y_normalized is not None and nose_y_normalized < overhead_nose_y_thresh
+        if (avg_eye_vis is not None and avg_eye_vis >= eyes_not_in_frame_thresh
+                and avg_eye_vis < self.EYES_NOT_VISIBLE_THRESHOLD
+                and not is_overhead_camera):
+            tracking['low_eye_vis_count'] = tracking.get('low_eye_vis_count', 0) + 1
+        else:
+            tracking['low_eye_vis_count'] = 0
+
+        # Face-not-visible counter: when eye_vis is very low AND this is NOT an overhead
+        # camera, the face has turned away. During microsleep with behind/side camera,
+        # head droops and face disappears. We use 0.25 as the threshold — eye_vis below 0.25
+        # means the face is barely detectable from a side/behind camera angle.
+        face_gone_threshold = getattr(self.settings, 'sleep_face_gone_threshold', 0.25)
+        is_face_not_visible = (avg_eye_vis is not None
+                               and avg_eye_vis < face_gone_threshold
+                               and not is_overhead_camera)
+        if is_face_not_visible:
+            tracking['face_not_visible_count'] = tracking.get('face_not_visible_count', 0) + 1
+        else:
+            tracking['face_not_visible_count'] = 0
+
+        # Derive sustained-signal boolean flags
+        is_sustained_stillness = tracking['sustained_stillness_count'] >= self.SLEEP_SUSTAINED_STILLNESS_FRAMES
+        is_hands_clasped = tracking['hands_clasped_count'] >= self.SLEEP_HANDS_CLASPED_FRAMES
+        is_sustained_low_eyes = tracking['low_eye_vis_count'] >= self.SLEEP_SUSTAINED_LOW_EYE_FRAMES
+
+        # --- Head Bob Detection (5d) ---
+        head_bob_detected = False
+        deltas = list(tracking['head_tilt_deltas'])
+        if len(deltas) >= (self.SLEEP_HEAD_BOB_MIN_DRIFT_FRAMES + 1):
+            # Scan backward: find positive spike (corrective jerk up)
+            for i in range(len(deltas) - 1, self.SLEEP_HEAD_BOB_MIN_DRIFT_FRAMES - 1, -1):
+                if deltas[i] >= self.SLEEP_HEAD_BOB_JERK_MIN_RATE:
+                    # Check preceding entries for slow negative drift (head dropping)
+                    drift_ok = True
+                    total_drift = 0.0
+                    for j in range(i - 1, max(i - 1 - self.SLEEP_HEAD_BOB_MIN_DRIFT_FRAMES, -1), -1):
+                        if j < 0:
+                            drift_ok = False
+                            break
+                        if deltas[j] > 0 or abs(deltas[j]) > self.SLEEP_HEAD_BOB_DRIFT_MAX_RATE:
+                            drift_ok = False
+                            break
+                        total_drift += abs(deltas[j])
+                    if drift_ok and total_drift >= self.SLEEP_HEAD_BOB_MIN_AMPLITUDE:
+                        head_bob_detected = True
+                        tracking['head_bob_count'] = tracking.get('head_bob_count', 0) + 1
+                        break
+
+        # --- Wrist Velocity Flags (5e) ---
+        vel_hist = list(tracking['wrist_velocity_history'])
+        avg_wrist_velocity = np.mean(vel_hist) if len(vel_hist) > 0 else 0.0
+        is_wrists_still = False
+        if len(vel_hist) >= self.SLEEP_WRIST_VEL_STILL_FRAMES:
+            recent_vels = vel_hist[-self.SLEEP_WRIST_VEL_STILL_FRAMES:]
+            is_wrists_still = all(v < self.SLEEP_WRIST_VEL_STILL for v in recent_vels)
+        is_wrists_active = avg_wrist_velocity > self.SLEEP_WRIST_VEL_ACTIVE
 
         # Need sufficient history to make determination
         # NOTE: In multiprocessing mode, each worker processes a ~6s chunk independently.
@@ -1548,100 +2024,196 @@ class LocopilotActivityMonitor:
         avg_nose_y_norm = np.mean(list(tracking['nose_y_norm_history'])) if len(tracking['nose_y_norm_history']) > 0 else 0.5
         avg_nose_above_shoulders = np.mean(list(tracking['nose_above_shoulders_history'])) if len(tracking['nose_above_shoulders_history']) > 0 else 0.0
 
-        # --- Compute sleep indicators ---
+        # --- Shoulder Slump Rate (5f) ---
+        shoulder_slump_rate = 0.0
+        is_shoulder_slumping = False
+        sh_y_hist = list(tracking['shoulder_y_history'])
+        sh_t_hist = list(tracking['shoulder_y_timestamps'])
+        if len(sh_y_hist) >= self.SLEEP_SHOULDER_SLUMP_MIN_FRAMES and len(sh_t_hist) == len(sh_y_hist):
+            t_arr = np.array(sh_t_hist)
+            y_arr = np.array(sh_y_hist)
+            t_mean = np.mean(t_arr)
+            y_mean = np.mean(y_arr)
+            t_diff = t_arr - t_mean
+            y_diff = y_arr - y_mean
+            denom = np.sum(t_diff ** 2)
+            if denom > 1e-12:
+                shoulder_slump_rate = float(np.sum(t_diff * y_diff) / denom)
+                is_shoulder_slumping = shoulder_slump_rate > self.SLEEP_SHOULDER_SLUMP_RATE_THRESHOLD
+
+        # --- Compute sleep indicators (delta-from-baseline when available) ---
+        baseline = tracking.get('baseline')
+        has_baseline = baseline is not None
+
         # Legacy signals (forward head drop)
         head_tilt_thresh = getattr(self.settings, 'sleep_head_tilt_threshold', -155)
-        is_head_down = avg_head_tilt < head_tilt_thresh  # Tightened for side/overhead camera angles
-
         nose_below_thresh = getattr(self.settings, 'sleep_nose_below_px_threshold', -55)
-        is_nose_drooping = nose_below_px is not None and nose_below_px < nose_below_thresh  # Nose far below shoulders (px)
 
-        # Nose above shoulders normalized: strongest discriminator for side/overhead cameras
-        # In side/overhead camera geometry, sleeping (reclined) posture pushes nose further above
-        # shoulder midpoint than upright posture due to perspective foreshortening.
+        if has_baseline:
+            # Delta-from-baseline: fire only when current value deviates significantly from awake baseline
+            baseline_nose = baseline.get('nose_below_px')
+            is_nose_drooping = (nose_below_px is not None and baseline_nose is not None and
+                                nose_below_px < baseline_nose - self.SLEEP_BASELINE_NOSE_BELOW_DELTA)
+
+            baseline_tilt = baseline.get('head_tilt')
+            is_head_down = (baseline_tilt is not None and
+                            avg_head_tilt < baseline_tilt - self.SLEEP_BASELINE_HEAD_TILT_DELTA)
+
+            baseline_torso = baseline.get('torso_height_px')
+            is_torso_elongated = (torso_height_px is not None and baseline_torso is not None and
+                                  torso_height_px > baseline_torso + self.SLEEP_BASELINE_TORSO_HEIGHT_DELTA)
+
+            baseline_shoulder = baseline.get('shoulder_width_px')
+            is_shoulders_compressed = (shoulder_width_px is not None and baseline_shoulder is not None and
+                                       shoulder_width_px < baseline_shoulder - self.SLEEP_BASELINE_SHOULDER_WIDTH_DELTA)
+        else:
+            # Fallback: absolute thresholds (backward-compatible)
+            is_nose_drooping = nose_below_px is not None and nose_below_px < nose_below_thresh
+            is_head_down = avg_head_tilt < head_tilt_thresh
+            torso_thresh = getattr(self.settings, 'sleep_reclined_torso_height_threshold', 175)
+            is_torso_elongated = torso_height_px is not None and torso_height_px > torso_thresh
+            sh_width_thresh = getattr(self.settings, 'sleep_reclined_shoulder_width_threshold', 60)
+            is_shoulders_compressed = shoulder_width_px is not None and shoulder_width_px < sh_width_thresh
+
+        # Nose above shoulders normalized (not strongly camera-dependent, keep absolute)
         nose_above_sh_thresh = getattr(self.settings, 'sleep_nose_above_shoulders_threshold', 0.08)
         is_nose_above_shoulders = len(tracking['nose_above_shoulders_history']) > 0 and avg_nose_above_shoulders > nose_above_sh_thresh
 
-        # Reclined posture signals (leaning back against wall — overhead/behind camera)
-        # Torso elongation: strongest discriminator (Cohen's d=2.34 from analysis)
-        torso_thresh = getattr(self.settings, 'sleep_reclined_torso_height_threshold', 175)
-        is_torso_elongated = torso_height_px is not None and torso_height_px > torso_thresh
-
-        # Nose Y position: strong signal (d=1.60) — when reclined, nose moves higher in frame
+        # Nose Y position: strong signal — when reclined, nose moves higher in frame
         nose_y_thresh = getattr(self.settings, 'sleep_nose_y_norm_threshold', 0.30)
         is_nose_high_in_frame = nose_y_normalized is not None and nose_y_normalized < nose_y_thresh
 
-        # Shoulder width compression: moderate signal — shoulders appear narrower when reclined
-        sh_width_thresh = getattr(self.settings, 'sleep_reclined_shoulder_width_threshold', 60)
-        is_shoulders_compressed = shoulder_width_px is not None and shoulder_width_px < sh_width_thresh
-
         # Common signals
-        is_minimal_movement = avg_movement < self.MINIMAL_MOVEMENT_THRESHOLD  # Relaxed from 0.1 — sleeping persons may shift slightly
-        is_stable_posture = head_tilt_variance < self.STABLE_POSTURE_VARIANCE  # Low variance = stable position
-        is_eyes_not_visible = avg_eye_vis is not None and avg_eye_vis < self.EYES_NOT_VISIBLE_THRESHOLD  # Eyes pointing down / not visible
+        is_minimal_movement = avg_movement < self.MINIMAL_MOVEMENT_THRESHOLD
+        is_stable_posture = head_tilt_variance < self.STABLE_POSTURE_VARIANCE
+        is_eyes_not_visible = avg_eye_vis is not None and avg_eye_vis < self.EYES_NOT_VISIBLE_THRESHOLD
 
-        # --- Weighted scoring approach ---
-        # Two scoring paths: forward-drop (legacy) and reclined (new)
-        # Plus nose_above_shoulders as strongest discriminator for side/overhead cameras
+        # --- State Machine (5g) ---
+        current_sleep_state = 'ALERT'
+        if self.SLEEP_STATE_MACHINE_ENABLED:
+            current_sleep_state = self._update_sleep_state_machine(
+                tracking, timestamp_sec, is_head_down,
+                is_sustained_low_eyes, is_minimal_movement,
+                head_bob_detected, avg_wrist_velocity
+            )
+            # If person is actively working (looking down at controls with hands active), suppress sleep
+            if current_sleep_state == 'LOOKING_DOWN_WORKING':
+                return False, False, {
+                    'head_tilt': head_tilt,
+                    'movement': movement_score,
+                    'nose_below_px': nose_below_px,
+                    'sleep_state': current_sleep_state,
+                    'avg_wrist_velocity': avg_wrist_velocity,
+                    'status': 'looking_down_working_suppressed'
+                }
+
+        # --- HEAD DROP DETECTION (primary microsleep signal) ---
+        # Microsleep = head suddenly drops forward/down from baseline position.
+        # We detect this by comparing current nose_y / head_tilt against baseline.
+        # A large sudden deviation = head has dropped = microsleep.
+        head_drop_detected = False
+        nose_y_drop = 0.0
+        head_tilt_drop = 0.0
+
+        # Configurable thresholds for head drop
+        nose_y_drop_thresh = getattr(self.settings, 'sleep_nose_y_drop_threshold', 0.15)
+        head_tilt_drop_thresh = getattr(self.settings, 'sleep_head_tilt_drop_threshold', 30.0)
+
+        if has_baseline:
+            baseline_nose_y = baseline.get('nose_y_normalized')
+            baseline_head_tilt = baseline.get('head_tilt')
+
+            # Nose Y drop: nose_y increases when head drops forward (Y axis is top-to-bottom)
+            if nose_y_normalized is not None and baseline_nose_y is not None:
+                nose_y_drop = nose_y_normalized - baseline_nose_y
+                if nose_y_drop > nose_y_drop_thresh:
+                    head_drop_detected = True
+
+            # Head tilt drop: head_tilt moves toward 0° (or positive) when head pitches forward
+            # Baseline is typically around -160° to -175°; microsleep goes to ~-90°
+            # So the change is positive (less negative = head dropped forward)
+            if head_tilt is not None and baseline_head_tilt is not None:
+                head_tilt_drop = head_tilt - baseline_head_tilt
+                if head_tilt_drop > head_tilt_drop_thresh:
+                    head_drop_detected = True
+
+        # Also detect via frame-to-frame delta (sudden change without baseline)
+        head_drop_from_delta = False
+        if len(tracking.get('head_tilt_deltas', [])) >= 1:
+            last_delta = list(tracking['head_tilt_deltas'])[-1]
+            # A large positive delta means head suddenly pitched forward
+            if last_delta > head_tilt_drop_thresh:
+                head_drop_from_delta = True
+                head_drop_detected = True
+
+        # Debug: log head drop values for every frame to diagnose detection
+        self.logger.debug(
+            f"[HEAD DROP DEBUG] Person {person_idx}: "
+            f"has_baseline={has_baseline}, nose_y={nose_y_normalized}, head_tilt={head_tilt}, "
+            f"baseline_nose_y={baseline.get('nose_y_normalized') if has_baseline else 'N/A'}, "
+            f"baseline_head_tilt={baseline.get('head_tilt') if has_baseline else 'N/A'}, "
+            f"nose_y_drop={nose_y_drop:.4f}, head_tilt_drop={head_tilt_drop:.1f}, "
+            f"thresh_nose_y={nose_y_drop_thresh}, thresh_tilt={head_tilt_drop_thresh}, "
+            f"head_drop={head_drop_detected}, delta_drop={head_drop_from_delta}"
+        )
+
+        # Score: primarily driven by head drop
         sleep_score = 0
+        is_hands_spread = wrist_dist is not None and wrist_dist > self.SLEEP_HANDS_SPREAD_THRESHOLD
 
-        # Path 1: Forward head drop (legacy — frontal/side cameras)
-        if is_nose_drooping:           # Head drooping (strong signal, works overhead)
-            sleep_score += 2
-        if is_head_down:               # Legacy head tilt (reduced weight, overlaps with awake in side cameras)
-            sleep_score += 1
+        if head_drop_detected:
+            sleep_score += 5  # Head drop is the primary signal
 
-        # Nose above shoulders: strongest discriminator for side/overhead cameras (+2)
-        if is_nose_above_shoulders:
-            sleep_score += 2
+        # Suppression: if hands are actively spread (on controls), reduce confidence
+        if is_hands_spread:
+            sleep_score -= 2
+        if is_wrists_active:
+            sleep_score -= 1
 
-        # Path 2: Reclined posture (leaning back — overhead/behind cameras)
-        if is_torso_elongated:         # Torso elongation (strongest reclined signal, +2)
-            sleep_score += 2
-        if is_nose_high_in_frame:      # Nose high in frame = head tilted back (+1)
-            sleep_score += 1
-        if is_shoulders_compressed:    # Shoulders narrower when reclined (+1)
-            sleep_score += 1
+        # Haar cascade eye closure boost (result passed in from caller to avoid double invocation)
+        haar_eye_closed = False
+        if haar_result is None:
+            haar_result = {}
+        haar_eye_closed = haar_result.get('eyes_closed', False)
+        if haar_eye_closed:
+            sleep_score += self.settings.haar_eye_score_boost
 
-        # Common signals (apply to both paths)
-        if is_eyes_not_visible:        # Eyes not visible (moderate signal)
-            sleep_score += 1
-        if is_minimal_movement:        # Low movement (moderate signal)
-            sleep_score += 1
-        if is_stable_posture:          # Stable position (weak signal)
-            sleep_score += 1
-
-        score_thresh = getattr(self.settings, 'sleep_score_threshold', 4)
-        sleep_indicators_met = sleep_score >= score_thresh  # Raised from 3 to 4 to reduce false positives
+        score_thresh = getattr(self.settings, 'sleep_score_threshold', 3)
+        sleep_indicators_met = sleep_score >= score_thresh
 
         debug_info = {
             'head_tilt': head_tilt,
-            'avg_head_tilt': avg_head_tilt,
-            'movement': movement_score,
-            'avg_movement': avg_movement,
-            'head_tilt_variance': head_tilt_variance,
-            'nose_below_px': nose_below_px,
-            'avg_nose_below_px': avg_nose_below_px,
-            'nose_above_shoulders_norm': nose_above_shoulders_norm,
-            'avg_nose_above_shoulders': avg_nose_above_shoulders,
-            'torso_height_px': torso_height_px,
-            'avg_torso_height': avg_torso_height,
             'nose_y_normalized': nose_y_normalized,
-            'avg_nose_y_norm': avg_nose_y_norm,
-            'shoulder_width_px': shoulder_width_px,
+            'nose_below_px': nose_below_px,
+            'movement': movement_score,
             'avg_eye_vis': avg_eye_vis,
+            'shoulder_width_px': shoulder_width_px,
+            'wrist_distance': wrist_dist,
+            'baseline_established': has_baseline,
             'sleep_score': sleep_score,
             'sleep_score_threshold': score_thresh,
-            'is_head_down': is_head_down,
-            'is_nose_drooping': is_nose_drooping,
-            'is_nose_above_shoulders': is_nose_above_shoulders,
-            'is_torso_elongated': is_torso_elongated,
-            'is_nose_high_in_frame': is_nose_high_in_frame,
-            'is_shoulders_compressed': is_shoulders_compressed,
-            'is_eyes_not_visible': is_eyes_not_visible,
-            'is_minimal_movement': is_minimal_movement,
-            'is_stable_posture': is_stable_posture
+            # Head drop detection
+            'head_drop_detected': head_drop_detected,
+            'head_drop_from_delta': head_drop_from_delta,
+            'nose_y_drop': nose_y_drop,
+            'head_tilt_drop': head_tilt_drop,
+            'nose_y_drop_thresh': nose_y_drop_thresh,
+            'head_tilt_drop_thresh': head_tilt_drop_thresh,
+            # Suppression signals
+            'is_hands_spread': is_hands_spread,
+            'is_wrists_active': is_wrists_active,
+            'avg_wrist_velocity': avg_wrist_velocity,
+            'sleep_state': current_sleep_state,
+            # Haar eye closure info
+            'haar_eye_closed': haar_eye_closed,
+            'haar_eye_info': haar_result,
         }
+
+        # Hard gate: head drop OR haar eye closure must be detected to proceed
+        if not head_drop_detected and not haar_eye_closed:
+            tracking['pose_sleep_start'] = None
+            tracking['pose_sleep_duration'] = 0
+            return False, False, debug_info
 
         # Detect sleep condition
         if sleep_indicators_met:
@@ -1649,9 +2221,12 @@ class LocopilotActivityMonitor:
                 tracking['pose_sleep_start'] = timestamp_sec
                 self.logger.debug(
                     f"[Pose-Based Sleep] Person {person_idx} started tracking - "
-                    f"score={sleep_score}, nose_px={nose_below_px}, head_tilt={avg_head_tilt:.1f}°, "
-                    f"torso_h={torso_height_px}, nose_y={nose_y_normalized}, sh_w={shoulder_width_px}, "
-                    f"eye_vis={avg_eye_vis}, movement={avg_movement:.4f}"
+                    f"score={sleep_score}, baseline={has_baseline}, "
+                    f"head_drop={head_drop_detected}, nose_y_drop={nose_y_drop:.4f}, "
+                    f"head_tilt_drop={head_tilt_drop:.1f}°, head_drop_delta={head_drop_from_delta}, "
+                    f"nose_y={nose_y_normalized}, head_tilt={head_tilt}, "
+                    f"eye_vis={avg_eye_vis}, wrist_vel={avg_wrist_velocity:.4f}, "
+                    f"is_hands_spread={is_hands_spread}, state={current_sleep_state}"
                 )
 
             tracking['pose_sleep_duration'] = timestamp_sec - tracking['pose_sleep_start']
@@ -3042,7 +3617,7 @@ class LocopilotActivityMonitor:
         
         return annotated_frame
     
-    def draw_mediapipe_outputs(self, frame: Any, pose_results: Any, face_results: Any, ear_value: Optional[float] = None, eye_closure_duration: float = 0, pose_sleep_info: Optional[Dict[str, Any]] = None, head_pose_info: Optional[Dict[str, Any]] = None) -> Any:
+    def draw_mediapipe_outputs(self, frame: Any, pose_results: Any, face_results: Any, pose_sleep_info: Optional[Dict[str, Any]] = None, head_pose_info: Optional[Dict[str, Any]] = None) -> Any:
         """Draw MediaPipe pose and face mesh landmarks on frame"""
         annotated_frame = frame.copy()
         
@@ -3074,45 +3649,13 @@ class LocopilotActivityMonitor:
                 )
         
         if face_detected:
-            if ear_value is not None:
-                if ear_value < self.EAR_CLOSED_THRESHOLD:
-                    status = "EYES CLOSED"
-                    color = (0, 0, 255)
-                else:
-                    status = "EYES OPEN"
-                    color = (0, 255, 0)
-                
-                ear_text = f"EAR: {ear_value:.3f} - {status}"
-                cv2.putText(annotated_frame, ear_text, (10, 30), 
-                           cv2.FONT_HERSHEY_SIMPLEX, 0.8, color, 2, cv2.LINE_AA)
-                
-                threshold_text = f"Threshold: < {self.EAR_CLOSED_THRESHOLD} = Closed"
-                cv2.putText(annotated_frame, threshold_text, (10, 60), 
-                           cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2, cv2.LINE_AA)
-                
-                if eye_closure_duration > 0:
-                    duration_text = f"Closed Duration: {eye_closure_duration:.1f}s"
-                    duration_color = (0, 165, 255)
-                    
-                    if eye_closure_duration >= self.EYE_CLOSURE_SLEEP_SECS:
-                        duration_text += " - SLEEP ALERT!"
-                        duration_color = (0, 0, 255)
-                    elif eye_closure_duration >= self.EYE_CLOSURE_MICROSLEEP_SECS:
-                        duration_text += " - MICROSLEEP!"
-                        duration_color = (0, 140, 255)
-                    
-                    cv2.putText(annotated_frame, duration_text, (10, 90), 
-                               cv2.FONT_HERSHEY_SIMPLEX, 0.7, duration_color, 2, cv2.LINE_AA)
-            else:
-                warning_text = "FACE DETECTED - EAR CALC ISSUE"
-                cv2.putText(annotated_frame, warning_text, (10, 30), 
-                           cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 165, 255), 2, cv2.LINE_AA)
+            cv2.putText(annotated_frame, "FACE DETECTED", (10, 30),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2, cv2.LINE_AA)
         else:
-            no_face_text = "FACE NOT DETECTED"
-            cv2.putText(annotated_frame, no_face_text, (10, 30), 
+            cv2.putText(annotated_frame, "FACE NOT DETECTED", (10, 30),
                        cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 165, 255), 2, cv2.LINE_AA)
-        
-        # Display pose-based sleep detection info (when face not detected or as backup)
+
+        # Display pose-based sleep detection info
         if pose_sleep_info and pose_results.pose_landmarks:
             y_offset = 60 if not face_detected else 120
             
@@ -3139,10 +3682,10 @@ class LocopilotActivityMonitor:
                 duration = pose_sleep_info['pose_sleep_duration']
                 duration_text = f"Pose Sleep: {duration:.1f}s"
                 
-                if duration >= self.EYE_CLOSURE_SLEEP_SECS:
+                if duration >= self.SLEEP_STRONG_DURATION:
                     duration_text += " - SLEEP DETECTED!"
                     duration_color = (0, 0, 255)
-                elif duration >= self.EYE_CLOSURE_MICROSLEEP_SECS:
+                elif duration >= self.SLEEP_MICROSLEEP_DURATION:
                     duration_text += " - MICROSLEEP!"
                     duration_color = (0, 140, 255)
                 else:
@@ -3187,17 +3730,128 @@ class LocopilotActivityMonitor:
         
         return annotated_frame
     
-    def draw_multi_person_mediapipe_outputs(self, frame: Any, persons_data: Dict[int, Dict[str, Any]], face_results: Any, ear_value: Optional[float] = None, eye_closure_duration: float = 0) -> Any:
+    def _draw_sleep_debug_overlay(self, frame, sleep_info, person_idx, activities, timestamp_sec):
+        """Draw sleep detection debug overlay on frame.
+
+        Shows sleep score, state machine state, eye visibility, wrist velocity,
+        and other key signals as a semi-transparent panel on the frame.
+        """
+        if frame is None or sleep_info is None:
+            return frame
+
+        h, w = frame.shape[:2]
+        # Position: top-left for person 0, top-right for person 1
+        x_offset = 5 if person_idx == 0 else w - 340
+        y_start = 55  # Below the timestamp overlay
+
+        sleep_score = sleep_info.get('sleep_score', 0)
+        score_thresh = sleep_info.get('sleep_score_threshold', 5)
+        state = sleep_info.get('sleep_state', 'N/A')
+        eye_vis = sleep_info.get('avg_eye_vis')
+        wrist_vel = sleep_info.get('avg_wrist_velocity', 0)
+        head_bob = sleep_info.get('head_bob_detected', False)
+        slump_rate = sleep_info.get('shoulder_slump_rate', 0)
+        is_slumping = sleep_info.get('is_shoulder_slumping', False)
+        is_wrists_still = sleep_info.get('is_wrists_still', False)
+        is_wrists_active = sleep_info.get('is_wrists_active', False)
+        face_gone = sleep_info.get('is_face_not_visible', False)
+        face_gone_body = sleep_info.get('is_face_gone_with_body_signals', False)
+        is_sustained_low_eyes = sleep_info.get('is_sustained_low_eyes', False)
+        is_sustained_stillness = sleep_info.get('is_sustained_stillness', False)
+        is_hands_clasped = sleep_info.get('is_hands_clasped', False)
+        is_sleeping = activities.get('sleep', False)
+        is_microsleep = activities.get('microsleep', False)
+        status = sleep_info.get('status', '')
+        movement = sleep_info.get('avg_movement', 0)
+        duration = sleep_info.get('pose_sleep_duration', 0)
+
+        # Build lines
+        lines = []
+        lines.append(f"P{person_idx} SLEEP DEBUG")
+        lines.append(f"Score: {sleep_score}/{score_thresh}")
+        lines.append(f"State: {state}")
+        lines.append(f"Eye vis: {eye_vis:.3f}" if eye_vis is not None else "Eye vis: N/A")
+        lines.append(f"Wrist vel: {wrist_vel:.4f}")
+        lines.append(f"Movement: {movement:.4f}" if movement else "Movement: N/A")
+        lines.append(f"Head bob: {head_bob}")
+        lines.append(f"Slump: {slump_rate:.5f} {'[!]' if is_slumping else ''}")
+        lines.append(f"Wrists: {'STILL' if is_wrists_still else 'ACTIVE' if is_wrists_active else 'normal'}")
+        lines.append(f"Face gone: {face_gone} body:{face_gone_body}")
+        lines.append(f"Low eyes: {is_sustained_low_eyes} Still: {is_sustained_stillness}")
+        lines.append(f"Clasped: {is_hands_clasped}")
+        if duration:
+            lines.append(f"Duration: {duration:.1f}s")
+        if status:
+            lines.append(f"Status: {status}")
+
+        # Determine panel color based on state
+        if is_sleeping:
+            panel_color = (0, 0, 180)       # Red - SLEEPING
+            text_color = (255, 255, 255)
+        elif is_microsleep:
+            panel_color = (0, 80, 200)       # Orange - MICROSLEEP
+            text_color = (255, 255, 255)
+        elif state == 'DROWSY':
+            panel_color = (0, 140, 220)      # Yellow-ish - DROWSY
+            text_color = (0, 0, 0)
+        elif state == 'LOOKING_DOWN_WORKING':
+            panel_color = (140, 100, 40)     # Blue-gray - WORKING
+            text_color = (255, 255, 255)
+        elif sleep_score >= score_thresh:
+            panel_color = (30, 80, 160)      # Dark orange - high score
+            text_color = (255, 255, 255)
+        else:
+            panel_color = (60, 60, 60)       # Dark gray - normal
+            text_color = (200, 200, 200)
+
+        # Draw semi-transparent panel
+        font = cv2.FONT_HERSHEY_SIMPLEX
+        font_scale = 0.42
+        thickness = 1
+        line_height = 16
+        panel_h = len(lines) * line_height + 10
+        panel_w = 335
+
+        overlay = frame.copy()
+        cv2.rectangle(overlay, (x_offset, y_start), (x_offset + panel_w, y_start + panel_h), panel_color, -1)
+        cv2.addWeighted(overlay, 0.7, frame, 0.3, 0, frame)
+
+        # Draw text
+        for i, line in enumerate(lines):
+            y = y_start + 14 + i * line_height
+            # Highlight key signals
+            color = text_color
+            if 'Score:' in line and sleep_score >= score_thresh:
+                color = (0, 255, 255)  # Cyan for high score
+            elif 'SLEEPING' in str(state) or 'MICROSLEEP' in str(state):
+                color = (0, 0, 255)
+            elif 'Head bob: True' in line:
+                color = (0, 255, 0)
+            elif 'Face gone: True' in line:
+                color = (0, 200, 255)
+            cv2.putText(frame, line, (x_offset + 5, y), font, font_scale, color, thickness, cv2.LINE_AA)
+
+        # Draw score bar
+        bar_y = y_start + panel_h + 2
+        bar_w = min(int((sleep_score / max(score_thresh + 3, 1)) * panel_w), panel_w)
+        bar_color = (0, 255, 0) if sleep_score < score_thresh else (0, 0, 255)
+        cv2.rectangle(frame, (x_offset, bar_y), (x_offset + bar_w, bar_y + 6), bar_color, -1)
+        cv2.rectangle(frame, (x_offset, bar_y), (x_offset + panel_w, bar_y + 6), (100, 100, 100), 1)
+        # Threshold marker
+        thresh_x = x_offset + int((score_thresh / max(score_thresh + 3, 1)) * panel_w)
+        cv2.line(frame, (thresh_x, bar_y), (thresh_x, bar_y + 6), (255, 255, 255), 2)
+
+        return frame
+
+    def draw_multi_person_mediapipe_outputs(self, frame: Any, persons_data: Dict[int, Dict[str, Any]], face_results: Any) -> Any:
         """Draw MediaPipe pose landmarks for ALL detected persons
-        
+
         Args:
             frame: The frame image
             persons_data: Dictionary of person data from process_all_persons_activities()
                          Format: {person_idx: {'pose_landmarks': landmarks, 'role': 'LP', 'activities': {...}, ...}}
             face_results: MediaPipe face mesh results
-            ear_value: Eye aspect ratio value
-            eye_closure_duration: Duration of eye closure
-            
+
         Returns:
             Annotated frame with all persons' pose landmarks drawn
         """
@@ -3347,36 +4001,12 @@ class LocopilotActivityMonitor:
                     connection_drawing_spec=self.mp_drawing_styles.get_default_face_mesh_contours_style()
                 )
         
-        # Draw status text for face/eye detection
+        # Draw face detection status
         if face_detected:
-            if ear_value is not None:
-                if ear_value < self.EAR_CLOSED_THRESHOLD:
-                    status = "EYES CLOSED"
-                    color = (0, 0, 255)
-                else:
-                    status = "EYES OPEN"
-                    color = (0, 255, 0)
-                
-                ear_text = f"EAR: {ear_value:.3f} - {status}"
-                cv2.putText(annotated_frame, ear_text, (10, 30), 
-                           cv2.FONT_HERSHEY_SIMPLEX, 0.8, color, 2, cv2.LINE_AA)
-                
-                if eye_closure_duration > 0:
-                    duration_text = f"Closed Duration: {eye_closure_duration:.1f}s"
-                    duration_color = (0, 165, 255)
-                    
-                    if eye_closure_duration >= self.EYE_CLOSURE_SLEEP_SECS:
-                        duration_text += " - SLEEP ALERT!"
-                        duration_color = (0, 0, 255)
-                    elif eye_closure_duration >= self.EYE_CLOSURE_MICROSLEEP_SECS:
-                        duration_text += " - MICROSLEEP!"
-                        duration_color = (0, 140, 255)
-                    
-                    cv2.putText(annotated_frame, duration_text, (10, 60), 
-                               cv2.FONT_HERSHEY_SIMPLEX, 0.7, duration_color, 2, cv2.LINE_AA)
+            cv2.putText(annotated_frame, "FACE DETECTED", (10, 30),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2, cv2.LINE_AA)
         else:
-            no_face_text = "FACE NOT DETECTED"
-            cv2.putText(annotated_frame, no_face_text, (10, 30), 
+            cv2.putText(annotated_frame, "FACE NOT DETECTED", (10, 30),
                        cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 165, 255), 2, cv2.LINE_AA)
         
         # Draw activity warnings for each person
@@ -4831,7 +5461,8 @@ class LocopilotActivityMonitor:
                             visible_kps = sum(1 for lm in sleep_fallback_landmarks.landmark if lm.visibility > 0.3)
                             if visible_kps >= 5:
                                 sleep_det, microsleep_det, sleep_info = self.detect_pose_based_sleep(
-                                    sleep_fallback_landmarks, timestamp_sec, person_idx=person_idx, frame_shape=frame.shape
+                                    sleep_fallback_landmarks, timestamp_sec, person_idx=person_idx,
+                                    frame_shape=frame.shape
                                 )
                                 if sleep_det:
                                     no_pose_activities['sleep'] = True
@@ -4977,8 +5608,17 @@ class LocopilotActivityMonitor:
                 # This allows us to check both book presence AND writing activity
                 
                 # 2. SLEEP / MICROSLEEP DETECTION (pose-based)
+                # Run Haar eye detection once (shared between score boost and fallback)
+                haar_eye_result = None
+                if (self.settings.haar_eye_detection_enabled and self.eye_cascade is not None):
+                    haar_eye_result = self.detect_eye_closure_haar(
+                        frame, translated_landmarks, person_idx, bbox, timestamp_sec
+                    )
+                    person_debug_info['haar_eye_info'] = haar_eye_result
+
                 pose_sleep_detected, pose_microsleep_detected, pose_sleep_info = self.detect_pose_based_sleep(
-                    translated_landmarks, timestamp_sec, person_idx=person_idx, frame_shape=frame.shape
+                    translated_landmarks, timestamp_sec, person_idx=person_idx,
+                    frame_shape=frame.shape, haar_result=haar_eye_result
                 )
                 person_debug_info['sleep_info'] = pose_sleep_info
                 person_activities['sleep'] = pose_sleep_detected
@@ -4999,6 +5639,16 @@ class LocopilotActivityMonitor:
                         person_activities['microsleep'] = True
                         person_debug_info['sleep_info'] = ir_info
                         person_debug_info['sleep_info']['method'] = 'ir_forward_lean_pose_fallback'
+
+                # 2c. HAAR EYE CLOSURE FALLBACK (reuse result from step 2 — no second call)
+                if (haar_eye_result is not None and
+                        not person_activities.get('sleep') and not person_activities.get('microsleep')):
+                    if haar_eye_result.get('is_sleep'):
+                        person_activities['sleep'] = True
+                        person_debug_info['sleep_info'] = {'method': 'haar_eye_closure', **haar_eye_result}
+                    elif haar_eye_result.get('is_microsleep'):
+                        person_activities['microsleep'] = True
+                        person_debug_info['sleep_info'] = {'method': 'haar_eye_closure', **haar_eye_result}
 
                 # 3. CELL PHONE DETECTION (check if hand near phone in THIS person's region)
                 # MOVED BEFORE HAND GESTURE: Need to detect this first for context-aware filtering
@@ -6741,26 +7391,9 @@ class LocopilotActivityMonitor:
             # CR-005: Track frame indices in parallel buffer for activity frame storage
             self.frame_idx_buffer.append(frame_idx)
 
-            # STEP 1: Run MediaPipe Face Mesh on full frame (for face-based sleep/EAR detection)
+            # STEP 1: Run MediaPipe Face Mesh on full frame (for head pose/mind diversion detection)
             rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             face_results = self.face_mesh.process(rgb_frame)
-
-            # Calculate EAR for all detected faces (check all people)
-            ear_value = None
-            min_ear_value = None  # Track the lowest EAR (most closed eyes)
-
-            if face_results.multi_face_landmarks:
-                # Check all detected faces
-                ear_values = []
-                for face_landmarks in face_results.multi_face_landmarks:
-                    ear = self.calculate_eye_aspect_ratio(face_landmarks.landmark)
-                    if ear is not None:
-                        ear_values.append(ear)
-
-                # Use the minimum EAR (most closed eyes) for microsleep detection
-                if ear_values:
-                    min_ear_value = min(ear_values)
-                    ear_value = min_ear_value
 
             # STEP 2: Detect objects with YOLO
             # GPU BATCH: Use pre-computed detections from batch inference if available
@@ -6907,39 +7540,42 @@ class LocopilotActivityMonitor:
                     if activities.get('packing', False) and self.consecutive_detections.get('packing_bags', 0) == 0:
                         self.logger.info(f"[{timestamp}] PACKING detected for {role_name} (Person {person_idx+1})")
 
-            # Face-based sleep detection (still use EAR as additional signal)
-            if face_results.multi_face_landmarks and ear_value is not None:
-                if ear_value < self.EAR_CLOSED_THRESHOLD:
-                    if self.eye_closure_start is None:
-                        self.eye_closure_start = timestamp_sec
-
-                    self.eye_closure_duration = timestamp_sec - self.eye_closure_start
-
-                    # Merge with pose-based detection
-                    if self.eye_closure_duration >= self.EYE_CLOSURE_SLEEP_SECS:
-                        sleep_detected = True
-                    elif self.eye_closure_duration >= self.EYE_CLOSURE_MICROSLEEP_SECS:
-                        microsleep_detected = True
-                else:
-                    self.eye_closure_start = None
-                    self.eye_closure_duration = 0
-
             # CRITICAL: Exclude sleep detection if person is holding objects or in active posture
             # If someone has a phone, book, or backpack in hand, they're clearly NOT sleeping
-            if cell_phone_detected or writing_detected or packing_detected:
+            # EXCEPTION: If the sleep state machine is in DROWSY/MICROSLEEP/SLEEPING, don't let
+            # writing suppress sleep — during microsleep, hands-in-lap + head-down can look like
+            # writing posture but the state machine has already determined the person is drowsy.
+            sleep_state_overrides_writing = False
+            if sleep_detected or microsleep_detected:
+                for _pidx, _pdata in persons_data.items():
+                    _sleep_info = _pdata.get('debug_info', {}).get('sleep_info', {})
+                    _state = _sleep_info.get('sleep_state', 'ALERT')
+                    if _state in ('DROWSY', 'MICROSLEEP', 'SLEEPING'):
+                        sleep_state_overrides_writing = True
+                        break
+            suppress_activities = cell_phone_detected or packing_detected
+            if writing_detected and not sleep_state_overrides_writing:
+                suppress_activities = True
+            if suppress_activities:
                 if log_per_person_detections and (microsleep_detected or sleep_detected):
                     reason = []
                     if cell_phone_detected: reason.append("phone")
-                    if writing_detected: reason.append("book")
+                    if writing_detected and not sleep_state_overrides_writing: reason.append("book")
                     if packing_detected: reason.append("backpack")
                     self.logger.debug(f"[{timestamp}] Sleep detection OVERRIDDEN - person active ({', '.join(reason)})")
                 microsleep_detected = False
                 sleep_detected = False
                 # Reset sleep tracking counters
-                self.eye_closure_start = None
-                self.eye_closure_duration = 0
                 self.pose_sleep_start = None
                 self.pose_sleep_duration = 0
+
+            # Debug: log sleep detection state after override check
+            if sleep_detected or microsleep_detected:
+                self.logger.info(
+                    f"[{timestamp}] [Frame {frame_idx}] SLEEP/MICROSLEEP PASSED override check: "
+                    f"sleep={sleep_detected}, microsleep={microsleep_detected}, "
+                    f"writing={writing_detected}, override={sleep_state_overrides_writing}"
+                )
 
             # Create annotated frame with all detections (pose landmarks + YOLO boxes)
             # This annotated frame will be used for BOTH activity clips AND periodic frame saving
@@ -6950,10 +7586,17 @@ class LocopilotActivityMonitor:
             annotated_frame_for_activity = self.draw_multi_person_mediapipe_outputs(
                 annotated_frame_for_activity,
                 persons_data,  # All persons' pose landmarks and activities
-                face_results,
-                ear_value,
-                self.eye_closure_duration
+                face_results
             )
+
+            # Draw sleep detection debug overlay for each person
+            for pidx, pdata in persons_data.items():
+                sleep_info = pdata.get('debug_info', {}).get('sleep_info')
+                if sleep_info:
+                    annotated_frame_for_activity = self._draw_sleep_debug_overlay(
+                        annotated_frame_for_activity, sleep_info, pidx,
+                        pdata.get('activities', {}), timestamp_sec
+                    )
 
             # Save annotated frames periodically if enabled (AFTER all detections)
             if (

@@ -233,7 +233,68 @@ class Settings(BaseSettings):
     sleep_nose_below_px_threshold: float = float(os.getenv("SLEEP_NOSE_BELOW_PX_THRESH", "-55"))
     sleep_head_tilt_threshold: float = float(os.getenv("SLEEP_HEAD_TILT_THRESH", "-155"))
     sleep_nose_y_norm_threshold: float = float(os.getenv("SLEEP_NOSE_Y_NORM_THRESH", "0.30"))
-    sleep_score_threshold: int = int(os.getenv("SLEEP_SCORE_THRESH", "4"))
+    sleep_score_threshold: int = int(os.getenv("SLEEP_SCORE_THRESH", "5"))
+
+    # Baseline calibration for camera-angle adaptation
+    sleep_baseline_enabled: bool = os.getenv("SLEEP_BASELINE_ENABLED", "true").lower() == "true"
+    sleep_baseline_calibration_window: float = float(os.getenv("SLEEP_BASELINE_WINDOW", "2.0"))
+    sleep_baseline_min_samples: int = int(os.getenv("SLEEP_BASELINE_MIN_SAMPLES", "1"))
+
+    # Delta-from-baseline thresholds
+    sleep_baseline_nose_below_delta: float = float(os.getenv("SLEEP_BASELINE_NOSE_BELOW_DELTA", "40"))
+    sleep_baseline_head_tilt_delta: float = float(os.getenv("SLEEP_BASELINE_HEAD_TILT_DELTA", "25"))
+    sleep_baseline_torso_height_delta: float = float(os.getenv("SLEEP_BASELINE_TORSO_DELTA", "40"))
+    sleep_baseline_shoulder_width_delta: float = float(os.getenv("SLEEP_BASELINE_SHOULDER_DELTA", "20"))
+
+    # New discriminating signals for sleep detection
+    sleep_sustained_stillness_threshold: float = float(os.getenv("SLEEP_SUSTAINED_STILLNESS_THRESH", "0.03"))
+    sleep_sustained_stillness_frames: int = int(os.getenv("SLEEP_SUSTAINED_STILLNESS_FRAMES", "1"))
+    sleep_hands_clasped_threshold: float = float(os.getenv("SLEEP_HANDS_CLASPED_THRESH", "100"))
+    sleep_hands_clasped_frames: int = int(os.getenv("SLEEP_HANDS_CLASPED_FRAMES", "1"))
+    sleep_sustained_low_eye_frames: int = int(os.getenv("SLEEP_SUSTAINED_LOW_EYE_FRAMES", "2"))
+    sleep_hands_spread_threshold: float = float(os.getenv("SLEEP_HANDS_SPREAD_THRESHOLD", "180"))
+
+    # Head Bob Detection (slow drift + corrective jerk)
+    sleep_head_bob_drift_max_rate: float = float(os.getenv("SLEEP_HEAD_BOB_DRIFT_MAX_RATE", "15.0"))
+    sleep_head_bob_jerk_min_rate: float = float(os.getenv("SLEEP_HEAD_BOB_JERK_MIN_RATE", "20.0"))
+    sleep_head_bob_min_drift_frames: int = int(os.getenv("SLEEP_HEAD_BOB_MIN_DRIFT_FRAMES", "2"))
+    sleep_head_bob_min_amplitude: float = float(os.getenv("SLEEP_HEAD_BOB_MIN_AMPLITUDE", "10.0"))
+    sleep_head_bob_score_bonus: int = int(os.getenv("SLEEP_HEAD_BOB_SCORE_BONUS", "2"))
+    sleep_head_bob_bypass_eye_gate: bool = os.getenv("SLEEP_HEAD_BOB_BYPASS_EYE_GATE", "true").lower() == "true"
+
+    # Wrist Velocity Tracking (still vs active hands)
+    sleep_wrist_velocity_still_threshold: float = float(os.getenv("SLEEP_WRIST_VEL_STILL", "0.005"))
+    sleep_wrist_velocity_active_threshold: float = float(os.getenv("SLEEP_WRIST_VEL_ACTIVE", "0.03"))
+    sleep_wrist_velocity_still_frames: int = int(os.getenv("SLEEP_WRIST_VEL_STILL_FRAMES", "2"))
+
+    # Temporal State Machine
+    sleep_state_machine_enabled: bool = os.getenv("SLEEP_STATE_MACHINE_ENABLED", "true").lower() == "true"
+    sleep_state_hand_activity_threshold: float = float(os.getenv("SLEEP_STATE_HAND_ACTIVITY", "0.02"))
+    sleep_state_drowsy_to_microsleep_sec: float = float(os.getenv("SLEEP_DROWSY_TO_MICROSLEEP_SEC", "2.0"))
+    sleep_state_microsleep_to_sleep_sec: float = float(os.getenv("SLEEP_MICROSLEEP_TO_SLEEP_SEC", "4.0"))
+
+    # Shoulder Slump Rate (progressive downward drift)
+    sleep_shoulder_slump_rate_threshold: float = float(os.getenv("SLEEP_SHOULDER_SLUMP_RATE", "0.005"))
+    sleep_shoulder_slump_min_frames: int = int(os.getenv("SLEEP_SHOULDER_SLUMP_MIN_FRAMES", "3"))
+    # Face-gone threshold: eye_vis below this = face not visible (side/behind camera)
+    sleep_face_gone_threshold: float = float(os.getenv("SLEEP_FACE_GONE_THRESHOLD", "0.25"))
+
+    # Head drop detection thresholds (primary microsleep signal)
+    sleep_nose_y_drop_threshold: float = float(os.getenv("SLEEP_NOSE_Y_DROP_THRESHOLD", "0.15"))
+    sleep_head_tilt_drop_threshold: float = float(os.getenv("SLEEP_HEAD_TILT_DROP_THRESHOLD", "30.0"))
+
+    eyes_not_in_frame_threshold: float = float(os.getenv("EYES_NOT_IN_FRAME_THRESHOLD", "0.15"))
+    sleep_overhead_nose_y_threshold: float = float(os.getenv("SLEEP_OVERHEAD_NOSE_Y_THRESHOLD", "0.10"))
+
+    # Haar Cascade Eye Closure Detection
+    haar_eye_detection_enabled: bool = bool(int(os.getenv("HAAR_EYE_DETECTION_ENABLED", "1")))
+    haar_eye_closed_consecutive_frames: int = int(os.getenv("HAAR_EYE_CLOSED_FRAMES", "3"))
+    haar_eye_roi_padding: float = float(os.getenv("HAAR_EYE_ROI_PADDING", "0.4"))
+    haar_eye_scale_factor: float = float(os.getenv("HAAR_EYE_SCALE_FACTOR", "1.1"))
+    haar_eye_min_neighbors: int = int(os.getenv("HAAR_EYE_MIN_NEIGHBORS", "3"))
+    haar_eye_microsleep_duration: float = float(os.getenv("HAAR_EYE_MICROSLEEP_DURATION", "1.5"))
+    haar_eye_sleep_duration: float = float(os.getenv("HAAR_EYE_SLEEP_DURATION", "4.0"))
+    haar_eye_score_boost: int = int(os.getenv("HAAR_EYE_SCORE_BOOST", "5"))
 
     # Lower YOLO pose confidence for sleep analysis (sleeping persons have low YOLO confidence)
     yolo_pose_sleep_confidence: float = float(os.getenv("YOLO_POSE_SLEEP_CONFIDENCE", "0.30"))
@@ -310,13 +371,10 @@ class Settings(BaseSettings):
     # Head Tilt / Sleep Detection Thresholds
     # ==========================================
     head_down_threshold: float = float(os.getenv("HEAD_DOWN_THRESHOLD", "0.01"))
-    ear_closed_threshold: float = float(os.getenv("EAR_CLOSED_THRESHOLD", "0.2"))
-    eye_closure_microsleep_secs: int = int(os.getenv("EYE_CLOSURE_MICROSLEEP_SECS", "5"))
-    eye_closure_sleep_secs: int = int(os.getenv("EYE_CLOSURE_SLEEP_SECS", "30"))
-    sleep_strong_score: int = int(os.getenv("SLEEP_STRONG_SCORE", "4"))
-    sleep_strong_duration: int = int(os.getenv("SLEEP_STRONG_DURATION", "2"))
-    sleep_moderate_duration: int = int(os.getenv("SLEEP_MODERATE_DURATION", "4"))
-    sleep_microsleep_duration: int = int(os.getenv("SLEEP_MICROSLEEP_DURATION", "2"))
+    sleep_strong_score: int = int(os.getenv("SLEEP_STRONG_SCORE", "6"))
+    sleep_strong_duration: int = int(os.getenv("SLEEP_STRONG_DURATION", "0"))
+    sleep_moderate_duration: int = int(os.getenv("SLEEP_MODERATE_DURATION", "2"))
+    sleep_microsleep_duration: int = int(os.getenv("SLEEP_MICROSLEEP_DURATION", "0"))
     minimal_movement_threshold: float = float(os.getenv("MINIMAL_MOVEMENT_THRESHOLD", "0.15"))
     stable_posture_variance: int = int(os.getenv("STABLE_POSTURE_VARIANCE", "100"))
     eyes_not_visible_threshold: float = float(os.getenv("EYES_NOT_VISIBLE_THRESHOLD", "0.4"))
