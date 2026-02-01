@@ -98,7 +98,7 @@ WorkingDirectory=/opt/poc2
 EnvironmentFile=/opt/poc2/.env
 Environment=PATH=/opt/poc2/venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 Environment=YOLO_DEVICE=0
-Environment=MP_MAX_WORKERS_CAP=2
+Environment=MP_MAX_WORKERS_CAP=6
 Environment=TORCH_THREADS=1
 Environment=OPENCV_THREADS=2
 ExecStart=/opt/poc2/venv/bin/gunicorn -c gunicorn_config.py app.main:app
@@ -154,7 +154,7 @@ if [ "$STATUS" = "active" ]; then
         echo ""
         echo "Application URL: http://$SERVER_IP:8000"
         echo "Health Check:    http://$SERVER_IP:8000/health"
-        echo "GPU Workers:     2 (MP_MAX_WORKERS_CAP)"
+        echo "GPU Workers:     6 (MP_MAX_WORKERS_CAP)"
     else
         echo -e "${YELLOW}Warning: Health check did not return expected response${NC}"
         echo "Response: $HEALTH"

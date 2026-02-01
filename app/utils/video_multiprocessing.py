@@ -28,6 +28,18 @@ logger = get_logger(__name__)
 settings = get_settings()
 
 
+class NumpyEncoder(json.JSONEncoder):
+    """JSON encoder that handles numpy types."""
+    def default(self, obj):
+        if isinstance(obj, (np.integer,)):
+            return int(obj)
+        if isinstance(obj, (np.floating,)):
+            return float(obj)
+        if isinstance(obj, np.ndarray):
+            return obj.tolist()
+        return super().default(obj)
+
+
 # Global variables for worker processes (initialized once per worker)
 _worker_models = None
 _worker_config = None
@@ -595,7 +607,7 @@ class VideoMultiprocessingOrchestrator:
         state_path = os.path.join(run_dir, self.config.state_file_name)
         try:
             with open(state_path, 'w') as f:
-                json.dump(self.state.to_dict(), f, indent=2)
+                json.dump(self.state.to_dict(), f, indent=2, cls=NumpyEncoder)
             logger.debug(f"State saved to {state_path}")
         except Exception as e:
             logger.error(f"Failed to save state: {e}")
@@ -810,7 +822,7 @@ class VideoMultiprocessingOrchestrator:
             try:
                 import json
                 with open(activities_json_path, 'w') as f:
-                    json.dump(all_activities, f, indent=2)
+                    json.dump(all_activities, f, indent=2, cls=NumpyEncoder)
                 logger.info(f"Saved {len(all_activities)} activities to {activities_json_path}")
             except Exception as e:
                 logger.error(f"Failed to save activities.json: {e}")

@@ -56,8 +56,8 @@ class ActivityDetectionService:
         
         self.evidence_rules = {
             'cell_phone': 'phone_in_hand',
-            'microsleep': 'eyes_closed_5s_or_pose_indicators',
-            'sleep': 'eyes_closed_30s_or_pose_indicators',
+            'microsleep': 'pose_indicators',
+            'sleep': 'pose_indicators',
             'writing': 'hand_near_book',
             'packing_bags': 'wrist_inside_backpack_bbox_or_hand_near_backpack',
             'group_detected': 'more_than_2_deduplicated_persons',

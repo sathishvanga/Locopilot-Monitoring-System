@@ -6,6 +6,7 @@ This repository manages reading and writing activity data to JSON files.
 
 import json
 import os
+import numpy as np
 from typing import List, Dict, Any, Optional, Union
 from pathlib import Path
 
@@ -14,6 +15,18 @@ from ..models.activity_models import ActivityModel
 
 
 logger = get_logger(__name__)
+
+
+class NumpyEncoder(json.JSONEncoder):
+    """JSON encoder that handles numpy types."""
+    def default(self, obj):
+        if isinstance(obj, (np.integer,)):
+            return int(obj)
+        if isinstance(obj, (np.floating,)):
+            return float(obj)
+        if isinstance(obj, np.ndarray):
+            return obj.tolist()
+        return super().default(obj)
 
 
 def parse_time_to_seconds(time_value: Union[str, int, float, None]) -> float:
@@ -102,7 +115,7 @@ class ActivityRepository:
             
             # Write activities to JSON file with proper formatting
             with open(activities_json_path, 'w', encoding='utf-8') as f:
-                json.dump(activities, f, indent=2, ensure_ascii=False)
+                json.dump(activities, f, indent=2, ensure_ascii=False, cls=NumpyEncoder)
             
             logger.info(
                 f"Successfully saved {len(activities)} activities to {activities_json_path}"
