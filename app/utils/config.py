@@ -367,6 +367,16 @@ class Settings(BaseSettings):
     book_posture_min_duration: float = float(os.getenv("BOOK_POSTURE_MIN_DURATION", "2.0"))
     book_posture_required_consecutive: int = int(os.getenv("BOOK_POSTURE_REQUIRED_CONSECUTIVE", "2"))
 
+    # Writing Motion Asymmetry (Method 2 false positive filter)
+    # Note: At 0.5 FPS, motion asymmetry measures macro-scale postural drift
+    # (dominant hand drifts more while writing) rather than individual pen strokes.
+    writing_motion_min_variance: float = float(os.getenv("WRITING_MOTION_MIN_VARIANCE", "8.0"))
+    writing_motion_asymmetry_ratio: float = float(os.getenv("WRITING_MOTION_ASYMMETRY_RATIO", "2.0"))
+    writing_motion_history_length: int = int(os.getenv("WRITING_MOTION_HISTORY_LENGTH", "5"))
+
+    # Writing Edge Density (paper/book texture verification)
+    writing_edge_density_threshold: float = float(os.getenv("WRITING_EDGE_DENSITY_THRESHOLD", "0.08"))
+
     # ==========================================
     # Head Tilt / Sleep Detection Thresholds
     # ==========================================

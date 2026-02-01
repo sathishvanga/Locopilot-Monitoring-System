@@ -357,6 +357,13 @@ class LocopilotActivityMonitor:
         self.BOOK_POSTURE_MIN_DURATION = settings.book_posture_min_duration if settings else 2.0
         self.BOOK_POSTURE_REQUIRED_CONSECUTIVE = settings.book_posture_required_consecutive if settings else 2
 
+        # Writing Motion Asymmetry (false positive filter for Method 2)
+        self.WRITING_MOTION_MIN_VARIANCE = settings.writing_motion_min_variance if settings else 8.0
+        self.WRITING_MOTION_ASYMMETRY_RATIO = settings.writing_motion_asymmetry_ratio if settings else 2.0
+        self.WRITING_MOTION_HISTORY_LENGTH = settings.writing_motion_history_length if settings else 5
+        # Writing Edge Density (paper/book texture verification)
+        self.WRITING_EDGE_DENSITY_THRESHOLD = settings.writing_edge_density_threshold if settings else 0.08
+
         # Head Tilt / Sleep Detection
         self.HEAD_DOWN_THRESHOLD = settings.head_down_threshold if settings else 0.01
         # Pose-Based Sleep Detection
@@ -618,6 +625,10 @@ class LocopilotActivityMonitor:
         # Format: {person_idx: {'start_time': timestamp, 'duration': seconds, 'consecutive_frames': int}}
         self.wrist_proximity_tracking = {}
 
+        # Writing wrist motion history for asymmetry detection (per person)
+        # Format: {person_idx: {'right_wrist': deque([(x,y)]), 'left_wrist': deque([(x,y)])}}
+        self.writing_wrist_motion_history = {}
+
         # Per-person consecutive detection tracking for temporal filtering
         # Format: {person_idx: {activity_type: count}} - uses defaultdict to support all activity types
         self.per_person_consecutive_detections = defaultdict(lambda: defaultdict(int))
@@ -729,32 +740,12 @@ class LocopilotActivityMonitor:
             self.voting_service = None
             self.logger.info("VotingVerificationService not available - voting disabled")
 
-        # Initialize train motion rule engine services
+        # Motion detection and rule engine fully disabled
         self.video_start_time = None  # Will be set via set_video_start_time()
-        self._prev_motion_frame = None  # Previous frame for optical flow
-        self.current_motion_context = None  # Current train motion state
-
-        # Rule engine service
-        if get_rule_engine_service is not None:
-            try:
-                self.rule_engine = get_rule_engine_service()
-                self.logger.info("RuleEngineService initialized successfully")
-            except Exception as e:
-                self.logger.warning(f"Failed to initialize RuleEngineService: {e}")
-                self.rule_engine = None
-        else:
-            self.rule_engine = None
-
-        # Optical flow motion service (replaces schedule-based motion resolver)
-        if get_side_window_motion_service is not None:
-            try:
-                self.optical_flow_service = get_side_window_motion_service()
-                self.logger.info("SideWindowMotionService initialized successfully")
-            except Exception as e:
-                self.logger.warning(f"Failed to initialize SideWindowMotionService: {e}")
-                self.optical_flow_service = None
-        else:
-            self.optical_flow_service = None
+        self._prev_motion_frame = None
+        self.current_motion_context = None
+        self.rule_engine = None
+        self.optical_flow_service = None
 
         # OCR timestamp service
         if get_ocr_timestamp_service is not None:
@@ -777,15 +768,13 @@ class LocopilotActivityMonitor:
         else:
             self.alp_alertness_service = None
 
-        # ALP pre-stop standing check state
-        self._prev_motion_state = None          # Track RUNNING→STOPPED transitions
-        _lookback = self.settings.alp_pre_stop_lookback_seconds if self.settings else 30
-        _buffer_size = max(1, int(_lookback * self.sample_fps))
-        self._alp_standing_buffer = deque(maxlen=_buffer_size)  # Last ~30s of ALP standing checks
-        self._alp_pre_stop_violation_countdown = 0    # Frames remaining to fire the violation
-        self._consecutive_stopped_count = 0           # Consecutive STOPPED frames before confirming transition
-        self._consecutive_stopped_required = 3        # Require 3 consecutive STOPPED frames (~6s at 0.5fps)
-        self._was_running_before_stopped_streak = False  # Was RUNNING right before the STOPPED streak began
+        # ALP pre-stop standing check state (disabled - motion detection removed)
+        self._prev_motion_state = None
+        self._alp_standing_buffer = deque(maxlen=1)
+        self._alp_pre_stop_violation_countdown = 0
+        self._consecutive_stopped_count = 0
+        self._consecutive_stopped_required = 3
+        self._was_running_before_stopped_streak = False
 
 
     def set_video_start_time(self, start_time_str: str) -> None:
@@ -1210,7 +1199,8 @@ class LocopilotActivityMonitor:
 
     def _update_sleep_state_machine(self, tracking, timestamp_sec, is_head_down,
                                      is_sustained_low_eyes, is_minimal_movement,
-                                     head_bob_detected, avg_wrist_velocity):
+                                     head_bob_detected, avg_wrist_velocity,
+                                     instant_wrist_velocity=None):
         """Temporal state machine for sleep detection.
 
         States: ALERT, LOOKING_DOWN_WORKING, DROWSY, MICROSLEEP, SLEEPING
@@ -1223,12 +1213,20 @@ class LocopilotActivityMonitor:
             is_minimal_movement: Whether body movement is minimal
             head_bob_detected: Whether a head bob pattern was detected
             avg_wrist_velocity: Average wrist velocity from recent history
+            instant_wrist_velocity: Current frame's wrist velocity (not averaged)
 
         Returns:
             str: Current sleep state after transition
         """
         current_state = tracking.get('sleep_state', 'ALERT')
-        has_hand_activity = avg_wrist_velocity > self.SLEEP_STATE_HAND_ACTIVITY_THRESHOLD
+        # Fix: In DROWSY/MICROSLEEP states, use instantaneous wrist velocity instead of
+        # the average. The average includes old hand movements from before the person
+        # became drowsy, which falsely resets the state machine. The instant velocity
+        # reflects what the hands are doing RIGHT NOW.
+        if current_state in ('DROWSY', 'MICROSLEEP', 'SLEEPING') and instant_wrist_velocity is not None:
+            has_hand_activity = instant_wrist_velocity > self.SLEEP_STATE_HAND_ACTIVITY_THRESHOLD
+        else:
+            has_hand_activity = avg_wrist_velocity > self.SLEEP_STATE_HAND_ACTIVITY_THRESHOLD
 
         # Calculate time in current state
         if tracking.get('state_enter_time') is not None:
@@ -1271,10 +1269,13 @@ class LocopilotActivityMonitor:
             tracking['state_history'].append((current_state, new_state, timestamp_sec))
             tracking['sleep_state'] = new_state
             tracking['state_enter_time'] = timestamp_sec
+            _vel_used = instant_wrist_velocity if (current_state in ('DROWSY', 'MICROSLEEP', 'SLEEPING') and instant_wrist_velocity is not None) else avg_wrist_velocity
+            _inst_vel = instant_wrist_velocity if instant_wrist_velocity is not None else 0.0
             self.logger.debug(
                 f"[Sleep State Machine] {current_state} -> {new_state} "
                 f"(time_in_prev={time_in_state:.1f}s, hand_activity={has_hand_activity}, "
-                f"head_bob={head_bob_detected})"
+                f"head_bob={head_bob_detected}, vel_used={_vel_used:.4f}, "
+                f"avg_vel={avg_wrist_velocity:.4f}, instant_vel={_inst_vel:.4f})"
             )
 
         return tracking['sleep_state']
@@ -2115,7 +2116,8 @@ class LocopilotActivityMonitor:
             current_sleep_state = self._update_sleep_state_machine(
                 tracking, timestamp_sec, is_head_down,
                 is_sustained_low_eyes, is_minimal_movement,
-                head_bob_detected, avg_wrist_velocity
+                head_bob_detected, avg_wrist_velocity,
+                instant_wrist_velocity=wrist_velocity
             )
             # If person is actively working (looking down at controls with hands active), suppress sleep
             if current_sleep_state == 'LOOKING_DOWN_WORKING':
@@ -2513,23 +2515,27 @@ class LocopilotActivityMonitor:
             self.logger.debug(f"Exception in check_hands_below_shoulders: {e}")
             return False
 
-    def detect_writing_by_wrist_proximity(self, pose_landmarks: Any, frame_shape: Tuple[int, ...], person_idx: int, timestamp_sec: float) -> bool:
+    def detect_writing_by_wrist_proximity(self, pose_landmarks: Any, frame_shape: Tuple[int, ...], person_idx: int, timestamp_sec: float, frame: Any = None) -> bool:
         """Detect writing activity based on wrist/elbow proximity + head posture heuristic.
 
         When both wrists (or elbows as fallback) are close together AND head is tilted down
         (typical writing posture) for a sustained duration, it indicates writing activity.
         This method serves as a fallback when book detection doesn't trigger but person is clearly writing.
 
-        Required Conditions (both must be true):
+        Required Conditions (all must be true):
         1. Wrist/Elbow proximity: Left and right wrists within 300px (or elbows within 450px)
         2. Head posture: Head tilted down (nose below eye line)
         3. Temporal: Sustained for 1+ seconds across 2+ consecutive frames
+        4. Verification (at least one must pass):
+           a. Motion asymmetry: One hand moving (pen strokes) while other stays still
+           b. Edge density: Paper/book-like texture detected between hands
 
         Args:
             pose_landmarks: MediaPipe pose landmarks (must include wrist/elbow + head keypoints)
             frame_shape: Tuple of (height, width) of the frame
             person_idx: Index of the person being analyzed
             timestamp_sec: Current timestamp in seconds
+            frame: The current video frame (BGR numpy array) for edge density analysis
 
         Returns:
             bool: True if writing detected by pose-based heuristic, False otherwise
@@ -2591,6 +2597,7 @@ class LocopilotActivityMonitor:
                 person_tracking['start_time'] = None
                 person_tracking['duration'] = 0.0
                 person_tracking['consecutive_frames'] = 0
+                self.writing_wrist_motion_history.pop(person_idx, None)
                 return False
 
             # BOTH conditions met: distance close AND head down
@@ -2612,14 +2619,39 @@ class LocopilotActivityMonitor:
                     f"duration={person_tracking['duration']:.1f}s"
                 )
 
-            # Check if thresholds are met
+            # Check if temporal thresholds are met
             if (person_tracking['consecutive_frames'] >= self.WRITING_REQUIRED_CONSECUTIVE and
                 person_tracking['duration'] >= self.WRITING_MIN_DURATION):
-                self.logger.info(
-                    f"Person {person_idx}: WRITING CONFIRMED via {source} - distance close + head down for "
-                    f"{person_tracking['duration']:.1f}s ({person_tracking['consecutive_frames']} frames)"
-                )
-                return True
+
+                # Additional verification: motion asymmetry OR edge density must pass
+                # This filters false positives from hands resting together, holding objects, etc.
+                motion_ok = self.detect_writing_motion_asymmetry(pose_landmarks, frame_shape, person_idx)
+                edge_ok = False
+                if not motion_ok and frame is not None:
+                    edge_ok = self.detect_edge_density_between_hands(frame, pose_landmarks, frame_shape, person_idx)
+                elif frame is None:
+                    self.logger.debug(
+                        f"Person {person_idx}: Edge density check SKIPPED - no frame provided"
+                    )
+
+                if motion_ok or edge_ok:
+                    verification = []
+                    if motion_ok:
+                        verification.append('motion_asymmetry')
+                    if edge_ok:
+                        verification.append('edge_density')
+                    self.logger.info(
+                        f"Person {person_idx}: WRITING CONFIRMED via {source} - distance close + head down for "
+                        f"{person_tracking['duration']:.1f}s ({person_tracking['consecutive_frames']} frames), "
+                        f"verified by: {', '.join(verification)}"
+                    )
+                    return True
+                else:
+                    self.logger.debug(
+                        f"Person {person_idx}: Writing pose met but verification FAILED - "
+                        f"motion_asymmetry={motion_ok}, edge_density={edge_ok} - likely false positive"
+                    )
+                    return False
         else:
             # Distance too far apart - reset tracking
             if person_tracking['start_time'] is not None:
@@ -2630,8 +2662,185 @@ class LocopilotActivityMonitor:
             person_tracking['start_time'] = None
             person_tracking['duration'] = 0.0
             person_tracking['consecutive_frames'] = 0
+            self.writing_wrist_motion_history.pop(person_idx, None)
 
         return False
+
+    def detect_writing_motion_asymmetry(self, pose_landmarks: Any, frame_shape: Tuple[int, ...], person_idx: int) -> bool:
+        """Check for asymmetric hand motion pattern characteristic of writing.
+
+        At the system's 0.5 FPS sampling rate, individual pen strokes (2-5 Hz) are not
+        captured. Instead, this detects macro-scale postural drift: the writing hand
+        shifts position more over time (line progression, page movement) while the
+        anchoring hand stays relatively still. Other activities like resting hands
+        together or holding objects produce symmetric or no movement.
+
+        Tracks wrist positions over a sliding window and compares per-hand variance.
+
+        Args:
+            pose_landmarks: Pose landmarks for the person
+            frame_shape: (height, width) of the frame
+            person_idx: Person index for tracking history
+
+        Returns:
+            bool: True if asymmetric writing motion detected
+        """
+        try:
+            h, w = frame_shape[:2]
+            right_wrist = self.get_keypoint(pose_landmarks, 'right_wrist')
+            left_wrist = self.get_keypoint(pose_landmarks, 'left_wrist')
+
+            if right_wrist is None or left_wrist is None:
+                return False
+            if right_wrist.visibility < self.WRIST_VISIBILITY_THRESHOLD or left_wrist.visibility < self.WRIST_VISIBILITY_THRESHOLD:
+                return False
+
+            right_coords = (right_wrist.x * w, right_wrist.y * h)
+            left_coords = (left_wrist.x * w, left_wrist.y * h)
+
+            max_len = self.WRITING_MOTION_HISTORY_LENGTH
+            if person_idx not in self.writing_wrist_motion_history:
+                self.writing_wrist_motion_history[person_idx] = {
+                    'right_wrist': deque(maxlen=max_len),
+                    'left_wrist': deque(maxlen=max_len),
+                }
+
+            history = self.writing_wrist_motion_history[person_idx]
+            history['right_wrist'].append(right_coords)
+            history['left_wrist'].append(left_coords)
+
+            # Need at least 3 frames to compute meaningful variance
+            if len(history['right_wrist']) < 3:
+                return False
+
+            # Compute per-hand positional variance (horizontal + vertical)
+            right_positions = np.array(history['right_wrist'])
+            left_positions = np.array(history['left_wrist'])
+
+            right_variance = np.mean(np.var(right_positions, axis=0))
+            left_variance = np.mean(np.var(left_positions, axis=0))
+
+            # At least one hand must show movement above minimum threshold
+            max_variance = max(right_variance, left_variance)
+            min_variance = min(right_variance, left_variance)
+
+            if max_variance < self.WRITING_MOTION_MIN_VARIANCE:
+                # Both hands too still — not writing, just resting together
+                self.logger.debug(
+                    f"Person {person_idx}: Writing motion check FAIL - both hands too still "
+                    f"(max_var={max_variance:.1f} < {self.WRITING_MOTION_MIN_VARIANCE})"
+                )
+                return False
+
+            # Check asymmetry: one hand moving significantly more than the other
+            if min_variance > 0:
+                asymmetry_ratio = max_variance / min_variance
+            else:
+                # One hand perfectly still, the other moving — strong asymmetry
+                asymmetry_ratio = float('inf') if max_variance > 0 else 0
+
+            is_asymmetric = asymmetry_ratio >= self.WRITING_MOTION_ASYMMETRY_RATIO
+
+            self.logger.debug(
+                f"Person {person_idx}: Writing motion check - "
+                f"R_var={right_variance:.1f}, L_var={left_variance:.1f}, "
+                f"ratio={asymmetry_ratio:.1f}, asymmetric={is_asymmetric}"
+            )
+
+            return is_asymmetric
+
+        except Exception as e:
+            self.logger.debug(f"Exception in detect_writing_motion_asymmetry: {e}")
+            return False
+
+    def detect_edge_density_between_hands(self, frame: Any, pose_landmarks: Any, frame_shape: Tuple[int, ...], person_idx: int) -> bool:
+        """Check for high edge density in the region between wrists (paper/book indicator).
+
+        Paper and book pages have characteristic high edge density from text lines,
+        ruled lines, and page edges. This is more robust than color-based detection
+        because it works in IR mode, varying lighting, and with non-white paper.
+
+        Extracts the ROI between the two wrists, applies Gaussian blur to suppress
+        noise (especially important in IR/dark frames), then computes Canny edge ratio.
+
+        Args:
+            frame: The current video frame (BGR numpy array)
+            pose_landmarks: Pose landmarks for the person
+            frame_shape: (height, width) of the frame
+            person_idx: Person index
+
+        Returns:
+            bool: True if high edge density detected (paper/book likely present)
+        """
+        try:
+            h, w = frame_shape[:2]
+            right_wrist = self.get_keypoint(pose_landmarks, 'right_wrist')
+            left_wrist = self.get_keypoint(pose_landmarks, 'left_wrist')
+
+            if right_wrist is None or left_wrist is None:
+                return False
+            if right_wrist.visibility < self.WRIST_VISIBILITY_THRESHOLD or left_wrist.visibility < self.WRIST_VISIBILITY_THRESHOLD:
+                return False
+
+            # Get wrist pixel coordinates
+            rx, ry = int(right_wrist.x * w), int(right_wrist.y * h)
+            lx, ly = int(left_wrist.x * w), int(left_wrist.y * h)
+
+            # Build ROI between the two wrists with resolution-proportional padding
+            padding = max(10, int(w * 0.03))  # ~3% of frame width, min 10px
+            x1 = max(0, min(rx, lx) - padding)
+            y1 = max(0, min(ry, ly) - padding)
+            x2 = min(w, max(rx, lx) + padding)
+            y2 = min(h, max(ry, ly) + padding)
+
+            # ROI minimum size proportional to resolution (~4% of frame width, min 20px)
+            min_roi_size = max(20, int(w * 0.04))
+            if (x2 - x1) < min_roi_size or (y2 - y1) < min_roi_size:
+                self.logger.debug(f"Person {person_idx}: Edge density check SKIP - ROI too small ({x2-x1}x{y2-y1})")
+                return False
+
+            roi = frame[y1:y2, x1:x2]
+
+            # Convert to grayscale if needed
+            if len(roi.shape) == 3:
+                gray_roi = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
+            else:
+                gray_roi = roi
+
+            # Skip on very dark frames where Canny produces mostly noise
+            mean_brightness = np.mean(gray_roi)
+            if mean_brightness < 20:
+                self.logger.debug(
+                    f"Person {person_idx}: Edge density check SKIP - ROI too dark "
+                    f"(mean_brightness={mean_brightness:.1f})"
+                )
+                return False
+
+            # Gaussian blur to suppress sensor noise (critical for IR/dark frames)
+            blurred_roi = cv2.GaussianBlur(gray_roi, (5, 5), 0)
+
+            # Apply Canny edge detection
+            edges = cv2.Canny(blurred_roi, 50, 150)
+
+            # Calculate edge density (ratio of edge pixels to total pixels)
+            total_pixels = edges.shape[0] * edges.shape[1]
+            edge_pixels = np.count_nonzero(edges)
+            edge_density = edge_pixels / total_pixels if total_pixels > 0 else 0
+
+            is_paper_like = edge_density >= self.WRITING_EDGE_DENSITY_THRESHOLD
+
+            self.logger.debug(
+                f"Person {person_idx}: Edge density check - "
+                f"ROI=({x1},{y1})-({x2},{y2}), brightness={mean_brightness:.1f}, "
+                f"density={edge_density:.4f}, threshold={self.WRITING_EDGE_DENSITY_THRESHOLD}, "
+                f"paper_like={is_paper_like}"
+            )
+
+            return is_paper_like
+
+        except Exception as e:
+            self.logger.debug(f"Exception in detect_edge_density_between_hands: {e}")
+            return False
 
     def detect_writing_by_book_and_posture(self, pose_landmarks: Any, person_bbox: List[int], book_bboxes: List[List[int]], person_idx: int, timestamp_sec: float) -> bool:
         """Fallback writing detection when wrists are not visible.
@@ -5828,7 +6037,8 @@ class LocopilotActivityMonitor:
                     translated_landmarks,
                     frame.shape,
                     person_idx,
-                    timestamp_sec
+                    timestamp_sec,
+                    frame=frame
                 )
                 self.logger.debug(f"Person {person_idx}: Writing detection result = {writing_detected_by_wrist}")
 
@@ -6117,21 +6327,11 @@ class LocopilotActivityMonitor:
                 # Uses optical flow motion detection to exempt violations when train is stopped
                 if voting_collector is not None and voting_collector.has_activities():
                     try:
-                        # Use motion-aware verification if available
-                        if hasattr(self.voting_service, 'verify_batch_with_motion_check'):
-                            batch_results = self.voting_service.verify_batch_with_motion_check(
-                                video_path=self.current_video_path,
-                                timestamp_sec=timestamp_sec,
-                                activities=voting_collector.get_activities(),
-                                trip_schedule=None,
-                                motion_context=self.current_motion_context
-                            )
-                        else:
-                            batch_results = self.voting_service.verify_batch(
-                                video_path=self.current_video_path,
-                                timestamp_sec=timestamp_sec,
-                                activities=voting_collector.get_activities()
-                            )
+                        batch_results = self.voting_service.verify_batch(
+                            video_path=self.current_video_path,
+                            timestamp_sec=timestamp_sec,
+                            activities=voting_collector.get_activities()
+                        )
 
                         # Apply results to person_activities
                         for activity_key, (is_confirmed, vote_details) in batch_results.items():
@@ -7563,17 +7763,20 @@ class LocopilotActivityMonitor:
 
             # CRITICAL: Exclude sleep detection if person is holding objects or in active posture
             # If someone has a phone, book, or backpack in hand, they're clearly NOT sleeping
-            # EXCEPTION: If the sleep state machine is in DROWSY/MICROSLEEP/SLEEPING, don't let
-            # writing suppress sleep — during microsleep, hands-in-lap + head-down can look like
-            # writing posture but the state machine has already determined the person is drowsy.
+            # EXCEPTION: If the sleep state machine is in DROWSY/MICROSLEEP/SLEEPING, or if the
+            # sleep score is high (>=5), don't let writing suppress sleep — during microsleep,
+            # hands-in-lap + head-down can look like writing posture but the state machine has
+            # already determined the person is drowsy. We also check sleep_score >= 5 because
+            # the state machine may not have reached MICROSLEEP yet (it needs time to transition)
+            # but the pose signals strongly indicate sleep.
             sleep_state_overrides_writing = False
-            if sleep_detected or microsleep_detected:
-                for _pidx, _pdata in persons_data.items():
-                    _sleep_info = _pdata.get('debug_info', {}).get('sleep_info', {})
-                    _state = _sleep_info.get('sleep_state', 'ALERT')
-                    if _state in ('DROWSY', 'MICROSLEEP', 'SLEEPING'):
-                        sleep_state_overrides_writing = True
-                        break
+            for _pidx, _pdata in persons_data.items():
+                _sleep_info = _pdata.get('debug_info', {}).get('sleep_info', {})
+                _state = _sleep_info.get('sleep_state', 'ALERT')
+                _score = _sleep_info.get('sleep_score', 0)
+                if _state in ('DROWSY', 'MICROSLEEP', 'SLEEPING') or _score >= 5:
+                    sleep_state_overrides_writing = True
+                    break
             suppress_activities = cell_phone_detected or packing_detected
             if writing_detected and not sleep_state_overrides_writing:
                 suppress_activities = True
@@ -7660,101 +7863,9 @@ class LocopilotActivityMonitor:
             no_person_detected_flag = (len(detections.get('deduplicated_person', [])) == 0)
 
             # ==========================================
-            # TRAIN MOTION RULE ENGINE INTEGRATION
+            # ACTIVITY MAP (motion detection & rule engine disabled)
             # ==========================================
-            # 1. Extract OCR timestamp from frame (if enabled)
-            ocr_timestamp = self._extract_ocr_timestamp(frame)
-
-            # 2. Resolve train motion context
-            # Priority: OCR timestamp > video_start_time + offset > video-relative time
-            if ocr_timestamp:
-                motion_timestamp = ocr_timestamp
-                # Log OCR success periodically (every 30 frames to avoid spam)
-                if frame_idx % 30 == 0:
-                    self.logger.info(f"[MOTION-RULES] Frame {frame_idx}: OCR extracted timestamp: {motion_timestamp}")
-            else:
-                # Convert video offset to real time (if video_start_time is set)
-                # Use timestamp_sec directly (it's already numeric) instead of parsing timestamp string
-                video_seconds = timestamp_sec
-                motion_timestamp = self._convert_video_to_real_time(video_seconds)
-                has_start_time = hasattr(self, 'video_start_time') and self.video_start_time
-                # Log periodically (every 60 frames)
-                if frame_idx % 60 == 0:
-                    if has_start_time:
-                        self.logger.info(
-                            f"[MOTION-RULES] Frame {frame_idx}: Using video_start_time + offset = {motion_timestamp}"
-                        )
-                    else:
-                        self.logger.info(
-                            f"[MOTION-RULES] Frame {frame_idx}: No OCR/start_time - using video-relative: {motion_timestamp}"
-                        )
-            # Pass frame for optical flow-enhanced motion detection
-            # prev_motion_frame is set at end of loop
-            prev_motion_frame = self._prev_motion_frame
-            self.current_motion_context = self._resolve_motion_context(
-                motion_timestamp, frame=frame, prev_frame=prev_motion_frame
-            )
-            # Store current frame for next iteration's optical flow
-            self._prev_motion_frame = frame.copy()
-
-            # Log motion state periodically
-            if frame_idx % 60 == 0 and self.current_motion_context:
-                self.logger.info(
-                    f"[MOTION-RULES] Frame {frame_idx}: State={self.current_motion_context.motion_state.value}, "
-                    f"Station={self.current_motion_context.current_station.station_code if self.current_motion_context.current_station else 'N/A'}, "
-                    f"Source={self.current_motion_context.resolution_source}"
-                )
-
-            # --- ALP pre-stop standing check ---
             alp_not_standing_detected = False
-
-            # While RUNNING: check ALP standing and buffer results
-            if (self.current_motion_context and
-                self.current_motion_context.motion_state == TrainMotionState.RUNNING and
-                self.alp_alertness_service is not None):
-                is_not_standing = self._check_alp_standing(persons_data, person_roles, frame.shape)
-                # _check_alp_standing returns True if NOT standing, so invert for is_standing
-                self._alp_standing_buffer.append((timestamp, not is_not_standing))
-
-            # Detect RUNNING → STOPPED transition (requires consecutive STOPPED frames)
-            current_state = (self.current_motion_context.motion_state
-                             if self.current_motion_context else None)
-
-            if current_state == TrainMotionState.STOPPED:
-                # Track the start of a STOPPED streak
-                if self._consecutive_stopped_count == 0 and self._prev_motion_state == TrainMotionState.RUNNING:
-                    self._was_running_before_stopped_streak = True
-                self._consecutive_stopped_count += 1
-
-                # Confirm transition only after N consecutive STOPPED frames
-                if (self._was_running_before_stopped_streak and
-                    self._consecutive_stopped_count == self._consecutive_stopped_required):
-                    # Train confirmed stopped — evaluate standing buffer
-                    self.logger.info(
-                        f"[{timestamp}] RUNNING→STOPPED confirmed after "
-                        f"{self._consecutive_stopped_required} consecutive STOPPED frames"
-                    )
-                    if self._alp_standing_buffer:
-                        was_standing = any(standing for _, standing in self._alp_standing_buffer)
-                        if not was_standing:
-                            self._alp_pre_stop_violation_countdown = 3  # Fire for 3 frames
-                            self.logger.info(
-                                f"[{timestamp}] ALP NOT STANDING before stop - "
-                                f"checked {len(self._alp_standing_buffer)} frames, none standing"
-                            )
-                    self._alp_standing_buffer.clear()
-                    self._was_running_before_stopped_streak = False
-            else:
-                # Not STOPPED — reset consecutive counter
-                self._consecutive_stopped_count = 0
-                self._was_running_before_stopped_streak = False
-
-            # Fire violation for countdown frames
-            if self._alp_pre_stop_violation_countdown > 0:
-                alp_not_standing_detected = True
-                self._alp_pre_stop_violation_countdown -= 1
-
-            self._prev_motion_state = current_state
 
             # Update activity states with temporal filtering
             activities_map = {
@@ -7770,9 +7881,6 @@ class LocopilotActivityMonitor:
                 'no_person_detected': no_person_detected_flag,
                 'alp_not_standing': alp_not_standing_detected,
             }
-
-            # 4. Apply motion-based rule engine to filter exempted activities
-            activities_map = self._apply_motion_rules(activities_map, self.current_motion_context)
 
             for activity_name, detected in activities_map.items():
                 if detected:
@@ -7857,10 +7965,6 @@ class LocopilotActivityMonitor:
 
     def process_video(self) -> None:
         """Main video processing loop - SAMPLES FRAMES AT SPECIFIED RATE"""
-        # Configure optical flow ROI for camera angle (LP=left window, ALP=right window)
-        if self.optical_flow_service is not None:
-            self.optical_flow_service.configure_for_camera_angle(self.camera_angle)
-
         # Get video metadata
         # CR-011: Use cached video metadata instead of reopening VideoCapture
         total_frames, fps, _duration = self._get_video_metadata()
@@ -7983,10 +8087,6 @@ class LocopilotActivityMonitor:
         # CR-011: Use cached video metadata instead of reopening VideoCapture
         total_frames, fps, _duration = self._get_video_metadata()
 
-        # Configure optical flow ROI for camera angle (LP=left window, ALP=right window)
-        if self.optical_flow_service is not None:
-            self.optical_flow_service.configure_for_camera_angle(self.camera_angle)
-
         self.logger.info(f"Processing frame range {start_frame}-{end_frame} (worker {os.getpid()})")
 
         # NOTE: required_consecutive thresholds are preserved for multiprocessing chunks.
@@ -8000,28 +8100,6 @@ class LocopilotActivityMonitor:
         # Get batch settings from instance variables
         batch_size = self.gpu_batch_size
         batch_enabled = self.gpu_batch_enabled
-
-        # CR-013: Initialize optical flow state for chunk boundaries
-        # In multiprocessing mode, each worker starts with _prev_motion_frame = None,
-        # so the first frame(s) of each chunk produce no optical flow results.
-        # Fix: read the frame immediately before this chunk's start to seed optical flow.
-        if start_frame > 0 and self._prev_motion_frame is None:
-            try:
-                with video_capture_context(self.video_path) as _init_cap:
-                    _init_cap.set(cv2.CAP_PROP_POS_FRAMES, int(start_frame - 1))
-                    _init_ret, _init_frame = _init_cap.read()
-                    if _init_ret and _init_frame is not None:
-                        self._prev_motion_frame = _init_frame.copy()
-                        self.logger.debug(
-                            f"[CR-013] Initialized optical flow with frame {start_frame - 1} "
-                            f"for chunk starting at {start_frame} (worker {os.getpid()})"
-                        )
-                    else:
-                        self.logger.debug(
-                            f"[CR-013] Could not read frame {start_frame - 1} for optical flow init"
-                        )
-            except Exception as e:
-                self.logger.debug(f"[CR-013] Optical flow pre-init failed: {e}")
 
         # PHASE 1: Collect all frames for this chunk
         frames_data = []  # List of (frame, frame_idx, timestamp_sec, sample_idx)
