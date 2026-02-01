@@ -425,9 +425,21 @@ class ActivityDetectionService:
             return activities
             
         finally:
-            # Cleanup: shutdown pool
-            orchestrator.shutdown_pool(wait=True)
-            
-            # ✅ MEMORY FIX: Force garbage collection after shutdown
+            # Cleanup: shutdown shared pool to release GPU memory after each job
+            # orchestrator.shutdown_pool() is a no-op for shared pools,
+            # so we call shutdown_shared_pool() directly to terminate workers
+            # and free GPU VRAM between jobs.
+            from ..utils.video_multiprocessing import shutdown_shared_pool
+            shutdown_shared_pool(wait=True)
+
+            # Force PyTorch to release cached GPU memory
+            try:
+                import torch
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+            except Exception:
+                pass
+
+            # Force garbage collection after shutdown
             gc.collect()
 
