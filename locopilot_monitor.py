@@ -1331,8 +1331,13 @@ class LocopilotActivityMonitor:
         Uses shoulders, elbows, and hips (which remain visible in IR) plus the
         disappearance of head keypoints as a strong signal of forward lean.
 
-        Scoring signals:
-        - Head keypoints invisible (+2): All 5 head keypoints below visibility threshold
+        MANDATORY gate: Head keypoints must be invisible (all below threshold).
+        If head is visible, person is not in a forward-lean sleep posture and
+        this rule returns False immediately to avoid false positives from
+        overhead camera angles where body-only signals easily trigger.
+
+        Scoring signals (after head_invisible gate passes):
+        - Head keypoints invisible (+2): All 5 head keypoints below visibility threshold [MANDATORY]
         - Shoulders high in bbox (+1): Shoulder midpoint in upper 40% of person bbox
         - Bbox aspect ratio squashed (+1): height/width < 1.2 (forward lean = wider, shorter)
         - Low body movement (+1): Body keypoints stable across frames
@@ -1383,7 +1388,11 @@ class LocopilotActivityMonitor:
         score = 0
         score_breakdown = {}
 
-        # Signal 1: Head keypoints invisible (+2)
+        # Signal 1: Head keypoints invisible (MANDATORY gate + 2 points)
+        # Head invisibility is the core premise of the IR forward lean rule:
+        # if the head is visible, the person is NOT slumped forward.
+        # Without this gate, normal seated postures from overhead cameras
+        # easily reach the score threshold via body-only signals.
         head_visible = 0
         for idx in head_indices:
             if getattr(landmarks.landmark[idx], 'visibility', 0) >= head_vis_thresh:
@@ -1393,6 +1402,17 @@ class LocopilotActivityMonitor:
             score_breakdown['head_invisible'] = 2
         else:
             score_breakdown['head_invisible'] = 0
+            # Head is visible — person is not in a forward-lean sleep posture.
+            # Reset tracking and return early to avoid false positives.
+            tracking = self._get_ir_forward_lean_tracking(person_idx)
+            tracking['start_time'] = None
+            tracking['sub_threshold_streak'] = 0
+            return False, False, {
+                'ir_forward_lean': False,
+                'reason': 'head_visible',
+                'head_visible': head_visible,
+                'score_breakdown': score_breakdown,
+            }
 
         # Signal 2: Shoulders high in bbox (+1)
         left_shoulder = landmarks.landmark[5]

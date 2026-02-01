@@ -312,7 +312,7 @@ class Settings(BaseSettings):
     ir_forward_lean_min_body_keypoints: int = int(os.getenv("IR_FORWARD_LEAN_MIN_BODY_KPS", "3"))
     ir_forward_lean_head_vis_threshold: float = float(os.getenv("IR_FORWARD_LEAN_HEAD_VIS", "0.15"))
     ir_forward_lean_body_vis_threshold: float = float(os.getenv("IR_FORWARD_LEAN_BODY_VIS", "0.2"))
-    ir_forward_lean_score_threshold: int = int(os.getenv("IR_FORWARD_LEAN_SCORE_THRESH", "3"))
+    ir_forward_lean_score_threshold: int = int(os.getenv("IR_FORWARD_LEAN_SCORE_THRESH", "4"))
     ir_forward_lean_min_duration: float = float(os.getenv("IR_FORWARD_LEAN_MIN_DURATION", "5.0"))  # Microsleep threshold (seconds)
     ir_forward_lean_sleep_duration: float = float(os.getenv("IR_FORWARD_LEAN_SLEEP_DURATION", "10.0"))  # Sleep threshold (seconds)
 
