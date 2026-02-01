@@ -362,7 +362,6 @@ def process_frame_range(
     output_dir: str,
     run_dir: str = None,
     save_clips: bool = True,
-    trip_schedule_dict: Dict[str, Any] = None,
     video_start_time: str = None,
     camera_angle: int = 1
 ) -> Dict[str, Any]:
@@ -387,7 +386,6 @@ def process_frame_range(
         output_dir: Output directory (base directory)
         run_dir: Run directory for saving clips (if None, no clips saved)
         save_clips: Whether to save clips and images (default: True)
-        trip_schedule_dict: Serialized TripSchedule dict for motion rules (optional)
         video_start_time: Video recording start time in HH:MM:SS format (optional)
 
     Returns:
@@ -444,15 +442,6 @@ def process_frame_range(
 
         # Set camera angle for LP/ALP role assignment
         monitor.camera_angle = camera_angle
-
-        # Reconstruct trip_schedule from dict if provided
-        if trip_schedule_dict is not None and hasattr(monitor, 'set_trip_schedule'):
-            try:
-                from app.models.trip_models import TripSchedule
-                trip_schedule = TripSchedule(**trip_schedule_dict)
-                monitor.set_trip_schedule(trip_schedule)
-            except Exception as e:
-                logger.warning(f"Worker {worker_id} could not reconstruct trip_schedule: {e}")
 
         # Set video start time for motion rules (when OCR unavailable)
         if video_start_time and hasattr(monitor, 'set_video_start_time'):
@@ -642,7 +631,6 @@ class VideoMultiprocessingOrchestrator:
         sample_fps: float = 1.0,
         run_dir: str = None,
         save_clips: bool = True,
-        trip_schedule = None,
         video_start_time: str = None,
         camera_angle: int = 1
     ) -> List[Dict[str, Any]]:
@@ -658,8 +646,6 @@ class VideoMultiprocessingOrchestrator:
             sample_fps: Sampling rate
             run_dir: Run directory for output
             save_clips: Whether to save video clips and images (default: True)
-            trip_schedule: TripSchedule object for motion-based rules (optional)
-                           Note: Serialized to dict for multiprocessing workers
             video_start_time: Video recording start time in HH:MM:SS format (optional)
             camera_angle: Camera angle for LP/ALP role assignment (1 = LP Side, 2 = ALP Side)
 
@@ -698,14 +684,6 @@ class VideoMultiprocessingOrchestrator:
         logger.info(f"Submitting {len(frame_ranges)} tasks to process pool "
                    f"(expected {total_expected_frames} sampled frames, save_clips={save_clips})")
 
-        # Serialize trip_schedule for multiprocessing (Pydantic models can't be pickled directly)
-        trip_schedule_dict = None
-        if trip_schedule is not None:
-            try:
-                trip_schedule_dict = trip_schedule.model_dump() if hasattr(trip_schedule, 'model_dump') else trip_schedule.dict()
-            except Exception as e:
-                logger.warning(f"Could not serialize trip_schedule for multiprocessing: {e}")
-
         # Submit tasks to pool
         futures: Dict[Future, FrameRange] = {}
         config_dict = {}  # Pipeline configuration
@@ -725,7 +703,6 @@ class VideoMultiprocessingOrchestrator:
                 output_dir=self.output_dir,
                 run_dir=run_dir,  # Pass run_dir for clip saving
                 save_clips=save_clips,
-                trip_schedule_dict=trip_schedule_dict,  # Pass serialized schedule
                 video_start_time=video_start_time,  # Pass video start time for motion rules
                 camera_angle=camera_angle
             )

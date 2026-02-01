@@ -426,14 +426,6 @@ class Settings(BaseSettings):
     # Enable/disable train motion-based rule engine
     train_motion_rules_enabled: bool = bool(int(os.getenv("TRAIN_MOTION_RULES_ENABLED", "0")))
 
-    # Suppress no_person_detected when trip schedule is unavailable
-    # (cannot distinguish station halts from running without schedule)
-    suppress_no_person_without_schedule: bool = bool(int(os.getenv("SUPPRESS_NO_PERSON_WITHOUT_SCHEDULE", "1")))
-
-    # Trip API Settings (RailRadar API)
-    trip_api_url: str = os.getenv("TRIP_API_URL", "https://api.railradar.in/api/v1/trains")
-    trip_api_timeout: int = int(os.getenv("TRIP_API_TIMEOUT", "10"))
-
     # OCR Timestamp Extraction Settings
     ocr_enabled: bool = bool(int(os.getenv("OCR_ENABLED", "0")))
     ocr_engine: str = os.getenv("OCR_ENGINE", "auto")  # 'easyocr' (recommended), 'tesseract', or 'auto'
@@ -473,18 +465,6 @@ class Settings(BaseSettings):
     motion_stopped_threshold: float = float(os.getenv("MOTION_STOPPED_THRESHOLD", "0.3"))
     motion_running_threshold: float = float(os.getenv("MOTION_RUNNING_THRESHOLD", "0.8"))
     motion_confidence_threshold: float = float(os.getenv("MOTION_CONFIDENCE_THRESHOLD", "0.7"))
-
-    # ==========================================
-    # etrain.info Delay Integration Settings
-    # ==========================================
-    # Enable/disable etrain.info delay data fetching
-    etrain_enabled: bool = bool(int(os.getenv("ETRAIN_ENABLED", "0")))
-
-    # etrain.info base URL for train live status
-    etrain_base_url: str = os.getenv("ETRAIN_BASE_URL", "https://etrain.info/train")
-
-    # Cache TTL for delay data (in seconds, default 30 minutes)
-    etrain_cache_ttl: int = int(os.getenv("ETRAIN_CACHE_TTL", "1800"))
 
 
 @lru_cache()
