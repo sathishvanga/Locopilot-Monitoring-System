@@ -424,7 +424,7 @@ class Settings(BaseSettings):
     # Train Motion Rules Settings
     # ==========================================
     # Enable/disable train motion-based rule engine
-    train_motion_rules_enabled: bool = bool(int(os.getenv("TRAIN_MOTION_RULES_ENABLED", "0")))
+    train_motion_rules_enabled: bool = bool(int(os.getenv("TRAIN_MOTION_RULES_ENABLED", "1")))
 
     # OCR Timestamp Extraction Settings
     ocr_enabled: bool = bool(int(os.getenv("OCR_ENABLED", "0")))
@@ -439,6 +439,9 @@ class Settings(BaseSettings):
     pre_arrival_window_start: int = int(os.getenv("PRE_ARRIVAL_WINDOW_START", "60"))  # 60s before arrival
     pre_arrival_window_end: int = int(os.getenv("PRE_ARRIVAL_WINDOW_END", "30"))  # 30s before arrival
 
+    # ALP pre-stop standing check: lookback window in seconds before RUNNING→STOPPED transition
+    alp_pre_stop_lookback_seconds: float = float(os.getenv("ALP_PRE_STOP_LOOKBACK", "30"))
+
     # Halt Grace Period - allow exemptions for short time after scheduled departure
     halt_grace_period: int = int(os.getenv("HALT_GRACE_PERIOD", "120"))  # 120s after departure
 
@@ -446,16 +449,20 @@ class Settings(BaseSettings):
     # Optical Flow Motion Detection Settings
     # ==========================================
     # Enable/disable optical flow motion verification
-    optical_flow_enabled: bool = bool(int(os.getenv("OPTICAL_FLOW_ENABLED", "0")))
+    optical_flow_enabled: bool = bool(int(os.getenv("OPTICAL_FLOW_ENABLED", "1")))
 
     # Side window ROI configuration (ratios of frame dimensions)
-    # Captures the narrow left side window/door opening for motion detection
-    # IPCamera 02 cabin view: outside scenery visible through left side bars/window
-    # Calibrated from "Writing 13 25.mp4" (1280x720, 25fps)
+    # LP side (IPCamera 02): outside scenery through left side bars/window
     motion_roi_x_ratio: float = float(os.getenv("MOTION_ROI_X", "0.0"))
     motion_roi_width_ratio: float = float(os.getenv("MOTION_ROI_WIDTH", "0.08"))
     motion_roi_y_ratio: float = float(os.getenv("MOTION_ROI_Y", "0.15"))
     motion_roi_height_ratio: float = float(os.getenv("MOTION_ROI_HEIGHT", "0.50"))
+
+    # ALP side (IPCamera 03): outside scenery through right side bars/railings
+    motion_roi_alp_x_ratio: float = float(os.getenv("MOTION_ROI_ALP_X", "0.90"))
+    motion_roi_alp_width_ratio: float = float(os.getenv("MOTION_ROI_ALP_WIDTH", "0.10"))
+    motion_roi_alp_y_ratio: float = float(os.getenv("MOTION_ROI_ALP_Y", "0.15"))
+    motion_roi_alp_height_ratio: float = float(os.getenv("MOTION_ROI_ALP_HEIGHT", "0.50"))
 
     # Motion classification thresholds (optical flow magnitude - 90th percentile)
     # Calibrated from video analysis (consecutive frames at 25fps):

@@ -121,6 +121,12 @@ def _build_activity_registry() -> Dict[str, ActivityConfig]:
             margin=None,
             grace_frames=3,
         ),
+        'alp_not_standing': ActivityConfig(
+            min_duration=0.0,
+            required_consecutive=1,
+            margin=None,
+            grace_frames=3,
+        ),
     }
 
 
@@ -139,6 +145,7 @@ try:
     from app.services.side_window_motion_service import SideWindowMotionService, get_side_window_motion_service, OpticalFlowMotionState
     from app.services.ocr_timestamp_service import OCRTimestampService, get_ocr_timestamp_service
     from app.models.trip_models import TrainMotionContext, TrainMotionState
+    from app.services.alp_alertness_service import ALPAlertnessService, get_alp_alertness_service
 except ImportError:
     # Fallback: try importing as module
     try:
@@ -183,6 +190,8 @@ except ImportError:
     get_ocr_timestamp_service = None
     TrainMotionContext = None
     TrainMotionState = None
+    ALPAlertnessService = None
+    get_alp_alertness_service = None
 
 # Import VotingVerificationService separately (may not exist in fallback path)
 try:
@@ -655,6 +664,7 @@ class LocopilotActivityMonitor:
             'alp_hand_gesture': 9,
             'mind_diversion': 10,
             'no_person_detected': 11,
+            'alp_not_standing': 12,
         }
         
         # Activity descriptions
@@ -669,6 +679,7 @@ class LocopilotActivityMonitor:
             'alp_hand_gesture': 'ALP not exchanging hand gesture',
             'mind_diversion': 'Mind diversion - attention diverted from controls',
             'no_person_detected': 'No person detected in frame',
+            'alp_not_standing': 'ALP not standing before train stop',
         }
         
         # Evidence rules
@@ -683,6 +694,7 @@ class LocopilotActivityMonitor:
             'alp_hand_gesture': 'alp_hand_raised_gesture_detected',
             'mind_diversion': 'attention_diverted_from_controls',  # Sub-type stored in evidence details
             'no_person_detected': 'zero_persons_in_frame',
+            'alp_not_standing': 'alp_seated_before_stop',
         }
         
         # Default crew/trip information (None until set by API input)
@@ -754,6 +766,26 @@ class LocopilotActivityMonitor:
                 self.ocr_service = None
         else:
             self.ocr_service = None
+
+        # ALP alertness service (pre-stop standing check)
+        if get_alp_alertness_service is not None:
+            try:
+                self.alp_alertness_service = get_alp_alertness_service()
+                self.logger.info("ALPAlertnessService initialized successfully")
+            except Exception:
+                self.alp_alertness_service = None
+        else:
+            self.alp_alertness_service = None
+
+        # ALP pre-stop standing check state
+        self._prev_motion_state = None          # Track RUNNING→STOPPED transitions
+        _lookback = self.settings.alp_pre_stop_lookback_seconds if self.settings else 30
+        _buffer_size = max(1, int(_lookback * self.sample_fps))
+        self._alp_standing_buffer = deque(maxlen=_buffer_size)  # Last ~30s of ALP standing checks
+        self._alp_pre_stop_violation_countdown = 0    # Frames remaining to fire the violation
+        self._consecutive_stopped_count = 0           # Consecutive STOPPED frames before confirming transition
+        self._consecutive_stopped_required = 3        # Require 3 consecutive STOPPED frames (~6s at 0.5fps)
+        self._was_running_before_stopped_streak = False  # Was RUNNING right before the STOPPED streak began
 
 
     def set_video_start_time(self, start_time_str: str) -> None:
@@ -7673,6 +7705,57 @@ class LocopilotActivityMonitor:
                     f"Source={self.current_motion_context.resolution_source}"
                 )
 
+            # --- ALP pre-stop standing check ---
+            alp_not_standing_detected = False
+
+            # While RUNNING: check ALP standing and buffer results
+            if (self.current_motion_context and
+                self.current_motion_context.motion_state == TrainMotionState.RUNNING and
+                self.alp_alertness_service is not None):
+                is_not_standing = self._check_alp_standing(persons_data, person_roles, frame.shape)
+                # _check_alp_standing returns True if NOT standing, so invert for is_standing
+                self._alp_standing_buffer.append((timestamp, not is_not_standing))
+
+            # Detect RUNNING → STOPPED transition (requires consecutive STOPPED frames)
+            current_state = (self.current_motion_context.motion_state
+                             if self.current_motion_context else None)
+
+            if current_state == TrainMotionState.STOPPED:
+                # Track the start of a STOPPED streak
+                if self._consecutive_stopped_count == 0 and self._prev_motion_state == TrainMotionState.RUNNING:
+                    self._was_running_before_stopped_streak = True
+                self._consecutive_stopped_count += 1
+
+                # Confirm transition only after N consecutive STOPPED frames
+                if (self._was_running_before_stopped_streak and
+                    self._consecutive_stopped_count == self._consecutive_stopped_required):
+                    # Train confirmed stopped — evaluate standing buffer
+                    self.logger.info(
+                        f"[{timestamp}] RUNNING→STOPPED confirmed after "
+                        f"{self._consecutive_stopped_required} consecutive STOPPED frames"
+                    )
+                    if self._alp_standing_buffer:
+                        was_standing = any(standing for _, standing in self._alp_standing_buffer)
+                        if not was_standing:
+                            self._alp_pre_stop_violation_countdown = 3  # Fire for 3 frames
+                            self.logger.info(
+                                f"[{timestamp}] ALP NOT STANDING before stop - "
+                                f"checked {len(self._alp_standing_buffer)} frames, none standing"
+                            )
+                    self._alp_standing_buffer.clear()
+                    self._was_running_before_stopped_streak = False
+            else:
+                # Not STOPPED — reset consecutive counter
+                self._consecutive_stopped_count = 0
+                self._was_running_before_stopped_streak = False
+
+            # Fire violation for countdown frames
+            if self._alp_pre_stop_violation_countdown > 0:
+                alp_not_standing_detected = True
+                self._alp_pre_stop_violation_countdown -= 1
+
+            self._prev_motion_state = current_state
+
             # Update activity states with temporal filtering
             activities_map = {
                 'microsleep': microsleep_detected and not sleep_detected,
@@ -7685,6 +7768,7 @@ class LocopilotActivityMonitor:
                 'alp_hand_gesture': alp_not_coordinating,  # ALP fails to respond when LP raises hand
                 'mind_diversion': mind_diversion_detected,
                 'no_person_detected': no_person_detected_flag,
+                'alp_not_standing': alp_not_standing_detected,
             }
 
             # 4. Apply motion-based rule engine to filter exempted activities
@@ -7773,6 +7857,10 @@ class LocopilotActivityMonitor:
 
     def process_video(self) -> None:
         """Main video processing loop - SAMPLES FRAMES AT SPECIFIED RATE"""
+        # Configure optical flow ROI for camera angle (LP=left window, ALP=right window)
+        if self.optical_flow_service is not None:
+            self.optical_flow_service.configure_for_camera_angle(self.camera_angle)
+
         # Get video metadata
         # CR-011: Use cached video metadata instead of reopening VideoCapture
         total_frames, fps, _duration = self._get_video_metadata()
@@ -7894,6 +7982,10 @@ class LocopilotActivityMonitor:
         # Get video metadata
         # CR-011: Use cached video metadata instead of reopening VideoCapture
         total_frames, fps, _duration = self._get_video_metadata()
+
+        # Configure optical flow ROI for camera angle (LP=left window, ALP=right window)
+        if self.optical_flow_service is not None:
+            self.optical_flow_service.configure_for_camera_angle(self.camera_angle)
 
         self.logger.info(f"Processing frame range {start_frame}-{end_frame} (worker {os.getpid()})")
 

@@ -394,6 +394,35 @@ class SideWindowMotionService:
 
             return state, confidence
 
+    def configure_for_camera_angle(self, camera_angle: int) -> None:
+        """
+        Configure ROI based on camera angle.
+
+        Args:
+            camera_angle: 1 = LP side (left window), 2 = ALP side (right window)
+        """
+        if camera_angle == 2:
+            # ALP side — outside scenery on the right
+            self.roi_x_ratio = getattr(self.settings, 'motion_roi_alp_x_ratio', 0.90)
+            self.roi_width_ratio = getattr(self.settings, 'motion_roi_alp_width_ratio', 0.10)
+            self.roi_y_ratio = getattr(self.settings, 'motion_roi_alp_y_ratio', 0.15)
+            self.roi_height_ratio = getattr(self.settings, 'motion_roi_alp_height_ratio', 0.50)
+        else:
+            # LP side (default) — outside scenery on the left
+            self.roi_x_ratio = getattr(self.settings, 'motion_roi_x_ratio', 0.0)
+            self.roi_width_ratio = getattr(self.settings, 'motion_roi_width_ratio', 0.08)
+            self.roi_y_ratio = getattr(self.settings, 'motion_roi_y_ratio', 0.15)
+            self.roi_height_ratio = getattr(self.settings, 'motion_roi_height_ratio', 0.50)
+
+        # Reset internal state since ROI changed
+        self._prev_roi = None
+
+        logger.info(
+            f"[OPTICAL-FLOW] Configured for camera_angle={camera_angle} - "
+            f"ROI: x={self.roi_x_ratio}, w={self.roi_width_ratio}, "
+            f"y={self.roi_y_ratio}, h={self.roi_height_ratio}"
+        )
+
     def reset(self):
         """Reset internal state (call when switching videos)."""
         self._prev_gray_frame = None

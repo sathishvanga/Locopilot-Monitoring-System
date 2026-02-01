@@ -25,13 +25,12 @@ class RuleEngineService:
 
     Rule definitions:
     - When RUNNING: All activities are violations (normal detection)
-    - When STOPPED: writing and packing_bags are ALLOWED, no_person is VIOLATION
-    - Pre-arrival window: Check for ALP standing requirement
+    - When STOPPED: Only no_person_detected is a violation (cabin must be manned);
+      all other activities are exempt
 
     Features:
     - Evaluates individual activities against motion state
     - Batch evaluation for all activities in a frame
-    - Pre-arrival ALP alertness checking
     - Detailed logging of exemptions
     """
 
@@ -49,21 +48,12 @@ class RuleEngineService:
         ActivityTypeEnum.NO_PERSON_DETECTED: 'no_person_detected',
     }
 
-    # Activities ALLOWED when train is STOPPED at station
-    ALLOWED_WHEN_STOPPED = {
-        'writing',          # Writing logbook is allowed at stations
-        'packing_bags',     # Packing bags is allowed at stations
-        'mind_diversion',   # Brief attention diversion allowed at stations
-        'cell_phone',       # Cell phone usage allowed at stations
-        'lp_hand_gesture',  # Hand signaling not required at stations
-        'alp_hand_gesture'  # Hand signaling not required at stations
-    }
-
-    # Activities that are always violations regardless of motion state
-    ALWAYS_VIOLATION = {
-        'microsleep',       # Sleeping is never allowed
-        'sleep',            # Sleeping is never allowed
-        'group_detected'    # Unauthorized persons never allowed
+    # When STOPPED, only no_person_detected is a violation (cabin must be manned).
+    # All other activities are exempt because crew may legitimately step away,
+    # use phones, rest, etc. while the train is stationary.
+    VIOLATION_WHEN_STOPPED = {
+        'no_person_detected',  # At least 1 crew member required in cabin
+        'alp_not_standing',    # ALP must stand before train stops
     }
 
     def __init__(self):
@@ -168,35 +158,12 @@ class RuleEngineService:
                 was_detected=True
             )
 
-        # STOPPED state - check exemptions
+        # STOPPED state - only no_person_detected is a violation
         if motion_state == TrainMotionState.STOPPED:
-            station_info = ""
-            if motion_context.current_station:
-                station_info = f" at {motion_context.current_station.station_name}"
-
-            # Check if activity is allowed when stopped
-            if activity_name in self.ALLOWED_WHEN_STOPPED:
+            # Only detect absence of crew in cabin when stopped
+            if activity_name in self.VIOLATION_WHEN_STOPPED:
                 logger.info(
-                    f"[RULE-ENGINE] ✅ {activity_name.upper()}: EXEMPTED - "
-                    f"train STOPPED{station_info} (allowed activities: {self.ALLOWED_WHEN_STOPPED})"
-                )
-
-                return ViolationRuleResult(
-                    activity_type=activity_type,
-                    activity_name=activity_name,
-                    is_violation=False,
-                    is_exempted=True,
-                    motion_state=motion_state,
-                    rule_applied="STOPPED_EXEMPTION",
-                    reason=f"{activity_name} is allowed when train is stopped{station_info}",
-                    was_detected=True
-                )
-
-            # Special case: no_person_detected is ALWAYS a violation when stopped
-            # (at least 1 crew required in cabin)
-            if activity_name == 'no_person_detected':
-                logger.info(
-                    f"[RULE-ENGINE] {activity_name}: train STOPPED but VIOLATION "
+                    f"[RULE-ENGINE] {activity_name}: train STOPPED -> VIOLATION "
                     f"(crew required in cabin)"
                 )
                 return ViolationRuleResult(
@@ -210,19 +177,19 @@ class RuleEngineService:
                     was_detected=True
                 )
 
-            # All other activities are still violations when stopped
+            # All other activities are exempt when stopped
             logger.info(
-                f"[RULE-ENGINE] {activity_name}: train STOPPED but VIOLATION "
-                f"(not in allowed list: {self.ALLOWED_WHEN_STOPPED})"
+                f"[RULE-ENGINE] ✅ {activity_name.upper()}: EXEMPTED - "
+                f"train STOPPED (only no_person_detected is checked when stopped)"
             )
             return ViolationRuleResult(
                 activity_type=activity_type,
                 activity_name=activity_name,
-                is_violation=True,
-                is_exempted=False,
+                is_violation=False,
+                is_exempted=True,
                 motion_state=motion_state,
-                rule_applied="STOPPED_VIOLATION",
-                reason=f"{activity_name} is still a violation when stopped",
+                rule_applied="STOPPED_EXEMPTION",
+                reason=f"{activity_name} is exempt when train is stopped",
                 was_detected=True
             )
 
