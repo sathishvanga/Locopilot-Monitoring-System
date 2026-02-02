@@ -7560,6 +7560,25 @@ class LocopilotActivityMonitor:
                     if activities.get('packing', False) and self.consecutive_detections.get('packing_bags', 0) == 0:
                         self.logger.info(f"[{timestamp}] PACKING detected for {role_name} (Person {person_idx+1})")
 
+            # GATE: Require sleep state machine to be in DROWSY or beyond before
+            # reporting microsleep/sleep. This prevents false positives where a single
+            # frame scores high but the person hasn't shown sustained drowsiness.
+            if microsleep_detected or sleep_detected:
+                state_machine_ready = False
+                for _pidx, _pdata in persons_data.items():
+                    _sleep_info = _pdata.get('debug_info', {}).get('sleep_info', {})
+                    _state = _sleep_info.get('sleep_state', 'ALERT')
+                    if _state in ('DROWSY', 'MICROSLEEP', 'SLEEPING'):
+                        state_machine_ready = True
+                        break
+                if not state_machine_ready:
+                    self.logger.debug(
+                        f"[{timestamp}] [Frame {frame_idx}] Sleep/microsleep SUPPRESSED - "
+                        f"state machine not in DROWSY/MICROSLEEP/SLEEPING"
+                    )
+                    microsleep_detected = False
+                    sleep_detected = False
+
             # CRITICAL: Exclude sleep detection if person is holding objects or in active posture
             # If someone has a phone, book, or backpack in hand, they're clearly NOT sleeping
             # EXCEPTION: If the sleep state machine is in DROWSY/MICROSLEEP/SLEEPING, don't let
@@ -8151,7 +8170,7 @@ class LocopilotActivityMonitor:
         # Save the activities array in the run directory
         activities_json_path = os.path.join(self.run_dir, "activities.json")
         with open(activities_json_path, 'w') as f:
-            json.dump(self.all_activities, f, indent=2)
+            json.dump(self.all_activities, f, indent=2, default=lambda o: float(o) if isinstance(o, np.floating) else int(o) if isinstance(o, np.integer) else o)
         
         self.logger.info(f"Activities JSON saved: {activities_json_path}")
         self.logger.info(f"Total activities detected: {len(self.all_activities)}")
