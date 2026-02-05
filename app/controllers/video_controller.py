@@ -66,9 +66,13 @@ s3_upload_service = get_s3_upload_service()
     - lpCrewId: LP crew member ID (optional)
     - alpCrewName: ALP crew member name (optional)
     - alpCrewId: ALP crew member ID (optional)
+    - trainNumber: Train number for motion-based rules (optional, e.g., "12345")
+    - tripDate: Trip date in YYYY-MM-DD format for motion-based rules (optional)
+    - videoStartTime: Video recording start time in HH:MM:SS format (optional, for motion rules when OCR unavailable)
     - useMockDetection: Use mock detection for testing (optional, default: false)
     - useMultiprocessing: Enable parallel processing (optional, default: from config)
     - saveClips: Save annotated frames for debugging (optional, default: false). Clips and images are always saved for UI evidence.
+    - cameraAngle: Camera angle for LP/ALP role assignment (1 = LP Side, 2 = ALP Side, default: 1)
 
     Returns:
     - Processing results with detected activities
@@ -77,38 +81,66 @@ s3_upload_service = get_s3_upload_service()
     """
 )
 async def process_video(
+    request: Request,
     background_tasks: BackgroundTasks,
     video: Optional[UploadFile] = File(default=None, description="Video file to process (optional if videoUrl provided)"),
     videoUrl: Optional[str] = Form(default=None, description="MinIO URL to download video from (e.g., https://mind.snikbtel.uk:9000/cvss/video.mp4)"),
-    tripId: str = Form(..., description="Unique trip identifier"),
+    tripId: Optional[str] = Form(default=None, description="Unique trip identifier"),
     division: Optional[str] = Form(default=None, description="Division identifier"),
     lpCrewName: Optional[str] = Form(default=None, description="Loco Pilot crew member name"),
     lpCrewId: Optional[str] = Form(default=None, description="Loco Pilot crew member ID"),
     alpCrewName: Optional[str] = Form(default=None, description="Assistant Loco Pilot crew member name"),
     alpCrewId: Optional[str] = Form(default=None, description="Assistant Loco Pilot crew member ID"),
+    trainNumber: Optional[str] = Form(default=None, description="Train number for motion-based rules (e.g., '12345')"),
+    tripDate: Optional[str] = Form(default=None, description="Trip date in YYYY-MM-DD format for motion-based rules"),
+    videoStartTime: Optional[str] = Form(default=None, description="Video recording start time in HH:MM:SS format (for motion rules when OCR unavailable)"),
     useMockDetection: Optional[bool] = Form(default=False, description="Use mock detection for testing"),
     useMultiprocessing: Optional[bool] = Form(default=None, description="Enable multiprocessing (default: from config)"),
-    saveClips: Optional[bool] = Form(default=False, description="Save annotated frames for debugging (default: false). Clips/images always saved.")
+    saveClips: Optional[bool] = Form(default=False, description="Save annotated frames for debugging (default: false). Clips/images always saved."),
+    cameraAngle: Optional[int] = Form(default=1, description="Camera angle: 1 = LP Side (default), 2 = ALP Side")
 ):
     """
     Process uploaded video and detect activities
 
     This endpoint handles video upload or MinIO download, validation, processing,
     and activity detection. The video is saved temporarily, processed, and then cleaned up.
+
+    Accepts both multipart/form-data and application/json content types.
+    Use JSON when sending only a videoUrl (no file upload needed).
     """
     video_path = None
     video_filename = None
 
     try:
-        logger.info(f"📥 Received video processing request for trip: {tripId}, division: {division}")
+        # If JSON body was sent, override form fields with JSON values
+        content_type = request.headers.get("content-type", "")
+        if "application/json" in content_type:
+            try:
+                body = await request.json()
+                tripId = body.get("tripId", tripId)
+                videoUrl = body.get("videoUrl", videoUrl)
+                division = body.get("division", division)
+                lpCrewName = body.get("lpCrewName", lpCrewName)
+                lpCrewId = body.get("lpCrewId", lpCrewId)
+                alpCrewName = body.get("alpCrewName", alpCrewName)
+                alpCrewId = body.get("alpCrewId", alpCrewId)
+                trainNumber = body.get("trainNumber", trainNumber)
+                tripDate = body.get("tripDate", tripDate)
+                videoStartTime = body.get("videoStartTime", videoStartTime)
+                useMockDetection = body.get("useMockDetection", useMockDetection)
+                useMultiprocessing = body.get("useMultiprocessing", useMultiprocessing)
+                saveClips = body.get("saveClips", saveClips)
+                cameraAngle = body.get("cameraAngle", cameraAngle)
+                logger.info(f"📥 Received JSON request body for trip: {tripId}")
+            except Exception as e:
+                logger.warning(f"⚠️ Failed to parse JSON body: {e}")
+                raise HTTPException(status_code=400, detail=f"Invalid JSON body: {str(e)}")
 
         # Validate tripId
         if not tripId or not tripId.strip():
-            logger.warning(f"⚠️ Invalid request: tripId is empty")
-            raise HTTPException(
-                status_code=400,
-                detail="tripId is required and cannot be empty"
-            )
+            raise HTTPException(status_code=400, detail="tripId is required and cannot be empty")
+
+        logger.info(f"📥 Received video processing request for trip: {tripId}, division: {division}, train: {trainNumber}, date: {tripDate}")
 
         # Validate that either video OR videoUrl is provided (not both, not neither)
         has_video = video is not None and video.filename
@@ -155,6 +187,13 @@ async def process_video(
             logger.info(f"📥 Downloading video from MinIO: {videoUrl}")
             try:
                 minio_svc = get_minio_service()
+                # Check if the object exists before attempting download
+                if not minio_svc.check_object_exists(videoUrl):
+                    logger.error(f"❌ Video not found in MinIO: {videoUrl}")
+                    raise HTTPException(
+                        status_code=404,
+                        detail=f"Video not found in MinIO storage. Please verify the URL: {videoUrl}"
+                    )
                 video_path = minio_svc.download_video(videoUrl, tripId)
                 video_filename = os.path.basename(video_path)
                 file_size = os.path.getsize(video_path)
@@ -200,6 +239,9 @@ async def process_video(
         )
         
         # Process video (synchronous for now, can be made async)
+        # Validate cameraAngle (must be 1 or 2)
+        camera_angle = cameraAngle if cameraAngle in (1, 2) else 1
+
         result = video_processing_service.process_video(
             video_path=video_path,
             trip_id=tripId,
@@ -210,7 +252,11 @@ async def process_video(
             use_mock_detection=useMockDetection,
             use_multiprocessing=use_mp,
             save_clips=saveClips,
-            division=division
+            division=division,
+            train_number=trainNumber,
+            trip_date=tripDate,
+            video_start_time=videoStartTime,
+            camera_angle=camera_angle
         )
 
         # Schedule cleanup of uploaded video after processing (production mode)
@@ -440,6 +486,9 @@ async def process_and_upload_video(
     lpCrewId: Optional[str] = Form(default=None, description="Loco Pilot crew member ID"),
     alpCrewName: Optional[str] = Form(default=None, description="Assistant Loco Pilot crew member name"),
     alpCrewId: Optional[str] = Form(default=None, description="Assistant Loco Pilot crew member ID"),
+    trainNumber: Optional[str] = Form(default=None, description="Train number for motion-based rules (e.g., '12345')"),
+    tripDate: Optional[str] = Form(default=None, description="Trip date in YYYY-MM-DD format for motion-based rules"),
+    videoStartTime: Optional[str] = Form(default=None, description="Video recording start time in HH:MM:SS format (for motion rules when OCR unavailable)"),
     useMultiprocessing: Optional[bool] = Form(default=None, description="Enable multiprocessing (default: from config)"),
     useMockDetection: Optional[bool] = Form(default=False, description="Use mock detection for testing"),
     saveClips: Optional[bool] = Form(default=False, description="Save annotated frames for debugging")
@@ -453,7 +502,7 @@ async def process_and_upload_video(
     video_path = None
     
     try:
-        logger.info(f"📥 Process and upload request for trip: {tripId}")
+        logger.info(f"📥 Process and upload request for trip: {tripId}, train: {trainNumber}, date: {tripDate}")
         
         # Validate tripId
         if not tripId or not tripId.strip():
@@ -525,7 +574,10 @@ async def process_and_upload_video(
             use_mock_detection=useMockDetection,
             use_multiprocessing=use_mp,  # ✅ Now using multiprocessing!
             save_clips=saveClips,
-            skip_external_api=True  # Skip here - will call after S3 uploads with correct S3 URLs
+            skip_external_api=True,  # Skip here - will call after S3 uploads with correct S3 URLs
+            train_number=trainNumber,
+            trip_date=tripDate,
+            video_start_time=videoStartTime
         )
         
         logger.info(

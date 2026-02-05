@@ -429,8 +429,12 @@ class ExternalAPIService:
             crew_name = event.get("crewName", "Unknown")
             activity_clip = event.get("activityClip", "")
 
-            # Calculate clip duration from start and end time
-            clip_duration = self._calculate_clip_duration(start_time, end_time)
+            # Calculate clip duration from video timestamps (actual clip length)
+            # Use videoStartTime/videoEndTime which represent actual video positions
+            # Fallback to activityStartTime/activityEndTime if video timestamps not available
+            video_start = event.get("videoStartTime", start_time)
+            video_end = event.get("videoEndTime", end_time)
+            clip_duration = self._calculate_clip_duration(video_start, video_end)
 
             # Determine fileUrl - prefer S3 URL, fallback to local backend URL
             file_url = ""

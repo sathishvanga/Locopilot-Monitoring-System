@@ -50,7 +50,7 @@ class Settings(BaseSettings):
     port: int = 8000
     
     # File upload settings
-    max_upload_size: int = 500 * 1024 * 1024  # 500 MB
+    max_upload_size: int = 5 * 1024 * 1024 * 1024  # 5 GB
     allowed_video_extensions: List[str] = [".mp4", ".avi", ".mov", ".mkv"]
     # Use cross-platform temp directory (works on Windows, macOS, and Linux)
     upload_dir: str = os.getenv("UPLOAD_DIR", os.path.join(tempfile.gettempdir(), "locopilot_uploads"))
@@ -68,7 +68,7 @@ class Settings(BaseSettings):
     sample_fps: float = 0.5  # Sample at 0.5 FPS (1 frame every 2 seconds)
     
     # Multiprocessing settings
-    enable_multiprocessing: bool = True
+    enable_multiprocessing: bool = bool(int(os.getenv("ENABLE_MULTIPROCESSING", "1")))
     # ✅ 15s chunks ensure hand gesture coordination detection works correctly
     # Coordination window is 10s, so 15s chunks capture full coordination sequences
     # Tradeoff: fewer chunks (~118 for 30-min video) but reliable coordination detection
@@ -122,7 +122,7 @@ class Settings(BaseSettings):
     cvvr_api_token: Optional[str] = os.getenv("CVVR_API_TOKEN", None)
     cvvr_api_timeout: int = int(os.getenv("CVVR_API_TIMEOUT", "30"))
     cvvr_api_enabled: bool = bool(int(os.getenv("CVVR_API_ENABLED", "1")))  # Enable by default
-    host_url: str = os.getenv("HOST_URL", "http://103.195.244.66:8000")  # URL for building fileUrl
+    host_url: str = os.getenv("HOST_URL", "https://celebxmedia.info")  # URL for building fileUrl
 
     # MinIO settings for video downloads
     minio_endpoint: str = os.getenv("MINIO_ENDPOINT", "mind.snikbtel.uk:9000")
@@ -180,9 +180,10 @@ class Settings(BaseSettings):
     voting_threshold_cell_phone: float = float(os.getenv("VOTING_THRESHOLD_CELL_PHONE", "0.5"))
     voting_threshold_writing: float = float(os.getenv("VOTING_THRESHOLD_WRITING", "0.5"))
     voting_threshold_packing_bags: float = float(os.getenv("VOTING_THRESHOLD_PACKING_BAGS", "0.75"))  # 75% - stricter for false positive reduction (was 60%)
-    voting_threshold_lp_hand_gesture: float = float(os.getenv("VOTING_THRESHOLD_LP_GESTURE", "0.5"))
-    voting_threshold_alp_hand_gesture: float = float(os.getenv("VOTING_THRESHOLD_ALP_GESTURE", "0.5"))
+    voting_threshold_lp_hand_gesture: float = float(os.getenv("VOTING_THRESHOLD_LP_GESTURE", "0.6"))
+    voting_threshold_alp_hand_gesture: float = float(os.getenv("VOTING_THRESHOLD_ALP_GESTURE", "0.6"))
     voting_threshold_mind_diversion: float = float(os.getenv("VOTING_THRESHOLD_MIND_DIVERSION", "0.5"))
+    voting_threshold_eating_drinking: float = float(os.getenv("VOTING_THRESHOLD_EATING_DRINKING", "0.4"))  # Lower threshold - cups harder to detect in IR
     voting_threshold_group_detected: float = float(os.getenv("VOTING_THRESHOLD_GROUP", "0.5"))
 
     # Hand Gesture Coordination Session Settings
@@ -191,7 +192,7 @@ class Settings(BaseSettings):
     hand_gesture_session_timeout: float = float(os.getenv("HAND_GESTURE_SESSION_TIMEOUT", "10.0"))
 
     # Voting debug settings - save annotated frames for troubleshooting
-    voting_save_debug_frames: bool = bool(int(os.getenv("VOTING_SAVE_DEBUG_FRAMES", "1")))  # Enable by default
+    voting_save_debug_frames: bool = bool(int(os.getenv("VOTING_SAVE_DEBUG_FRAMES", "0")))  # Disabled by default (enable locally for debugging)
     voting_debug_frames_dir: str = os.getenv("VOTING_DEBUG_FRAMES_DIR", "voting_debug_frames")
 
     # Packing bags verification thresholds (stricter than initial detection)
@@ -221,6 +222,110 @@ class Settings(BaseSettings):
     # When enabled, only positive yaw triggers mind diversion (exempts looking at track)
     mind_diversion_exempt_forward_looking: bool = os.getenv("MIND_DIV_EXEMPT_FORWARD", "true").lower() == "true"
 
+    # Sleep Detection - Reclined Posture Settings (overhead/behind camera angles)
+    # When crew sleeps by leaning BACK against wall, torso elongates and nose moves higher in frame
+    sleep_reclined_torso_height_threshold: float = float(os.getenv("SLEEP_TORSO_HEIGHT_THRESH", "175"))  # px, torso > this = reclined
+    # NOTE: nose_y_norm threshold moved to sleep_nose_y_norm_threshold (tuned to 0.30) in the scoring section below
+    sleep_reclined_shoulder_width_threshold: float = float(os.getenv("SLEEP_SHOULDER_WIDTH_THRESH", "60"))  # px, shoulders < this = compressed (reclined)
+
+    # Pose-based sleep scoring thresholds (tuned for side/overhead camera angles)
+    sleep_nose_above_shoulders_threshold: float = float(os.getenv("SLEEP_NOSE_ABOVE_SHOULDERS_THRESH", "0.08"))
+    sleep_nose_below_px_threshold: float = float(os.getenv("SLEEP_NOSE_BELOW_PX_THRESH", "-55"))
+    sleep_head_tilt_threshold: float = float(os.getenv("SLEEP_HEAD_TILT_THRESH", "-155"))
+    sleep_nose_y_norm_threshold: float = float(os.getenv("SLEEP_NOSE_Y_NORM_THRESH", "0.30"))
+    sleep_score_threshold: int = int(os.getenv("SLEEP_SCORE_THRESH", "5"))
+
+    # Baseline calibration for camera-angle adaptation
+    sleep_baseline_enabled: bool = os.getenv("SLEEP_BASELINE_ENABLED", "true").lower() == "true"
+    sleep_baseline_calibration_window: float = float(os.getenv("SLEEP_BASELINE_WINDOW", "2.0"))
+    sleep_baseline_min_samples: int = int(os.getenv("SLEEP_BASELINE_MIN_SAMPLES", "1"))
+
+    # Delta-from-baseline thresholds
+    sleep_baseline_nose_below_delta: float = float(os.getenv("SLEEP_BASELINE_NOSE_BELOW_DELTA", "40"))
+    sleep_baseline_head_tilt_delta: float = float(os.getenv("SLEEP_BASELINE_HEAD_TILT_DELTA", "25"))
+    sleep_baseline_torso_height_delta: float = float(os.getenv("SLEEP_BASELINE_TORSO_DELTA", "40"))
+    sleep_baseline_shoulder_width_delta: float = float(os.getenv("SLEEP_BASELINE_SHOULDER_DELTA", "20"))
+
+    # New discriminating signals for sleep detection
+    sleep_sustained_stillness_threshold: float = float(os.getenv("SLEEP_SUSTAINED_STILLNESS_THRESH", "0.03"))
+    sleep_sustained_stillness_frames: int = int(os.getenv("SLEEP_SUSTAINED_STILLNESS_FRAMES", "1"))
+    sleep_hands_clasped_threshold: float = float(os.getenv("SLEEP_HANDS_CLASPED_THRESH", "100"))
+    sleep_hands_clasped_frames: int = int(os.getenv("SLEEP_HANDS_CLASPED_FRAMES", "1"))
+    sleep_sustained_low_eye_frames: int = int(os.getenv("SLEEP_SUSTAINED_LOW_EYE_FRAMES", "2"))
+    sleep_hands_spread_threshold: float = float(os.getenv("SLEEP_HANDS_SPREAD_THRESHOLD", "180"))
+
+    # Head Bob Detection (slow drift + corrective jerk)
+    sleep_head_bob_drift_max_rate: float = float(os.getenv("SLEEP_HEAD_BOB_DRIFT_MAX_RATE", "15.0"))
+    sleep_head_bob_jerk_min_rate: float = float(os.getenv("SLEEP_HEAD_BOB_JERK_MIN_RATE", "20.0"))
+    sleep_head_bob_min_drift_frames: int = int(os.getenv("SLEEP_HEAD_BOB_MIN_DRIFT_FRAMES", "2"))
+    sleep_head_bob_min_amplitude: float = float(os.getenv("SLEEP_HEAD_BOB_MIN_AMPLITUDE", "10.0"))
+    sleep_head_bob_score_bonus: int = int(os.getenv("SLEEP_HEAD_BOB_SCORE_BONUS", "2"))
+    sleep_head_bob_bypass_eye_gate: bool = os.getenv("SLEEP_HEAD_BOB_BYPASS_EYE_GATE", "true").lower() == "true"
+
+    # Wrist Velocity Tracking (still vs active hands)
+    sleep_wrist_velocity_still_threshold: float = float(os.getenv("SLEEP_WRIST_VEL_STILL", "0.005"))
+    sleep_wrist_velocity_active_threshold: float = float(os.getenv("SLEEP_WRIST_VEL_ACTIVE", "0.03"))
+    sleep_wrist_velocity_still_frames: int = int(os.getenv("SLEEP_WRIST_VEL_STILL_FRAMES", "2"))
+
+    # Temporal State Machine
+    sleep_state_machine_enabled: bool = os.getenv("SLEEP_STATE_MACHINE_ENABLED", "true").lower() == "true"
+    sleep_state_hand_activity_threshold: float = float(os.getenv("SLEEP_STATE_HAND_ACTIVITY", "0.02"))
+    sleep_state_drowsy_to_microsleep_sec: float = float(os.getenv("SLEEP_DROWSY_TO_MICROSLEEP_SEC", "2.0"))
+    sleep_state_microsleep_to_sleep_sec: float = float(os.getenv("SLEEP_MICROSLEEP_TO_SLEEP_SEC", "4.0"))
+
+    # Shoulder Slump Rate (progressive downward drift)
+    sleep_shoulder_slump_rate_threshold: float = float(os.getenv("SLEEP_SHOULDER_SLUMP_RATE", "0.005"))
+    sleep_shoulder_slump_min_frames: int = int(os.getenv("SLEEP_SHOULDER_SLUMP_MIN_FRAMES", "3"))
+    # Face-gone threshold: eye_vis below this = face not visible (side/behind camera)
+    sleep_face_gone_threshold: float = float(os.getenv("SLEEP_FACE_GONE_THRESHOLD", "0.25"))
+
+    # Head drop detection thresholds (primary microsleep signal)
+    sleep_nose_y_drop_threshold: float = float(os.getenv("SLEEP_NOSE_Y_DROP_THRESHOLD", "0.15"))
+    sleep_head_tilt_drop_threshold: float = float(os.getenv("SLEEP_HEAD_TILT_DROP_THRESHOLD", "30.0"))
+
+    eyes_not_in_frame_threshold: float = float(os.getenv("EYES_NOT_IN_FRAME_THRESHOLD", "0.15"))
+    sleep_overhead_nose_y_threshold: float = float(os.getenv("SLEEP_OVERHEAD_NOSE_Y_THRESHOLD", "0.10"))
+
+    # Haar Cascade Eye Closure Detection
+    haar_eye_detection_enabled: bool = bool(int(os.getenv("HAAR_EYE_DETECTION_ENABLED", "1")))
+    haar_eye_closed_consecutive_frames: int = int(os.getenv("HAAR_EYE_CLOSED_FRAMES", "3"))
+    haar_eye_roi_padding: float = float(os.getenv("HAAR_EYE_ROI_PADDING", "0.4"))
+    haar_eye_scale_factor: float = float(os.getenv("HAAR_EYE_SCALE_FACTOR", "1.1"))
+    haar_eye_min_neighbors: int = int(os.getenv("HAAR_EYE_MIN_NEIGHBORS", "3"))
+    haar_eye_microsleep_duration: float = float(os.getenv("HAAR_EYE_MICROSLEEP_DURATION", "1.5"))
+    haar_eye_sleep_duration: float = float(os.getenv("HAAR_EYE_SLEEP_DURATION", "4.0"))
+    haar_eye_score_boost: int = int(os.getenv("HAAR_EYE_SCORE_BOOST", "5"))
+
+    # Lower YOLO pose confidence for sleep analysis (sleeping persons have low YOLO confidence)
+    yolo_pose_sleep_confidence: float = float(os.getenv("YOLO_POSE_SLEEP_CONFIDENCE", "0.30"))
+
+    # IR/dark frame preprocessing for YOLO detection
+    yolo_dark_frame_brightness_threshold: float = float(os.getenv("YOLO_DARK_BRIGHTNESS_THRESH", "0.4"))
+
+    # No-pose sleep detection (for IR mode where YOLO pose fails)
+    sleep_no_pose_enabled: bool = bool(int(os.getenv("SLEEP_NO_POSE_ENABLED", "1")))
+    sleep_no_pose_min_duration: float = float(os.getenv("SLEEP_NO_POSE_MIN_DURATION", "30.0"))  # Seconds of stable no-pose person before flagging sleep
+    sleep_no_pose_bbox_stability_threshold: float = float(os.getenv("SLEEP_NO_POSE_BBOX_STABILITY", "0.15"))  # IoU change threshold for bbox stability
+
+    # IR Forward-Lean Sleep Detection (body-only keypoints for dark/IR frames)
+    ir_forward_lean_enabled: bool = bool(int(os.getenv("IR_FORWARD_LEAN_ENABLED", "1")))
+    ir_forward_lean_min_body_keypoints: int = int(os.getenv("IR_FORWARD_LEAN_MIN_BODY_KPS", "3"))
+    ir_forward_lean_head_vis_threshold: float = float(os.getenv("IR_FORWARD_LEAN_HEAD_VIS", "0.15"))
+    ir_forward_lean_body_vis_threshold: float = float(os.getenv("IR_FORWARD_LEAN_BODY_VIS", "0.2"))
+    ir_forward_lean_score_threshold: int = int(os.getenv("IR_FORWARD_LEAN_SCORE_THRESH", "4"))
+    ir_forward_lean_min_duration: float = float(os.getenv("IR_FORWARD_LEAN_MIN_DURATION", "5.0"))  # Microsleep threshold (seconds)
+    ir_forward_lean_sleep_duration: float = float(os.getenv("IR_FORWARD_LEAN_SLEEP_DURATION", "10.0"))  # Sleep threshold (seconds)
+
+    # IR-adjusted no-pose bbox stability duration (applies to existing no-pose sleep detector in dark frames)
+    ir_sleep_no_pose_min_duration: float = float(os.getenv("IR_SLEEP_NO_POSE_MIN_DURATION", "15.0"))  # Reduced from 30s for IR dark frames
+
+    # Eating/Drinking Detection (mind diversion sub-type)
+    eating_drinking_detection_enabled: bool = bool(int(os.getenv("EATING_DRINKING_ENABLED", "1")))
+    eating_drinking_cup_confidence: float = float(os.getenv("EATING_DRINKING_CUP_CONF", "0.25"))  # Lower threshold for cups in IR
+    eating_drinking_hand_face_margin: int = int(os.getenv("EATING_DRINKING_HAND_FACE_MARGIN", "80"))  # Wrist within 80px of nose height
+    eating_drinking_hand_object_margin: int = int(os.getenv("EATING_DRINKING_HAND_OBJ_MARGIN", "150"))  # Hand-to-cup proximity
+    eating_drinking_cup_floor_confidence: float = float(os.getenv("EATING_DRINKING_CUP_FLOOR_CONF", "0.20"))  # Pre-filter floor for cup/bottle in full-frame detection
+
     # Mind Diversion Suppression Settings
     # Suppress false positives when LP is doing legitimate document work
     mind_diversion_suppress_with_writing: bool = os.getenv("MIND_DIV_SUPPRESS_WRITING", "true").lower() == "true"
@@ -234,86 +339,152 @@ class Settings(BaseSettings):
     # GPU Memory Management Settings
     gpu_memory_warning_threshold: float = float(os.getenv("GPU_MEMORY_WARNING_THRESHOLD", "80.0"))  # Percentage
 
-    # ==========================================================================
-    # Train State Detection Settings (ROI-based Optical Flow)
-    # ==========================================================================
-    # Detects when train is stopped to exempt non-safety-critical violations
-    # ROI configured for Indian loco cab camera (mounted rear-right, window on left)
+    # ==========================================
+    # YOLO Confidence Thresholds
+    # ==========================================
+    yolo_person_confidence: float = float(os.getenv("YOLO_PERSON_CONFIDENCE", "0.5"))
+    yolo_bag_confidence: float = float(os.getenv("YOLO_BAG_CONFIDENCE", "0.45"))
+    yolo_bag_log_confidence: float = float(os.getenv("YOLO_BAG_LOG_CONFIDENCE", "0.25"))
+    yolo_book_confidence: float = float(os.getenv("YOLO_BOOK_CONFIDENCE", "0.4"))
+    yolo_cell_phone_confidence: float = float(os.getenv("YOLO_CELL_PHONE_CONFIDENCE", "0.3"))
 
-    # Enable/disable train state detection
-    train_state_detection_enabled: bool = bool(int(os.getenv("TRAIN_STATE_DETECTION_ENABLED", "1")))
+    # ==========================================
+    # Wrist/Elbow Detection Thresholds
+    # ==========================================
+    max_wrist_distance: int = int(os.getenv("MAX_WRIST_DISTANCE", "300"))
+    max_elbow_distance: int = int(os.getenv("MAX_ELBOW_DISTANCE", "450"))
+    max_single_wrist_distance: int = int(os.getenv("MAX_SINGLE_WRIST_DISTANCE", "250"))
+    writing_wrist_distance: int = int(os.getenv("WRITING_WRIST_DISTANCE", "300"))
+    relaxed_wrist_distance: int = int(os.getenv("RELAXED_WRIST_DISTANCE", "400"))
+    elbow_visibility_threshold: float = float(os.getenv("ELBOW_VISIBILITY_THRESHOLD", "0.25"))
+    wrist_visibility_threshold: float = float(os.getenv("WRIST_VISIBILITY_THRESHOLD", "0.3"))
 
-    # Optical flow magnitude threshold (lower = more sensitive to motion)
-    train_state_motion_threshold: float = float(os.getenv("TRAIN_STATE_MOTION_THRESHOLD", "2.0"))
+    # ==========================================
+    # Writing Detection Thresholds
+    # ==========================================
+    writing_min_duration: float = float(os.getenv("WRITING_MIN_DURATION", "1.0"))
+    writing_required_consecutive: int = int(os.getenv("WRITING_REQUIRED_CONSECUTIVE", "2"))
+    book_posture_min_duration: float = float(os.getenv("BOOK_POSTURE_MIN_DURATION", "2.0"))
+    book_posture_required_consecutive: int = int(os.getenv("BOOK_POSTURE_REQUIRED_CONSECUTIVE", "2"))
 
-    # Minimum seconds before state changes to STOPPED (temporal filtering)
-    train_state_min_stopped_duration: float = float(os.getenv("TRAIN_STATE_MIN_STOPPED_SEC", "5.0"))
+    # ==========================================
+    # Head Tilt / Sleep Detection Thresholds
+    # ==========================================
+    head_down_threshold: float = float(os.getenv("HEAD_DOWN_THRESHOLD", "0.01"))
+    sleep_strong_score: int = int(os.getenv("SLEEP_STRONG_SCORE", "6"))
+    sleep_strong_duration: int = int(os.getenv("SLEEP_STRONG_DURATION", "0"))
+    sleep_moderate_duration: int = int(os.getenv("SLEEP_MODERATE_DURATION", "2"))
+    sleep_microsleep_duration: int = int(os.getenv("SLEEP_MICROSLEEP_DURATION", "0"))
+    minimal_movement_threshold: float = float(os.getenv("MINIMAL_MOVEMENT_THRESHOLD", "0.15"))
+    stable_posture_variance: int = int(os.getenv("STABLE_POSTURE_VARIANCE", "100"))
+    eyes_not_visible_threshold: float = float(os.getenv("EYES_NOT_VISIBLE_THRESHOLD", "0.4"))
 
-    # ROI: Side Window/Door - TOP ONLY (above person height to avoid crew movement)
-    train_state_roi_x_start: float = float(os.getenv("TRAIN_STATE_ROI_X_START", "0.37"))
-    train_state_roi_x_end: float = float(os.getenv("TRAIN_STATE_ROI_X_END", "0.52"))
-    train_state_roi_y_start: float = float(os.getenv("TRAIN_STATE_ROI_Y_START", "0.0"))
-    train_state_roi_y_end: float = float(os.getenv("TRAIN_STATE_ROI_Y_END", "0.15"))
+    # ==========================================
+    # IR Forward Lean Detection Thresholds
+    # ==========================================
+    ir_shoulder_relative_threshold: float = float(os.getenv("IR_SHOULDER_RELATIVE_THRESHOLD", "0.4"))
+    ir_bbox_aspect_ratio_threshold: float = float(os.getenv("IR_BBOX_ASPECT_RATIO_THRESHOLD", "1.2"))
+    ir_low_movement_threshold: float = float(os.getenv("IR_LOW_MOVEMENT_THRESHOLD", "0.02"))
+    sub_threshold_streak_limit: int = int(os.getenv("SUB_THRESHOLD_STREAK_LIMIT", "3"))
 
-    # Use adaptive ROI detection (color-based, experimental)
-    train_state_adaptive_roi: bool = bool(int(os.getenv("TRAIN_STATE_ROI_ADAPTIVE", "0")))
+    # ==========================================
+    # Object Detection Geometry
+    # ==========================================
+    bag_max_aspect_ratio: float = float(os.getenv("BAG_MAX_ASPECT_RATIO", "1.2"))
+    bag_min_area: int = int(os.getenv("BAG_MIN_AREA", "5000"))
+    bag_max_area: int = int(os.getenv("BAG_MAX_AREA", "100000"))
+    book_person_margin: int = int(os.getenv("BOOK_PERSON_MARGIN", "150"))
+    person_book_overlap_margin: int = int(os.getenv("PERSON_BOOK_OVERLAP_MARGIN", "250"))
 
-    # Debug settings for train state detection
-    train_state_debug_frames: bool = bool(int(os.getenv("TRAIN_STATE_DEBUG_FRAMES", "0")))
-    train_state_debug_dir: str = os.getenv("TRAIN_STATE_DEBUG_DIR", "train_state_debug")
-    train_state_debug_interval: int = int(os.getenv("TRAIN_STATE_DEBUG_INTERVAL", "1"))
+    # ==========================================
+    # Pose Validation
+    # ==========================================
+    min_pose_landmarks: int = int(os.getenv("MIN_POSE_LANDMARKS", "10"))
+    min_pose_visibility: float = float(os.getenv("MIN_POSE_VISIBILITY", "0.3"))
+    face_mesh_detection_confidence: float = float(os.getenv("FACE_MESH_DETECTION_CONFIDENCE", "0.5"))
+    face_mesh_tracking_confidence: float = float(os.getenv("FACE_MESH_TRACKING_CONFIDENCE", "0.5"))
 
-    # ==========================================================================
-    # ALP Standing Before Stop Detection Settings
-    # ==========================================================================
-    # ALP must stand up at least N seconds before train stops at a station
-    # Uses YOLO-Pose keypoints to detect standing posture
+    # ==========================================
+    # Activity Registry Defaults (margins/regions)
+    # ==========================================
+    activity_cell_phone_margin: int = int(os.getenv("ACTIVITY_CELL_PHONE_MARGIN", "180"))
+    activity_writing_margin: int = int(os.getenv("ACTIVITY_WRITING_MARGIN", "180"))
+    activity_packing_margin: int = int(os.getenv("ACTIVITY_PACKING_MARGIN", "100"))
+    activity_packing_region_margin: int = int(os.getenv("ACTIVITY_PACKING_REGION_MARGIN", "150"))
+    activity_packing_wrist_inside_margin: int = int(os.getenv("ACTIVITY_PACKING_WRIST_INSIDE_MARGIN", "80"))
 
-    # Time in seconds ALP must stand before train stops
-    alp_standing_required_seconds: float = float(os.getenv("ALP_STANDING_REQUIRED_SECONDS", "30.0"))
+    # ==========================================
+    # Voting Service Margins
+    # ==========================================
+    voting_cell_phone_margin: int = int(os.getenv("VOTING_CELL_PHONE_MARGIN", "100"))
+    voting_book_hand_margin: int = int(os.getenv("VOTING_BOOK_HAND_MARGIN", "180"))
+    voting_person_book_margin: int = int(os.getenv("VOTING_PERSON_BOOK_MARGIN", "250"))
 
-    # Optical flow threshold for detecting approach to stop (lower = slower)
-    # Train is "approaching stop" when flow drops below this but above stopped threshold
-    approaching_stop_flow_threshold: float = float(os.getenv("APPROACHING_STOP_FLOW_THRESHOLD", "4.0"))
+    # ==========================================
+    # Train Motion Rules Settings
+    # ==========================================
+    # Enable/disable train motion-based rule engine
+    train_motion_rules_enabled: bool = bool(int(os.getenv("TRAIN_MOTION_RULES_ENABLED", "0")))
 
-    # Number of frames to analyze for trend detection (linear regression on flow history)
-    approaching_stop_lookback_frames: int = int(os.getenv("APPROACHING_STOP_LOOKBACK_FRAMES", "15"))
+    # Suppress no_person_detected when trip schedule is unavailable
+    # (cannot distinguish station halts from running without schedule)
+    suppress_no_person_without_schedule: bool = bool(int(os.getenv("SUPPRESS_NO_PERSON_WITHOUT_SCHEDULE", "1")))
 
-    # ==========================================================================
-    # Violation Exemption During Stopped State
-    # ==========================================================================
-    # Activities that are EXEMPTED when train is stopped
-    # Format: JSON array of activity names
-    # When train is stopped (at stations, signals, etc.), crew is permitted to rest/relax
-    # ALL violations are exempted during stopped periods
+    # Trip API Settings (RailRadar API)
+    trip_api_url: str = os.getenv("TRIP_API_URL", "https://api.railradar.in/api/v1/trains")
+    trip_api_timeout: int = int(os.getenv("TRIP_API_TIMEOUT", "10"))
 
-    @field_validator('stopped_state_exempt_activities', mode='before')
-    @classmethod
-    def parse_exempt_activities(cls, v):
-        """Parse exempt activities from JSON string or return default"""
-        default_exempt = [
-            "cell_phone", "writing", "packing_bags", "mind_diversion",
-            "microsleep", "sleep", "no_person_detected", "group_detected",
-            "lp_hand_gesture", "alp_hand_gesture"
-        ]
-        if v is None:
-            return default_exempt
-        if isinstance(v, str):
-            try:
-                parsed = json.loads(v)
-                if isinstance(parsed, list):
-                    return parsed
-            except (json.JSONDecodeError, ValueError, TypeError):
-                pass
-            return default_exempt
-        if isinstance(v, list):
-            return v
-        return default_exempt
+    # OCR Timestamp Extraction Settings
+    ocr_enabled: bool = bool(int(os.getenv("OCR_ENABLED", "0")))
+    ocr_engine: str = os.getenv("OCR_ENGINE", "auto")  # 'easyocr' (recommended), 'tesseract', or 'auto'
+    ocr_roi_position: str = os.getenv("OCR_ROI_POSITION", "top-left")  # top-right, top-left, bottom-right, bottom-left
+    ocr_roi_x: int = int(os.getenv("OCR_ROI_X", "10"))  # X offset from edge
+    ocr_roi_y: int = int(os.getenv("OCR_ROI_Y", "10"))  # Y offset from edge
+    ocr_roi_width: int = int(os.getenv("OCR_ROI_WIDTH", "200"))  # ROI width
+    ocr_roi_height: int = int(os.getenv("OCR_ROI_HEIGHT", "50"))  # ROI height
 
-    stopped_state_exempt_activities: List[str] = json.loads(
-        os.getenv("STOPPED_STATE_EXEMPT_ACTIVITIES",
-                  '["cell_phone", "writing", "packing_bags", "mind_diversion", "microsleep", "sleep", "no_person_detected", "group_detected", "lp_hand_gesture", "alp_hand_gesture"]')
-    )
+    # Pre-Arrival ALP Alertness Settings
+    pre_arrival_window_start: int = int(os.getenv("PRE_ARRIVAL_WINDOW_START", "60"))  # 60s before arrival
+    pre_arrival_window_end: int = int(os.getenv("PRE_ARRIVAL_WINDOW_END", "30"))  # 30s before arrival
+
+    # Halt Grace Period - allow exemptions for short time after scheduled departure
+    halt_grace_period: int = int(os.getenv("HALT_GRACE_PERIOD", "120"))  # 120s after departure
+
+    # ==========================================
+    # Optical Flow Motion Detection Settings
+    # ==========================================
+    # Enable/disable optical flow motion verification
+    optical_flow_enabled: bool = bool(int(os.getenv("OPTICAL_FLOW_ENABLED", "0")))
+
+    # Side window ROI configuration (ratios of frame dimensions)
+    # Captures the narrow left side window/door opening for motion detection
+    # IPCamera 02 cabin view: outside scenery visible through left side bars/window
+    # Calibrated from "Writing 13 25.mp4" (1280x720, 25fps)
+    motion_roi_x_ratio: float = float(os.getenv("MOTION_ROI_X", "0.0"))
+    motion_roi_width_ratio: float = float(os.getenv("MOTION_ROI_WIDTH", "0.08"))
+    motion_roi_y_ratio: float = float(os.getenv("MOTION_ROI_Y", "0.15"))
+    motion_roi_height_ratio: float = float(os.getenv("MOTION_ROI_HEIGHT", "0.50"))
+
+    # Motion classification thresholds (optical flow magnitude - 90th percentile)
+    # Calibrated from video analysis (consecutive frames at 25fps):
+    #   - STOPPED: p90 magnitude typically 0.13-0.14
+    #   - RUNNING: p90 magnitude typically 1.0-2.4
+    #   - TRANSITION: p90 magnitude 0.5-0.7
+    motion_stopped_threshold: float = float(os.getenv("MOTION_STOPPED_THRESHOLD", "0.3"))
+    motion_running_threshold: float = float(os.getenv("MOTION_RUNNING_THRESHOLD", "0.8"))
+    motion_confidence_threshold: float = float(os.getenv("MOTION_CONFIDENCE_THRESHOLD", "0.7"))
+
+    # ==========================================
+    # etrain.info Delay Integration Settings
+    # ==========================================
+    # Enable/disable etrain.info delay data fetching
+    etrain_enabled: bool = bool(int(os.getenv("ETRAIN_ENABLED", "0")))
+
+    # etrain.info base URL for train live status
+    etrain_base_url: str = os.getenv("ETRAIN_BASE_URL", "https://etrain.info/train")
+
+    # Cache TTL for delay data (in seconds, default 30 minutes)
+    etrain_cache_ttl: int = int(os.getenv("ETRAIN_CACHE_TTL", "1800"))
 
 
 @lru_cache()

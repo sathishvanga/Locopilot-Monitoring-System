@@ -278,11 +278,13 @@ class PersonKeypoints:
         self.conf = batch_keypoints.conf[person_idx:person_idx+1] if batch_keypoints.conf is not None else None
 
 
-def get_keypoint_by_name(landmarks: YoloPoseLandmarks, keypoint_name: str) -> YoloLandmark:
+def get_keypoint_by_name(landmarks, keypoint_name: str) -> YoloLandmark:
     """Get a keypoint from landmarks by name.
 
     Args:
-        landmarks: YoloPoseLandmarks object
+        landmarks: YoloPoseLandmarks object, or a list of YoloLandmark objects
+                   (i.e. the .landmark attribute of YoloPoseLandmarks).
+                   Both forms are accepted for backward compatibility.
         keypoint_name: String name like 'nose', 'left_wrist', etc.
 
     Returns:
@@ -291,6 +293,9 @@ def get_keypoint_by_name(landmarks: YoloPoseLandmarks, keypoint_name: str) -> Yo
     Raises:
         ValueError: If keypoint name is unknown
     """
+    # Support both YoloPoseLandmarks (has .landmark) and plain list
+    landmark_list = landmarks.landmark if hasattr(landmarks, 'landmark') else landmarks
+
     name_lower = keypoint_name.lower()
 
     # Handle MediaPipe-style names with underscores
@@ -299,7 +304,7 @@ def get_keypoint_by_name(landmarks: YoloPoseLandmarks, keypoint_name: str) -> Yo
     # Check if it's a valid YOLO keypoint
     if name_lower in YOLO_KEYPOINT_INDICES:
         idx = YOLO_KEYPOINT_INDICES[name_lower]
-        return landmarks.landmark[idx]
+        return landmark_list[idx]
 
     # Handle MediaPipe-specific keypoints that don't exist in YOLO (fallback to wrist)
     fallback_map = {
@@ -314,6 +319,6 @@ def get_keypoint_by_name(landmarks: YoloPoseLandmarks, keypoint_name: str) -> Yo
     if name_lower in fallback_map:
         fallback_name = fallback_map[name_lower]
         idx = YOLO_KEYPOINT_INDICES[fallback_name]
-        return landmarks.landmark[idx]
+        return landmark_list[idx]
 
     raise ValueError(f"Unknown keypoint: {keypoint_name}")

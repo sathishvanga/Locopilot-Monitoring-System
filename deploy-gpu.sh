@@ -1,15 +1,18 @@
 #!/bin/bash
 # Locopilot Monitoring System - GPU Server Deployment Script
 # Usage: ./deploy-gpu.sh
-# Target: GPU Server (95.216.66.168) - GTX 1080 8GB
+# Target: GPU Server (103.116.80.162)
 
 set -e
 
 # Server Configuration
-SERVER_IP="95.216.66.168"
-SERVER_PORT="22"
-SERVER_USER="root"
-SERVER_PASS="Login@123@@@"
+SERVER_IP="103.116.80.162"
+SERVER_PORT="3781"
+SERVER_USER="admin1"
+SERVER_PASS='9o\P`3#W(9}K'
+# Base64-encode password to safely pass through SSH command strings
+# (password contains backtick which breaks double-quoted shell expansions)
+PASS_B64=$(printf '%s' "$SERVER_PASS" | base64)
 REMOTE_PATH="/opt/poc2"
 
 # Colors for output
@@ -20,7 +23,7 @@ NC='\033[0m' # No Color
 
 echo "=========================================="
 echo "  Locopilot - GPU Server Deployer"
-echo "  Target: $SERVER_IP (GTX 1080)"
+echo "  Target: $SERVER_IP (New GPU Server)"
 echo "=========================================="
 echo ""
 
@@ -70,7 +73,7 @@ echo ""
 echo -e "${YELLOW}[3/6] Installing system dependencies (ffmpeg)...${NC}"
 sshpass -p "$SERVER_PASS" ssh -p "$SERVER_PORT" -o StrictHostKeyChecking=no \
     "$SERVER_USER@$SERVER_IP" \
-    "which ffmpeg > /dev/null 2>&1 || (apt-get update -qq && apt-get install -y ffmpeg -qq)"
+    "which ffmpeg > /dev/null 2>&1 || (echo '$PASS_B64' | base64 -d | sudo -S apt-get update -qq && echo '$PASS_B64' | base64 -d | sudo -S apt-get install -y ffmpeg -qq)"
 
 echo ""
 echo -e "${YELLOW}[4/6] Installing Python dependencies...${NC}"
@@ -81,21 +84,21 @@ sshpass -p "$SERVER_PASS" ssh -p "$SERVER_PORT" -o StrictHostKeyChecking=no \
 echo ""
 echo -e "${YELLOW}[5/6] Updating systemd service and restarting...${NC}"
 # Update systemd service with correct environment variables
-sshpass -p "$SERVER_PASS" ssh -p "$SERVER_PORT" -o StrictHostKeyChecking=no \
-    "$SERVER_USER@$SERVER_IP" << 'EOF'
-cat > /etc/systemd/system/locopilot.service << 'SERVICE'
+# Write the service file locally, then copy it over
+SERVICE_FILE=$(mktemp)
+cat > "$SERVICE_FILE" << 'SERVICE'
 [Unit]
 Description=Locopilot Monitoring System
 After=network.target
 
 [Service]
 Type=simple
-User=root
+User=admin1
 WorkingDirectory=/opt/poc2
 EnvironmentFile=/opt/poc2/.env
 Environment=PATH=/opt/poc2/venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 Environment=YOLO_DEVICE=0
-Environment=MP_MAX_WORKERS_CAP=2
+Environment=MP_MAX_WORKERS_CAP=6
 Environment=TORCH_THREADS=1
 Environment=OPENCV_THREADS=2
 ExecStart=/opt/poc2/venv/bin/gunicorn -c gunicorn_config.py app.main:app
@@ -106,9 +109,18 @@ RestartSec=10
 WantedBy=multi-user.target
 SERVICE
 
-systemctl daemon-reload
-systemctl restart locopilot
-EOF
+# Copy service file to remote server
+sshpass -p "$SERVER_PASS" scp -P "$SERVER_PORT" -o StrictHostKeyChecking=no \
+    "$SERVICE_FILE" "$SERVER_USER@$SERVER_IP:/tmp/locopilot.service"
+rm -f "$SERVICE_FILE"
+
+# Install service and restart
+sshpass -p "$SERVER_PASS" ssh -p "$SERVER_PORT" -o StrictHostKeyChecking=no \
+    "$SERVER_USER@$SERVER_IP" \
+    "echo '$PASS_B64' | base64 -d | sudo -S cp /tmp/locopilot.service /etc/systemd/system/locopilot.service && \
+     echo '$PASS_B64' | base64 -d | sudo -S systemctl daemon-reload && \
+     echo '$PASS_B64' | base64 -d | sudo -S systemctl restart locopilot && \
+     rm -f /tmp/locopilot.service"
 
 echo ""
 echo -e "${YELLOW}[6/6] Verifying deployment...${NC}"
@@ -117,7 +129,7 @@ sleep 5
 # Check service status
 STATUS=$(sshpass -p "$SERVER_PASS" ssh -p "$SERVER_PORT" -o StrictHostKeyChecking=no \
     "$SERVER_USER@$SERVER_IP" \
-    "systemctl is-active locopilot")
+    "echo '$PASS_B64' | base64 -d | sudo -S systemctl is-active locopilot 2>/dev/null")
 
 if [ "$STATUS" = "active" ]; then
     echo -e "${GREEN}Service is running!${NC}"
@@ -142,7 +154,7 @@ if [ "$STATUS" = "active" ]; then
         echo ""
         echo "Application URL: http://$SERVER_IP:8000"
         echo "Health Check:    http://$SERVER_IP:8000/health"
-        echo "GPU Workers:     2 (MP_MAX_WORKERS_CAP)"
+        echo "GPU Workers:     6 (MP_MAX_WORKERS_CAP)"
     else
         echo -e "${YELLOW}Warning: Health check did not return expected response${NC}"
         echo "Response: $HEALTH"

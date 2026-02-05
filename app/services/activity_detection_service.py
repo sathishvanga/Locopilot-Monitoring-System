@@ -56,8 +56,8 @@ class ActivityDetectionService:
         
         self.evidence_rules = {
             'cell_phone': 'phone_in_hand',
-            'microsleep': 'eyes_closed_5s_or_pose_indicators',
-            'sleep': 'eyes_closed_30s_or_pose_indicators',
+            'microsleep': 'pose_indicators',
+            'sleep': 'pose_indicators',
             'writing': 'hand_near_book',
             'packing_bags': 'wrist_inside_backpack_bbox_or_hand_near_backpack',
             'group_detected': 'more_than_2_deduplicated_persons',
@@ -236,11 +236,14 @@ class ActivityDetectionService:
         crew_role: int = 1,
         output_dir: str = "locopilot_evidence",
         sample_fps: float = 1.0,
-        run_dir: str = None
+        run_dir: str = None,
+        trip_schedule = None,
+        video_start_time: str = None,
+        camera_angle: int = 1
     ) -> List[Dict[str, Any]]:
         """
         Single-process activity detection (original implementation)
-        
+
         Args:
             video_path: Path to video file
             trip_id: Trip identifier
@@ -250,12 +253,15 @@ class ActivityDetectionService:
             output_dir: Output directory for evidence (base directory)
             sample_fps: Frame sampling rate
             run_dir: Run directory to use (if None, creates new one)
-            
+            trip_schedule: TripSchedule object for motion-based rule engine (optional)
+            video_start_time: Video recording start time in HH:MM:SS format (optional)
+            camera_angle: Camera angle for LP/ALP role assignment (1 = LP Side, 2 = ALP Side)
+
         Returns:
             List[Dict[str, Any]]: List of detected activities
         """
         from locopilot_monitor import LocopilotActivityMonitor
-        
+
         # Create monitor instance (with or without run_dir)
         if run_dir:
             # Use existing run directory
@@ -277,17 +283,28 @@ class ActivityDetectionService:
                 frame_save_interval=self.settings.frame_save_interval,
                 sample_fps=sample_fps
             )
-        
+
         # Set trip and crew information
         monitor.trip_id = trip_id
         monitor.crew_name = crew_name
         monitor.crew_id = crew_id
         monitor.crew_role = crew_role
-        
+
         # Set crew members mapping if provided
         if crew_members:
             monitor.crew_members = crew_members
-        
+
+        # Set camera angle for LP/ALP role assignment
+        monitor.camera_angle = camera_angle
+
+        # Set trip schedule for motion-based rule engine
+        if trip_schedule is not None and hasattr(monitor, 'set_trip_schedule'):
+            monitor.set_trip_schedule(trip_schedule)
+
+        # Set video start time for motion rules (when OCR unavailable)
+        if video_start_time and hasattr(monitor, 'set_video_start_time'):
+            monitor.set_video_start_time(video_start_time)
+
         # Process video
         monitor.process_video()
         
@@ -320,11 +337,14 @@ class ActivityDetectionService:
         output_dir: str = "locopilot_evidence",
         sample_fps: float = 1.0,
         run_dir: str = None,
-        save_clips: bool = True
+        save_clips: bool = True,
+        trip_schedule = None,
+        video_start_time: str = None,
+        camera_angle: int = 1
     ) -> List[Dict[str, Any]]:
         """
         Multi-process activity detection using parallel processing
-        
+
         Args:
             video_path: Path to video file
             trip_id: Trip identifier
@@ -335,7 +355,10 @@ class ActivityDetectionService:
             sample_fps: Frame sampling rate
             run_dir: Run directory to use (if None, creates new one)
             save_clips: Whether to save video clips and images (default: True)
-            
+            trip_schedule: TripSchedule object for motion-based rule engine (optional)
+            video_start_time: Video recording start time in HH:MM:SS format (optional)
+            camera_angle: Camera angle for LP/ALP role assignment (1 = LP Side, 2 = ALP Side)
+
         Returns:
             List[Dict[str, Any]]: List of detected activities
         """
@@ -372,6 +395,8 @@ class ActivityDetectionService:
         
         try:
             # Process video in parallel with clip generation
+            # Note: trip_schedule is passed for motion-based rules
+            # Multiprocessing workers will need to re-fetch or receive serialized schedule
             activities = orchestrator.process_video_parallel(
                 video_path=video_path,
                 trip_id=trip_id,
@@ -381,7 +406,10 @@ class ActivityDetectionService:
                 crew_role=crew_role,
                 sample_fps=sample_fps,
                 run_dir=run_dir,
-                save_clips=save_clips
+                save_clips=save_clips,
+                trip_schedule=trip_schedule,
+                video_start_time=video_start_time,
+                camera_angle=camera_angle
             )
             
             # ✅ MEMORY FIX: Force garbage collection after processing
@@ -397,9 +425,21 @@ class ActivityDetectionService:
             return activities
             
         finally:
-            # Cleanup: shutdown pool
-            orchestrator.shutdown_pool(wait=True)
-            
-            # ✅ MEMORY FIX: Force garbage collection after shutdown
+            # Cleanup: shutdown shared pool to release GPU memory after each job
+            # orchestrator.shutdown_pool() is a no-op for shared pools,
+            # so we call shutdown_shared_pool() directly to terminate workers
+            # and free GPU VRAM between jobs.
+            from ..utils.video_multiprocessing import shutdown_shared_pool
+            shutdown_shared_pool(wait=True)
+
+            # Force PyTorch to release cached GPU memory
+            try:
+                import torch
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+            except Exception:
+                pass
+
+            # Force garbage collection after shutdown
             gc.collect()
 

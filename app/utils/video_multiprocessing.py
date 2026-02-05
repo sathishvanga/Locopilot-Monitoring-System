@@ -28,6 +28,18 @@ logger = get_logger(__name__)
 settings = get_settings()
 
 
+class NumpyEncoder(json.JSONEncoder):
+    """JSON encoder that handles numpy types."""
+    def default(self, obj):
+        if isinstance(obj, (np.integer,)):
+            return int(obj)
+        if isinstance(obj, (np.floating,)):
+            return float(obj)
+        if isinstance(obj, np.ndarray):
+            return obj.tolist()
+        return super().default(obj)
+
+
 # Global variables for worker processes (initialized once per worker)
 _worker_models = None
 _worker_config = None
@@ -349,17 +361,20 @@ def process_frame_range(
     crew_role: int,
     output_dir: str,
     run_dir: str = None,
-    save_clips: bool = True
+    save_clips: bool = True,
+    trip_schedule_dict: Dict[str, Any] = None,
+    video_start_time: str = None,
+    camera_angle: int = 1
 ) -> Dict[str, Any]:
     """
     Process a specific frame range (worker task function)
-    
+
     This function runs in a worker process and processes frames within
     the assigned range independently. Clips and images can be saved if requested.
-    
+
     ✅ PERFORMANCE: Uses pre-loaded models from _worker_models (initialized once per worker)
     instead of loading models for each task. This significantly reduces processing time.
-    
+
     Args:
         video_path: Path to video file
         frame_range: Frame range to process
@@ -372,7 +387,9 @@ def process_frame_range(
         output_dir: Output directory (base directory)
         run_dir: Run directory for saving clips (if None, no clips saved)
         save_clips: Whether to save clips and images (default: True)
-        
+        trip_schedule_dict: Serialized TripSchedule dict for motion rules (optional)
+        video_start_time: Video recording start time in HH:MM:SS format (optional)
+
     Returns:
         Dictionary with detected activities and metadata
     """
@@ -424,7 +441,23 @@ def process_frame_range(
         # Set crew members mapping if provided
         if crew_members:
             monitor.crew_members = crew_members
-        
+
+        # Set camera angle for LP/ALP role assignment
+        monitor.camera_angle = camera_angle
+
+        # Reconstruct trip_schedule from dict if provided
+        if trip_schedule_dict is not None and hasattr(monitor, 'set_trip_schedule'):
+            try:
+                from app.models.trip_models import TripSchedule
+                trip_schedule = TripSchedule(**trip_schedule_dict)
+                monitor.set_trip_schedule(trip_schedule)
+            except Exception as e:
+                logger.warning(f"Worker {worker_id} could not reconstruct trip_schedule: {e}")
+
+        # Set video start time for motion rules (when OCR unavailable)
+        if video_start_time and hasattr(monitor, 'set_video_start_time'):
+            monitor.set_video_start_time(video_start_time)
+
         # Process the assigned frame range with optional clip saving
         activities = monitor.process_video_range(
             start_frame=frame_range.start_frame,
@@ -574,7 +607,7 @@ class VideoMultiprocessingOrchestrator:
         state_path = os.path.join(run_dir, self.config.state_file_name)
         try:
             with open(state_path, 'w') as f:
-                json.dump(self.state.to_dict(), f, indent=2)
+                json.dump(self.state.to_dict(), f, indent=2, cls=NumpyEncoder)
             logger.debug(f"State saved to {state_path}")
         except Exception as e:
             logger.error(f"Failed to save state: {e}")
@@ -608,11 +641,14 @@ class VideoMultiprocessingOrchestrator:
         crew_role: int = 1,
         sample_fps: float = 1.0,
         run_dir: str = None,
-        save_clips: bool = True
+        save_clips: bool = True,
+        trip_schedule = None,
+        video_start_time: str = None,
+        camera_angle: int = 1
     ) -> List[Dict[str, Any]]:
         """
         Process video in parallel using multiple workers
-        
+
         Args:
             video_path: Path to video file
             trip_id: Trip identifier
@@ -622,7 +658,11 @@ class VideoMultiprocessingOrchestrator:
             sample_fps: Sampling rate
             run_dir: Run directory for output
             save_clips: Whether to save video clips and images (default: True)
-            
+            trip_schedule: TripSchedule object for motion-based rules (optional)
+                           Note: Serialized to dict for multiprocessing workers
+            video_start_time: Video recording start time in HH:MM:SS format (optional)
+            camera_angle: Camera angle for LP/ALP role assignment (1 = LP Side, 2 = ALP Side)
+
         Returns:
             List of detected activities (merged from all ranges)
         """
@@ -657,11 +697,19 @@ class VideoMultiprocessingOrchestrator:
         
         logger.info(f"Submitting {len(frame_ranges)} tasks to process pool "
                    f"(expected {total_expected_frames} sampled frames, save_clips={save_clips})")
-        
+
+        # Serialize trip_schedule for multiprocessing (Pydantic models can't be pickled directly)
+        trip_schedule_dict = None
+        if trip_schedule is not None:
+            try:
+                trip_schedule_dict = trip_schedule.model_dump() if hasattr(trip_schedule, 'model_dump') else trip_schedule.dict()
+            except Exception as e:
+                logger.warning(f"Could not serialize trip_schedule for multiprocessing: {e}")
+
         # Submit tasks to pool
         futures: Dict[Future, FrameRange] = {}
         config_dict = {}  # Pipeline configuration
-        
+
         for frame_range in frame_ranges:
             future = self.pool.submit(
                 process_frame_range,
@@ -676,7 +724,10 @@ class VideoMultiprocessingOrchestrator:
                 crew_role=crew_role,
                 output_dir=self.output_dir,
                 run_dir=run_dir,  # Pass run_dir for clip saving
-                save_clips=save_clips
+                save_clips=save_clips,
+                trip_schedule_dict=trip_schedule_dict,  # Pass serialized schedule
+                video_start_time=video_start_time,  # Pass video start time for motion rules
+                camera_angle=camera_angle
             )
             futures[future] = frame_range
         
@@ -771,7 +822,7 @@ class VideoMultiprocessingOrchestrator:
             try:
                 import json
                 with open(activities_json_path, 'w') as f:
-                    json.dump(all_activities, f, indent=2)
+                    json.dump(all_activities, f, indent=2, cls=NumpyEncoder)
                 logger.info(f"Saved {len(all_activities)} activities to {activities_json_path}")
             except Exception as e:
                 logger.error(f"Failed to save activities.json: {e}")

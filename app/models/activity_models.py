@@ -20,21 +20,7 @@ class ActivityTypeEnum(IntEnum):
     ALP_NOT_EXCHANGING_HAND_GESTURE = 9
     MIND_DIVERSION = 10
     NO_PERSON_DETECTED = 11
-    ALP_NOT_STANDING_BEFORE_STOP = 12  # ALP must stand 30s before train stops at station
-
-
-class TrainStateEnum(IntEnum):
-    """
-    Train state enumeration for stopped train detection.
-
-    Used to track whether the train is moving or stopped,
-    enabling exemption of non-safety-critical violations
-    during stopped periods (at stations, signals, etc.).
-    """
-    UNKNOWN = 0          # State not yet determined
-    MOVING = 1           # Train is in motion
-    STOPPED = 2          # Train is stationary
-    APPROACHING_STOP = 3 # Train decelerating toward stop (for ALP standing check)
+    ALP_NOT_STANDING_PRE_ARRIVAL = 12  # ALP not standing in pre-arrival window (30-60s before station)
 
 
 class EvidenceModel(BaseModel):
@@ -45,10 +31,9 @@ class EvidenceModel(BaseModel):
 class PersonRoleModel(BaseModel):
     """Person role information with LP/ALP identification"""
     personIndex: int = Field(..., description="Index of the person (0, 1, 2, ...)")
-    role: str = Field(..., description="Role code (LP, ALP, SUPERVISOR, TRAINEE, VISITOR)")
+    role: str = Field(..., description="Role code (LP, ALP, VISITOR)")
     roleName: str = Field(..., description="Human-readable role name")
-    lpScore: int = Field(..., description="Loco Pilot score based on detected objects")
-    alpScore: int = Field(..., description="Assistant Loco Pilot score based on detected objects")
+    bboxArea: float = Field(..., description="Bounding box area used for camera proximity-based role assignment")
 
 
 class ActivityModel(BaseModel):
@@ -108,8 +93,7 @@ class ActivityModel(BaseModel):
                         "personIndex": 0,
                         "role": "LP",
                         "roleName": "Loco Pilot",
-                        "lpScore": 5,
-                        "alpScore": 1
+                        "bboxArea": 12345.0
                     }
                 ]
             }

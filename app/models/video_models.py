@@ -96,13 +96,13 @@ class CrewMember(BaseModel):
 class VideoUploadRequest(BaseModel):
     """
     Request model for video upload and processing
-    
+
     Note: The actual video file will be uploaded via multipart/form-data,
     this model handles the metadata.
     """
-    
+
     tripId: str = Field(
-        ..., 
+        ...,
         description="Unique trip identifier",
         min_length=1,
         max_length=100
@@ -114,6 +114,19 @@ class VideoUploadRequest(BaseModel):
     alpCrew: Optional[CrewMember] = Field(
         None,
         description="Assistant Loco Pilot crew member information"
+    )
+
+    # Train motion rule engine fields
+    train_number: Optional[str] = Field(
+        None,
+        description="Train number for schedule lookup (5-digit train number)",
+        min_length=4,
+        max_length=10
+    )
+    trip_date: Optional[str] = Field(
+        None,
+        description="Trip date in YYYY-MM-DD format for schedule lookup",
+        pattern=r"^\d{4}-\d{2}-\d{2}$"
     )
     
     @validator('tripId')
@@ -137,7 +150,9 @@ class VideoUploadRequest(BaseModel):
                     "name": "Jane Smith",
                     "id": "ALP-002",
                     "role": "ALP"
-                }
+                },
+                "train_number": "12345",
+                "trip_date": "2025-01-27"
             }
         }
 
