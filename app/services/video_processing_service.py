@@ -5,10 +5,9 @@ This service handles the main business logic for processing uploaded videos.
 """
 
 import os
-import shutil
 import time
+import threading
 from typing import Dict, Any, List, Optional
-from pathlib import Path
 
 from ..utils.logger import get_logger
 from ..utils.config import get_settings
@@ -30,14 +29,28 @@ settings = get_settings()
 class VideoProcessingService:
     """
     Service for processing uploaded videos and detecting activities
-    
+
     Orchestrates the complete workflow:
     1. Save uploaded video to disk
     2. Run activity detection
     3. Save results to activities.json
     4. Return processing results
+
+    Implements thread-safe singleton pattern.
     """
-    
+
+    _instance: Optional['VideoProcessingService'] = None
+    _lock: threading.Lock = threading.Lock()
+    _initialized: bool = False
+
+    def __new__(cls, *args, **kwargs) -> 'VideoProcessingService':
+        """Thread-safe singleton implementation."""
+        if cls._instance is None:
+            with cls._lock:
+                if cls._instance is None:
+                    cls._instance = super().__new__(cls)
+        return cls._instance
+
     def __init__(
         self,
         activity_repository: Optional[ActivityRepository] = None,
@@ -45,23 +58,29 @@ class VideoProcessingService:
     ):
         """
         Initialize the video processing service
-        
+
         Args:
             activity_repository: Repository for activity persistence
             activity_detection_service: Service for activity detection
         """
+        # Skip re-initialization for singleton
+        if VideoProcessingService._initialized:
+            return
+
         self.activity_repository = activity_repository or ActivityRepository(
             output_dir=settings.output_dir
         )
         self.activity_detection_service = activity_detection_service or ActivityDetectionService()
-        
+
         # Ensure upload directory exists
         os.makedirs(settings.upload_dir, exist_ok=True)
-        
+
         logger.info(
-            f"🚀 Video processing service initialized - "
+            f"[OK] Video processing service initialized - "
             f"Output dir: {settings.output_dir}, Upload dir: {settings.upload_dir}"
         )
+
+        VideoProcessingService._initialized = True
     
     def validate_video_file(self, filename: str, file_size: int) -> tuple[bool, Optional[str]]:
         """
@@ -175,17 +194,17 @@ class VideoProcessingService:
 
         try:
             logger.info(
-                f"🎬 Starting video processing for trip {trip_id} - "
+                f"[START] Starting video processing for trip {trip_id} - "
                 f"Multiprocessing: {'enabled' if use_multiprocessing else 'disabled'}, "
                 f"Save clips: {save_clips}, Mock detection: {use_mock_detection}"
             )
 
             # Validate video file exists
             if not os.path.exists(video_path):
-                logger.error(f"❌ Video file not found: {video_path}")
+                logger.error(f"[ERROR] Video file not found: {video_path}")
                 raise FileNotFoundError(f"Video file not found: {video_path}")
 
-            logger.info(f"✅ Video file validated: {video_path}")
+            logger.info(f"[OK] Video file validated: {video_path}")
 
             # Fetch trip schedule for motion-based rule engine (if train info provided)
             trip_schedule = None
@@ -197,7 +216,7 @@ class VideoProcessingService:
 
             if train_number and trip_date and settings.train_motion_rules_enabled:
                 logger.info(
-                    f"[MOTION-RULES] ✅ All conditions met - fetching trip schedule "
+                    f"[MOTION-RULES] [OK] All conditions met - fetching trip schedule "
                     f"for train {train_number} on {trip_date}"
                 )
                 try:
@@ -234,13 +253,13 @@ class VideoProcessingService:
                                 logger.info(f"[MOTION-RULES]   ... and {len(trip_schedule.halts) - 3} more halts")
                         else:
                             logger.warning(
-                                f"[MOTION-RULES] ⚠️ Could not fetch trip schedule for train {train_number} "
+                                f"[MOTION-RULES] [WARN] Could not fetch trip schedule for train {train_number} "
                                 f"on {trip_date} - no_person_detected will be suppressed (cannot distinguish station halts)"
                             )
                     else:
-                        logger.warning("[MOTION-RULES] ⚠️ Trip data service not available - motion rules disabled")
+                        logger.warning("[MOTION-RULES] [WARN] Trip data service not available - motion rules disabled")
                 except Exception as e:
-                    logger.warning(f"[MOTION-RULES] ⚠️ Error fetching trip schedule: {e} - no_person_detected will be suppressed")
+                    logger.warning(f"[MOTION-RULES] [WARN] Error fetching trip schedule: {e} - no_person_detected will be suppressed")
             else:
                 missing = []
                 if not train_number:
@@ -250,17 +269,17 @@ class VideoProcessingService:
                 if not settings.train_motion_rules_enabled:
                     missing.append("rules_enabled=False")
                 logger.info(
-                    f"[MOTION-RULES] ❌ Skipping motion-based rules - missing: {', '.join(missing)}. "
+                    f"[MOTION-RULES] [SKIP] Skipping motion-based rules - missing: {', '.join(missing)}. "
                     f"All detected activities will be treated as violations."
                 )
 
             # Create run directory ONCE at the top level
             run_dir = self.activity_repository.create_run_directory(base_name=f"run")
-            logger.info(f"📁 Created run directory: {run_dir}")
+            logger.info(f"[OK] Created run directory: {run_dir}")
             
             # Run activity detection
             if use_mock_detection:
-                logger.info("🎭 Using mock activity detection")
+                logger.info("[MOCK] Using mock activity detection")
                 activities = self.activity_detection_service.detect_activities_mock(
                     video_path=video_path,
                     trip_id=trip_id,
@@ -271,7 +290,7 @@ class VideoProcessingService:
                 )
             else:
                 logger.info(
-                    f"🔍 Using real activity detection - "
+                    f"[DETECT] Using real activity detection - "
                     f"Multiprocessing: {'enabled' if use_multiprocessing else 'disabled'}"
                 )
                 
@@ -313,14 +332,14 @@ class VideoProcessingService:
                 activities=activities,
                 run_dir=run_dir
             )
-            logger.info(f"💾 Saved {len(activities)} activities to {activities_json_path}")
+            logger.info(f"[SAVE] Saved {len(activities)} activities to {activities_json_path}")
             
             # Post results to external API (non-blocking, errors don't fail the job)
             # Skip if called from process-and-upload endpoint (will be called later with S3 URLs)
             api_result = None
             if not skip_external_api:
                 try:
-                    logger.info(f"🌐 Attempting to post results to external API...")
+                    logger.info(f"[API] Attempting to post results to external API...")
                     external_api_service = get_external_api_service()
                     
                     # Extract run_id from run_dir for constructing job_id
@@ -337,16 +356,16 @@ class VideoProcessingService:
                     
                     if api_result.get("success"):
                         logger.info(
-                            f"✅ [external_api] Successfully posted {api_result.get('violations_count', 0)} "
+                            f"[OK] [external_api] Successfully posted {api_result.get('violations_count', 0)} "
                             f"violations to external API for trip {trip_id}"
                         )
                     else:
                         logger.warning(
-                            f"⚠️ [external_api] Failed to post to external API: {api_result.get('message')}"
+                            f"[WARN] [external_api] Failed to post to external API: {api_result.get('message')}"
                         )
                 except Exception as e:
                     logger.error(
-                        f"❌ [external_api] Exception while posting to external API: {e}",
+                        f"[ERROR] [external_api] Exception while posting to external API: {e}",
                         exc_info=True
                     )
                     api_result = {
@@ -355,7 +374,7 @@ class VideoProcessingService:
                         "posted": False
                     }
             else:
-                logger.info(f"⏭️ [external_api] Skipping external API call (will be called later with S3 URLs)")
+                logger.info(f"[SKIP] [external_api] Skipping external API call (will be called later with S3 URLs)")
                 api_result = {
                     "success": False,
                     "message": "Skipped - will be called later with S3 URLs",
@@ -369,7 +388,7 @@ class VideoProcessingService:
             summary = self.activity_repository.get_activity_summary(activities)
             
             logger.info(
-                f"✅ Video processing completed in {processing_time:.2f}s - "
+                f"[OK] Video processing completed in {processing_time:.2f}s - "
                 f"Found {len(activities)} activities for trip {trip_id}"
             )
             
@@ -398,7 +417,7 @@ class VideoProcessingService:
         except Exception as e:
             processing_time = time.time() - start_time
             logger.error(
-                f"❌ Video processing failed after {processing_time:.2f}s for trip {trip_id}: {e}",
+                f"[ERROR] Video processing failed after {processing_time:.2f}s for trip {trip_id}: {e}",
                 exc_info=True
             )
             raise
@@ -413,9 +432,9 @@ class VideoProcessingService:
         try:
             if os.path.exists(video_path):
                 os.remove(video_path)
-                logger.info(f"🗑️ Cleaned up uploaded video: {video_path}")
+                logger.info(f"[CLEANUP] Cleaned up uploaded video: {video_path}")
         except Exception as e:
-            logger.warning(f"⚠️ Failed to cleanup video {video_path}: {e}")
+            logger.warning(f"[WARN] Failed to cleanup video {video_path}: {e}")
     
     def get_processing_status(self, run_dir: str) -> Dict[str, Any]:
         """

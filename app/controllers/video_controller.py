@@ -6,10 +6,48 @@ Includes both synchronous and async job-based endpoints.
 """
 
 import asyncio
+import re
 from typing import Optional, Dict, Any
 import os
 
 from fastapi import APIRouter, UploadFile, File, Form, HTTPException, BackgroundTasks, Request, Response
+
+
+def sanitize_identifier(value: Optional[str], field_name: str, required: bool = True, max_length: int = 128) -> Optional[str]:
+    """
+    Sanitize identifier to prevent injection attacks.
+
+    Args:
+        value: The input value to sanitize
+        field_name: Name of the field (for error messages)
+        required: Whether the field is required
+        max_length: Maximum allowed length
+
+    Returns:
+        Sanitized string or None if not required and empty
+
+    Raises:
+        HTTPException: If validation fails
+    """
+    if value is None or not value.strip():
+        if required:
+            raise HTTPException(status_code=400, detail=f"{field_name} is required and cannot be empty")
+        return None
+
+    # Strip whitespace
+    sanitized = value.strip()
+
+    # Allow alphanumeric, underscores, hyphens, and dots (for filenames)
+    if not re.match(r'^[a-zA-Z0-9_\-\.]+$', sanitized):
+        raise HTTPException(
+            status_code=400,
+            detail=f"{field_name} contains invalid characters. Only alphanumeric, underscore, hyphen, and dot are allowed."
+        )
+
+    if len(sanitized) > max_length:
+        raise HTTPException(status_code=400, detail=f"{field_name} exceeds maximum length of {max_length} characters")
+
+    return sanitized
 from fastapi.responses import JSONResponse
 
 from ..models.video_models import (
@@ -131,16 +169,21 @@ async def process_video(
                 useMultiprocessing = body.get("useMultiprocessing", useMultiprocessing)
                 saveClips = body.get("saveClips", saveClips)
                 cameraAngle = body.get("cameraAngle", cameraAngle)
-                logger.info(f"📥 Received JSON request body for trip: {tripId}")
+                logger.info(f"[OK] Received JSON request body for trip: {tripId}")
             except Exception as e:
-                logger.warning(f"⚠️ Failed to parse JSON body: {e}")
+                logger.warning(f"[WARN] Failed to parse JSON body: {e}")
                 raise HTTPException(status_code=400, detail=f"Invalid JSON body: {str(e)}")
 
-        # Validate tripId
-        if not tripId or not tripId.strip():
-            raise HTTPException(status_code=400, detail="tripId is required and cannot be empty")
+        # Validate and sanitize tripId
+        tripId = sanitize_identifier(tripId, "tripId", required=True)
 
-        logger.info(f"📥 Received video processing request for trip: {tripId}, division: {division}, train: {trainNumber}, date: {tripDate}")
+        # Sanitize optional crew identifiers (if provided)
+        if lpCrewId:
+            lpCrewId = sanitize_identifier(lpCrewId, "lpCrewId", required=False, max_length=64)
+        if alpCrewId:
+            alpCrewId = sanitize_identifier(alpCrewId, "alpCrewId", required=False, max_length=64)
+
+        logger.info(f"[OK] Received video processing request for trip: {tripId}, division: {division}, train: {trainNumber}, date: {tripDate}")
 
         # Validate that either video OR videoUrl is provided (not both, not neither)
         has_video = video is not None and video.filename
@@ -152,7 +195,7 @@ async def process_video(
         )
 
         if not has_video and not has_url:
-            logger.warning(f"⚠️ Invalid request: Neither video file nor videoUrl provided")
+            logger.warning(f"[WARN] Invalid request: Neither video file nor videoUrl provided")
             raise HTTPException(
                 status_code=400,
                 detail="Either 'video' file or 'videoUrl' must be provided"
@@ -184,12 +227,12 @@ async def process_video(
         # Get video either from upload or MinIO URL
         if has_url:
             # Download video from MinIO
-            logger.info(f"📥 Downloading video from MinIO: {videoUrl}")
+            logger.info(f"[OK] Downloading video from MinIO: {videoUrl}")
             try:
                 minio_svc = get_minio_service()
                 # Check if the object exists before attempting download
                 if not minio_svc.check_object_exists(videoUrl):
-                    logger.error(f"❌ Video not found in MinIO: {videoUrl}")
+                    logger.error(f"[ERROR] Video not found in MinIO: {videoUrl}")
                     raise HTTPException(
                         status_code=404,
                         detail=f"Video not found in MinIO storage. Please verify the URL: {videoUrl}"
@@ -197,9 +240,9 @@ async def process_video(
                 video_path = minio_svc.download_video(videoUrl, tripId)
                 video_filename = os.path.basename(video_path)
                 file_size = os.path.getsize(video_path)
-                logger.info(f"📹 Downloaded video: {video_filename} ({file_size / (1024*1024):.2f} MB)")
+                logger.info(f"[OK] Downloaded video: {video_filename} ({file_size / (1024*1024):.2f} MB)")
             except Exception as e:
-                logger.error(f"❌ Failed to download video from MinIO: {e}")
+                logger.error(f"[ERROR] Failed to download video from MinIO: {e}")
                 raise HTTPException(
                     status_code=400,
                     detail=f"Failed to download video from MinIO: {str(e)}"
@@ -210,7 +253,7 @@ async def process_video(
             file_size = len(video_content)
             video_filename = video.filename
 
-            logger.info(f"📹 Uploaded video: {video_filename} ({file_size / (1024*1024):.2f} MB)")
+            logger.info(f"[OK] Uploaded video: {video_filename} ({file_size / (1024*1024):.2f} MB)")
 
             # Validate video file
             is_valid, error_message = video_processing_service.validate_video_file(
@@ -219,7 +262,7 @@ async def process_video(
             )
 
             if not is_valid:
-                logger.warning(f"⚠️ Video validation failed: {error_message}")
+                logger.warning(f"[WARN] Video validation failed: {error_message}")
                 raise HTTPException(status_code=400, detail=error_message)
 
             # Save uploaded video
@@ -234,7 +277,7 @@ async def process_video(
         use_mp = useMultiprocessing if useMultiprocessing is not None else settings.enable_multiprocessing
         
         logger.info(
-            f"🎮 Processing configuration - "
+            f"[CONFIG] Processing configuration - "
             f"Multiprocessing: {use_mp}, SaveClips: {saveClips}, Mock: {useMockDetection}"
         )
         
@@ -291,7 +334,7 @@ async def process_video(
         result.pop('activities', None)
 
         logger.info(
-            f"✅ Successfully processed video for trip {tripId} - "
+            f"[OK] Successfully processed video for trip {tripId} - "
             f"Violations: {result.get('activitiesCount', 0)}, "
             f"Time: {result.get('processingTime', 0):.2f}s"
         )
@@ -303,7 +346,7 @@ async def process_video(
         raise
         
     except Exception as e:
-        logger.error(f"❌ Video processing failed for trip {tripId}: {e}", exc_info=True)
+        logger.error(f"[ERROR] Video processing failed for trip {tripId}: {e}", exc_info=True)
         
         # Cleanup on error
         if video_path:
@@ -500,16 +543,18 @@ async def process_and_upload_video(
     the complete workflow in one request.
     """
     video_path = None
-    
+
     try:
-        logger.info(f"📥 Process and upload request for trip: {tripId}, train: {trainNumber}, date: {tripDate}")
-        
-        # Validate tripId
-        if not tripId or not tripId.strip():
-            raise HTTPException(
-                status_code=400,
-                detail="tripId is required and cannot be empty"
-            )
+        logger.info(f"[OK] Process and upload request for trip: {tripId}, train: {trainNumber}, date: {tripDate}")
+
+        # Validate and sanitize tripId
+        tripId = sanitize_identifier(tripId, "tripId", required=True)
+
+        # Sanitize optional crew identifiers (if provided)
+        if lpCrewId:
+            lpCrewId = sanitize_identifier(lpCrewId, "lpCrewId", required=False, max_length=64)
+        if alpCrewId:
+            alpCrewId = sanitize_identifier(alpCrewId, "alpCrewId", required=False, max_length=64)
         
         # Build crew members dictionary
         crew_members = {}
@@ -553,14 +598,14 @@ async def process_and_upload_video(
             tripId
         )
         
-        logger.info(f"✅ Video saved: {video_path}")
+        logger.info(f"[OK] Video saved: {video_path}")
         
         # Determine multiprocessing setting
         use_mp = useMultiprocessing if useMultiprocessing is not None else settings.enable_multiprocessing
-        
+
         # Process video (activity detection)
         logger.info(
-            f"🎬 Starting video processing for trip: {tripId} - "
+            f"[START] Starting video processing for trip: {tripId} - "
             f"Multiprocessing: {use_mp}, Mock: {useMockDetection}, SaveClips: {saveClips}"
         )
         
@@ -581,7 +626,7 @@ async def process_and_upload_video(
         )
         
         logger.info(
-            f"✅ Processing complete - "
+            f"[OK] Processing complete - "
             f"Run: {result.get('runId', result.get('run_id', 'N/A'))}, "
             f"Activities: {result.get('activitiesCount', result.get('activities_count', 0))}, "
             f"Clips: {len(result.get('clipFiles', result.get('clip_files', [])))}"
@@ -596,7 +641,7 @@ async def process_and_upload_video(
         s3_file_mapping = {}  # Map local paths to S3 URLs
         
         if clip_files:
-            logger.info(f"☁️ Uploading {len(clip_files)} evidence files (clips + images) to S3")
+            logger.info(f"[UPLOAD] Uploading {len(clip_files)} evidence files (clips + images) to S3")
             
             # Collect all files to upload (clips + their corresponding images)
             all_files_to_upload = []
@@ -608,7 +653,7 @@ async def process_and_upload_video(
                 if os.path.exists(image_file):
                     all_files_to_upload.append(image_file)
             
-            logger.info(f"☁️ Total files to upload: {len(all_files_to_upload)} (clips + images)")
+            logger.info(f"[UPLOAD] Total files to upload: {len(all_files_to_upload)} (clips + images)")
             
             # Upload all files
             clips_success, file_urls, clip_errors = s3_upload_service.upload_multiple_files(
@@ -627,10 +672,10 @@ async def process_and_upload_video(
             if not clips_success:
                 logger.warning(f"Some files failed to upload: {clip_errors}")
             
-            logger.info(f"✅ Uploaded {len(file_urls)}/{len(all_files_to_upload)} files to S3")
+            logger.info(f"[OK] Uploaded {len(file_urls)}/{len(all_files_to_upload)} files to S3")
         
         # Step 3 (continued): Update activities.json with S3 URLs
-        logger.info("📝 Updating activities.json with S3 URLs")
+        logger.info("[UPDATE] Updating activities.json with S3 URLs")
         
         # Extract values from result dictionary
         run_dir = result.get('run_dir', result.get('runDir', ''))
@@ -651,7 +696,7 @@ async def process_and_upload_video(
                     with open(activities_json_path, 'r', encoding='utf-8') as f:
                         activities = json.load(f)
                     
-                    logger.info(f"📖 Loaded {len(activities)} activities from {activities_json_path}")
+                    logger.info(f"[OK] Loaded {len(activities)} activities from {activities_json_path}")
                     
                     # Update each activity with S3 URLs
                     updated_activities = []
@@ -679,23 +724,23 @@ async def process_and_upload_video(
                     # Update activities for response
                     activities = updated_activities
                     
-                    logger.info(f"✅ Updated {len(updated_activities)} activities with S3 URLs")
+                    logger.info(f"[OK] Updated {len(updated_activities)} activities with S3 URLs")
                 except Exception as e:
-                    logger.error(f"❌ Failed to update activities.json: {e}", exc_info=True)
+                    logger.error(f"[ERROR] Failed to update activities.json: {e}", exc_info=True)
             else:
-                logger.warning(f"⚠️ Activities JSON file not found: {activities_json_path}")
+                logger.warning(f"[WARN] Activities JSON file not found: {activities_json_path}")
         else:
-            logger.warning(f"⚠️ Run directory not found: {run_dir}")
+            logger.warning(f"[WARN] Run directory not found: {run_dir}")
         
         # Step 4: Post results to external API with evidence clip S3 URLs
         # Note: We don't upload original video, so video_s3_url is None
         # The external API will use evidence clip URLs from activities
         external_api_result = None
-        logger.info(f"🔍 Checking conditions for external API call: activities={len(activities) if activities else 0}")
+        logger.info(f"[CHECK] Checking conditions for external API call: activities={len(activities) if activities else 0}")
         
         if activities:
             try:
-                logger.info(f"🌐 Posting results to external API with S3 URLs for trip: {tripId}")
+                logger.info(f"[API] Posting results to external API with S3 URLs for trip: {tripId}")
                 external_api_service = get_external_api_service()
                 
                 external_api_result = external_api_service.post_cvvr_results(
@@ -708,15 +753,15 @@ async def process_and_upload_video(
                 
                 if external_api_result.get("success"):
                     logger.info(
-                        f"✅ [external_api] Posted {external_api_result.get('violations_count', 0)} "
+                        f"[OK] [external_api] Posted {external_api_result.get('violations_count', 0)} "
                         f"violations with S3 URLs to external API for trip {tripId}"
                     )
                 else:
                     logger.warning(
-                        f"⚠️ [external_api] Failed to post to external API: {external_api_result.get('message')}"
+                        f"[WARN] [external_api] Failed to post to external API: {external_api_result.get('message')}"
                     )
             except Exception as e:
-                logger.error(f"❌ [external_api] Exception while posting to external API: {e}", exc_info=True)
+                logger.error(f"[ERROR] [external_api] Exception while posting to external API: {e}", exc_info=True)
                 external_api_result = {
                     "success": False,
                     "message": f"Exception: {str(e)}",
@@ -743,7 +788,7 @@ async def process_and_upload_video(
             }
         }
         
-        logger.info(f"✅ Complete workflow finished for trip: {tripId}")
+        logger.info(f"[OK] Complete workflow finished for trip: {tripId}")
         
         return JSONResponse(content=response_data)
         

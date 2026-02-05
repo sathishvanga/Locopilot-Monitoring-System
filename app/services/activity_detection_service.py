@@ -104,19 +104,23 @@ class ActivityDetectionService:
         """
         import os
         import cv2
-        
+
         logger.info(f"Running mock activity detection for {video_path}")
-        
-        # Get video metadata
-        cap = cv2.VideoCapture(video_path)
-        if not cap.isOpened():
-            logger.error(f"Failed to open video: {video_path}")
-            return []
-        
-        fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
-        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-        video_duration_seconds = total_frames / fps
-        cap.release()
+
+        # Get video metadata with proper resource cleanup
+        cap = None
+        try:
+            cap = cv2.VideoCapture(video_path)
+            if not cap.isOpened():
+                logger.error(f"Failed to open video: {video_path}")
+                return []
+
+            fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
+            total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+            video_duration_seconds = total_frames / fps
+        finally:
+            if cap is not None:
+                cap.release()
         
         video_duration_formatted = str(timedelta(seconds=int(video_duration_seconds)))
         video_filename = os.path.basename(video_path)

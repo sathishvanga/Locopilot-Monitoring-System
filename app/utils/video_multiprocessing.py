@@ -25,7 +25,10 @@ from .config import get_settings
 
 
 logger = get_logger(__name__)
-settings = get_settings()
+
+# NOTE: Settings are accessed lazily via get_settings() within functions
+# to prevent caching before environment variables are fully loaded.
+# Do not use a module-level settings variable.
 
 
 class NumpyEncoder(json.JSONEncoder):
@@ -187,19 +190,21 @@ def worker_initializer(config: MultiprocessingConfig):
             preprocessing_service = None
             try:
                 from app.services.image_preprocessing_service import ImagePreprocessingService
+                # Get settings lazily within worker process
+                worker_settings = get_settings()
                 preprocessing_config = {
-                    'enable_image_preprocessing': settings.enable_image_preprocessing,
-                    'use_clahe': settings.use_clahe,
-                    'use_gamma_correction': settings.use_gamma_correction,
-                    'use_unsharp_masking': settings.use_unsharp_masking,
-                    'use_noise_reduction': settings.use_noise_reduction,
-                    'adaptive_preprocessing': settings.adaptive_preprocessing,
-                    'clahe_clip_limit': settings.clahe_clip_limit,
-                    'clahe_tile_grid_size': settings.clahe_tile_grid_size,
-                    'gamma_value': settings.gamma_value,
-                    'unsharp_strength': settings.unsharp_strength,
-                    'unsharp_radius': settings.unsharp_radius,
-                    'noise_reduction_kernel': settings.noise_reduction_kernel
+                    'enable_image_preprocessing': worker_settings.enable_image_preprocessing,
+                    'use_clahe': worker_settings.use_clahe,
+                    'use_gamma_correction': worker_settings.use_gamma_correction,
+                    'use_unsharp_masking': worker_settings.use_unsharp_masking,
+                    'use_noise_reduction': worker_settings.use_noise_reduction,
+                    'adaptive_preprocessing': worker_settings.adaptive_preprocessing,
+                    'clahe_clip_limit': worker_settings.clahe_clip_limit,
+                    'clahe_tile_grid_size': worker_settings.clahe_tile_grid_size,
+                    'gamma_value': worker_settings.gamma_value,
+                    'unsharp_strength': worker_settings.unsharp_strength,
+                    'unsharp_radius': worker_settings.unsharp_radius,
+                    'noise_reduction_kernel': worker_settings.noise_reduction_kernel
                 }
                 preprocessing_service = ImagePreprocessingService(config=preprocessing_config)
                 logger.info(f"Worker {os.getpid()} preprocessing service initialized")
@@ -407,7 +412,9 @@ def process_frame_range(
         # Determine whether annotated frames should be persisted
         # Clips and images are ALWAYS saved (for UI evidence)
         # Frames are only saved when save_clips=True AND save_annotated_frames config is True
-        save_frames = save_clips and settings.save_annotated_frames
+        # Get settings lazily within worker process
+        worker_settings = get_settings()
+        save_frames = save_clips and worker_settings.save_annotated_frames
 
         # ✅ PERFORMANCE: Use pre-loaded models if available (significantly faster)
         preloaded = _worker_models if _worker_models is not None else None
@@ -422,7 +429,7 @@ def process_frame_range(
                 video_path=video_path,
                 output_dir=output_dir,
                 save_annotated_frames=save_frames,  # Only save frames when explicitly requested
-                frame_save_interval=settings.frame_save_interval,
+                frame_save_interval=worker_settings.frame_save_interval,
                 sample_fps=sample_fps,
                 run_dir=run_dir,  # Use shared run directory
                 create_run_dir=False,  # Don't create new directory

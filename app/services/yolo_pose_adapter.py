@@ -16,7 +16,6 @@ YOLO-Pose provides 17 keypoints (COCO format):
 
 import logging
 import os
-from logging.handlers import TimedRotatingFileHandler
 
 from ultralytics import YOLO
 import numpy as np
