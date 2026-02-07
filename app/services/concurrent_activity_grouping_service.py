@@ -346,7 +346,7 @@ class ConcurrentActivityGroupingService:
             if os.path.exists(concat_list_path):
                 try:
                     os.remove(concat_list_path)
-                except:
+                except OSError:
                     pass
 
     def _merge_group_to_combined(

@@ -7,6 +7,7 @@ from app.core.models.yolo_handler import (
     YOLO_BODY_INDICES,
     YOLO_MIN_KEYPOINTS,
 )
+from app.core.models.model_loader import ModelLoader
 
 __all__ = [
     'YOLOHandler',
@@ -14,4 +15,5 @@ __all__ = [
     'YOLO_HEAD_INDICES',
     'YOLO_BODY_INDICES',
     'YOLO_MIN_KEYPOINTS',
+    'ModelLoader',
 ]

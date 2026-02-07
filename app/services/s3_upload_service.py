@@ -133,7 +133,7 @@ class S3UploadService:
                 error_data = e.response.json()
                 if isinstance(error_data, dict) and "mssg" in error_data:
                     error_msg = error_data.get("mssg", error_msg)
-            except:
+            except (ValueError, KeyError):
                 pass
             return False, None, error_msg
             

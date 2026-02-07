@@ -67,14 +67,15 @@ class MindDiversionDetector:
         wrist_distance_threshold: Max wrist distance for writing pose detection (pixels)
     """
 
-    def __init__(self, settings: Optional[Any] = None) -> None:
+    def __init__(self, settings: Optional[Any] = None, logger: Optional[logging.Logger] = None) -> None:
         """Initialize the mind diversion detector.
 
         Args:
             settings: Optional settings object with threshold configurations.
                      If None, default values are used.
+            logger: Optional logger instance. If None, creates a file-only logger.
         """
-        self.logger = _setup_module_logger('MindDiversionDetector')
+        self.logger = logger or _setup_module_logger('MindDiversionDetector')
         self.settings = settings
 
         # Yaw/Pitch thresholds (from settings or defaults)

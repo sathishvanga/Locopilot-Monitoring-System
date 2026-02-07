@@ -21,7 +21,9 @@ import subprocess
 # ---------------------------------------------------------------------------
 from app.core.utils.geometry import calculate_iou, bbox_overlap_with_margin, deduplicate_person_boxes
 from app.core.models.yolo_handler import YOLOHandler, YOLO_KEYPOINT_INDICES
-from app.core.detectors import SleepDetector, ActivityDetector, GestureDetector, MindDiversionDetector
+from app.core.detectors import SleepDetector, ActivityDetector, GestureDetector, MindDiversionDetector, ObjectDetector
+from app.core.tracking import PersonTracker
+from app.core.visualization import FrameAnnotator
 from app.core.activity_tracker import ActivityTracker, ActivityConfig as ExtractedActivityConfig
 from app.core.evidence_manager import EvidenceManager
 
@@ -548,6 +550,21 @@ class LocopilotActivityMonitor:
         # Track if models were pre-loaded (don't close them in cleanup)
         self._models_preloaded = preloaded_models is not None
 
+        # Initialize ObjectDetector (extracted module for YOLO-based object detection)
+        self.object_detector = ObjectDetector(
+            yolo_model=self.yolo_model,
+            settings=self.settings,
+            preprocessing_service=self.preprocessing_service,
+            get_keypoint_func=self.get_keypoint,
+            logger=self.logger,
+            yolo_imgsz=self.yolo_imgsz,
+            yolo_device=self.yolo_device,
+            cell_phone_confidence=self.cell_phone_confidence
+        )
+
+        # Initialize FrameAnnotator (extracted module for frame visualization)
+        self.frame_annotator = FrameAnnotator(logger=self.logger)
+
         # CR-004: Build the 4 parallel tracking dicts from ACTIVITY_REGISTRY
         # This ensures all activity names stay in sync across dicts.
 
@@ -703,6 +720,12 @@ class LocopilotActivityMonitor:
         # Camera angle for LP/ALP role assignment (1 = LP Side, 2 = ALP Side)
         self.camera_angle = 1  # Default to LP side
 
+        # Initialize PersonTracker (extracted module for person role tracking)
+        self.person_tracker = PersonTracker(
+            camera_angle=self.camera_angle,
+            logger=self.logger
+        )
+
         # Crew members mapping: role (LP/ALP) -> {name, id, role}
         self.crew_members = {}  # Will be populated from API input
 
@@ -812,7 +835,8 @@ class LocopilotActivityMonitor:
         )
 
         self.mind_diversion_detector = MindDiversionDetector(
-            settings=self.settings
+            settings=self.settings,
+            logger=self.logger
         )
 
         # Evidence manager for clip/report generation (only if run_dir is set)
@@ -1134,46 +1158,9 @@ class LocopilotActivityMonitor:
             
             self.logger.debug(f"[Frame Sampling] Completed sampling, total samples: {sampled_idx}")
         
-    def calculate_head_tilt_angle(self, landmarks: Any) -> Optional[float]:
-        """Calculate head tilt angle from pose landmarks - delegates to SleepDetector."""
-        return self.sleep_detector.calculate_head_tilt_angle(landmarks)
+    # Sleep detection methods now accessed via self.sleep_detector directly
 
-    def calculate_movement_score(self, current_landmarks: Any, previous_landmarks: Any) -> float:
-        """Calculate movement score between two sets of pose landmarks - delegates to SleepDetector."""
-        return self.sleep_detector.calculate_movement_score(current_landmarks, previous_landmarks)
-
-    # NOTE: _get_per_person_sleep_tracking, _update_sleep_state_machine, _get_ir_forward_lean_tracking,
-    # and _calculate_body_movement are now handled by SleepDetector
-
-    def detect_ir_forward_lean_sleep(self, landmarks: Any, bbox: List[int], timestamp_sec: float, person_idx: int, frame_shape: Tuple[int, ...]) -> Tuple[bool, bool, Dict[str, Any]]:
-        """Detect IR forward lean sleep - delegates to SleepDetector."""
-        return self.sleep_detector.detect_ir_forward_lean_sleep(
-            landmarks, bbox, timestamp_sec, person_idx, frame_shape
-        )
-
-    def detect_eye_closure_haar(self, frame, pose_landmarks, person_idx, bbox, timestamp_sec) -> Dict:
-        """Detect eye closure using Haar cascade - delegates to SleepDetector."""
-        return self.sleep_detector.detect_eye_closure_haar(
-            frame, pose_landmarks, person_idx, bbox, timestamp_sec
-        )
-
-    def detect_pose_based_sleep(self, pose_landmarks: Any, timestamp_sec: float, person_idx: int = 0, frame_shape: Optional[Tuple[int, ...]] = None, haar_result: Optional[Dict[str, Any]] = None) -> Tuple[bool, bool, Dict[str, Any]]:
-        """Detect sleep based on pose analysis - delegates to SleepDetector."""
-        return self.sleep_detector.detect_pose_based_sleep(
-            pose_landmarks, timestamp_sec, person_idx, frame_shape, haar_result
-        )
-
-    def calculate_wrist_distance(self, pose_landmarks: Any, frame_shape: Tuple[int, ...]) -> Tuple[Optional[float], Optional[str]]:
-        """Calculate Euclidean distance between left and right wrists - delegates to ActivityDetector."""
-        return self.activity_detector.calculate_wrist_distance(pose_landmarks, frame_shape)
-
-    def detect_writing_posture(self, pose_landmarks: Any, frame_shape: Tuple[int, ...]) -> bool:
-        """Detect writing posture based on hand position - delegates to ActivityDetector."""
-        return self.activity_detector.detect_writing_posture(pose_landmarks, frame_shape)
-
-    def detect_head_looking_down(self, pose_landmarks: Any) -> bool:
-        """Check if head is tilted down (looking at lap area) - delegates to ActivityDetector."""
-        return self.activity_detector.detect_head_looking_down(pose_landmarks)
+    # Activity detection methods now accessed via self.activity_detector directly
 
     def check_hands_below_shoulders(self, pose_landmarks: Any) -> bool:
         """Check if both hands are below shoulder level.
@@ -1224,7 +1211,7 @@ class LocopilotActivityMonitor:
             bool: True if writing detected by pose-based heuristic, False otherwise
         """
         # Calculate distance between wrists (with elbow fallback)
-        distance_result = self.calculate_wrist_distance(pose_landmarks, frame_shape)
+        distance_result = self.activity_detector.calculate_wrist_distance(pose_landmarks, frame_shape)
 
         # Handle tuple return (distance, source)
         if isinstance(distance_result, tuple):
@@ -1264,7 +1251,7 @@ class LocopilotActivityMonitor:
         # Check if distance is within threshold
         if distance <= max_distance:
             # NEW: Check if head is looking down (required for writing posture)
-            head_looking_down = self.detect_head_looking_down(pose_landmarks)
+            head_looking_down = self.activity_detector.detect_head_looking_down(pose_landmarks)
 
             # DEBUG: Log head state
             self.logger.debug(f"Person {person_idx}: Head looking down = {head_looking_down} (source={source})")
@@ -1371,7 +1358,7 @@ class LocopilotActivityMonitor:
             return False
 
         # Check head posture (must be looking down toward book)
-        head_looking_down = self.detect_head_looking_down(pose_landmarks)
+        head_looking_down = self.activity_detector.detect_head_looking_down(pose_landmarks)
 
         if not head_looking_down:
             if person_tracking['start_time'] is not None:
@@ -1409,683 +1396,7 @@ class LocopilotActivityMonitor:
 
         return False
 
-    def get_roi_around_keypoint(self, keypoint_coords: Any, frame_shape: Tuple[int, ...], roi_size: int = 150) -> Optional[Tuple[int, int, int, int]]:
-        """Create Region of Interest (ROI) box around a keypoint.
-        
-        Args:
-            keypoint_coords: (x, y) coordinates of keypoint
-            frame_shape: (height, width) of frame
-            roi_size: Size of ROI box in pixels (default 150x150)
-            
-        Returns:
-            (x1, y1, x2, y2) ROI bounding box, or None if invalid
-        """
-        if keypoint_coords is None:
-            return None
-        
-        h, w = frame_shape[:2]
-        x, y = keypoint_coords
-        
-        # Create square ROI centered on keypoint
-        half_size = roi_size // 2
-        x1 = max(0, x - half_size)
-        y1 = max(0, y - half_size)
-        x2 = min(w, x + half_size)
-        y2 = min(h, y + half_size)
-        
-        # Ensure minimum ROI size
-        if (x2 - x1) < 50 or (y2 - y1) < 50:
-            return None
-        
-        return (int(x1), int(y1), int(x2), int(y2))
-    
-    def detect_objects_in_roi(self, frame: Any, roi_bbox: Tuple[int, int, int, int], target_classes: List[str] = ['cell phone', 'book', 'pen', 'pencil']) -> List[Dict[str, Any]]:
-        """Run YOLO detection on a specific ROI region.
-        
-        Args:
-            frame: Full frame
-            roi_bbox: (x1, y1, x2, y2) ROI bounding box
-            target_classes: List of class names to detect in ROI
-            
-        Returns:
-            List of detections with global coordinates: [(class_name, conf, x1, y1, x2, y2), ...]
-        """
-        if roi_bbox is None:
-            return []
-        
-        x1, y1, x2, y2 = roi_bbox
-        roi_frame = frame[y1:y2, x1:x2]
-        
-        # Run YOLO on ROI with strict confidence threshold to minimize false positives
-        # Increased from 0.01 → 0.15 → 0.25 → 0.38 → 0.45 (configurable)
-        results = self.yolo_model(roi_frame, verbose=False, conf=self.cell_phone_confidence,
-                                  imgsz=self.yolo_imgsz, device=self.yolo_device)
-        
-        detections = []
-        debug_all_detections = []  # Track all detections for debugging
-        
-        for r in results:
-            boxes = r.boxes
-            for box in boxes:
-                cls = int(box.cls[0])
-                conf = float(box.conf[0])
-                xyxy_local = box.xyxy[0].cpu().numpy()
-                
-                class_name = self.yolo_model.names[cls]
-                debug_all_detections.append((class_name, conf))
-                
-                # Check if this is a target class
-                if class_name in target_classes:
-                    # Convert local ROI coordinates to global frame coordinates
-                    global_x1 = xyxy_local[0] + x1
-                    global_y1 = xyxy_local[1] + y1
-                    global_x2 = xyxy_local[2] + x1
-                    global_y2 = xyxy_local[3] + y1
-
-                    # Validate aspect ratio before adding detection
-                    bbox_for_validation = (global_x1, global_y1, global_x2, global_y2)
-                    if self.validate_object_aspect_ratio(bbox_for_validation, class_name):
-                        detections.append((class_name, conf, global_x1, global_y1, global_x2, global_y2))
-        
-        # DEBUG LOGGING: Log what YOLO detected (especially for cell phone debugging)
-        
-        if 'cell phone' in target_classes:
-            if len(debug_all_detections) > 0:
-                cell_phones = [d for d in debug_all_detections if d[0] == 'cell phone']
-                if cell_phones:
-                    self.logger.info(f"[DEBUG ROI] [OK] Found {len(cell_phones)} cell phone(s): {cell_phones}")
-                else:
-                    # Log what was detected instead of phone (top 5 by confidence)
-                    top_detections = sorted(debug_all_detections, key=lambda x: -x[1])[:5]
-                    self.logger.info(f"[DEBUG ROI] [FAIL] No phone, but YOLO found {len(debug_all_detections)} objects: {top_detections}")
-            else:
-                # YOLO detected absolutely nothing in this ROI
-                self.logger.info(f"[DEBUG ROI] [WARN] YOLO detected NOTHING in this ROI (empty detection)")
-        
-        return detections
-
-    def detect_objects_in_rois_batch(self, frame: Any, roi_bboxes: List[Tuple[int, int, int, int]], roi_names: List[str], target_classes: List[str] = ['cell phone', 'book', 'pen', 'pencil']) -> List[List[Dict[str, Any]]]:
-        """Run YOLO detection on multiple ROI regions in a single batched call.
-
-        PERFORMANCE OPTIMIZATION: This method processes all ROIs in a single YOLO
-        inference call instead of N sequential calls, achieving ~4x speedup for
-        ROI processing (1200ms → 300ms for 8 ROIs per person).
-
-        Args:
-            frame: Full frame
-            roi_bboxes: List of (x1, y1, x2, y2) ROI bounding boxes
-            roi_names: List of ROI names corresponding to each bbox (for debugging)
-            target_classes: List of class names to detect in ROIs
-
-        Returns:
-            List of lists: [[detections for ROI 1], [detections for ROI 2], ...]
-            Each detection: (class_name, conf, x1, y1, x2, y2) with global coordinates
-        """
-        if not roi_bboxes or len(roi_bboxes) == 0:
-            return [[] for _ in range(len(roi_names))]
-
-        # Step 1: Extract all ROI crops
-        roi_frames = []
-        valid_indices = []
-
-        for idx, roi_bbox in enumerate(roi_bboxes):
-            if roi_bbox is None:
-                continue
-
-            x1, y1, x2, y2 = roi_bbox
-            roi_frame = frame[y1:y2, x1:x2]
-
-            # Validate ROI dimensions
-            if roi_frame.size == 0:
-                continue
-
-            roi_frames.append(roi_frame)
-            valid_indices.append(idx)
-
-        # Initialize results for all ROIs (including invalid ones)
-        all_detections = [[] for _ in range(len(roi_bboxes))]
-
-        if len(roi_frames) == 0:
-            return all_detections
-
-        # Step 2: Batch YOLO inference on all ROI crops
-        # This is the KEY optimization: 1 call instead of N calls
-        batch_results = self.yolo_model(roi_frames, verbose=False, conf=self.cell_phone_confidence,
-                                         imgsz=self.yolo_imgsz, device=self.yolo_device)
-
-        # Step 3: Process batch results and translate to global coordinates
-        for batch_idx, (results_idx, roi_bbox_idx) in enumerate(zip(range(len(batch_results)), valid_indices)):
-            roi_bbox = roi_bboxes[roi_bbox_idx]
-            x1, y1, x2, y2 = roi_bbox
-
-            detections = []
-            debug_all_detections = []
-
-            results = batch_results[batch_idx]
-            boxes = results.boxes
-
-            for box in boxes:
-                cls = int(box.cls[0])
-                conf = float(box.conf[0])
-                xyxy_local = box.xyxy[0].cpu().numpy()
-
-                class_name = self.yolo_model.names[cls]
-                debug_all_detections.append((class_name, conf))
-
-                # Check if this is a target class
-                if class_name in target_classes:
-                    # Convert local ROI coordinates to global frame coordinates
-                    global_x1 = xyxy_local[0] + x1
-                    global_y1 = xyxy_local[1] + y1
-                    global_x2 = xyxy_local[2] + x1
-                    global_y2 = xyxy_local[3] + y1
-
-                    # Validate aspect ratio before adding detection
-                    bbox_for_validation = (global_x1, global_y1, global_x2, global_y2)
-                    if self.validate_object_aspect_ratio(bbox_for_validation, class_name):
-                        detections.append((class_name, conf, global_x1, global_y1, global_x2, global_y2))
-
-            # DEBUG LOGGING (same as original method)
-
-            if 'cell phone' in target_classes:
-                roi_name = roi_names[roi_bbox_idx]
-                if len(debug_all_detections) > 0:
-                    cell_phones = [d for d in debug_all_detections if d[0] == 'cell phone']
-                    if cell_phones:
-                        self.logger.info(f"[DEBUG ROI BATCH] {roi_name}: [OK] Found {len(cell_phones)} cell phone(s): {cell_phones}")
-                    else:
-                        top_detections = sorted(debug_all_detections, key=lambda x: -x[1])[:5]
-                        self.logger.info(f"[DEBUG ROI BATCH] {roi_name}: [FAIL] No phone, found {len(debug_all_detections)} objects: {top_detections}")
-                else:
-                    self.logger.info(f"[DEBUG ROI BATCH] {roi_name}: [WARN] YOLO detected NOTHING")
-
-            all_detections[roi_bbox_idx] = detections
-
-        return all_detections
-
-    def validate_object_aspect_ratio(self, bbox: List[int], object_class: str) -> bool:
-        """
-        Validate detected object based on aspect ratio to filter false positives.
-
-        Args:
-            bbox: Bounding box [x1, y1, x2, y2]
-            object_class: Class name ('cell phone', 'book', etc.)
-
-        Returns:
-            bool: True if aspect ratio is valid for the object class
-        """
-        x1, y1, x2, y2 = bbox
-        width = x2 - x1
-        height = y2 - y1
-
-        if height == 0 or width == 0:
-            return False
-
-        aspect_ratio = width / height
-
-        aspect_ratio_rules = {
-            'cell phone': {
-                'min_ratio': 0.4,   # Portrait: ~0.45 (9:20) - tightened from 0.3
-                'max_ratio': 2.0,   # Landscape: ~1.78 (16:9)
-                'min_size': 30      # Minimum dimension (pixels)
-            },
-            'book': {
-                'min_ratio': 0.5,   # Tall book: ~0.7 (A4 portrait)
-                'max_ratio': 2.5,   # Wide book: ~1.4 (A4 landscape)
-                'min_size': 40
-            }
-        }
-
-        if object_class not in aspect_ratio_rules:
-            return True  # No validation for other objects
-
-        rules = aspect_ratio_rules[object_class]
-
-        # Check aspect ratio bounds
-        if aspect_ratio < rules['min_ratio'] or aspect_ratio > rules['max_ratio']:
-            return False
-
-        # Check minimum size
-        if min(width, height) < rules['min_size']:
-            return False
-
-        return True
-
-    def detect_objects(self, frame: Any, pose_landmarks: Any = None, use_pose_guided: bool = True) -> Dict[str, List[Any]]:
-        """Detect objects using YOLO with pose-guided detection.
-        
-        MULTI-LAYERED DETECTION FLOW:
-        1. Full frame detection for:
-           - Person (for counting)
-           - Backpack (for packing detection)
-           - Book (low confidence, only if near person with aspect ratio validation)
-        2. ROI-based detection around landmarks for activity objects:
-           - Hands (wrists, index) - 180px radius (OPTIMIZED for YOLOv8m)
-           - Lap/Torso (hips) - 180px radius (OPTIMIZED for YOLOv8m)
-           - Ears, mouth - 180px radius (for phone/eating detection)
-        3. Aspect ratio validation filters false positives (phones, books)
-        4. This provides comprehensive detection while minimizing false positives
-        
-        Args:
-            frame: Input frame
-            pose_landmarks: MediaPipe pose landmarks (optional)
-            use_pose_guided: Enable pose-guided ROI detection (default True)
-            
-        Returns:
-            Dictionary with detections and ROI information
-        """
-        # Stage 1: Full frame detection for person, backpack, and books near person
-        results = self.yolo_model(frame, verbose=False, imgsz=self.yolo_imgsz, device=self.yolo_device)
-
-        # Phase 3: Cache results for potential reuse (avoid redundant inference)
-        # Store results with timestamp for cache validation (100ms TTL)
-        self._cached_frame_objects = results
-        self._cached_frame_time = time_module.time()
-
-        detections = {
-            'person': [],
-            'cell_phone': [],
-            'book': [],
-            'backpack': [],
-            'cup_bottle': [],  # Cup/bottle detections for eating/drinking detection
-            'roi_detections': [],  # ROI-based detections (main activity detection)
-            'roi_boxes': []  # ROI boxes for visualization
-        }
-        
-        # Store person boxes for proximity checking
-        person_boxes = []
-        
-        for r in results:
-            boxes = r.boxes
-            for box in boxes:
-                cls = int(box.cls[0])
-                conf = float(box.conf[0])
-                xyxy = box.xyxy[0].cpu().numpy()
-                
-                class_name = self.yolo_model.names[cls]
-                # Detect person and bag types (backpack, handbag, suitcase) from full frame
-                if class_name == 'person' and conf > self.YOLO_PERSON_CONFIDENCE:
-                    detections['person'].append(xyxy)
-                    person_boxes.append(xyxy)
-                elif class_name in ['backpack', 'handbag', 'suitcase']:
-                    # Log all bag detections for debugging
-                    if conf > self.YOLO_BAG_LOG_CONFIDENCE:
-                        self.logger.debug(f"BAG DETECTED: {class_name} conf={conf:.2f} bbox={xyxy}")
-                    if conf > self.YOLO_BAG_CONFIDENCE:  # LOWERED from 0.75 to catch more bags (aspect ratio filter handles false positives)
-                        # Validate aspect ratio and size to filter out seats/equipment
-                        bag_width = xyxy[2] - xyxy[0]
-                        bag_height = xyxy[3] - xyxy[1]
-                        aspect_ratio = bag_width / bag_height if bag_height > 0 else 999
-                        bag_area = bag_width * bag_height
-
-                        # Filter: backpacks are typically taller than wide (aspect ratio < 1.2)
-                        # Train seats are wide (aspect ratio > 1.2)
-                        # Also filter very large detections (> 100000 px area = ~316x316)
-                        # And filter very small detections (< 5000 px area = ~70x70)
-                        if aspect_ratio < self.BAG_MAX_ASPECT_RATIO and self.BAG_MIN_AREA < bag_area < self.BAG_MAX_AREA:
-                            detections['backpack'].append(xyxy)
-                            self.logger.info(f"BAG ADDED: {class_name} conf={conf:.2f} aspect={aspect_ratio:.2f} area={bag_area:.0f}")
-                        else:
-                            self.logger.debug(f"BAG REJECTED: {class_name} conf={conf:.2f} aspect={aspect_ratio:.2f} area={bag_area:.0f} (filtered)")
-                # OPTION 3: Re-enable book detection in full frame with moderate confidence
-                # But only if book is within reasonable distance of a person
-                elif class_name == 'book' and conf > self.YOLO_BOOK_CONFIDENCE:  # Increased to reduce false positives
-                    # Check if book is near any detected person
-                    if len(person_boxes) > 0:
-                        book_near_person = False
-                        book_center_x = (xyxy[0] + xyxy[2]) / 2
-                        book_center_y = (xyxy[1] + xyxy[3]) / 2
-                        
-                        for person_box in person_boxes:
-                            # Check if book center is within expanded person bounding box
-                            person_x1, person_y1, person_x2, person_y2 = person_box
-                            margin = self.BOOK_PERSON_MARGIN  # Stricter book-to-person association
-                            if (person_x1 - margin <= book_center_x <= person_x2 + margin and
-                                person_y1 - margin <= book_center_y <= person_y2 + margin):
-                                book_near_person = True
-                                break
-                        
-                        if book_near_person and self.validate_object_aspect_ratio(xyxy, 'book'):
-                            detections['book'].append(xyxy)
-                    else:
-                        # No person detected, add book anyway (fallback) if aspect ratio is valid
-                        if self.validate_object_aspect_ratio(xyxy, 'book'):
-                            detections['book'].append(xyxy)
-                # Cup/bottle detection from full frame (for eating/drinking detection)
-                # Use configurable floor threshold (default 0.20) so the per-activity
-                # eating_drinking_cup_confidence (0.25) is the actual filter, not this pre-filter
-                elif class_name in ['cup', 'bottle'] and conf > getattr(self.settings, 'eating_drinking_cup_floor_confidence', 0.20):
-                    detections['cup_bottle'].append(xyxy)
-
-        # Stage 2: Pose-guided ROI detection (if pose landmarks available)
-        if use_pose_guided and pose_landmarks is not None:
-            h, w = frame.shape[:2]
-
-            # Define keypoints of interest with ROI sizes
-            # OPTIMIZED CONFIGURATION: Uniform 180px ROI for YOLOv8m
-            # Format: (display_name, keypoint_name_for_lookup, roi_size)
-            # Note: RIGHT_INDEX/LEFT_INDEX map to wrist in YOLO (no finger keypoints)
-            keypoints_of_interest = [
-                # Hands (for phone, book, pen, pencil) - FOCUSED ON HANDS ONLY
-                ('RIGHT_WRIST', 'right_wrist', 180),  # Optimized for YOLOv8m
-                ('LEFT_WRIST', 'left_wrist', 180),    # Optimized for YOLOv8m
-                ('RIGHT_INDEX', 'right_wrist', 180),  # Maps to wrist (YOLO has no finger keypoints)
-                ('LEFT_INDEX', 'left_wrist', 180),    # Maps to wrist (YOLO has no finger keypoints)
-
-                # Lap/Torso area (for books, reading, writing on lap) - REDUCED SIZE
-                ('RIGHT_HIP', 'right_hip', 180),  # Optimized for YOLOv8m
-                ('LEFT_HIP', 'left_hip', 180),    # Optimized for YOLOv8m
-
-                # Ears (for phone calls) - REDUCED SIZE
-                ('RIGHT_EAR', 'right_ear', 180),  # Reduced from 240px to 180px
-                ('LEFT_EAR', 'left_ear', 180),    # Reduced from 240px to 180px
-
-                # REMOVED: Shoulders, Mouth, Nose ROIs (causing too many false positives)
-            ]
-
-            # OPTIMIZATION: Collect all ROIs first instead of processing sequentially
-            # This enables batch YOLO inference for massive performance improvement
-            roi_bboxes = []
-            roi_names = []
-
-            for display_name, keypoint_name, roi_size in keypoints_of_interest:
-                try:
-                    landmark = self.get_keypoint(pose_landmarks, keypoint_name)
-
-                    # Check visibility
-                    if landmark.visibility < 0.5:
-                        roi_bboxes.append(None)
-                        roi_names.append(display_name)
-                        continue
-
-                    keypoint_coords = (int(landmark.x * w), int(landmark.y * h))
-                    roi_bbox = self.get_roi_around_keypoint(keypoint_coords, frame.shape, roi_size)
-
-                    roi_bboxes.append(roi_bbox)
-                    roi_names.append(display_name)
-
-                    if roi_bbox is not None:
-                        detections['roi_boxes'].append((display_name, roi_bbox))
-
-                        # DEBUG: Log ROI creation for key body parts
-                        if display_name in ['RIGHT_WRIST', 'LEFT_WRIST', 'RIGHT_HIP', 'LEFT_HIP', 'NOSE']:
-                            self.logger.info(f"[DEBUG ROI] Creating {display_name} ROI: size={roi_size}px, coords={keypoint_coords}")
-
-                except Exception as e:
-                    self.logger.debug(f"Exception in detect_objects: {e}")
-                    roi_bboxes.append(None)
-                    roi_names.append(display_name)
-                    continue
-
-            # OPTIMIZATION: Batch process all ROIs in single YOLO call
-            valid_roi_count = sum(1 for bbox in roi_bboxes if bbox is not None)
-
-            if valid_roi_count > 0:
-                target_classes = ['cell phone', 'book', 'pen', 'pencil', 'paper', 'bottle', 'cup']
-                batch_detections = self.detect_objects_in_rois_batch(frame, roi_bboxes, roi_names, target_classes)
-
-                # Process batch results (same logic as before, but from batch)
-                for idx, (keypoint_name, roi_detections) in enumerate(zip(roi_names, batch_detections)):
-                    for det in roi_detections:
-                        class_name, conf, x1, y1, x2, y2 = det
-                        detections['roi_detections'].append({
-                            'class': class_name,
-                            'confidence': conf,
-                            'bbox': [x1, y1, x2, y2],
-                            'keypoint': keypoint_name,
-                            'source': 'pose_guided_roi_batch'  # Updated source indicator
-                        })
-
-                        # FILTER: Only add cell phones from HAND/WRIST/EAR ROIs (not hips)
-                        # This reduces false positives from phones detected near lap/seat areas
-                        hand_related_keypoints = ['RIGHT_WRIST', 'LEFT_WRIST', 'RIGHT_INDEX', 'LEFT_INDEX', 'RIGHT_EAR', 'LEFT_EAR']
-
-                        if class_name == 'cell phone':
-                            # Only add if detected near hands/ears (actual phone usage)
-                            if keypoint_name in hand_related_keypoints:
-                                detections['cell_phone'].append([x1, y1, x2, y2])
-                        elif class_name == 'book':
-                            # Books can be detected from all ROIs (hands, lap, etc.)
-                            detections['book'].append([x1, y1, x2, y2])
-        
-        return detections
-
-    def detect_objects_person_rois(self, frame, pose_landmarks):
-        """Run ONLY pose-guided ROI detection for a single person (Stage 2 only).
-
-        CR-006 OPTIMIZATION: This method performs only the ROI-based detection
-        around a person's keypoints, WITHOUT re-running full-frame YOLO inference.
-        Full-frame detection (Stage 1) should be run once before the per-person
-        loop and its results reused via the 'detections' dict.
-
-        Args:
-            frame: Input frame (BGR)
-            pose_landmarks: Pose landmarks for this person
-
-        Returns:
-            Dictionary with 'cell_phone', 'book', 'roi_detections', 'roi_boxes' keys
-        """
-        person_roi_detections = {
-            'cell_phone': [],
-            'book': [],
-            'roi_detections': [],
-            'roi_boxes': []
-        }
-
-        if pose_landmarks is None:
-            return person_roi_detections
-
-        h, w = frame.shape[:2]
-
-        # Define keypoints of interest with ROI sizes (same as Stage 2 in detect_objects)
-        keypoints_of_interest = [
-            ('RIGHT_WRIST', 'right_wrist', 180),
-            ('LEFT_WRIST', 'left_wrist', 180),
-            ('RIGHT_INDEX', 'right_wrist', 180),
-            ('LEFT_INDEX', 'left_wrist', 180),
-            ('RIGHT_HIP', 'right_hip', 180),
-            ('LEFT_HIP', 'left_hip', 180),
-            ('RIGHT_EAR', 'right_ear', 180),
-            ('LEFT_EAR', 'left_ear', 180),
-        ]
-
-        roi_bboxes = []
-        roi_names = []
-
-        for display_name, keypoint_name, roi_size in keypoints_of_interest:
-            try:
-                landmark = self.get_keypoint(pose_landmarks, keypoint_name)
-
-                if landmark.visibility < 0.5:
-                    roi_bboxes.append(None)
-                    roi_names.append(display_name)
-                    continue
-
-                keypoint_coords = (int(landmark.x * w), int(landmark.y * h))
-                roi_bbox = self.get_roi_around_keypoint(keypoint_coords, frame.shape, roi_size)
-
-                roi_bboxes.append(roi_bbox)
-                roi_names.append(display_name)
-
-                if roi_bbox is not None:
-                    person_roi_detections['roi_boxes'].append((display_name, roi_bbox))
-
-                    if display_name in ['RIGHT_WRIST', 'LEFT_WRIST', 'RIGHT_HIP', 'LEFT_HIP', 'NOSE']:
-                        self.logger.info(f"[DEBUG ROI] Creating {display_name} ROI: size={roi_size}px, coords={keypoint_coords}")
-
-            except Exception as e:
-                self.logger.debug(f"Exception in detect_objects_person_rois: {e}")
-                roi_bboxes.append(None)
-                roi_names.append(display_name)
-                continue
-
-        valid_roi_count = sum(1 for bbox in roi_bboxes if bbox is not None)
-
-        if valid_roi_count > 0:
-            target_classes = ['cell phone', 'book', 'pen', 'pencil', 'paper', 'bottle', 'cup']
-            batch_detections = self.detect_objects_in_rois_batch(frame, roi_bboxes, roi_names, target_classes)
-
-            for idx, (keypoint_name, roi_dets) in enumerate(zip(roi_names, batch_detections)):
-                for det in roi_dets:
-                    class_name, conf, x1, y1, x2, y2 = det
-                    person_roi_detections['roi_detections'].append({
-                        'class': class_name,
-                        'confidence': conf,
-                        'bbox': [x1, y1, x2, y2],
-                        'keypoint': keypoint_name,
-                        'source': 'pose_guided_roi_batch'
-                    })
-
-                    hand_related_keypoints = ['RIGHT_WRIST', 'LEFT_WRIST', 'RIGHT_INDEX', 'LEFT_INDEX', 'RIGHT_EAR', 'LEFT_EAR']
-
-                    if class_name == 'cell phone':
-                        if keypoint_name in hand_related_keypoints:
-                            person_roi_detections['cell_phone'].append([x1, y1, x2, y2])
-                    elif class_name == 'book':
-                        person_roi_detections['book'].append([x1, y1, x2, y2])
-
-        return person_roi_detections
-
-    # =========================================================================
-    # BATCH INFERENCE METHODS - GPU OPTIMIZATION
-    # =========================================================================
-    # These methods process multiple frames at once to maximize GPU utilization.
-    # Instead of running inference N times (once per frame), we run it once on
-    # a batch of N frames, keeping the GPU busy and reducing overhead.
-    # =========================================================================
-
-    def _preprocess_frames_for_detection(self, frames):
-        """Preprocess dark/IR frames to improve YOLO person detection.
-
-        Uses adaptive brightness check on a sample frame. If dark (brightness < threshold),
-        applies CLAHE + gamma correction to all frames in the batch.
-        Only creates copies when preprocessing is needed.
-
-        Returns: list of frames (preprocessed copies if dark, originals if not)
-        """
-        if not self.preprocessing_service or not frames:
-            return frames
-
-        # Quick brightness check on first frame
-        sample = frames[0]
-        gray = cv2.cvtColor(sample, cv2.COLOR_BGR2GRAY) if len(sample.shape) == 3 else sample
-        brightness = float(np.mean(gray)) / 255.0
-
-        threshold = getattr(self.settings, 'yolo_dark_frame_brightness_threshold', 0.4) if self.settings else 0.4
-        if brightness >= threshold:
-            return frames  # Well-lit, no preprocessing needed
-
-        self.logger.debug(f"[IR PREPROCESS] Dark frames detected (brightness={brightness:.2f}), applying CLAHE+gamma for YOLO")
-
-        try:
-            enhanced = []
-            for frame in frames:
-                rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                processed = self.preprocessing_service.preprocess_for_mediapipe(rgb)
-                bgr = cv2.cvtColor(processed, cv2.COLOR_RGB2BGR)
-                enhanced.append(bgr)
-            return enhanced
-        except Exception as e:
-            self.logger.warning(f"[IR PREPROCESS] Preprocessing failed, using original frames: {e}")
-            return frames
-
-    def detect_objects_batch(self, frames: List[Any], batch_size: int = 8) -> List[Dict[str, List[Any]]]:
-        """Run YOLO object detection on multiple frames in a single batch.
-
-        This maximizes GPU utilization by processing multiple frames at once
-        instead of one at a time. The GPU stays busy with larger batches.
-
-        Args:
-            frames: List of BGR frames (numpy arrays)
-            batch_size: Maximum batch size for inference (default 8)
-
-        Returns:
-            List of detection dictionaries, one per frame
-        """
-        if not frames:
-            return []
-
-        self.logger.debug(f"[GPU BATCH] detect_objects_batch: {len(frames)} frames, batch_size={batch_size}")
-        all_detections = []
-
-        # Process frames in batches
-        for batch_start in range(0, len(frames), batch_size):
-            batch_frames = frames[batch_start:batch_start + batch_size]
-
-            try:
-                # Run batch inference - YOLO handles list of frames efficiently
-                batch_results = self.yolo_model(
-                    batch_frames,
-                    verbose=False,
-                    imgsz=self.yolo_imgsz,
-                    device=self.yolo_device
-                )
-            except Exception as e:
-                self.logger.error(f"[GPU BATCH] Object detection failed for batch starting at {batch_start}: {e}")
-                # Fallback: return empty detections for this batch
-                for _ in batch_frames:
-                    all_detections.append({
-                        'person': [], 'cell_phone': [], 'book': [],
-                        'backpack': [], 'roi_detections': [], 'roi_boxes': []
-                    })
-                continue
-
-            # Process results for each frame in batch
-            for frame_idx, (frame, results) in enumerate(zip(batch_frames, batch_results)):
-                detections = {
-                    'person': [],
-                    'cell_phone': [],
-                    'book': [],
-                    'backpack': [],
-                    'roi_detections': [],
-                    'roi_boxes': []
-                }
-
-                person_boxes = []
-                pending_books = []  # Store books to check after all persons are found
-
-                # Process detections from this frame's results
-                if results.boxes is not None:
-                    for box in results.boxes:
-                        cls = int(box.cls[0])
-                        conf = float(box.conf[0])
-                        xyxy = box.xyxy[0].cpu().numpy()
-
-                        class_name = self.yolo_model.names[cls]
-
-                        if class_name == 'person' and conf > self.YOLO_PERSON_CONFIDENCE:
-                            detections['person'].append(xyxy)
-                            person_boxes.append(xyxy)
-                        elif class_name in ['backpack', 'handbag', 'suitcase']:
-                            if conf > self.YOLO_BAG_CONFIDENCE:
-                                bag_width = xyxy[2] - xyxy[0]
-                                bag_height = xyxy[3] - xyxy[1]
-                                aspect_ratio = bag_width / bag_height if bag_height > 0 else 999
-                                bag_area = bag_width * bag_height
-
-                                if aspect_ratio < self.BAG_MAX_ASPECT_RATIO and self.BAG_MIN_AREA < bag_area < self.BAG_MAX_AREA:
-                                    detections['backpack'].append(xyxy)
-                        elif class_name == 'book' and conf > self.YOLO_BOOK_CONFIDENCE:
-                            # Store book for later processing (after all persons found)
-                            pending_books.append(xyxy)
-                        elif class_name == 'cell phone' and conf > self.YOLO_CELL_PHONE_CONFIDENCE:
-                            detections['cell_phone'].append(xyxy)
-
-                # Process pending books - check proximity to persons
-                for book_xyxy in pending_books:
-                    if len(person_boxes) > 0:
-                        for person_box in person_boxes:
-                            if self._boxes_overlap_or_near(book_xyxy, person_box, margin=200):
-                                detections['book'].append(book_xyxy)
-                                break
-                    else:
-                        # Fallback: add book anyway if no persons detected
-                        detections['book'].append(book_xyxy)
-
-                all_detections.append(detections)
-
-        self.logger.debug(f"[GPU BATCH] detect_objects_batch complete: {len(all_detections)} results")
-        return all_detections
+    # Object detection methods now accessed via self.object_detector directly
 
     def detect_poses_batch(self, frames: List[Any], batch_size: int = 8, conf_threshold: Optional[float] = None) -> List[Any]:
         """Run YOLO pose detection on multiple frames in a single batch.
@@ -2151,181 +1462,7 @@ class LocopilotActivityMonitor:
         self.logger.debug(f"[GPU BATCH] detect_poses_batch complete: {len(all_poses)} results")
         return all_poses
 
-    def _boxes_overlap_or_near(self, box1, box2, margin=100):
-        """Check if two boxes overlap or are within margin pixels of each other."""
-        x1_min, y1_min, x1_max, y1_max = box1
-        x2_min, y2_min, x2_max, y2_max = box2
-
-        # Expand box2 by margin
-        x2_min_expanded = x2_min - margin
-        y2_min_expanded = y2_min - margin
-        x2_max_expanded = x2_max + margin
-        y2_max_expanded = y2_max + margin
-
-        # Check for overlap with expanded box
-        return not (x1_max < x2_min_expanded or x1_min > x2_max_expanded or
-                   y1_max < y2_min_expanded or y1_min > y2_max_expanded)
-
-    # =========================================================================
-    # END BATCH INFERENCE METHODS
-    # =========================================================================
-
-    def draw_bounding_boxes(self, frame: Any, detections: Dict[str, List[Any]], show_roi_boxes: bool = True, person_roles: Optional[Dict[int, Dict[str, Any]]] = None) -> Any:
-        """Draw bounding boxes on frame for detected objects and ROI regions.
-        
-        Args:
-            frame: Input frame
-            detections: Dictionary with detection results
-            show_roi_boxes: Whether to show ROI boxes (default True)
-            person_roles: Dictionary of person roles (optional)
-        """
-        annotated_frame = frame.copy()
-        
-        colors = {
-            'person': (0, 255, 0),
-            'cell_phone': (0, 0, 255),
-            'book': (255, 0, 0),
-            'backpack': (0, 255, 255),
-            'deduplicated_person': (0, 255, 0),  # Green for deduplicated persons
-            'LP': (0, 255, 255),  # Yellow for Loco Pilot
-            'ALP': (255, 165, 0),  # Orange for Assistant Loco Pilot
-            'SUPERVISOR': (128, 0, 128),  # Purple for Supervisor
-            'TRAINEE': (0, 255, 255),  # Cyan for Trainee
-            'VISITOR': (128, 128, 128)  # Gray for Visitor
-        }
-        
-        # Draw ROI boxes (semi-transparent cyan boxes)
-        if show_roi_boxes and 'roi_boxes' in detections:
-            for keypoint_name, roi_bbox in detections['roi_boxes']:
-                x1, y1, x2, y2 = roi_bbox
-                # Draw semi-transparent ROI box
-                cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), (255, 255, 0), 1)
-                
-                # Add keypoint label
-                label = keypoint_name.replace('_', ' ')
-                cv2.putText(annotated_frame, label, 
-                           (x1 + 5, y1 + 15), 
-                           cv2.FONT_HERSHEY_SIMPLEX, 
-                           0.4, (255, 255, 0), 1)
-        
-        # Draw ROI detections (objects found via pose-guided detection)
-        if 'roi_detections' in detections:
-            for roi_det in detections['roi_detections']:
-                bbox = roi_det['bbox']
-                x1, y1, x2, y2 = map(int, bbox)
-                
-                # Use magenta color for pose-guided detections
-                color = (255, 0, 255)
-                thickness = 3  # Thicker border to distinguish from regular detections
-                
-                cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), color, thickness)
-                
-                # Add label with confidence and keypoint
-                label = f"{roi_det['class']} {roi_det['confidence']:.2f} (ROI: {roi_det['keypoint']})"
-                label_size, _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.4, 1)
-                label_w, label_h = label_size
-                
-                # Background for label
-                cv2.rectangle(annotated_frame, 
-                            (x1, y1 - label_h - 10), 
-                            (x1 + label_w + 10, y1), 
-                            color, -1)
-                
-                cv2.putText(annotated_frame, label, 
-                           (x1 + 5, y1 - 5), 
-                           cv2.FONT_HERSHEY_SIMPLEX, 
-                           0.4, (255, 255, 255), 1)
-        
-        # Draw regular detections
-        for obj_type, bboxes in detections.items():
-            if obj_type in ['roi_detections', 'roi_boxes', 'deduplicated_person']:
-                continue
-            
-            color = colors.get(obj_type, (255, 255, 255))
-            for bbox in bboxes:
-                x1, y1, x2, y2 = map(int, bbox)
-                cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), color, 2)
-                
-                label = obj_type.replace('_', ' ').title()
-                label_size, _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 2)
-                label_w, label_h = label_size
-                
-                cv2.rectangle(annotated_frame, 
-                            (x1, y1 - label_h - 10), 
-                            (x1 + label_w + 10, y1), 
-                            color, -1)
-                
-                cv2.putText(annotated_frame, label, 
-                           (x1 + 5, y1 - 5), 
-                           cv2.FONT_HERSHEY_SIMPLEX, 
-                           0.5, (255, 255, 255), 2)
-        
-        # Draw deduplicated person boxes (with thicker border and role labels)
-        if 'deduplicated_person' in detections and len(detections['deduplicated_person']) > 0:
-            person_count = len(detections['deduplicated_person'])
-            for idx, bbox in enumerate(detections['deduplicated_person']):
-                x1, y1, x2, y2 = map(int, bbox)
-                
-                # Get role information if available
-                if person_roles and idx in person_roles:
-                    role_info = person_roles[idx]
-                    role = role_info['role']
-                    role_name = role_info['role_name']
-                    bbox_area = role_info.get('bbox_area', 0)
-
-                    # Use role-specific color
-                    box_color = colors.get(role, (0, 255, 0))
-
-                    # Create detailed label
-                    label = f"{role_name} (area:{bbox_area:.0f})"
-                else:
-                    # Default label if no role info
-                    box_color = (0, 255, 0)
-                    label = f"Person {idx+1}"
-                
-                # Thicker border for deduplicated persons
-                cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), box_color, 3)
-                
-                label_size, _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)
-                label_w, label_h = label_size
-                
-                cv2.rectangle(annotated_frame, 
-                            (x1, y1 - label_h - 10), 
-                            (x1 + label_w + 10, y1), 
-                            box_color, -1)
-                
-                cv2.putText(annotated_frame, label, 
-                           (x1 + 5, y1 - 5), 
-                           cv2.FONT_HERSHEY_SIMPLEX, 
-                           0.6, (255, 255, 255), 2)
-            
-            # Add person count overlay at top
-            if person_count > 2:
-                count_text = f"GROUP DETECTED: {person_count} PEOPLE"
-                count_color = (0, 0, 255)  # Red for group alert
-            else:
-                count_text = f"People Count: {person_count}"
-                count_color = (0, 255, 0)
-            
-            cv2.putText(annotated_frame, count_text, 
-                       (frame.shape[1] - 400, 30), 
-                       cv2.FONT_HERSHEY_SIMPLEX, 
-                       0.8, count_color, 2, cv2.LINE_AA)
-            
-            # Add role summary if available
-            if person_roles:
-                y_offset = 60
-                for idx in sorted(person_roles.keys()):
-                    role_info = person_roles[idx]
-                    role_text = f"{role_info['role_name']} (area:{role_info.get('bbox_area', 0):.0f})"
-                    role_color = colors.get(role_info['role'], (255, 255, 255))
-                    cv2.putText(annotated_frame, role_text, 
-                               (frame.shape[1] - 400, y_offset), 
-                               cv2.FONT_HERSHEY_SIMPLEX, 
-                               0.6, role_color, 2, cv2.LINE_AA)
-                    y_offset += 25
-        
-        return annotated_frame
+    # Visualization methods now accessed via self.frame_annotator directly
     
     def draw_mediapipe_outputs(self, frame: Any, pose_results: Any, face_results: Any, pose_sleep_info: Optional[Dict[str, Any]] = None, head_pose_info: Optional[Dict[str, Any]] = None) -> Any:
         """Draw MediaPipe pose and face mesh landmarks on frame"""
@@ -2440,118 +1577,6 @@ class LocopilotActivityMonitor:
         
         return annotated_frame
     
-    def _draw_sleep_debug_overlay(self, frame, sleep_info, person_idx, activities, timestamp_sec):
-        """Draw sleep detection debug overlay on frame.
-
-        Shows sleep score, state machine state, eye visibility, wrist velocity,
-        and other key signals as a semi-transparent panel on the frame.
-        """
-        if frame is None or sleep_info is None:
-            return frame
-
-        h, w = frame.shape[:2]
-        # Position: top-left for person 0, top-right for person 1
-        x_offset = 5 if person_idx == 0 else w - 340
-        y_start = 55  # Below the timestamp overlay
-
-        sleep_score = sleep_info.get('sleep_score', 0)
-        score_thresh = sleep_info.get('sleep_score_threshold', 5)
-        state = sleep_info.get('sleep_state', 'N/A')
-        eye_vis = sleep_info.get('avg_eye_vis')
-        wrist_vel = sleep_info.get('avg_wrist_velocity', 0)
-        head_bob = sleep_info.get('head_bob_detected', False)
-        slump_rate = sleep_info.get('shoulder_slump_rate', 0)
-        is_slumping = sleep_info.get('is_shoulder_slumping', False)
-        is_wrists_still = sleep_info.get('is_wrists_still', False)
-        is_wrists_active = sleep_info.get('is_wrists_active', False)
-        face_gone = sleep_info.get('is_face_not_visible', False)
-        face_gone_body = sleep_info.get('is_face_gone_with_body_signals', False)
-        is_sustained_low_eyes = sleep_info.get('is_sustained_low_eyes', False)
-        is_sustained_stillness = sleep_info.get('is_sustained_stillness', False)
-        is_hands_clasped = sleep_info.get('is_hands_clasped', False)
-        is_sleeping = activities.get('sleep', False)
-        is_microsleep = activities.get('microsleep', False)
-        status = sleep_info.get('status', '')
-        movement = sleep_info.get('avg_movement', 0)
-        duration = sleep_info.get('pose_sleep_duration', 0)
-
-        # Build lines
-        lines = []
-        lines.append(f"P{person_idx} SLEEP DEBUG")
-        lines.append(f"Score: {sleep_score}/{score_thresh}")
-        lines.append(f"State: {state}")
-        lines.append(f"Eye vis: {eye_vis:.3f}" if eye_vis is not None else "Eye vis: N/A")
-        lines.append(f"Wrist vel: {wrist_vel:.4f}")
-        lines.append(f"Movement: {movement:.4f}" if movement else "Movement: N/A")
-        lines.append(f"Head bob: {head_bob}")
-        lines.append(f"Slump: {slump_rate:.5f} {'[!]' if is_slumping else ''}")
-        lines.append(f"Wrists: {'STILL' if is_wrists_still else 'ACTIVE' if is_wrists_active else 'normal'}")
-        lines.append(f"Face gone: {face_gone} body:{face_gone_body}")
-        lines.append(f"Low eyes: {is_sustained_low_eyes} Still: {is_sustained_stillness}")
-        lines.append(f"Clasped: {is_hands_clasped}")
-        if duration:
-            lines.append(f"Duration: {duration:.1f}s")
-        if status:
-            lines.append(f"Status: {status}")
-
-        # Determine panel color based on state
-        if is_sleeping:
-            panel_color = (0, 0, 180)       # Red - SLEEPING
-            text_color = (255, 255, 255)
-        elif is_microsleep:
-            panel_color = (0, 80, 200)       # Orange - MICROSLEEP
-            text_color = (255, 255, 255)
-        elif state == 'DROWSY':
-            panel_color = (0, 140, 220)      # Yellow-ish - DROWSY
-            text_color = (0, 0, 0)
-        elif state == 'LOOKING_DOWN_WORKING':
-            panel_color = (140, 100, 40)     # Blue-gray - WORKING
-            text_color = (255, 255, 255)
-        elif sleep_score >= score_thresh:
-            panel_color = (30, 80, 160)      # Dark orange - high score
-            text_color = (255, 255, 255)
-        else:
-            panel_color = (60, 60, 60)       # Dark gray - normal
-            text_color = (200, 200, 200)
-
-        # Draw semi-transparent panel
-        font = cv2.FONT_HERSHEY_SIMPLEX
-        font_scale = 0.42
-        thickness = 1
-        line_height = 16
-        panel_h = len(lines) * line_height + 10
-        panel_w = 335
-
-        overlay = frame.copy()
-        cv2.rectangle(overlay, (x_offset, y_start), (x_offset + panel_w, y_start + panel_h), panel_color, -1)
-        cv2.addWeighted(overlay, 0.7, frame, 0.3, 0, frame)
-
-        # Draw text
-        for i, line in enumerate(lines):
-            y = y_start + 14 + i * line_height
-            # Highlight key signals
-            color = text_color
-            if 'Score:' in line and sleep_score >= score_thresh:
-                color = (0, 255, 255)  # Cyan for high score
-            elif 'SLEEPING' in str(state) or 'MICROSLEEP' in str(state):
-                color = (0, 0, 255)
-            elif 'Head bob: True' in line:
-                color = (0, 255, 0)
-            elif 'Face gone: True' in line:
-                color = (0, 200, 255)
-            cv2.putText(frame, line, (x_offset + 5, y), font, font_scale, color, thickness, cv2.LINE_AA)
-
-        # Draw score bar
-        bar_y = y_start + panel_h + 2
-        bar_w = min(int((sleep_score / max(score_thresh + 3, 1)) * panel_w), panel_w)
-        bar_color = (0, 255, 0) if sleep_score < score_thresh else (0, 0, 255)
-        cv2.rectangle(frame, (x_offset, bar_y), (x_offset + bar_w, bar_y + 6), bar_color, -1)
-        cv2.rectangle(frame, (x_offset, bar_y), (x_offset + panel_w, bar_y + 6), (100, 100, 100), 1)
-        # Threshold marker
-        thresh_x = x_offset + int((score_thresh / max(score_thresh + 3, 1)) * panel_w)
-        cv2.line(frame, (thresh_x, bar_y), (thresh_x, bar_y + 6), (255, 255, 255), 2)
-
-        return frame
 
     def draw_multi_person_mediapipe_outputs(self, frame: Any, persons_data: Dict[int, Dict[str, Any]], face_results: Any) -> Any:
         """Draw MediaPipe pose landmarks for ALL detected persons
@@ -2808,10 +1833,6 @@ class LocopilotActivityMonitor:
         x1, y1, x2, y2 = object_bbox
         return (x1 - margin <= hx <= x2 + margin and
                 y1 - margin <= hy <= y2 + margin)
-
-    def is_wrist_inside_backpack(self, wrist_coords: Tuple[float, float], backpack_bbox: List[int], margin: int = 30) -> Tuple[bool, float]:
-        """Check if wrist keypoint is inside or very close to backpack bounding box - delegates to ActivityDetector."""
-        return self.activity_detector.is_wrist_inside_backpack(wrist_coords, backpack_bbox, margin)
 
     # NOTE: detect_pose_per_person removed - replaced by YOLOv8-Pose
     # NOTE: translate_pose_landmarks removed - not needed with YOLOv8-Pose (native multi-person)
@@ -3675,100 +2696,10 @@ class LocopilotActivityMonitor:
     def _match_pose_to_roles(self, yolo_pose_results, person_roles):
         """Match YOLOv8-Pose detections to identified person roles by bounding box IoU.
 
-        Enhanced with torso-center fallback for cases where bboxes overlap significantly.
-
-        Args:
-            yolo_pose_results: Dict from YoloPoseAdapter.process() containing:
-                {person_idx: {'bbox': [...], 'keypoints': YoloPoseLandmarks}}
-            person_roles: Dict from identify_person_roles() containing:
-                {person_idx: {'bbox': [...], 'role': 'LP'/'ALP', ...}}
-
-        Returns:
-            Dict mapping person_idx (from person_roles) to YoloPoseLandmarks
+        DELEGATION: This method delegates to PersonTracker.match_pose_to_roles().
+        Kept for backward compatibility during refactoring transition.
         """
-        matched = {}
-        used_yolo_indices = set()
-
-        self.logger.info(f"[POSE MATCHING] Matching {len(yolo_pose_results)} YOLO poses to {len(person_roles)} person roles")
-
-        for person_idx, role_data in person_roles.items():
-            if 'bbox' not in role_data:
-                continue
-
-            role_bbox = role_data['bbox']
-            role_center_x = (role_bbox[0] + role_bbox[2]) / 2
-            role_center_y = (role_bbox[1] + role_bbox[3]) / 2
-            role_name = role_data.get('role', 'UNKNOWN')
-
-            # Collect all candidates with their IoU scores
-            candidates = []
-            for yolo_idx, yolo_data in yolo_pose_results.items():
-                if yolo_idx in used_yolo_indices:
-                    continue
-
-                iou = calculate_iou(role_bbox, yolo_data['bbox'])
-                candidates.append({
-                    'yolo_idx': yolo_idx,
-                    'iou': iou,
-                    'keypoints': yolo_data['keypoints'],
-                    'bbox': yolo_data['bbox']
-                })
-
-            # Sort by IoU descending
-            candidates.sort(key=lambda x: x['iou'], reverse=True)
-
-            # Log all candidates
-            for c in candidates:
-                self.logger.debug(f"  [{role_name}] Candidate YOLO {c['yolo_idx']}: IoU={c['iou']:.3f}")
-
-            if not candidates:
-                self.logger.warning(f"[POSE MATCHING] No candidates for {role_name} (person {person_idx})")
-                continue
-
-            best_candidate = candidates[0]
-
-            # Check if top two candidates have similar IoU (within 0.15) - use torso center as tiebreaker
-            if len(candidates) >= 2 and candidates[0]['iou'] - candidates[1]['iou'] < 0.15:
-                self.logger.info(f"[POSE MATCHING] Close IoU scores for {role_name}: {candidates[0]['iou']:.3f} vs {candidates[1]['iou']:.3f} - using torso center")
-
-                # Calculate torso center for each candidate using shoulders
-                best_dist = float('inf')
-                for c in candidates[:2]:  # Only compare top 2
-                    keypoints = c['keypoints']
-                    if len(keypoints.landmark) >= 7:  # Need at least shoulders
-                        # Get shoulder positions (indices 5 and 6 for left/right shoulder)
-                        left_shoulder = keypoints.landmark[5]
-                        right_shoulder = keypoints.landmark[6]
-
-                        # Get frame dimensions from bbox (approximate)
-                        bbox = c['bbox']
-                        frame_w = max(bbox[2], 1920)  # Estimate frame width
-                        frame_h = max(bbox[3], 1080)  # Estimate frame height
-
-                        # Calculate torso center in pixel coords
-                        torso_x = ((left_shoulder.x + right_shoulder.x) / 2) * frame_w
-                        torso_y = ((left_shoulder.y + right_shoulder.y) / 2) * frame_h
-
-                        # Distance from role bbox center to torso center
-                        dist = ((torso_x - role_center_x) ** 2 + (torso_y - role_center_y) ** 2) ** 0.5
-
-                        self.logger.debug(f"    Candidate {c['yolo_idx']}: torso=({torso_x:.0f}, {torso_y:.0f}), dist={dist:.0f}px")
-
-                        if dist < best_dist:
-                            best_dist = dist
-                            best_candidate = c
-
-                self.logger.info(f"[POSE MATCHING] Torso-based selection: YOLO {best_candidate['yolo_idx']} (dist={best_dist:.0f}px)")
-
-            # Match if IoU is above threshold (LOWERED from 0.3 to 0.2 for overlapping cases)
-            if best_candidate['iou'] > 0.2:
-                matched[person_idx] = best_candidate['keypoints']
-                used_yolo_indices.add(best_candidate['yolo_idx'])
-                self.logger.info(f"[POSE MATCHING] Matched {role_name} (person {person_idx}) -> YOLO {best_candidate['yolo_idx']} (IoU={best_candidate['iou']:.3f})")
-            else:
-                self.logger.warning(f"[POSE MATCHING] No match for {role_name} (person {person_idx}): best IoU={best_candidate['iou']:.3f} < 0.2")
-
-        return matched
+        return self.person_tracker.match_pose_to_roles(yolo_pose_results, person_roles)
 
     def process_all_persons_activities(self, frame: Any, detections: Dict[str, List[Any]], person_roles: Dict[int, Dict[str, Any]], timestamp_sec: float, face_results: Any = None, frame_number: Optional[int] = None, precomputed_pose_results: Optional[Any] = None, precomputed_sleep_pose_results: Optional[Any] = None, is_dark_frame: Optional[bool] = None) -> Dict[str, Any]:
         """Process all detected persons for ALL activity detections (mind diversion, sleep, etc.)
@@ -3997,7 +2928,7 @@ class LocopilotActivityMonitor:
                         if sleep_fallback_landmarks is not None and len(sleep_fallback_landmarks.landmark) > 0:
                             visible_kps = sum(1 for lm in sleep_fallback_landmarks.landmark if lm.visibility > 0.3)
                             if visible_kps >= 5:
-                                sleep_det, microsleep_det, sleep_info = self.detect_pose_based_sleep(
+                                sleep_det, microsleep_det, sleep_info = self.sleep_detector.detect_pose_based_sleep(
                                     sleep_fallback_landmarks, timestamp_sec, person_idx=person_idx,
                                     frame_shape=frame.shape
                                 )
@@ -4020,7 +2951,7 @@ class LocopilotActivityMonitor:
                             ir_landmarks = matched_poses[person_idx]
 
                         if ir_landmarks is not None and hasattr(ir_landmarks, 'landmark') and len(ir_landmarks.landmark) > 0:
-                            ir_sleep, ir_microsleep, ir_info = self.detect_ir_forward_lean_sleep(
+                            ir_sleep, ir_microsleep, ir_info = self.sleep_detector.detect_ir_forward_lean_sleep(
                                 ir_landmarks, bbox, timestamp_sec, person_idx, frame.shape
                             )
                             if ir_sleep:
@@ -4112,7 +3043,7 @@ class LocopilotActivityMonitor:
                 # CR-006: Run ONLY pose-guided ROI detection for this person's keypoints.
                 # Full-frame YOLO inference (Stage 1) is already done via the 'detections'
                 # parameter passed into this method -- no need to re-run it per person.
-                person_detections = self.detect_objects_person_rois(frame, translated_landmarks)
+                person_detections = self.object_detector.detect_objects_person_rois(frame, translated_landmarks)
                 
                 # Merge person-specific detections into the main detections dict
                 # This ensures each person's hand ROIs are checked for cell phones
@@ -4152,12 +3083,12 @@ class LocopilotActivityMonitor:
                 # CR-NEW-003: Safe settings access with default
                 haar_enabled = getattr(self.settings, 'haar_eye_detection_enabled', True) if self.settings else True
                 if (haar_enabled and self.eye_cascade is not None):
-                    haar_eye_result = self.detect_eye_closure_haar(
+                    haar_eye_result = self.sleep_detector.detect_eye_closure_haar(
                         frame, translated_landmarks, person_idx, bbox, timestamp_sec
                     )
                     person_debug_info['haar_eye_info'] = haar_eye_result
 
-                pose_sleep_detected, pose_microsleep_detected, pose_sleep_info = self.detect_pose_based_sleep(
+                pose_sleep_detected, pose_microsleep_detected, pose_sleep_info = self.sleep_detector.detect_pose_based_sleep(
                     translated_landmarks, timestamp_sec, person_idx=person_idx,
                     frame_shape=frame.shape, haar_result=haar_eye_result
                 )
@@ -4170,7 +3101,7 @@ class LocopilotActivityMonitor:
                 ir_fl_enabled = getattr(self.settings, 'ir_forward_lean_enabled', True) if self.settings else True
                 if (is_dark_frame and ir_fl_enabled and
                         not pose_sleep_detected and not pose_microsleep_detected):
-                    ir_sleep, ir_microsleep, ir_info = self.detect_ir_forward_lean_sleep(
+                    ir_sleep, ir_microsleep, ir_info = self.sleep_detector.detect_ir_forward_lean_sleep(
                         translated_landmarks, bbox, timestamp_sec, person_idx, frame.shape
                     )
                     if ir_sleep:
@@ -4500,10 +3431,10 @@ class LocopilotActivityMonitor:
                         if backpack_in_person_region:
                             # ===== SIMPLIFIED CHECK: Is wrist INSIDE backpack bbox? =====
                             # This directly detects if hand is interacting with the bag
-                            right_inside, right_dist = self.is_wrist_inside_backpack(
+                            right_inside, right_dist = self.activity_detector.is_wrist_inside_backpack(
                                 right_hand_coords, backpack_bbox, margin=40  # 40px margin for tolerance
                             )
-                            left_inside, left_dist = self.is_wrist_inside_backpack(
+                            left_inside, left_dist = self.activity_detector.is_wrist_inside_backpack(
                                 left_hand_coords, backpack_bbox, margin=40
                             )
                             
@@ -4855,177 +3786,14 @@ class LocopilotActivityMonitor:
     # Use calculate_iou(), deduplicate_person_boxes() from app.core.utils.geometry
 
     def identify_person_roles(self, frame: Any, person_boxes: List[List[int]], detections: Dict[str, List[Any]]) -> Dict[int, Dict[str, Any]]:
-        """Identify LP (Loco Pilot) and ALP (Assistant Loco Pilot) based on camera angle and proximity.
+        """Identify LP (Loco Pilot) and ALP (Assistant Loco Pilot) based on camera angle.
 
-        Logic:
-        - camera_angle=1 (LP Side): closest person (largest bbox) = LP, further = ALP
-        - camera_angle=2 (ALP Side): closest person (largest bbox) = ALP, further = LP
-        - Third+ persons = "Visitor"
-
-        Args:
-            frame: Current video frame
-            person_boxes: List of de-duplicated person bounding boxes [[x1, y1, x2, y2], ...]
-            detections: Dictionary of all detected objects from YOLO
-
-        Returns:
-            Dictionary mapping person index to role info: {
-                0: {'role': 'LP', 'bbox': [x1, y1, x2, y2], 'bbox_area': 12345.0},
-                1: {'role': 'ALP', 'bbox': [x1, y1, x2, y2], 'bbox_area': 9876.0},
-                ...
-            }
+        DELEGATION: This method delegates to PersonTracker.identify_person_roles().
+        Kept for backward compatibility during refactoring transition.
         """
-        if len(person_boxes) == 0:
-            return {}
-
-        def get_bbox_area(bbox):
-            width = bbox[2] - bbox[0]
-            height = bbox[3] - bbox[1]
-            return width * height
-
-        # Build person list with bbox areas
-        persons = []
-        for person_idx, person_bbox in enumerate(person_boxes):
-            persons.append({
-                'person_idx': person_idx,
-                'bbox': person_bbox,
-                'bbox_area': get_bbox_area(person_bbox)
-            })
-
-        # Sort by bounding box area (largest first = closest to camera)
-        sorted_persons = sorted(persons, key=lambda x: x['bbox_area'], reverse=True)
-
-        # Determine role assignment based on camera angle
-        # camera_angle=1 (LP Side): closest to camera = LP, further = ALP
-        # camera_angle=2 (ALP Side): closest to camera = ALP, further = LP
-        is_lp_side = self.camera_angle == 1
-        closest_role = 'LP' if is_lp_side else 'ALP'
-        closest_role_name = 'Loco Pilot' if is_lp_side else 'Assistant Loco Pilot'
-        further_role = 'ALP' if is_lp_side else 'LP'
-        further_role_name = 'Assistant Loco Pilot' if is_lp_side else 'Loco Pilot'
-
-        camera_side = "LP Side" if is_lp_side else "ALP Side"
-
-        # Assign roles based on camera proximity
-        person_roles = {}
-
-        if len(sorted_persons) == 1:
-            # Only one person - assign based on camera side
-            person_roles[0] = {
-                'role': closest_role,
-                'role_name': closest_role_name,
-                'bbox': sorted_persons[0]['bbox'],
-                'bbox_area': sorted_persons[0]['bbox_area']
-            }
-
-        elif len(sorted_persons) == 2:
-            self.logger.debug(f"Role assignment (camera: {camera_side}): "
-                            f"Person {sorted_persons[0]['person_idx']} (area={sorted_persons[0]['bbox_area']:.0f}) -> {closest_role}, "
-                            f"Person {sorted_persons[1]['person_idx']} (area={sorted_persons[1]['bbox_area']:.0f}) -> {further_role}")
-
-            person_roles[sorted_persons[0]['person_idx']] = {
-                'role': closest_role,
-                'role_name': closest_role_name,
-                'bbox': sorted_persons[0]['bbox'],
-                'bbox_area': sorted_persons[0]['bbox_area']
-            }
-
-            person_roles[sorted_persons[1]['person_idx']] = {
-                'role': further_role,
-                'role_name': further_role_name,
-                'bbox': sorted_persons[1]['bbox'],
-                'bbox_area': sorted_persons[1]['bbox_area']
-            }
-
-        else:
-            # Three or more people
-            self.logger.debug(f"Role assignment (3+ people, camera: {camera_side}) - areas: {[p['bbox_area'] for p in sorted_persons]}")
-
-            # First person (largest bbox / closest to camera)
-            person_roles[sorted_persons[0]['person_idx']] = {
-                'role': closest_role,
-                'role_name': closest_role_name,
-                'bbox': sorted_persons[0]['bbox'],
-                'bbox_area': sorted_persons[0]['bbox_area']
-            }
-
-            # Second person
-            person_roles[sorted_persons[1]['person_idx']] = {
-                'role': further_role,
-                'role_name': further_role_name,
-                'bbox': sorted_persons[1]['bbox'],
-                'bbox_area': sorted_persons[1]['bbox_area']
-            }
-
-            # Additional people - assign as Visitor
-            for i in range(2, len(sorted_persons)):
-                person_idx = sorted_persons[i]['person_idx']
-                person_roles[person_idx] = {
-                    'role': 'VISITOR',
-                    'role_name': 'Visitor',
-                    'bbox': sorted_persons[i]['bbox'],
-                    'bbox_area': sorted_persons[i]['bbox_area']
-                }
-
-        # CR-007: Temporal role tracking via IoU matching to prevent role flipping
-        # If we have previous frame data, try to maintain role consistency
-        iou_threshold = 0.3
-        if self._prev_person_boxes and self._prev_person_roles and len(person_roles) >= 2:
-            # Build IoU matrix: current person_idx -> best matching prev person_idx
-            current_to_prev_match = {}  # current_idx -> (prev_idx, iou)
-            for curr_idx, curr_info in person_roles.items():
-                curr_box = curr_info['bbox']
-                best_iou = 0.0
-                best_prev_idx = None
-                for prev_idx, prev_box in enumerate(self._prev_person_boxes):
-                    iou = calculate_iou(curr_box, prev_box)
-                    if iou > best_iou:
-                        best_iou = iou
-                        best_prev_idx = prev_idx
-                if best_iou >= iou_threshold and best_prev_idx is not None:
-                    current_to_prev_match[curr_idx] = (best_prev_idx, best_iou)
-
-            # Check if any LP/ALP roles need to be swapped based on temporal tracking
-            # Only apply when we have exactly 2 LP/ALP persons matched to previous frame
-            lp_alp_indices = [idx for idx, info in person_roles.items() if info['role'] in ('LP', 'ALP')]
-            matched_lp_alp = [idx for idx in lp_alp_indices if idx in current_to_prev_match]
-
-            if len(matched_lp_alp) == 2 and len(lp_alp_indices) == 2:
-                # Both LP/ALP persons have good IoU matches to previous frame
-                idx_a, idx_b = matched_lp_alp
-                prev_idx_a = current_to_prev_match[idx_a][0]
-                prev_idx_b = current_to_prev_match[idx_b][0]
-
-                # Get previous roles for the matched previous persons
-                prev_role_a = self._prev_person_roles.get(prev_idx_a, {}).get('role')
-                prev_role_b = self._prev_person_roles.get(prev_idx_b, {}).get('role')
-
-                # Check if current assignment differs from previous and needs correction
-                curr_role_a = person_roles[idx_a]['role']
-                curr_role_b = person_roles[idx_b]['role']
-
-                if (prev_role_a in ('LP', 'ALP') and prev_role_b in ('LP', 'ALP') and
-                        prev_role_a != prev_role_b):
-                    # Previous frame had valid distinct LP/ALP assignments
-                    # Check if current frame flipped them
-                    if curr_role_a != prev_role_a or curr_role_b != prev_role_b:
-                        # Roles flipped - restore previous assignment
-                        role_name_map = {'LP': 'Loco Pilot', 'ALP': 'Assistant Loco Pilot'}
-                        self.logger.debug(
-                            f"CR-007: Temporal role correction - restoring "
-                            f"Person {idx_a} as {prev_role_a} and Person {idx_b} as {prev_role_b} "
-                            f"(IoU: {current_to_prev_match[idx_a][1]:.2f}, {current_to_prev_match[idx_b][1]:.2f})"
-                        )
-                        person_roles[idx_a]['role'] = prev_role_a
-                        person_roles[idx_a]['role_name'] = role_name_map[prev_role_a]
-                        person_roles[idx_b]['role'] = prev_role_b
-                        person_roles[idx_b]['role_name'] = role_name_map[prev_role_b]
-
-        # CR-007: Update tracking state for next frame
-        self._prev_person_boxes = [info['bbox'] for idx, info in sorted(person_roles.items())]
-        self._prev_person_roles = {idx: {'role': info['role'], 'role_name': info['role_name']}
-                                   for idx, info in person_roles.items()}
-
-        return person_roles
+        # Sync camera_angle in case it was changed
+        self.person_tracker.camera_angle = self.camera_angle
+        return self.person_tracker.identify_person_roles(person_boxes, frame, detections)
     
     def start_activity(self, activity_name: str, timestamp: float, fps: float, frame_count: int, person_roles: Optional[Dict[int, Dict[str, Any]]] = None, ocr_timestamp: Optional[str] = None) -> None:
         """Start tracking an activity
@@ -5517,10 +4285,10 @@ class LocopilotActivityMonitor:
                 # Per-frame detection (process_video path or fallback)
                 # Preprocess single frame for dark/IR conditions if batch mode fallback
                 if batch_object_detections is not None:
-                    detection_frame = self._preprocess_frames_for_detection([frame])[0]
-                    detections = self.detect_objects(detection_frame, None, use_pose_guided=False)
+                    detection_frame = self.object_detector._preprocess_frames_for_detection([frame])[0]
+                    detections = self.object_detector.detect_objects(detection_frame, None, use_pose_guided=False)
                 else:
-                    detections = self.detect_objects(frame, None, use_pose_guided=False)
+                    detections = self.object_detector.detect_objects(frame, None, use_pose_guided=False)
 
             # STEP 3: Identify person roles and count people
             people_count = len(detections['person'])
@@ -5712,7 +4480,7 @@ class LocopilotActivityMonitor:
 
             # Create annotated frame with all detections (pose landmarks + YOLO boxes)
             # This annotated frame will be used for BOTH activity clips AND periodic frame saving
-            annotated_frame_for_activity = self.draw_bounding_boxes(
+            annotated_frame_for_activity = self.frame_annotator.draw_bounding_boxes(
                 frame, detections, show_roi_boxes=True, person_roles=person_roles
             )
             # NEW: Draw MediaPipe outputs for ALL persons (not just one)
@@ -5726,7 +4494,7 @@ class LocopilotActivityMonitor:
             for pidx, pdata in persons_data.items():
                 sleep_info = pdata.get('debug_info', {}).get('sleep_info')
                 if sleep_info:
-                    annotated_frame_for_activity = self._draw_sleep_debug_overlay(
+                    annotated_frame_for_activity = self.frame_annotator.draw_sleep_debug_overlay(
                         annotated_frame_for_activity, sleep_info, pidx,
                         pdata.get('activities', {}), timestamp_sec
                     )
@@ -6118,10 +4886,10 @@ class LocopilotActivityMonitor:
             frames_only = [fd[0] for fd in frames_data]
 
             # Preprocess dark/IR frames for better YOLO person detection
-            detection_frames = self._preprocess_frames_for_detection(frames_only)
+            detection_frames = self.object_detector._preprocess_frames_for_detection(frames_only)
 
             self.logger.debug(f"[GPU BATCH] Running batch object detection on {len(frames_only)} frames")
-            batch_object_detections = self.detect_objects_batch(detection_frames, batch_size)
+            batch_object_detections = self.object_detector.detect_objects_batch(detection_frames, batch_size)
 
             # Run batch pose detection at normal confidence (for hand gestures, mind diversion, etc.)
             self.logger.debug(f"[GPU BATCH] Running batch pose detection on {len(frames_only)} frames")

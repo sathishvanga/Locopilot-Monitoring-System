@@ -20,3 +20,10 @@ cell_phone_frames
 diagnostic_output*
 roi_debug_2min.mp4
 microsleep_debug
+
+# Credentials and secrets
+.env
+.env.*
+!.env.example
+server details.txt
+deploy-gpu.sh
