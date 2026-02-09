@@ -465,35 +465,36 @@ def process_frame_range(
         if video_start_time and hasattr(monitor, 'set_video_start_time'):
             monitor.set_video_start_time(video_start_time)
 
-        # Process the assigned frame range with optional clip saving
-        activities = monitor.process_video_range(
+        # Pass 1 (two-pass pipeline): Run GPU-heavy detection and return raw per-frame
+        # detection flags. Temporal filtering is deferred to Pass 2 (sequential) for
+        # deterministic results across runs.
+        frame_detections = monitor.process_video_range_raw(
             start_frame=frame_range.start_frame,
             end_frame=frame_range.end_frame,
-            save_clips=save_clips
         )
-        
+
         logger.info(f"Worker {worker_id} completed range {frame_range.range_id}: "
-                   f"{len(activities)} activities detected")
-        
+                   f"{len(frame_detections)} raw detections")
+
         # ✅ MEMORY FIX: Explicit cleanup (closes MediaPipe, clears buffers, forces GC)
         # This mirrors POC_2's cleanup pattern
         monitor.cleanup()
-        
+
         return {
             'success': True,
             'range_id': frame_range.range_id,
-            'activities': activities,
+            'frame_detections': frame_detections,
             'processed_frames': frame_range.expected_sampled_frames,
             'error': None
         }
-        
+
     except Exception as e:
         logger.error(f"Worker {os.getpid()} failed processing range {frame_range.range_id}: {e}",
                     exc_info=True)
         return {
             'success': False,
             'range_id': frame_range.range_id,
-            'activities': [],
+            'frame_detections': [],
             'processed_frames': 0,
             'error': str(e)
         }
@@ -738,49 +739,163 @@ class VideoMultiprocessingOrchestrator:
             )
             futures[future] = frame_range
         
-        # Collect results as they complete
-        all_activities = []
-        
+        # =====================================================================
+        # Pass 1: Collect raw per-frame detections from all workers
+        # =====================================================================
+        all_frame_detections = []
+
         for future in as_completed(futures):
             frame_range = futures[future]
-            
+
             try:
                 result = future.result()
-                
+
                 if result['success']:
-                    # Append activities from this range
-                    all_activities.extend(result['activities'])
-                    
+                    all_frame_detections.extend(result['frame_detections'])
+
                     # Update state
                     self.state.processed_frames += result['processed_frames']
                     self.state.completed_ranges.append(result['range_id'])
-                    
+
                     logger.info(f"Range {result['range_id']} completed: "
-                               f"{len(result['activities'])} activities, "
+                               f"{len(result['frame_detections'])} raw detections, "
                                f"{self.state.get_progress_percentage():.1f}% done")
                 else:
-                    # Record failure
                     self.state.failed_ranges.append(result['range_id'])
                     logger.error(f"Range {result['range_id']} failed: {result['error']}")
-                
-                # Update state timestamp and save
+
                 self.state.last_update_time = time.time()
                 if self.config.enable_result_persistence:
                     self.save_state(run_dir)
-                
+
             except Exception as e:
                 logger.error(f"Failed to get result for range {frame_range.range_id}: {e}",
                            exc_info=True)
                 self.state.failed_ranges.append(frame_range.range_id)
-        
-        # Mark as done
+
+        # Mark Pass 1 as done
         self.state.done = True
         self.state.last_update_time = time.time()
-        
+
         if self.config.enable_result_persistence:
             self.save_state(run_dir)
-        
-        # Sort activities by start time (handles both timestamp strings and float seconds)
+
+        # =====================================================================
+        # Pass 2: Sequential temporal filtering (deterministic)
+        # =====================================================================
+        logger.info(f"[PASS 2] Starting temporal filtering over {len(all_frame_detections)} "
+                   f"raw detections from {len(self.state.completed_ranges)} workers")
+
+        from ..services.temporal_filtering_service import TemporalFilteringService
+        from locopilot_monitor import ACTIVITY_REGISTRY, _build_activity_registry
+
+        # Build activity thresholds, type maps, descriptions, evidence rules
+        # These mirror the monitor's __init__ setup
+        activity_thresholds = {}
+        for _name, _cfg in ACTIVITY_REGISTRY.items():
+            _entry = {
+                'min_duration': _cfg.min_duration,
+                'required_consecutive': _cfg.required_consecutive,
+                'margin': _cfg.margin,
+                'grace_frames': _cfg.grace_frames,
+            }
+            activity_thresholds[_name] = _entry
+        # Add alp_not_standing (manually added in monitor __init__)
+        activity_thresholds['alp_not_standing'] = {
+            'min_duration': 0.0,
+            'required_consecutive': 2,
+            'margin': None,
+            'grace_frames': 5,
+        }
+
+        activity_type_map = {
+            'cell_phone': 2, 'microsleep': 3, 'sleep': 4, 'writing': 5,
+            'packing_bags': 6, 'group_detected': 7, 'lp_hand_gesture': 8,
+            'alp_hand_gesture': 9, 'mind_diversion': 10, 'no_person_detected': 11,
+            'alp_not_standing': 12,
+        }
+        activity_descriptions = {
+            'cell_phone': 'Using mobile phone',
+            'microsleep': 'Micro-sleep detected (5+ seconds)',
+            'sleep': 'Sleep detected (30+ seconds)',
+            'writing': 'WRITING LOG BOOK WHILE RUNNING',
+            'packing_bags': 'Packing bags activity detected',
+            'group_detected': 'More than 2 people (group) detected',
+            'lp_hand_gesture': 'LP not exchanging hand gesture',
+            'alp_hand_gesture': 'ALP not exchanging hand gesture',
+            'mind_diversion': 'Mind diversion - attention diverted from controls',
+            'no_person_detected': 'No person detected in frame',
+            'alp_not_standing': 'ALP not standing during pre-arrival window',
+        }
+        evidence_rules = {
+            'cell_phone': 'phone_in_hand',
+            'microsleep': 'pose_indicators',
+            'sleep': 'pose_indicators',
+            'writing': 'hand_near_book_or_wrist_proximity',
+            'packing_bags': 'wrist_inside_backpack_bbox_or_hand_near_backpack',
+            'group_detected': 'more_than_2_deduplicated_persons',
+            'lp_hand_gesture': 'lp_hand_raised_gesture_detected',
+            'alp_hand_gesture': 'alp_hand_raised_gesture_detected',
+            'mind_diversion': 'attention_diverted_from_controls',
+            'no_person_detected': 'zero_persons_in_frame',
+            'alp_not_standing': 'alp_seated_during_pre_arrival_window',
+        }
+
+        # Initialize VLM service for Pass 2 verification (if enabled)
+        worker_settings = get_settings()
+        vlm_service = None
+        vlm_enabled = getattr(worker_settings, 'vlm_verification_enabled', False)
+        if vlm_enabled:
+            try:
+                from ..services.vlm_verification_service import VLMVerificationService
+                vlm_service = VLMVerificationService(
+                    vllm_base_url=getattr(worker_settings, 'vlm_server_url', 'http://localhost:8001/v1'),
+                    model_name=getattr(worker_settings, 'vlm_model_name', 'Qwen/Qwen2.5-VL-7B-Instruct-AWQ'),
+                    timeout=getattr(worker_settings, 'vlm_timeout', 10.0),
+                    max_retries=getattr(worker_settings, 'vlm_max_retries', 2),
+                    circuit_breaker_threshold=getattr(worker_settings, 'vlm_circuit_breaker_threshold', 5),
+                    circuit_breaker_reset_sec=getattr(worker_settings, 'vlm_circuit_breaker_reset_sec', 60.0),
+                    cache_ttl_sec=getattr(worker_settings, 'vlm_cache_ttl', 5.0),
+                    crop_padding=getattr(worker_settings, 'vlm_crop_padding', 50),
+                    jpeg_quality=getattr(worker_settings, 'vlm_jpeg_quality', 85),
+                    rejection_cooldown_sec=getattr(worker_settings, 'vlm_rejection_cooldown', 15.0),
+                    ext_logger=logger,
+                )
+                logger.info("[PASS 2] VLM verification service initialized")
+            except Exception as e:
+                logger.warning(f"[PASS 2] VLM service unavailable: {e}")
+
+        clip_buffer_before = getattr(worker_settings, 'clip_buffer_before', 1.0)
+        clip_buffer_after = getattr(worker_settings, 'clip_buffer_after', 1.0)
+
+        temporal_service = TemporalFilteringService(
+            activity_thresholds=activity_thresholds,
+            activity_type_map=activity_type_map,
+            activity_descriptions=activity_descriptions,
+            evidence_rules=evidence_rules,
+            sample_fps=sample_fps,
+            logger=logger,
+            vlm_service=vlm_service,
+            clip_buffer_before=clip_buffer_before,
+            clip_buffer_after=clip_buffer_after,
+        )
+
+        all_activities = temporal_service.apply_temporal_filtering(
+            frame_detections=all_frame_detections,
+            video_path=video_path,
+            run_dir=run_dir,
+            trip_id=trip_id,
+            fps=native_fps,
+            sample_fps=sample_fps,
+            crew_name=crew_name,
+            crew_id=crew_id,
+            crew_role=crew_role,
+            crew_members=crew_members or {},
+            camera_angle=camera_angle,
+            save_clips=save_clips,
+        )
+
+        # Sort activities by start time
         def parse_activity_time(time_val):
             """Parse activity time - handles HH:MM:SS strings or float seconds"""
             if time_val is None:
@@ -788,7 +903,6 @@ class VideoMultiprocessingOrchestrator:
             if isinstance(time_val, (int, float)):
                 return float(time_val)
             if isinstance(time_val, str):
-                # Try parsing as HH:MM:SS
                 if ':' in time_val:
                     try:
                         parts = time_val.split(':')
@@ -798,7 +912,6 @@ class VideoMultiprocessingOrchestrator:
                         return hours * 3600 + minutes * 60 + seconds
                     except (ValueError, IndexError):
                         pass
-                # Try parsing as float
                 try:
                     return float(time_val)
                 except ValueError:

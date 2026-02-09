@@ -27,3 +27,5 @@ microsleep_debug
 !.env.example
 server details.txt
 deploy-gpu.sh
+debug_frames
+activity_frames

@@ -1084,12 +1084,28 @@ class SleepDetector:
             f"head_drop={head_drop_detected}, delta_drop={head_drop_from_delta}"
         )
 
+        # Reclined sleep detection: nose tilted back + torso elongated + shoulders compressed
+        # A reclined sleeping person leans BACK (head doesn't drop forward).
+        is_reclined_sleep = False
+        if has_baseline:
+            baseline_nose_y = baseline.get('nose_y_normalized')
+            if (baseline_nose_y is not None and nose_y_normalized is not None
+                    and nose_y_normalized < baseline_nose_y - 0.05
+                    and is_torso_elongated and is_shoulders_compressed):
+                is_reclined_sleep = True
+        else:
+            # Without baseline, use absolute thresholds for reclined posture
+            if is_torso_elongated and is_shoulders_compressed and is_nose_high_in_frame:
+                is_reclined_sleep = True
+
         # Score calculation
         sleep_score = 0
         is_hands_spread = wrist_dist is not None and wrist_dist > self.SLEEP_HANDS_SPREAD_THRESHOLD
 
         if head_drop_detected:
             sleep_score += 5
+        elif is_reclined_sleep:
+            sleep_score += 4  # Slightly less than head_drop, requires longer duration
 
         if is_hands_spread:
             sleep_score -= 2
@@ -1121,6 +1137,7 @@ class SleepDetector:
             'sleep_score_threshold': score_thresh,
             'head_drop_detected': head_drop_detected,
             'head_drop_from_delta': head_drop_from_delta,
+            'is_reclined_sleep': is_reclined_sleep,
             'nose_y_drop': nose_y_drop,
             'head_tilt_drop': head_tilt_drop,
             'nose_y_drop_thresh': nose_y_drop_thresh,
@@ -1133,8 +1150,8 @@ class SleepDetector:
             'haar_eye_info': haar_result,
         }
 
-        # Hard gate: head drop OR haar eye closure must be detected
-        if not head_drop_detected and not haar_eye_closed:
+        # Hard gate: head drop OR haar eye closure OR reclined posture must be detected
+        if not head_drop_detected and not haar_eye_closed and not is_reclined_sleep:
             tracking['pose_sleep_start'] = None
             tracking['pose_sleep_duration'] = 0
             return False, False, debug_info

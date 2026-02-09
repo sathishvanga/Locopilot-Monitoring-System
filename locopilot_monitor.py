@@ -145,13 +145,6 @@ if script_dir not in sys.path:
 try:
     from app.services.image_preprocessing_service import ImagePreprocessingService
     from app.utils.config import get_settings
-    from app.services.voting_verification_service import VotingVerificationService, ActivityBatchCollector
-    # Train motion rule engine imports
-    from app.services.rule_engine_service import RuleEngineService, get_rule_engine_service
-    from app.services.train_motion_resolver_service import TrainMotionResolverService, get_motion_resolver_service
-    from app.services.ocr_timestamp_service import OCRTimestampService, get_ocr_timestamp_service
-    from app.services.alp_alertness_service import ALPAlertnessService, get_alp_alertness_service
-    from app.models.trip_models import TripSchedule, TrainMotionContext, TrainMotionState
 except ImportError:
     # Fallback: try importing as module
     try:
@@ -183,29 +176,13 @@ except ImportError:
     except Exception:
         ImagePreprocessingService = None
         get_settings = None
-        VotingVerificationService = None
-        ActivityBatchCollector = None
 
-    # Set rule engine imports to None if not available
-    RuleEngineService = None
-    get_rule_engine_service = None
-    TrainMotionResolverService = None
-    get_motion_resolver_service = None
-    OCRTimestampService = None
-    get_ocr_timestamp_service = None
-    ALPAlertnessService = None
-    get_alp_alertness_service = None
-    TripSchedule = None
-    TrainMotionContext = None
-    TrainMotionState = None
 
-# Import VotingVerificationService separately (may not exist in fallback path)
+# Import VLM verification service (secondary verification via Qwen2.5-VL)
 try:
-    if 'VotingVerificationService' not in dir():
-        from app.services.voting_verification_service import VotingVerificationService, ActivityBatchCollector
+    from app.services.vlm_verification_service import VLMVerificationService
 except ImportError:
-    VotingVerificationService = None
-    ActivityBatchCollector = None
+    VLMVerificationService = None
 
 # Build activity registry now that get_settings is available
 ACTIVITY_REGISTRY: Dict[str, ActivityConfig] = _build_activity_registry()
@@ -732,73 +709,35 @@ class LocopilotActivityMonitor:
         # Store all activities for final JSON array output
         self.all_activities = []
 
-        # Initialize voting verification service for multi-frame voting
-        # This reduces false positives by verifying detections across multiple native frames
-        self.current_video_path = video_path  # Track current video for voting
-        if VotingVerificationService is not None:
+        self.current_video_path = video_path  # Track current video
+
+        # Initialize VLM verification service (Qwen2.5-VL verification)
+        vlm_enabled = getattr(self.settings, 'vlm_verification_enabled', False) if self.settings else False
+        if vlm_enabled and VLMVerificationService is not None:
             try:
-                self.voting_service = VotingVerificationService(
-                    yolo_model=self.yolo_model,
-                    yolo_pose_model=self.yolo_pose
+                self.vlm_service = VLMVerificationService(
+                    vllm_base_url=getattr(self.settings, 'vlm_server_url', 'http://localhost:8001/v1'),
+                    model_name=getattr(self.settings, 'vlm_model_name', 'Qwen/Qwen2.5-VL-7B-Instruct-AWQ'),
+                    timeout=getattr(self.settings, 'vlm_timeout', 10.0),
+                    max_retries=getattr(self.settings, 'vlm_max_retries', 2),
+                    circuit_breaker_threshold=getattr(self.settings, 'vlm_circuit_breaker_threshold', 5),
+                    circuit_breaker_reset_sec=getattr(self.settings, 'vlm_circuit_breaker_reset_sec', 60.0),
+                    cache_ttl_sec=getattr(self.settings, 'vlm_cache_ttl', 5.0),
+                    crop_padding=getattr(self.settings, 'vlm_crop_padding', 50),
+                    jpeg_quality=getattr(self.settings, 'vlm_jpeg_quality', 85),
+                    rejection_cooldown_sec=getattr(self.settings, 'vlm_rejection_cooldown', 15.0),
+                    ext_logger=self.logger,
                 )
-                self.logger.info("VotingVerificationService initialized successfully")
+                self.logger.info("[VLM] VLMVerificationService initialized successfully")
             except Exception as e:
-                self.logger.warning(f"Failed to initialize VotingVerificationService: {e}")
-                self.voting_service = None
+                self.logger.warning(f"[VLM] Failed to initialize VLMVerificationService: {e}")
+                self.vlm_service = None
         else:
-            self.voting_service = None
-            self.logger.info("VotingVerificationService not available - voting disabled")
-
-        # Initialize train motion rule engine services
-        self.trip_schedule = None  # Will be set via set_trip_schedule()
-        self.video_start_time = None  # Will be set via set_video_start_time()
-        self._prev_motion_frame = None  # Previous frame for optical flow
-        self.current_motion_context = None  # Current train motion state
-        self.suppress_no_person_without_schedule = getattr(self.settings, 'suppress_no_person_without_schedule', True) if self.settings else True
-
-        # Rule engine service
-        if get_rule_engine_service is not None:
-            try:
-                self.rule_engine = get_rule_engine_service()
-                self.logger.info("RuleEngineService initialized successfully")
-            except Exception as e:
-                self.logger.warning(f"Failed to initialize RuleEngineService: {e}")
-                self.rule_engine = None
-        else:
-            self.rule_engine = None
-
-        # Motion resolver service
-        if get_motion_resolver_service is not None:
-            try:
-                self.motion_resolver = get_motion_resolver_service()
-                self.logger.info("TrainMotionResolverService initialized successfully")
-            except Exception as e:
-                self.logger.warning(f"Failed to initialize TrainMotionResolverService: {e}")
-                self.motion_resolver = None
-        else:
-            self.motion_resolver = None
-
-        # OCR timestamp service
-        if get_ocr_timestamp_service is not None:
-            try:
-                self.ocr_service = get_ocr_timestamp_service()
-                self.logger.info("OCRTimestampService initialized successfully")
-            except Exception as e:
-                self.logger.warning(f"Failed to initialize OCRTimestampService: {e}")
-                self.ocr_service = None
-        else:
-            self.ocr_service = None
-
-        # ALP alertness service
-        if get_alp_alertness_service is not None:
-            try:
-                self.alp_alertness_service = get_alp_alertness_service()
-                self.logger.info("ALPAlertnessService initialized successfully")
-            except Exception as e:
-                self.logger.warning(f"Failed to initialize ALPAlertnessService: {e}")
-                self.alp_alertness_service = None
-        else:
-            self.alp_alertness_service = None
+            self.vlm_service = None
+            if not vlm_enabled:
+                self.logger.info("[VLM] VLM verification disabled (VLM_VERIFICATION_ENABLED=0)")
+            else:
+                self.logger.info("[VLM] VLMVerificationService not available")
 
         # Add activity tracking for alp_not_standing
         self.activities['alp_not_standing'] = {'active': False, 'start_time': None, 'ocr_start_time': None, 'frames': [], 'duration': 0}
@@ -852,203 +791,6 @@ class LocopilotActivityMonitor:
             self.evidence_manager = None
 
         self.logger.info("Extracted detector modules initialized: SleepDetector, ActivityDetector, GestureDetector, MindDiversionDetector")
-
-    def set_trip_schedule(self, trip_schedule: Any) -> None:
-        """
-        Set the trip schedule for motion-based rule evaluation.
-
-        Args:
-            trip_schedule: TripSchedule object or None
-        """
-        self.trip_schedule = trip_schedule
-        if trip_schedule:
-            self.logger.info(
-                f"Trip schedule set for train {trip_schedule.train_number} "
-                f"on {trip_schedule.journey_date} with {len(trip_schedule.halts)} halts"
-            )
-        else:
-            self.logger.info(
-                "Trip schedule not available - no_person_detected will be suppressed "
-                "(cannot distinguish station halts from running without schedule)"
-            )
-
-    def set_video_start_time(self, start_time_str: str) -> None:
-        """
-        Set the video's actual start time (time of day when recording began).
-
-        This allows calculating real timestamps from video offsets when OCR is unavailable.
-
-        Args:
-            start_time_str: Start time in HH:MM:SS format (e.g., "14:30:00")
-        """
-        self.video_start_time = start_time_str
-        if start_time_str:
-            self.logger.info(f"Video start time set to {start_time_str} - will use for motion rules when OCR unavailable")
-        else:
-            self.video_start_time = None
-
-    def _convert_video_to_real_time(self, video_seconds: float) -> str:
-        """
-        Convert video timestamp (seconds from start) to real time of day.
-
-        If video_start_time is set, calculates actual time by adding video offset.
-        Otherwise returns video-relative time (which won't match station schedules).
-
-        Args:
-            video_seconds: Seconds from video start
-
-        Returns:
-            Time string in HH:MM:SS format
-        """
-        if self.video_start_time:
-            try:
-                # Parse video start time
-                parts = self.video_start_time.split(':')
-                start_hours = int(parts[0])
-                start_minutes = int(parts[1])
-                start_seconds = int(parts[2]) if len(parts) > 2 else 0
-                total_start_seconds = start_hours * 3600 + start_minutes * 60 + start_seconds
-
-                # Add video offset
-                total_seconds = total_start_seconds + int(video_seconds)
-
-                # Handle day rollover (wrap at 24 hours)
-                total_seconds = total_seconds % (24 * 3600)
-
-                hours = total_seconds // 3600
-                minutes = (total_seconds % 3600) // 60
-                seconds = total_seconds % 60
-                return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
-            except (ValueError, IndexError) as e:
-                self.logger.warning(f"Failed to parse video_start_time '{self.video_start_time}': {e}")
-
-        # Fallback: return video-relative time
-        hours = int(video_seconds // 3600)
-        minutes = int((video_seconds % 3600) // 60)
-        seconds = int(video_seconds % 60)
-        return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
-
-    def _resolve_motion_context(self, timestamp_str, frame=None, prev_frame=None):
-        """
-        Resolve current train motion context from timestamp.
-
-        Enhanced with optical flow verification for unscheduled stops.
-
-        Args:
-            timestamp_str: Current timestamp in HH:MM:SS format
-            frame: Current video frame (optional, for optical flow)
-            prev_frame: Previous video frame (optional, for optical flow)
-
-        Returns:
-            TrainMotionContext or None
-        """
-        if self.motion_resolver is None or self.trip_schedule is None:
-            return None
-
-        try:
-            # Use optical flow-enhanced method if frame is provided
-            if frame is not None and hasattr(self.motion_resolver, 'resolve_motion_state_with_optical_flow'):
-                context = self.motion_resolver.resolve_motion_state_with_optical_flow(
-                    timestamp_str, self.trip_schedule, frame, prev_frame
-                )
-            else:
-                # Fall back to standard schedule-based resolution
-                context = self.motion_resolver.resolve_motion_state(
-                    timestamp_str, self.trip_schedule
-                )
-            return context
-        except Exception as e:
-            self.logger.warning(f"Error resolving motion context: {e}")
-            return None
-
-    def _extract_ocr_timestamp(self, frame):
-        """
-        Extract timestamp from video frame using OCR.
-
-        Args:
-            frame: Video frame (numpy array)
-
-        Returns:
-            Extracted timestamp string (HH:MM:SS) or None
-        """
-        if self.ocr_service is None:
-            return None
-
-        try:
-            result = self.ocr_service.extract_timestamp(frame)
-            if result.success:
-                return result.timestamp
-            return None
-        except Exception as e:
-            self.logger.debug(f"OCR extraction failed: {e}")
-            return None
-
-    def _apply_motion_rules(self, activities_map, motion_context):
-        """
-        Apply motion-based rules to filter activities.
-
-        Args:
-            activities_map: Dictionary of activity_name -> detected (bool)
-            motion_context: Current TrainMotionContext
-
-        Returns:
-            Filtered activities_map with exemptions applied
-        """
-        if self.rule_engine is None:
-            return activities_map
-
-        try:
-            return self.rule_engine.get_filtered_activities_map(
-                activities_map, motion_context
-            )
-        except Exception as e:
-            self.logger.warning(f"Error applying motion rules: {e}")
-            return activities_map
-
-    def _check_alp_standing(self, persons_data, person_roles, frame_shape):
-        """
-        Check if ALP is standing (for pre-arrival alertness detection).
-
-        Args:
-            persons_data: Per-person detection data from process_all_persons_activities
-            person_roles: Person role assignments
-            frame_shape: Frame shape (height, width, channels)
-
-        Returns:
-            bool: True if ALP is NOT standing (violation), False otherwise
-        """
-        if self.alp_alertness_service is None:
-            return False
-
-        # Find ALP person
-        alp_person_idx = None
-        for person_idx, role_info in person_roles.items():
-            if role_info.get('role') == 'ALP':
-                alp_person_idx = person_idx
-                break
-
-        if alp_person_idx is None:
-            # No ALP identified - can't check standing
-            return False
-
-        # Get pose keypoints for ALP
-        person_data = persons_data.get(alp_person_idx)
-        if person_data is None:
-            return False
-
-        pose_keypoints = person_data.get('pose_landmarks')
-        if pose_keypoints is None:
-            return False
-
-        try:
-            result = self.alp_alertness_service.is_alp_standing(
-                pose_keypoints, frame_shape, 'ALP'
-            )
-            # Return True if NOT standing (violation)
-            return not result.get('is_standing', False)
-        except Exception as e:
-            self.logger.debug(f"ALP standing check failed: {e}")
-            return False
 
     def get_keypoint(self, landmarks: Any, keypoint_name: str) -> Any:
         """Get a keypoint from landmarks by name (works with both YOLO and MediaPipe formats).
@@ -3032,13 +2774,6 @@ class LocopilotActivityMonitor:
                     'gesture_debug': {}
                 }
 
-                # ============ BATCH VOTING VERIFICATION COLLECTOR ============
-                # Collect all activities that need verification for this person
-                # Then verify in batch at the end (single inference pass)
-                voting_collector = None
-                if self.voting_service is not None and ActivityBatchCollector is not None:
-                    voting_collector = ActivityBatchCollector()
-                
                 # ============ PER-PERSON OBJECT DETECTION (ROI ONLY) ============
                 # CR-006: Run ONLY pose-guided ROI detection for this person's keypoints.
                 # Full-frame YOLO inference (Stage 1) is already done via the 'detections'
@@ -3067,12 +2802,7 @@ class LocopilotActivityMonitor:
                 person_debug_info['head_pose'] = head_pose_info
                 mind_diversion_detected = head_pose_info.get('detected', False)
 
-                # Stage 2: Collect for batch voting verification (if enabled)
-                if mind_diversion_detected and voting_collector is not None:
-                    voting_collector.add('mind_diversion', person_idx, list(bbox))
-                    # Will be verified in batch at end of person processing
-                else:
-                    person_activities['mind_diversion'] = mind_diversion_detected
+                person_activities['mind_diversion'] = mind_diversion_detected
 
                 # NOTE: Mind diversion book suppression moved to AFTER writing detection
                 # This allows us to check both book presence AND writing activity
@@ -3153,12 +2883,7 @@ class LocopilotActivityMonitor:
                                     person_idx, 'cell_phone', True, timestamp_sec
                                 )
 
-                                # Stage 2: Collect for batch voting verification (if enabled)
-                                if should_trigger and voting_collector is not None:
-                                    voting_collector.add('cell_phone', person_idx, list(bbox))
-                                    # Will be verified in batch at end of person processing
-                                else:
-                                    person_activities['cell_phone'] = should_trigger
+                                person_activities['cell_phone'] = should_trigger
                                 break
 
                 # 3b. EATING/DRINKING DETECTION (cup/bottle near face = mind diversion)
@@ -3294,12 +3019,7 @@ class LocopilotActivityMonitor:
                     person_idx, 'writing', writing_detected_raw, timestamp_sec
                 )
 
-                # Stage 2: Collect for batch voting verification (if enabled)
-                if should_trigger and voting_collector is not None:
-                    voting_collector.add('writing', person_idx, list(bbox))
-                    # Will be verified in batch at end of person processing
-                else:
-                    person_activities['writing'] = should_trigger
+                person_activities['writing'] = should_trigger
 
                 # Store detection method in debug info for analysis
                 if writing_detected_by_book:
@@ -3463,14 +3183,7 @@ class LocopilotActivityMonitor:
                                     person_idx, 'packing_bags', True, timestamp_sec
                                 )
 
-                                # Stage 2: Collect for batch voting verification (if enabled)
-                                if should_trigger and voting_collector is not None:
-                                    voting_collector.add('packing_bags', person_idx, list(bbox))
-                                    # Will be verified in batch at end of person processing
-                                    # Tentatively set to True, will be updated after batch verification
-                                    person_activities['packing'] = True
-                                else:
-                                    person_activities['packing'] = should_trigger
+                                person_activities['packing'] = should_trigger
 
                                 # Update temporal history for hand gesture suppression
                                 if person_idx not in self.recent_person_activities:
@@ -3503,14 +3216,7 @@ class LocopilotActivityMonitor:
                                         person_idx, 'packing_bags', True, timestamp_sec
                                     )
 
-                                    # Stage 2: Collect for batch voting verification (if enabled)
-                                    if should_trigger and voting_collector is not None:
-                                        voting_collector.add('packing_bags', person_idx, list(bbox))
-                                        # Will be verified in batch at end of person processing
-                                        # Tentatively set to True, will be updated after batch verification
-                                        person_activities['packing'] = True
-                                    else:
-                                        person_activities['packing'] = should_trigger
+                                    person_activities['packing'] = should_trigger
                                     # UPDATE TEMPORAL HISTORY (for hand gesture suppression)
                                     if person_idx not in self.recent_person_activities:
                                         self.recent_person_activities[person_idx] = {}
@@ -3551,83 +3257,12 @@ class LocopilotActivityMonitor:
                 )
                 person_debug_info['gesture_debug'] = gesture_debug
 
-                # Stage 2: Collect for batch voting verification (if enabled)
-                if lp_gesture and voting_collector is not None:
-                    voting_collector.add('lp_hand_gesture', person_idx, list(bbox))
-                    # Will be verified in batch at end of person processing
-                else:
-                    person_activities['lp_hand_gesture'] = lp_gesture
+                person_activities['lp_hand_gesture'] = lp_gesture
+                person_activities['alp_hand_gesture'] = alp_gesture
 
-                if alp_gesture and voting_collector is not None:
-                    voting_collector.add('alp_hand_gesture', person_idx, list(bbox))
-                    # Will be verified in batch at end of person processing
-                else:
-                    person_activities['alp_hand_gesture'] = alp_gesture
-
-                # ============ BATCH VOTING VERIFICATION WITH MOTION CHECK ============
-                # Verify all collected activities in a single batch (shared inference)
-                # Uses optical flow motion detection to exempt violations when train is stopped
-                if voting_collector is not None and voting_collector.has_activities():
-                    try:
-                        # Use motion-aware verification if available
-                        if hasattr(self.voting_service, 'verify_batch_with_motion_check'):
-                            batch_results = self.voting_service.verify_batch_with_motion_check(
-                                video_path=self.current_video_path,
-                                timestamp_sec=timestamp_sec,
-                                activities=voting_collector.get_activities(),
-                                trip_schedule=self.trip_schedule,
-                                motion_context=self.current_motion_context
-                            )
-                        else:
-                            batch_results = self.voting_service.verify_batch(
-                                video_path=self.current_video_path,
-                                timestamp_sec=timestamp_sec,
-                                activities=voting_collector.get_activities()
-                            )
-
-                        # Apply results to person_activities
-                        for activity_key, (is_confirmed, vote_details) in batch_results.items():
-                            # Parse key: 'cell_phone_p0' -> ('cell_phone', 0)
-                            parts = activity_key.rsplit('_p', 1)
-                            if len(parts) == 2:
-                                activity_type = parts[0]
-
-                                # Map activity type to person_activities key
-                                activity_key_map = {
-                                    'mind_diversion': 'mind_diversion',
-                                    'cell_phone': 'cell_phone',
-                                    'writing': 'writing',
-                                    'packing_bags': 'packing',
-                                    'lp_hand_gesture': 'lp_hand_gesture',
-                                    'alp_hand_gesture': 'alp_hand_gesture'
-                                }
-
-                                person_key = activity_key_map.get(activity_type, activity_type)
-                                person_activities[person_key] = is_confirmed
-
-                                # Log result with motion exemption info
-                                motion_exempted = vote_details.get('motion_exempted', False)
-                                if is_confirmed:
-                                    self.logger.info(f"[VOTING BATCH] {activity_type} CONFIRMED: {vote_details.get('vote_breakdown', [])}")
-                                elif motion_exempted:
-                                    self.logger.info(f"[VOTING MOTION] {activity_type} EXEMPTED: Train stopped (optical flow)")
-                                else:
-                                    self.logger.info(f"[VOTING BATCH] {activity_type} REJECTED: {vote_details.get('vote_breakdown', [])}")
-                    except Exception as e:
-                        self.logger.error(f"[VOTING BATCH] Error in batch verification: {e}")
-                        # On error, set all collected activities to False (safe default)
-                        for activity in voting_collector.get_activities():
-                            activity_type = activity['type']
-                            activity_key_map = {
-                                'mind_diversion': 'mind_diversion',
-                                'cell_phone': 'cell_phone',
-                                'writing': 'writing',
-                                'packing_bags': 'packing',
-                                'lp_hand_gesture': 'lp_hand_gesture',
-                                'alp_hand_gesture': 'alp_hand_gesture'
-                            }
-                            person_key = activity_key_map.get(activity_type, activity_type)
-                            person_activities[person_key] = False
+                # NOTE: Per-frame VLM verification removed — VLM is called once
+                # when temporal threshold is met (one-shot verification at activity start).
+                # Per-frame VLM was resetting consecutive counters and preventing detections.
 
                 # Track hand raise timestamps for temporal coordination window
                 if person_activities['lp_hand_gesture']:
@@ -3795,6 +3430,92 @@ class LocopilotActivityMonitor:
         self.person_tracker.camera_angle = self.camera_angle
         return self.person_tracker.identify_person_roles(person_boxes, frame, detections)
     
+    # ─── VLM one-shot verification at activity start ─────────────
+    # Map activities_map keys → VLM activity type names
+    _ACT_TO_VLM = {
+        'mind_diversion': 'mind_diversion',
+        'sleep': 'sleeping',
+        'microsleep': 'microsleep',
+        'cell_phone': 'cell_phone',
+        'writing': 'writing',
+        'packing_bags': 'packing_bags',
+        'lp_hand_gesture': 'lp_hand_gesture',
+        'alp_hand_gesture': 'alp_hand_gesture',
+        'group_detected': 'group_detected',
+        'no_person_detected': 'no_person_detected',
+        'alp_not_standing': 'alp_not_standing',
+    }
+
+    # Map activities_map keys → person_activities keys
+    _ACT_TO_PA = {
+        'mind_diversion': 'mind_diversion',
+        'sleep': 'sleep',
+        'microsleep': 'microsleep',
+        'cell_phone': 'cell_phone',
+        'writing': 'writing',
+        'packing_bags': 'packing',
+        'lp_hand_gesture': 'lp_hand_gesture',
+        'alp_hand_gesture': 'alp_hand_gesture',
+    }
+
+    def _vlm_verify_at_start(
+        self,
+        activity_name: str,
+        frame,
+        persons_data: dict,
+        timestamp_sec: float,
+    ) -> bool:
+        """One-shot VLM verification when temporal threshold is met.
+
+        Called once before start_activity(). Returns True if VLM confirms
+        (or if VLM is unavailable / activity type is not verifiable).
+        """
+        vlm_type = self._ACT_TO_VLM.get(activity_name)
+        if vlm_type is None:
+            return True  # Unknown activity — let it through
+
+        # Determine bbox: person-level activities use person bbox,
+        # frame-level activities (group, no_person, alp_not_standing) use full frame.
+        pa_key = self._ACT_TO_PA.get(activity_name)
+        person_bbox = None
+        person_idx = 0
+
+        if pa_key and persons_data:
+            # Find the first person who triggered this activity
+            for pidx, pdata in persons_data.items():
+                if pdata.get('activities', {}).get(pa_key, False):
+                    person_bbox = list(pdata['bbox'])
+                    person_idx = pidx
+                    break
+            # Fallback: use first person's bbox
+            if person_bbox is None and persons_data:
+                first_pidx = next(iter(persons_data))
+                person_bbox = list(persons_data[first_pidx]['bbox'])
+                person_idx = first_pidx
+
+        if person_bbox is None:
+            # Frame-level activity — use full frame
+            person_bbox = [0, 0, frame.shape[1], frame.shape[0]]
+
+        try:
+            is_confirmed, details = self.vlm_service.verify_detection_sync(
+                frame, person_bbox, vlm_type, person_idx
+            )
+            if is_confirmed:
+                self.logger.info(
+                    f"[VLM START] {vlm_type} p{person_idx} CONFIRMED → starting activity "
+                    f"(conf={details.get('confidence', '?')}, reason={details.get('reason', '')})"
+                )
+            else:
+                self.logger.info(
+                    f"[VLM START] {vlm_type} p{person_idx} REJECTED → activity NOT started "
+                    f"(conf={details.get('confidence', '?')}, reason={details.get('reason', '')})"
+                )
+            return is_confirmed
+        except Exception as e:
+            self.logger.error(f"[VLM START] Error verifying {activity_name}: {e}")
+            return True  # On error, let activity through (safe default)
+
     def start_activity(self, activity_name: str, timestamp: float, fps: float, frame_count: int, person_roles: Optional[Dict[int, Dict[str, Any]]] = None, ocr_timestamp: Optional[str] = None) -> None:
         """Start tracking an activity
 
@@ -4237,7 +3958,8 @@ class LocopilotActivityMonitor:
         save_clips: bool = True,
         log_per_person_detections: bool = True,
         enable_stale_cleanup: bool = True,
-    ) -> None:
+        raw_detection_mode: bool = False,
+    ):
         """Core frame processing logic shared by process_video and process_video_range.
 
         CR-003: Extracted from duplicated code in process_video() and process_video_range().
@@ -4259,6 +3981,11 @@ class LocopilotActivityMonitor:
             save_clips: Whether to pass save_clips to end_activity (False for multiprocessing)
             log_per_person_detections: Whether to log per-person detection details
             enable_stale_cleanup: Whether to call _cleanup_stale_person_tracking
+            raw_detection_mode: If True, return raw detection dict after building activities_map
+                (skip temporal filtering, annotation, evidence generation). Used by two-pass pipeline.
+
+        Returns:
+            None in normal mode. In raw_detection_mode, returns a dict with per-frame detection data.
         """
         # Initialize variables for memory cleanup in finally block
         rgb_frame = None
@@ -4321,23 +4048,8 @@ class LocopilotActivityMonitor:
                         self.logger.debug(f"  Person {person_idx+1}: {role_info['role_name']} (bbox_area: {role_info.get('bbox_area', 0):.0f})")
 
                 if deduplicated_count > 2:
-                    # Stage 2: Voting verification for group_detected (if enabled)
-                    if self.voting_service is not None:
-                        is_confirmed, vote_details = self.voting_service.verify_activity(
-                            video_path=self.current_video_path,
-                            timestamp_sec=timestamp_sec,
-                            activity_type='group_detected',
-                            person_bbox=[0, 0, frame.shape[1], frame.shape[0]]  # Full frame for group detection
-                        )
-                        if is_confirmed:
-                            group_detected_flag = True
-                            self.logger.info(f"[VOTING] group_detected CONFIRMED: {vote_details.get('vote_breakdown', [])}")
-                        else:
-                            group_detected_flag = False
-                            self.logger.info(f"[VOTING] group_detected REJECTED: {vote_details.get('vote_breakdown', [])}")
-                    else:
-                        group_detected_flag = True
-                    if group_detected_flag and self.consecutive_detections['group_detected'] == 0:
+                    group_detected_flag = True
+                    if self.consecutive_detections['group_detected'] == 0:
                         self.logger.info(f"[{timestamp}] Group detected - {deduplicated_count} people (de-duplicated from {len(detections['person'])} raw detections)")
             else:
                 # No person detected at all
@@ -4454,6 +4166,17 @@ class LocopilotActivityMonitor:
                     if _state in ('DROWSY', 'MICROSLEEP', 'SLEEPING'):
                         sleep_state_overrides_writing = True
                         break
+            # Also check if person shows drowsiness indicators (reclined posture
+            # or significant nose drop) even before state machine reaches DROWSY.
+            # This breaks the chicken-and-egg: writing suppresses sleep → state
+            # machine never reaches DROWSY → writing always wins.
+            if not sleep_state_overrides_writing:
+                for _pidx, _pdata in persons_data.items():
+                    _sleep_info = _pdata.get('debug_info', {}).get('sleep_info', {})
+                    if _sleep_info.get('is_reclined_sleep') or _sleep_info.get('nose_y_drop', 0) < -0.05:
+                        sleep_state_overrides_writing = True
+                        break
+
             suppress_activities = cell_phone_detected or packing_detected
             if writing_detected and not sleep_state_overrides_writing:
                 suppress_activities = True
@@ -4539,65 +4262,21 @@ class LocopilotActivityMonitor:
             # Detect when no person is in frame
             no_person_detected_flag = (len(detections.get('deduplicated_person', [])) == 0)
 
-            # ==========================================
-            # TRAIN MOTION RULE ENGINE INTEGRATION
-            # ==========================================
-            # 1. Extract OCR timestamp from frame (if enabled)
-            ocr_timestamp = self._extract_ocr_timestamp(frame)
-
-            # 2. Resolve train motion context
-            # Priority: OCR timestamp > video_start_time + offset > video-relative time
-            if ocr_timestamp:
-                motion_timestamp = ocr_timestamp
-                # Log OCR success periodically (every 30 frames to avoid spam)
-                if frame_idx % 30 == 0:
-                    self.logger.info(f"[MOTION-RULES] Frame {frame_idx}: OCR extracted timestamp: {motion_timestamp}")
-            else:
-                # Convert video offset to real time (if video_start_time is set)
-                # Use timestamp_sec directly (it's already numeric) instead of parsing timestamp string
-                video_seconds = timestamp_sec
-                motion_timestamp = self._convert_video_to_real_time(video_seconds)
-                has_start_time = hasattr(self, 'video_start_time') and self.video_start_time
-                # Log periodically (every 60 frames)
-                if frame_idx % 60 == 0:
-                    if has_start_time:
-                        self.logger.info(
-                            f"[MOTION-RULES] Frame {frame_idx}: Using video_start_time + offset = {motion_timestamp}"
-                        )
-                    else:
-                        self.logger.info(
-                            f"[MOTION-RULES] Frame {frame_idx}: No OCR/start_time - using video-relative: {motion_timestamp}"
-                        )
-            # Pass frame for optical flow-enhanced motion detection
-            # prev_motion_frame is set at end of loop
-            prev_motion_frame = self._prev_motion_frame
-            self.current_motion_context = self._resolve_motion_context(
-                motion_timestamp, frame=frame, prev_frame=prev_motion_frame
-            )
-            # Store current frame for next iteration's optical flow
-            self._prev_motion_frame = frame.copy()
-
-            # Log motion state periodically
-            if frame_idx % 60 == 0 and self.current_motion_context:
-                self.logger.info(
-                    f"[MOTION-RULES] Frame {frame_idx}: State={self.current_motion_context.motion_state.value}, "
-                    f"Station={self.current_motion_context.current_station.station_code if self.current_motion_context.current_station else 'N/A'}, "
-                    f"Source={self.current_motion_context.resolution_source}"
-                )
-
-            # 3. Check ALP pre-arrival alertness (if in pre-arrival window)
-            alp_not_standing_detected = False
-            if (self.rule_engine is not None and
-                self.current_motion_context is not None and
-                self.rule_engine.should_check_alp_alertness(self.current_motion_context)):
-                alp_not_standing_detected = self._check_alp_standing(
-                    persons_data, person_roles, frame.shape
-                )
-                if alp_not_standing_detected and self.consecutive_detections.get('alp_not_standing', 0) == 0:
-                    self.logger.info(
-                        f"[{timestamp}] ALP NOT STANDING in pre-arrival window - "
-                        f"{self.current_motion_context.seconds_to_arrival}s to arrival"
-                    )
+            # ALP-not-standing detection: if LP is standing (tall bbox aspect ratio)
+            # while ALP remains seated, flag ALP as not standing.
+            alp_not_standing = False
+            if person_roles and len(person_roles) >= 2:
+                for pidx, prole_info in person_roles.items():
+                    if prole_info.get('role') == 'LP':
+                        lp_data = persons_data.get(pidx, {})
+                        lp_bbox = lp_data.get('bbox', [])
+                        if lp_bbox and len(lp_bbox) >= 4:
+                            bbox_height = lp_bbox[3] - lp_bbox[1]
+                            bbox_width = lp_bbox[2] - lp_bbox[0]
+                            # Standing person has tall aspect ratio (height >> width)
+                            if bbox_height > 0 and bbox_height / max(bbox_width, 1) > 2.5:
+                                alp_not_standing = True
+                        break
 
             # Update activity states with temporal filtering
             activities_map = {
@@ -4611,20 +4290,32 @@ class LocopilotActivityMonitor:
                 'alp_hand_gesture': alp_not_coordinating,  # ALP fails to respond when LP raises hand
                 'mind_diversion': mind_diversion_detected,
                 'no_person_detected': no_person_detected_flag,
-                'alp_not_standing': alp_not_standing_detected  # ALP not standing in pre-arrival
+                'alp_not_standing': alp_not_standing,
             }
 
-            # 3.5. Suppress no_person_detected when trip schedule is unavailable
-            if self.suppress_no_person_without_schedule and self.trip_schedule is None:
-                if activities_map.get('no_person_detected', False):
-                    activities_map['no_person_detected'] = False
-                    self.logger.debug(
-                        f"[{timestamp}] no_person_detected suppressed - "
-                        f"no trip schedule available to distinguish station halts"
-                    )
+            # NOTE: Per-frame VLM for frame-level activities also removed.
+            # VLM verification happens once when temporal threshold is met.
 
-            # 4. Apply motion-based rule engine to filter exempted activities
-            activities_map = self._apply_motion_rules(activities_map, self.current_motion_context)
+            # RAW DETECTION MODE: Return per-frame detection data without temporal filtering.
+            # Used by the two-pass pipeline where Pass 1 (parallel workers) collects raw detections
+            # and Pass 2 (sequential) applies temporal filtering deterministically.
+            if raw_detection_mode:
+                return {
+                    'frame_idx': frame_idx,
+                    'timestamp_sec': timestamp_sec,
+                    'sample_idx': sample_idx,
+                    'activities_map': activities_map,
+                    'people_count': len(detections.get('deduplicated_person', [])),
+                    'person_roles': person_roles,
+                    'persons_data_summary': {
+                        pid: {
+                            'bbox': list(pdata.get('bbox', [])),
+                            'role': pdata.get('role'),
+                            'activities': pdata.get('activities', {}),
+                        }
+                        for pid, pdata in (persons_data or {}).items()
+                    },
+                }
 
             for activity_name, detected in activities_map.items():
                 if detected:
@@ -4638,7 +4329,17 @@ class LocopilotActivityMonitor:
                     if self.consecutive_detections[activity_name] >= required_consecutive:
                         # Start activity if not already active
                         if not self.activities[activity_name]['active']:
-                            self.start_activity(activity_name, timestamp, fps, frame_idx, person_roles=person_roles, ocr_timestamp=ocr_timestamp)
+                            # One-shot VLM verification before starting activity
+                            if self.vlm_service is not None:
+                                vlm_confirmed = self._vlm_verify_at_start(
+                                    activity_name, frame, persons_data, timestamp_sec
+                                )
+                                if not vlm_confirmed:
+                                    # VLM rejected — reset counter and skip
+                                    self.consecutive_detections[activity_name] = 0
+                                    self.grace_counters[activity_name] = 0
+                                    continue
+                            self.start_activity(activity_name, timestamp, fps, frame_idx, person_roles=person_roles)
 
                         # Continue recording frames ONLY when activity is actively detected
                         if self.activities[activity_name]['active']:
@@ -4699,6 +4400,9 @@ class LocopilotActivityMonitor:
 
         except Exception as e:
             self.logger.error(f"Error processing sample {sample_idx} (frame {frame_idx}): {e}")
+            if raw_detection_mode:
+                # In raw mode, return None to signal frame processing failure
+                return None
         finally:
             # MEMORY FIX: Explicitly delete frame after processing to free memory
             if annotated_frame_for_activity is not None:
@@ -4785,21 +4489,25 @@ class LocopilotActivityMonitor:
             self.logger.info(f"  - Frames: {self.frames_dir}")
         self.logger.info(f"  - Activities: {os.path.join(self.run_dir, 'activities.json')}")
 
-        # Log voting verification cache statistics
-        if self.voting_service is not None:
+        # Log VLM verification statistics
+        if self.vlm_service is not None:
             try:
-                cache_stats = self.voting_service.get_cache_stats()
+                vlm_stats = self.vlm_service.get_stats()
                 self.logger.info("-" * 40)
-                self.logger.info("[VOTING CACHE STATS]")
-                self.logger.info(f"  Cache hits: {cache_stats.get('hits', 0)}")
-                self.logger.info(f"  Cache misses: {cache_stats.get('misses', 0)}")
-                self.logger.info(f"  Hit rate: {cache_stats.get('hit_rate', 0):.1f}%")
-                self.logger.info(f"  Cache size: {cache_stats.get('size', 0)}/{cache_stats.get('max_size', 0)}")
+                self.logger.info("[VLM VERIFICATION STATS]")
+                self.logger.info(f"  Total requests: {vlm_stats.get('total_requests', 0)}")
+                self.logger.info(f"  VLM calls: {vlm_stats.get('vlm_calls', 0)}")
+                self.logger.info(f"  Cache hits: {vlm_stats.get('cache_hits', 0)}")
+                self.logger.info(f"  Verified true: {vlm_stats.get('verified_true', 0)}")
+                self.logger.info(f"  Verified false: {vlm_stats.get('verified_false', 0)}")
+                self.logger.info(f"  Throttle hits: {vlm_stats.get('throttle_hits', 0)}")
+                self.logger.info(f"  Failures: {vlm_stats.get('vlm_failures', 0)}")
+                self.logger.info(f"  Circuit breaker trips: {vlm_stats.get('circuit_breaker_trips', 0)}")
                 # Clear cache after video processing to free memory
-                self.voting_service.clear_cache()
+                self.vlm_service.clear_cache()
                 self.logger.info("  Cache cleared for next video")
             except Exception as e:
-                self.logger.debug(f"Could not get cache stats: {e}")
+                self.logger.debug(f"Could not get VLM stats: {e}")
 
         self.logger.info("=" * 60)
 
@@ -4844,28 +4552,6 @@ class LocopilotActivityMonitor:
         # Get batch settings from instance variables
         batch_size = self.gpu_batch_size
         batch_enabled = self.gpu_batch_enabled
-
-        # CR-013: Initialize optical flow state for chunk boundaries
-        # In multiprocessing mode, each worker starts with _prev_motion_frame = None,
-        # so the first frame(s) of each chunk produce no optical flow results.
-        # Fix: read the frame immediately before this chunk's start to seed optical flow.
-        if start_frame > 0 and self._prev_motion_frame is None:
-            try:
-                with video_capture_context(self.video_path) as _init_cap:
-                    _init_cap.set(cv2.CAP_PROP_POS_FRAMES, int(start_frame - 1))
-                    _init_ret, _init_frame = _init_cap.read()
-                    if _init_ret and _init_frame is not None:
-                        self._prev_motion_frame = _init_frame.copy()
-                        self.logger.debug(
-                            f"[CR-013] Initialized optical flow with frame {start_frame - 1} "
-                            f"for chunk starting at {start_frame} (worker {os.getpid()})"
-                        )
-                    else:
-                        self.logger.debug(
-                            f"[CR-013] Could not read frame {start_frame - 1} for optical flow init"
-                        )
-            except Exception as e:
-                self.logger.debug(f"[CR-013] Optical flow pre-init failed: {e}")
 
         # PHASE 1: Collect all frames for this chunk
         frames_data = []  # List of (frame, frame_idx, timestamp_sec, sample_idx)
@@ -4972,13 +4658,117 @@ class LocopilotActivityMonitor:
         # Return detected activities (without generating summary reports)
         return self.all_activities
 
+    def process_video_range_raw(self, start_frame: int, end_frame: int) -> list:
+        """Process frame range and return raw per-frame detections (no temporal filtering).
+
+        This is Pass 1 of the two-pass deterministic pipeline. Workers call this method
+        to run GPU-heavy detection (YOLO, pose, face mesh, sleep state, activity detection)
+        and return raw per-frame detection flags (activities_map) without applying temporal
+        filtering or generating evidence.
+
+        Pass 2 (TemporalFilteringService) then applies temporal filtering sequentially
+        across ALL frames from all workers, making activity detection deterministic.
+
+        Args:
+            start_frame: Starting frame index
+            end_frame: Ending frame index
+
+        Returns:
+            List of per-frame detection dicts, each containing:
+                frame_idx, timestamp_sec, sample_idx, activities_map,
+                people_count, person_roles, persons_data_summary
+        """
+        # CR-011: Use cached video metadata instead of reopening VideoCapture
+        total_frames, fps, _duration = self._get_video_metadata()
+
+        self.logger.info(f"[RAW MODE] Processing frame range {start_frame}-{end_frame} (raw detections, no temporal filtering)")
+
+        # =========================================================================
+        # GPU BATCH OPTIMIZATION: Same as process_video_range but returns raw dicts
+        # =========================================================================
+
+        batch_size = self.gpu_batch_size
+        batch_enabled = self.gpu_batch_enabled
+
+        # PHASE 1: Collect all frames for this chunk
+        frames_data = []
+        for sample_idx, timestamp_sec, frame, frame_idx in self.sample_video_frames(
+            self.video_path, start_frame=start_frame, end_frame=end_frame
+        ):
+            frames_data.append((frame.copy(), frame_idx, timestamp_sec, sample_idx))
+
+        if not frames_data:
+            self.logger.warning(f"[RAW MODE] No frames sampled in range {start_frame}-{end_frame}")
+            return []
+
+        self.logger.info(f"[RAW MODE] Collected {len(frames_data)} frames for batch processing")
+
+        # PHASE 2 & 3: Batch YOLO inference (object + pose detection)
+        if batch_enabled and len(frames_data) > 1:
+            frames_only = [fd[0] for fd in frames_data]
+
+            # Preprocess dark/IR frames for better YOLO person detection
+            detection_frames = self.object_detector._preprocess_frames_for_detection(frames_only)
+
+            batch_object_detections = self.object_detector.detect_objects_batch(detection_frames, batch_size)
+            batch_pose_results = self.detect_poses_batch(frames_only, batch_size)
+
+            # Low-confidence pose pass for sleep detection
+            sleep_pose_conf = getattr(self.settings, 'yolo_pose_sleep_confidence', self.YOLO_SLEEP_POSE_CONFIDENCE) if self.settings else self.YOLO_SLEEP_POSE_CONFIDENCE
+            if sleep_pose_conf < self.yolo_pose.conf_threshold:
+                batch_sleep_pose_results = self.detect_poses_batch(frames_only, batch_size, conf_threshold=sleep_pose_conf)
+            else:
+                batch_sleep_pose_results = None
+
+            del frames_only
+            gc.collect()
+        else:
+            batch_object_detections = None
+            batch_pose_results = None
+            batch_sleep_pose_results = None
+
+        # PHASE 4: Sequential per-frame processing in raw detection mode
+        frame_detections = []
+
+        for idx, (frame, frame_idx, timestamp_sec, sample_idx) in enumerate(frames_data):
+            result = self._process_frames_core(
+                frame=frame,
+                frame_idx=frame_idx,
+                timestamp_sec=timestamp_sec,
+                sample_idx=sample_idx,
+                total_frames=total_frames,
+                fps=fps,
+                batch_object_detections=batch_object_detections,
+                batch_pose_results=batch_pose_results,
+                batch_sleep_pose_results=batch_sleep_pose_results,
+                batch_idx=idx,
+                save_clips=False,
+                log_per_person_detections=False,
+                enable_stale_cleanup=False,
+                raw_detection_mode=True,
+            )
+            if result is not None:
+                frame_detections.append(result)
+
+            # MEMORY FIX: Explicitly delete frame after processing
+            if frame is not None:
+                del frame
+
+        # MEMORY FIX: Force garbage collection
+        gc.collect()
+
+        self.logger.info(f"[RAW MODE] Frame range {start_frame}-{end_frame} completed: "
+                         f"{len(frame_detections)} raw detections collected")
+
+        return frame_detections
+
     def cleanup(self) -> None:
         """
         [OK] MEMORY FIX: Cleanup method to release model resources
 
         This method mirrors POC_2's MediaPipeService.close() pattern.
         Call this after processing to free GPU/CPU resources.
-        
+
         NOTE: If models were pre-loaded (worker pool), they are NOT closed
         since they are shared across tasks in the same worker.
         """

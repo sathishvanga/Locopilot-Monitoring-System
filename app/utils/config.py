@@ -233,7 +233,7 @@ class Settings(BaseSettings):
     sleep_nose_below_px_threshold: float = float(os.getenv("SLEEP_NOSE_BELOW_PX_THRESH", "-55"))
     sleep_head_tilt_threshold: float = float(os.getenv("SLEEP_HEAD_TILT_THRESH", "-155"))
     sleep_nose_y_norm_threshold: float = float(os.getenv("SLEEP_NOSE_Y_NORM_THRESH", "0.30"))
-    sleep_score_threshold: int = int(os.getenv("SLEEP_SCORE_THRESH", "5"))
+    sleep_score_threshold: int = int(os.getenv("SLEEP_SCORE_THRESH", "3"))
 
     # Baseline calibration for camera-angle adaptation
     sleep_baseline_enabled: bool = os.getenv("SLEEP_BASELINE_ENABLED", "true").lower() == "true"
@@ -485,6 +485,37 @@ class Settings(BaseSettings):
 
     # Cache TTL for delay data (in seconds, default 30 minutes)
     etrain_cache_ttl: int = int(os.getenv("ETRAIN_CACHE_TTL", "1800"))
+
+    # ==========================================
+    # VLM Verification Settings (Qwen2.5-VL)
+    # ==========================================
+    # Enable/disable VLM-based secondary verification of detections
+    vlm_verification_enabled: bool = bool(int(os.getenv("VLM_VERIFICATION_ENABLED", "0")))
+
+    # vLLM server endpoint (runs alongside the main app on a different port)
+    vlm_server_url: str = os.getenv("VLM_SERVER_URL", "http://localhost:8001/v1")
+    vlm_model_name: str = os.getenv("VLM_MODEL_NAME", "Qwen/Qwen2.5-VL-7B-Instruct-AWQ")
+
+    # VLM request timeout (seconds)
+    vlm_timeout: float = float(os.getenv("VLM_TIMEOUT", "10.0"))
+    vlm_max_retries: int = int(os.getenv("VLM_MAX_RETRIES", "2"))
+
+    # Circuit breaker: disable VLM after N consecutive failures
+    vlm_circuit_breaker_threshold: int = int(os.getenv("VLM_CIRCUIT_BREAKER_THRESHOLD", "5"))
+    vlm_circuit_breaker_reset_sec: float = float(os.getenv("VLM_CIRCUIT_BREAKER_RESET_SEC", "60.0"))
+
+    # Frame cache TTL (avoid re-verifying similar frames)
+    vlm_cache_ttl: float = float(os.getenv("VLM_CACHE_TTL", "5.0"))
+
+    # Crop padding around detection bbox (pixels)
+    vlm_crop_padding: int = int(os.getenv("VLM_CROP_PADDING", "50"))
+
+    # JPEG quality for encoding frames sent to VLM
+    vlm_jpeg_quality: int = int(os.getenv("VLM_JPEG_QUALITY", "85"))
+
+    # Rejection cooldown: skip repeated VLM calls for the same activity+person
+    # if VLM already rejected it within this many seconds (default 15s)
+    vlm_rejection_cooldown: float = float(os.getenv("VLM_REJECTION_COOLDOWN", "15.0"))
 
 
 @lru_cache()
