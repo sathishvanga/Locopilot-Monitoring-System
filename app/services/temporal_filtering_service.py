@@ -52,6 +52,7 @@ class TemporalFilteringService:
         vlm_service=None,
         clip_buffer_before: float = 1.0,
         clip_buffer_after: float = 1.0,
+        settings=None,
     ):
         self.activity_thresholds = activity_thresholds
         self.activity_type_map = activity_type_map
@@ -62,6 +63,7 @@ class TemporalFilteringService:
         self.vlm_service = vlm_service
         self.clip_buffer_before = clip_buffer_before
         self.clip_buffer_after = clip_buffer_after
+        self.settings = settings
 
         # VLM activity-name → vlm-type mapping (mirrors _ACT_TO_VLM in monitor)
         self._ACT_TO_VLM = {
@@ -162,6 +164,13 @@ class TemporalFilteringService:
         }
 
         all_activities: List[Dict] = []
+
+        # VLM sleep screening: per-person sustained stillness tracker (mirrors monitor)
+        vlm_sleep_stillness_tracker: Dict[str, Dict] = {}
+        vlm_sleep_enabled = (
+            self.vlm_service is not None
+            and getattr(self.settings, 'vlm_sleep_screening_enabled', False)
+        )
 
         # Evidence output directory
         clips_dir = os.path.join(run_dir, 'clips') if run_dir else None
@@ -317,6 +326,73 @@ class TemporalFilteringService:
 
             # Maintain rolling buffer of recent frame indices (mirrors monitor's frame_idx_buffer)
             frame_idx_buffer.append(frame_idx)
+
+            # VLM sleep screening: track per-person stillness from raw sleep_debug
+            if vlm_sleep_enabled:
+                persons_summary = det.get('persons_data_summary', {})
+                for pidx, pdata in persons_summary.items():
+                    sleep_dbg = pdata.get('sleep_debug', {})
+                    avg_vel = sleep_dbg.get('avg_wrist_velocity')
+                    movement = sleep_dbg.get('movement')
+                    if avg_vel is None or movement is None:
+                        continue
+
+                    # Skip if sleep/microsleep already detected for this person
+                    p_acts = pdata.get('activities', {})
+                    if p_acts.get('sleep') or p_acts.get('microsleep'):
+                        continue
+
+                    vel_thresh = getattr(self.settings, 'vlm_sleep_stillness_velocity', 0.01)
+                    mov_thresh = getattr(self.settings, 'vlm_sleep_stillness_movement', 5.0)
+
+                    tkey = f"vlm_sleep_{pidx}"
+                    if tkey not in vlm_sleep_stillness_tracker:
+                        vlm_sleep_stillness_tracker[tkey] = {
+                            'consecutive_still': 0, 'last_vlm_time': 0,
+                        }
+                    trk = vlm_sleep_stillness_tracker[tkey]
+
+                    if avg_vel < vel_thresh and movement < mov_thresh:
+                        trk['consecutive_still'] += 1
+                    else:
+                        trk['consecutive_still'] = 0
+
+                    req_frames = getattr(self.settings, 'vlm_sleep_stillness_frames', 30)
+                    cooldown = getattr(self.settings, 'vlm_sleep_screening_cooldown', 60.0)
+
+                    if (trk['consecutive_still'] >= req_frames
+                            and timestamp_sec - trk['last_vlm_time'] > cooldown):
+                        self.logger.info(
+                            f"[PASS 2] [{timestamp_str}] [VLM SLEEP SCREEN] Person {pidx}: "
+                            f"{trk['consecutive_still']} frames still "
+                            f"(vel={avg_vel:.4f}, mov={movement:.2f}) → calling VLM"
+                        )
+                        try:
+                            cap = cv2.VideoCapture(video_path)
+                            cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
+                            ret, vlm_frame = cap.read()
+                            cap.release()
+                            if ret and vlm_frame is not None:
+                                p_bbox = pdata.get('bbox', [0, 0, vlm_frame.shape[1], vlm_frame.shape[0]])
+                                is_confirmed, details = self.vlm_service.verify_detection_sync(
+                                    vlm_frame, list(p_bbox), 'sleeping', pidx
+                                )
+                                trk['last_vlm_time'] = timestamp_sec
+                                if is_confirmed:
+                                    # Inject microsleep into activities_map so temporal filtering picks it up
+                                    activities_map['microsleep'] = True
+                                    self.logger.info(
+                                        f"[PASS 2] [{timestamp_str}] [VLM SLEEP SCREEN] Person {pidx}: "
+                                        f"VLM CONFIRMED → microsleep=True"
+                                    )
+                                else:
+                                    trk['consecutive_still'] = 0
+                                    self.logger.info(
+                                        f"[PASS 2] [{timestamp_str}] [VLM SLEEP SCREEN] Person {pidx}: "
+                                        f"VLM REJECTED → reset"
+                                    )
+                        except Exception as e:
+                            self.logger.error(f"[PASS 2] [VLM SLEEP SCREEN] Error: {e}")
 
             for activity_name, detected in activities_map.items():
                 if activity_name not in consecutive_detections:

@@ -754,6 +754,9 @@ class LocopilotActivityMonitor:
             else:
                 self.logger.info("[VLM] VLMVerificationService not available")
 
+        # VLM sleep screening: per-person sustained stillness tracker
+        self._vlm_sleep_stillness_tracker = {}
+
         # Fix 17: alp_not_standing is now in ACTIVITY_REGISTRY (no manual addition needed)
 
         # ---------------------------------------------------------------------------
@@ -2921,6 +2924,73 @@ class LocopilotActivityMonitor:
                         person_activities['microsleep'] = True
                         person_debug_info['sleep_info'] = {'method': 'haar_eye_closure', **haar_eye_result}
 
+                # 2d. VLM SLEEP SCREENING FALLBACK (when all pose/haar methods failed)
+                # For overhead/behind cameras where pose geometry and haar cascade both fail,
+                # track sustained stillness and use VLM to visually confirm sleep.
+                if (self.vlm_service is not None
+                        and not person_activities.get('sleep')
+                        and not person_activities.get('microsleep')
+                        and getattr(self.settings, 'vlm_sleep_screening_enabled', False)):
+
+                    avg_vel = pose_sleep_info.get('avg_wrist_velocity', 999)
+                    movement = pose_sleep_info.get('movement', 999)
+
+                    vel_thresh = getattr(self.settings, 'vlm_sleep_stillness_velocity', 0.01)
+                    mov_thresh = getattr(self.settings, 'vlm_sleep_stillness_movement', 5.0)
+
+                    tracker_key = f"vlm_sleep_{person_idx}"
+                    if tracker_key not in self._vlm_sleep_stillness_tracker:
+                        self._vlm_sleep_stillness_tracker[tracker_key] = {
+                            'consecutive_still': 0, 'last_vlm_time': 0, 'vlm_reject_cooldown': 0
+                        }
+                    tracker = self._vlm_sleep_stillness_tracker[tracker_key]
+
+                    is_still = avg_vel < vel_thresh and movement < mov_thresh
+
+                    if is_still:
+                        tracker['consecutive_still'] += 1
+                    else:
+                        tracker['consecutive_still'] = 0
+
+                    required_frames = getattr(self.settings, 'vlm_sleep_stillness_frames', 30)
+                    cooldown_sec = getattr(self.settings, 'vlm_sleep_screening_cooldown', 60.0)
+
+                    if (tracker['consecutive_still'] >= required_frames
+                            and timestamp_sec - tracker['last_vlm_time'] > cooldown_sec):
+                        # Sustained stillness → ask VLM
+                        self.logger.info(
+                            f"[{timestamp}] [VLM SLEEP SCREEN] Person {person_idx+1}: "
+                            f"{tracker['consecutive_still']} frames still "
+                            f"(vel={avg_vel:.4f}, mov={movement:.2f}) → calling VLM"
+                        )
+                        try:
+                            is_confirmed, details = self.vlm_service.verify_detection_sync(
+                                frame, list(bbox), 'sleeping', person_idx
+                            )
+                            tracker['last_vlm_time'] = timestamp_sec
+                            if is_confirmed:
+                                person_activities['microsleep'] = True
+                                person_debug_info['sleep_info'] = {
+                                    'method': 'vlm_sleep_screening',
+                                    'consecutive_still_frames': tracker['consecutive_still'],
+                                    'avg_wrist_velocity': avg_vel,
+                                    'movement': movement,
+                                    'vlm_confirmed': True,
+                                    'vlm_reason': details.get('reason', ''),
+                                }
+                                self.logger.info(
+                                    f"[{timestamp}] [VLM SLEEP SCREEN] Person {person_idx+1}: "
+                                    f"VLM CONFIRMED sleeping → microsleep=True"
+                                )
+                            else:
+                                tracker['consecutive_still'] = 0
+                                self.logger.info(
+                                    f"[{timestamp}] [VLM SLEEP SCREEN] Person {person_idx+1}: "
+                                    f"VLM REJECTED → reset (reason={details.get('reason', '')})"
+                                )
+                        except Exception as e:
+                            self.logger.error(f"[VLM SLEEP SCREEN] Error: {e}")
+
                 # 3. CELL PHONE DETECTION (check if hand near phone in THIS person's region)
                 # MOVED BEFORE HAND GESTURE: Need to detect this first for context-aware filtering
                 if len(detections['cell_phone']) > 0:
@@ -4254,7 +4324,17 @@ class LocopilotActivityMonitor:
             # GATE: Require sleep state machine to be in DROWSY or beyond before
             # reporting microsleep/sleep. This prevents false positives where a single
             # frame scores high but the person hasn't shown sustained drowsiness.
+            # Exception: VLM-screened sleep bypasses the state machine entirely
+            # (the sustained stillness + VLM confirmation is the gate instead).
+            vlm_screened_sleep = False
             if microsleep_detected or sleep_detected:
+                for _pidx, _pdata in persons_data.items():
+                    _sleep_info = _pdata.get('debug_info', {}).get('sleep_info', {})
+                    if _sleep_info.get('method') == 'vlm_sleep_screening':
+                        vlm_screened_sleep = True
+                        break
+
+            if (microsleep_detected or sleep_detected) and not vlm_screened_sleep:
                 state_machine_ready = False
                 for _pidx, _pdata in persons_data.items():
                     _sleep_info = _pdata.get('debug_info', {}).get('sleep_info', {})
@@ -4455,6 +4535,10 @@ class LocopilotActivityMonitor:
                             'bbox': list(pdata.get('bbox', [])),
                             'role': pdata.get('role'),
                             'activities': pdata.get('activities', {}),
+                            'sleep_debug': {
+                                'avg_wrist_velocity': pdata.get('debug_info', {}).get('sleep_info', {}).get('avg_wrist_velocity'),
+                                'movement': pdata.get('debug_info', {}).get('sleep_info', {}).get('movement'),
+                            },
                         }
                         for pid, pdata in (persons_data or {}).items()
                     },

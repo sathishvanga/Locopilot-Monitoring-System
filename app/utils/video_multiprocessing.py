@@ -874,6 +874,7 @@ class VideoMultiprocessingOrchestrator:
             vlm_service=vlm_service,
             clip_buffer_before=clip_buffer_before,
             clip_buffer_after=clip_buffer_after,
+            settings=worker_settings,
         )
 
         all_activities = temporal_service.apply_temporal_filtering(

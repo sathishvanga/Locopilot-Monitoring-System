@@ -522,6 +522,15 @@ class Settings(BaseSettings):
     # if VLM already rejected it within this many seconds (default 15s)
     vlm_rejection_cooldown: float = float(os.getenv("VLM_REJECTION_COOLDOWN", "15.0"))
 
+    # VLM Sleep Screening (fallback for overhead/behind cameras)
+    # When standard sleep detection fails (overhead angle), tracks sustained
+    # stillness and uses VLM to visually confirm sleep. Requires VLM enabled.
+    vlm_sleep_screening_enabled: bool = os.getenv("VLM_SLEEP_SCREENING_ENABLED", "0") == "1"
+    vlm_sleep_stillness_velocity: float = float(os.getenv("VLM_SLEEP_STILLNESS_VELOCITY", "0.01"))
+    vlm_sleep_stillness_movement: float = float(os.getenv("VLM_SLEEP_STILLNESS_MOVEMENT", "5.0"))
+    vlm_sleep_stillness_frames: int = int(os.getenv("VLM_SLEEP_STILLNESS_FRAMES", "30"))
+    vlm_sleep_screening_cooldown: float = float(os.getenv("VLM_SLEEP_SCREENING_COOLDOWN", "60.0"))
+
 
 @lru_cache()
 def get_settings() -> Settings:
