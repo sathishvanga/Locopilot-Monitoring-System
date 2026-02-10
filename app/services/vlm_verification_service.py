@@ -37,8 +37,8 @@ ACTIVITY_DESCRIPTIONS = {
     "mind_diversion": "the operator's attention appears diverted from the track ahead",
     "group_detected": "three or more people are detected in the locomotive cab",
     "no_person_detected": "no person is detected in the locomotive cab",
-    "lp_hand_gesture": "the Loco Pilot (LP) failed to exchange a coordination hand gesture — appears distracted, sleeping, or otherwise not participating in crew coordination",
-    "alp_hand_gesture": "the Assistant Loco Pilot (ALP) failed to exchange a coordination hand gesture — appears distracted, sleeping, or otherwise not participating in crew coordination",
+    "lp_hand_gesture": "the LP appears to be giving a hand signal but the ALP is NOT reciprocating — possible crew coordination failure",
+    "alp_hand_gesture": "the ALP appears to be giving a hand signal but the LP is NOT reciprocating — possible crew coordination failure",
     "alp_not_standing": "the Assistant Loco Pilot (ALP) is not standing during pre-arrival",
 }
 
@@ -98,33 +98,47 @@ ACTIVITY_RULES = {
    - If any part of a person (arm, leg, torso) is visible -> verified=false
    - If the image is dark/unclear and you cannot determine -> verified=false""",
 
-    "lp_hand_gesture": """   - This detection means the LP failed to participate in a coordination hand gesture exchange
-   - verified=true ONLY if the Loco Pilot shows clear signs of NOT participating in crew coordination:
-     * Person is sleeping, drowsy, head slumped, or eyes closed -> verified=true (not participating)
-     * Person is smoking, hand near face/mouth with cigarette -> verified=true (distracted)
-     * Person is using a cell phone or looking at a device -> verified=true (distracted)
-     * Person is looking away from the track, turned around, or clearly inattentive -> verified=true
-     * Person appears idle and disengaged — slouched back, hands clasped, staring blankly -> verified=true
-   - verified=false if the person appears alert and engaged in normal duties:
-     * Both crew members are alert, sitting upright, looking forward -> verified=false (normal operations)
-     * Person is actively operating controls, levers, or switches -> verified=false (doing their job)
-     * Person has hand/arm extended toward controls or instruments -> verified=false (working)
-     * Both persons appear attentive and engaged -> verified=false (no coordination failure)
-   - IMPORTANT: Normal locomotive operation where both crew are alert and working is NOT a violation""",
+    "lp_hand_gesture": """   - The image shows BOTH crew members in the locomotive cab.
+   - CONTEXT: In Indian Railways, crew must exchange hand signals at signals/stations. One person raises their hand as a signal, and the other MUST raise their hand to acknowledge.
+   - The detection system flagged: the LP (Loco Pilot) raised their hand to give a signal, but the ALP (Assistant Loco Pilot) did NOT raise their hand to reciprocate.
+   - STEP 1: Is anyone ACTUALLY giving a deliberate hand signal (open palm raised, arm extended upward/outward in a clear signaling gesture, NOT touching any control)?
+     * A hand signal is a DELIBERATE gesture — arm/hand raised freely in the air, NOT gripping or touching anything
+     * If NEITHER person is giving a hand signal -> verified=false (no signal exchange is happening, false detection)
+   - STEP 2: If one person IS giving a hand signal, is the other person ALSO raising their hand to respond?
+     * One person signaling + other person's hands are down/on controls/in lap -> verified=true (failed coordination)
+     * Both persons have hands raised in signaling gestures -> verified=false (coordination successful)
+   - These are NOT hand signals (verified=false for all):
+     * Reaching for or operating overhead switches, levers, or controls -> verified=false
+     * Hands gripping brake handle, throttle, or dashboard controls -> verified=false
+     * Reaching for radio handset, equipment, or cabin fixtures -> verified=false
+     * Adjusting instruments, buttons, or control panel -> verified=false
+     * Both crew sitting normally with hands on/near controls -> verified=false
+     * Any arm movement where the hand is touching or gripping equipment -> verified=false
+   - verified=false with reason "reclassify:microsleep" if:
+     * Either person is sleeping, drowsy, head slumped, or eyes closed -> verified=false, reason="reclassify:microsleep"
+   - CRITICAL: Raising arm to operate controls/switches is NOT a hand signal. Only a FREE hand raised in the air with no contact with equipment counts as a signal.
+   - When in doubt, return verified=false.""",
 
-    "alp_hand_gesture": """   - This detection means the ALP failed to participate in a coordination hand gesture exchange
-   - verified=true ONLY if the Assistant Loco Pilot shows clear signs of NOT participating in crew coordination:
-     * Person is sleeping, drowsy, head slumped, or eyes closed -> verified=true (not participating)
-     * Person is smoking, hand near face/mouth with cigarette -> verified=true (distracted)
-     * Person is using a cell phone or looking at a device -> verified=true (distracted)
-     * Person is looking away from the track, turned around, or clearly inattentive -> verified=true
-     * Person appears idle and disengaged — slouched back, hands clasped, staring blankly -> verified=true
-   - verified=false if the person appears alert and engaged in normal duties:
-     * Both crew members are alert, sitting upright, looking forward -> verified=false (normal operations)
-     * Person is actively operating controls, levers, or switches -> verified=false (doing their job)
-     * Person has hand/arm extended toward controls or instruments -> verified=false (working)
-     * Both persons appear attentive and engaged -> verified=false (no coordination failure)
-   - IMPORTANT: Normal locomotive operation where both crew are alert and working is NOT a violation""",
+    "alp_hand_gesture": """   - The image shows BOTH crew members in the locomotive cab.
+   - CONTEXT: In Indian Railways, crew must exchange hand signals at signals/stations. One person raises their hand as a signal, and the other MUST raise their hand to acknowledge.
+   - The detection system flagged: the ALP (Assistant Loco Pilot) raised their hand to give a signal, but the LP (Loco Pilot) did NOT raise their hand to reciprocate.
+   - STEP 1: Is anyone ACTUALLY giving a deliberate hand signal (open palm raised, arm extended upward/outward in a clear signaling gesture, NOT touching any control)?
+     * A hand signal is a DELIBERATE gesture — arm/hand raised freely in the air, NOT gripping or touching anything
+     * If NEITHER person is giving a hand signal -> verified=false (no signal exchange is happening, false detection)
+   - STEP 2: If one person IS giving a hand signal, is the other person ALSO raising their hand to respond?
+     * One person signaling + other person's hands are down/on controls/in lap -> verified=true (failed coordination)
+     * Both persons have hands raised in signaling gestures -> verified=false (coordination successful)
+   - These are NOT hand signals (verified=false for all):
+     * Reaching for or operating overhead switches, levers, or controls -> verified=false
+     * Hands gripping brake handle, throttle, or dashboard controls -> verified=false
+     * Reaching for radio handset, equipment, or cabin fixtures -> verified=false
+     * Adjusting instruments, buttons, or control panel -> verified=false
+     * Both crew sitting normally with hands on/near controls -> verified=false
+     * Any arm movement where the hand is touching or gripping equipment -> verified=false
+   - verified=false with reason "reclassify:microsleep" if:
+     * Either person is sleeping, drowsy, head slumped, or eyes closed -> verified=false, reason="reclassify:microsleep"
+   - CRITICAL: Raising arm to operate controls/switches is NOT a hand signal. Only a FREE hand raised in the air with no contact with equipment counts as a signal.
+   - When in doubt, return verified=false.""",
 
     "alp_not_standing": """   - verified=true ONLY if the ALP is clearly seated or crouching, not standing
    - If the person appears to be standing upright -> verified=false
@@ -140,6 +154,12 @@ Analyze the image and respond ONLY in this exact JSON format:
 Evaluate whether the flagged activity is genuinely occurring:
 {activity_rules}
 
+If the flagged activity is NOT occurring, but you observe a DIFFERENT safety violation from this list:
+  cell_phone, writing, packing_bags, eating_drinking, sleeping, microsleep, mind_diversion,
+  group_detected, no_person_detected, alp_not_standing, lp_hand_gesture, alp_hand_gesture
+then respond with verified=false and set reason to "reclassify:<activity_name>" (e.g. "reclassify:sleeping").
+Only reclassify if you are confident the alternative activity is genuinely occurring.
+
 IMPORTANT: Respond with ONLY the JSON object, no other text."""
 
 
@@ -151,6 +171,41 @@ def build_verification_prompt(activity_type: str) -> str:
         activity_description=description,
         activity_rules=rules,
     )
+
+
+# ============================================================
+# Reclassification support
+# ============================================================
+
+# Activities that are valid reclassification targets (use ACTIVITY_REGISTRY key names)
+RECLASSIFIABLE_ACTIVITIES = {
+    'cell_phone', 'writing', 'packing_bags', 'eating_drinking',
+    'sleep', 'microsleep', 'mind_diversion',
+    'group_detected', 'no_person_detected', 'alp_not_standing',
+    'lp_hand_gesture', 'alp_hand_gesture',
+}
+
+# VLM prompt names → ACTIVITY_REGISTRY key names
+_VLM_TO_REGISTRY = {
+    'sleeping': 'sleep',
+    'packing': 'packing_bags',
+}
+
+
+def parse_reclassify_target(reason: str) -> Optional[str]:
+    """Extract and validate reclassification target from VLM reason string.
+
+    Returns the target activity name (registry key) if valid, None otherwise.
+    """
+    if not reason or 'reclassify:' not in reason:
+        return None
+    idx = reason.index('reclassify:') + len('reclassify:')
+    target = reason[idx:].split()[0].strip().strip('"').strip("'")
+    # Normalize VLM prompt names to registry keys
+    target = _VLM_TO_REGISTRY.get(target, target)
+    if target in RECLASSIFIABLE_ACTIVITIES:
+        return target
+    return None
 
 
 class VLMVerificationService:
@@ -176,10 +231,12 @@ class VLMVerificationService:
     # Per-activity crop padding (px). Larger padding captures more context
     # (e.g. book in lap for writing, full body posture for sleeping).
     ACTIVITY_CROP_PADDING = {
-        'writing': 150,     # Need to capture book in lap
-        'sleeping': 100,    # Need full body posture
+        'writing': 150,         # Need to capture book in lap
+        'sleeping': 100,        # Need full body posture
         'microsleep': 100,
         'packing_bags': 100,
+        'lp_hand_gesture': 100, # Combined bbox of both persons — extra context
+        'alp_hand_gesture': 100,
     }
 
     # Per-activity rejection cooldown (seconds). Sustained activities like

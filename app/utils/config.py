@@ -237,8 +237,8 @@ class Settings(BaseSettings):
 
     # Baseline calibration for camera-angle adaptation
     sleep_baseline_enabled: bool = os.getenv("SLEEP_BASELINE_ENABLED", "true").lower() == "true"
-    sleep_baseline_calibration_window: float = float(os.getenv("SLEEP_BASELINE_WINDOW", "2.0"))
-    sleep_baseline_min_samples: int = int(os.getenv("SLEEP_BASELINE_MIN_SAMPLES", "1"))
+    sleep_baseline_calibration_window: float = float(os.getenv("SLEEP_BASELINE_WINDOW", "10.0"))
+    sleep_baseline_min_samples: int = int(os.getenv("SLEEP_BASELINE_MIN_SAMPLES", "5"))
 
     # Delta-from-baseline thresholds
     sleep_baseline_nose_below_delta: float = float(os.getenv("SLEEP_BASELINE_NOSE_BELOW_DELTA", "40"))

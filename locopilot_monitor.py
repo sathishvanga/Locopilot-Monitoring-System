@@ -192,9 +192,10 @@ except ImportError:
 
 # Import VLM verification service (secondary verification via Qwen2.5-VL)
 try:
-    from app.services.vlm_verification_service import VLMVerificationService
+    from app.services.vlm_verification_service import VLMVerificationService, parse_reclassify_target
 except ImportError:
     VLMVerificationService = None
+    parse_reclassify_target = None
 
 # Build activity registry now that get_settings is available
 ACTIVITY_REGISTRY: Dict[str, ActivityConfig] = _build_activity_registry()
@@ -3638,15 +3639,16 @@ class LocopilotActivityMonitor:
         frame,
         persons_data: dict,
         timestamp_sec: float,
-    ) -> bool:
+    ) -> tuple:
         """One-shot VLM verification when temporal threshold is met.
 
-        Called once before start_activity(). Returns True if VLM confirms
-        (or if VLM is unavailable / activity type is not verifiable).
+        Called once before start_activity(). Returns (is_confirmed, reason_str).
+        is_confirmed is True if VLM confirms (or if VLM is unavailable /
+        activity type is not verifiable).
         """
         vlm_type = self._ACT_TO_VLM.get(activity_name)
         if vlm_type is None:
-            return True  # Unknown activity — let it through
+            return True, ""  # Unknown activity — let it through
 
         # Determine bbox: person-level activities use person bbox,
         # frame-level activities (group, no_person, alp_not_standing) use full frame.
@@ -3654,7 +3656,22 @@ class LocopilotActivityMonitor:
         person_bbox = None
         person_idx = 0
 
-        if pa_key and persons_data:
+        # Hand gesture is a two-person coordination activity — VLM needs to
+        # see both LP and ALP to judge whether coordination is happening.
+        is_hand_gesture = activity_name in ('lp_hand_gesture', 'alp_hand_gesture')
+
+        if is_hand_gesture and persons_data and len(persons_data) >= 2:
+            # Compute a combined bbox encompassing all persons
+            all_bboxes = [pdata['bbox'] for pdata in persons_data.values() if pdata.get('bbox')]
+            if all_bboxes:
+                person_bbox = [
+                    min(b[0] for b in all_bboxes),
+                    min(b[1] for b in all_bboxes),
+                    max(b[2] for b in all_bboxes),
+                    max(b[3] for b in all_bboxes),
+                ]
+                person_idx = 0  # Not person-specific
+        elif pa_key and persons_data:
             # Find the first person who triggered this activity
             for pidx, pdata in persons_data.items():
                 if pdata.get('activities', {}).get(pa_key, False):
@@ -3675,20 +3692,21 @@ class LocopilotActivityMonitor:
             is_confirmed, details = self.vlm_service.verify_detection_sync(
                 frame, person_bbox, vlm_type, person_idx
             )
+            reason = details.get('reason', '')
             if is_confirmed:
                 self.logger.info(
                     f"[VLM START] {vlm_type} p{person_idx} CONFIRMED → starting activity "
-                    f"(conf={details.get('confidence', '?')}, reason={details.get('reason', '')})"
+                    f"(conf={details.get('confidence', '?')}, reason={reason})"
                 )
             else:
                 self.logger.info(
                     f"[VLM START] {vlm_type} p{person_idx} REJECTED → activity NOT started "
-                    f"(conf={details.get('confidence', '?')}, reason={details.get('reason', '')})"
+                    f"(conf={details.get('confidence', '?')}, reason={reason})"
                 )
-            return is_confirmed
+            return is_confirmed, reason
         except Exception as e:
             self.logger.error(f"[VLM START] Error verifying {activity_name}: {e}")
-            return True  # On error, let activity through (safe default)
+            return True, ""  # On error, let activity through (safe default)
 
     def start_activity(self, activity_name: str, timestamp: float, fps: float, frame_count: int, person_roles: Optional[Dict[int, Dict[str, Any]]] = None, ocr_timestamp: Optional[str] = None) -> None:
         """Start tracking an activity
@@ -4381,6 +4399,9 @@ class LocopilotActivityMonitor:
                     _sleep_info = _pdata.get('debug_info', {}).get('sleep_info', {})
                     _haar_info = _pdata.get('debug_info', {}).get('haar_eye_info', {})
                     _head_drop = _sleep_info.get('head_drop', False)
+                    # Don't trust head_drop in the first 10s — baseline too fresh
+                    if _head_drop and timestamp_sec < 10.0:
+                        _head_drop = False
                     _haar_closed = _haar_info.get('is_sleep', False) or _haar_info.get('is_microsleep', False)
                     if _head_drop or _haar_closed:
                         sleep_state_overrides_writing = True
@@ -4569,7 +4590,7 @@ class LocopilotActivityMonitor:
                             )
                             # One-shot VLM verification before starting activity
                             if self.vlm_service is not None:
-                                vlm_confirmed = self._vlm_verify_at_start(
+                                vlm_confirmed, vlm_reason = self._vlm_verify_at_start(
                                     activity_name, frame, persons_data, timestamp_sec
                                 )
                                 if not vlm_confirmed:
@@ -4578,6 +4599,17 @@ class LocopilotActivityMonitor:
                                         f"[{timestamp}] [TEMPORAL] {activity_name}: VLM rejected → "
                                         f"resetting consecutive counter (was {self.consecutive_detections[activity_name]})"
                                     )
+                                    # Check if VLM detected a different activity (reclassification)
+                                    if parse_reclassify_target is not None:
+                                        reclassify_target = parse_reclassify_target(vlm_reason)
+                                        if reclassify_target and reclassify_target in self.consecutive_detections:
+                                            self.consecutive_detections[reclassify_target] = self.consecutive_detections.get(reclassify_target, 0) + 1
+                                            self.grace_counters[reclassify_target] = 0
+                                            self.logger.info(
+                                                f"[{timestamp}] [TEMPORAL] {activity_name}: "
+                                                f"VLM reclassified → {reclassify_target} "
+                                                f"(consecutive={self.consecutive_detections[reclassify_target]})"
+                                            )
                                     self.consecutive_detections[activity_name] = 0
                                     self.grace_counters[activity_name] = 0
                                     continue

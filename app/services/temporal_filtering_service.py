@@ -29,9 +29,10 @@ from typing import Dict, List, Any, Optional, Tuple
 import cv2
 
 try:
-    from app.services.vlm_verification_service import VLMVerificationService
+    from app.services.vlm_verification_service import VLMVerificationService, parse_reclassify_target
 except ImportError:
     VLMVerificationService = None
+    parse_reclassify_target = None
 
 
 class TemporalFilteringService:
@@ -419,7 +420,7 @@ class TemporalFilteringService:
                             )
                             # VLM one-shot verification before starting
                             if self.vlm_service is not None:
-                                vlm_confirmed = self._vlm_verify_at_start(
+                                vlm_confirmed, vlm_reason = self._vlm_verify_at_start(
                                     activity_name, video_path, frame_idx,
                                     det.get('persons_data_summary', {})
                                 )
@@ -428,6 +429,18 @@ class TemporalFilteringService:
                                         f"[PASS 2] [{timestamp_str}] [TEMPORAL] {activity_name}: VLM rejected "
                                         f"→ resetting consecutive counter (was {consecutive_detections[activity_name]})"
                                     )
+                                    # Check if VLM detected a different activity (reclassification)
+                                    if parse_reclassify_target is not None:
+                                        reclassify_target = parse_reclassify_target(vlm_reason)
+                                        if reclassify_target and reclassify_target in consecutive_detections:
+                                            activities_map[reclassify_target] = True
+                                            consecutive_detections[reclassify_target] = consecutive_detections.get(reclassify_target, 0) + 1
+                                            grace_counters[reclassify_target] = 0
+                                            self.logger.info(
+                                                f"[PASS 2] [{timestamp_str}] [TEMPORAL] {activity_name}: "
+                                                f"VLM reclassified → {reclassify_target} "
+                                                f"(consecutive={consecutive_detections[reclassify_target]})"
+                                            )
                                     consecutive_detections[activity_name] = 0
                                     grace_counters[activity_name] = 0
                                     continue
@@ -512,15 +525,18 @@ class TemporalFilteringService:
         video_path: str,
         frame_idx: int,
         persons_data_summary: Dict,
-    ) -> bool:
+    ) -> Tuple[bool, str]:
         """One-shot VLM verification when temporal threshold is met.
 
         Extracts the frame from the video, crops the person bbox, and
         calls the VLM service to verify.
+
+        Returns:
+            Tuple of (is_confirmed, reason_string)
         """
         vlm_type = self._ACT_TO_VLM.get(activity_name)
         if vlm_type is None:
-            return True
+            return True, ""
 
         # Extract frame from video
         cap = cv2.VideoCapture(video_path)
@@ -530,14 +546,32 @@ class TemporalFilteringService:
 
         if not ret or frame is None:
             self.logger.warning(f"[VLM PASS2] Could not read frame {frame_idx}")
-            return True  # On error, let it through
+            return True, ""  # On error, let it through
 
         # Determine bbox: find the person who triggered this activity
         pa_key = self._ACT_TO_PA.get(activity_name)
         person_bbox = None
         person_idx = 0
 
-        if pa_key and persons_data_summary:
+        # Hand gesture is a two-person coordination activity — VLM needs to
+        # see both LP and ALP to judge whether coordination is happening.
+        is_hand_gesture = activity_name in ('lp_hand_gesture', 'alp_hand_gesture')
+
+        if is_hand_gesture and persons_data_summary and len(persons_data_summary) >= 2:
+            # Compute a combined bbox encompassing all persons
+            all_bboxes = [
+                pdata.get('bbox') for pdata in persons_data_summary.values()
+                if pdata.get('bbox')
+            ]
+            if all_bboxes:
+                person_bbox = [
+                    min(b[0] for b in all_bboxes),
+                    min(b[1] for b in all_bboxes),
+                    max(b[2] for b in all_bboxes),
+                    max(b[3] for b in all_bboxes),
+                ]
+                person_idx = 0  # Not person-specific
+        elif pa_key and persons_data_summary:
             # First try to find the person who triggered this specific activity
             for pidx, pdata in persons_data_summary.items():
                 if pdata.get('activities', {}).get(pa_key, False):
@@ -562,6 +596,7 @@ class TemporalFilteringService:
             is_confirmed, details = self.vlm_service.verify_detection_sync(
                 frame, person_bbox, vlm_type, person_idx
             )
+            reason = details.get('reason', '')
             if is_confirmed:
                 self.logger.info(
                     f"[VLM PASS2] {vlm_type} p{person_idx} CONFIRMED "
@@ -570,12 +605,12 @@ class TemporalFilteringService:
             else:
                 self.logger.info(
                     f"[VLM PASS2] {vlm_type} p{person_idx} REJECTED "
-                    f"(conf={details.get('confidence', '?')})"
+                    f"(conf={details.get('confidence', '?')}, reason={reason})"
                 )
-            return is_confirmed
+            return is_confirmed, reason
         except Exception as e:
             self.logger.error(f"[VLM PASS2] Error verifying {activity_name}: {e}")
-            return True
+            return True, ""
 
 
 # ------------------------------------------------------------------
