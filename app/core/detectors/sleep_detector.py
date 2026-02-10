@@ -140,9 +140,15 @@ class SleepDetector:
         self.SLEEP_HEAD_BOB_SCORE_BONUS = getattr(s, 'sleep_head_bob_score_bonus', 2) if s else 2
         self.SLEEP_HEAD_BOB_BYPASS_EYE_GATE = getattr(s, 'sleep_head_bob_bypass_eye_gate', True) if s else True
 
-        # Wrist velocity thresholds
-        self.SLEEP_WRIST_VEL_STILL = getattr(s, 'sleep_wrist_velocity_still_threshold', 0.005) if s else 0.005
-        self.SLEEP_WRIST_VEL_ACTIVE = getattr(s, 'sleep_wrist_velocity_active_threshold', 0.03) if s else 0.03
+        # Wrist velocity thresholds — Fix 11: scale by sqrt(fps_ratio) for low-fps sampling.
+        # At 0.5fps (2s between frames), YOLO keypoint jitter exceeds the reference 30fps threshold.
+        base_wrist_vel_still = getattr(s, 'sleep_wrist_velocity_still_threshold', 0.005) if s else 0.005
+        base_wrist_vel_active = getattr(s, 'sleep_wrist_velocity_active_threshold', 0.03) if s else 0.03
+        frame_interval = 1.0 / max(0.1, self.sample_fps)
+        reference_interval = 1.0 / 30.0
+        fps_scale = max(1.0, (frame_interval / reference_interval) ** 0.5)
+        self.SLEEP_WRIST_VEL_STILL = base_wrist_vel_still * fps_scale
+        self.SLEEP_WRIST_VEL_ACTIVE = base_wrist_vel_active * fps_scale
         self.SLEEP_WRIST_VEL_STILL_FRAMES = getattr(s, 'sleep_wrist_velocity_still_frames', 2) if s else 2
 
         # State machine thresholds
@@ -996,6 +1002,12 @@ class SleepDetector:
         head_tilt_thresh = getattr(self.settings, 'sleep_head_tilt_threshold', -155) if self.settings else -155
         nose_below_thresh = getattr(self.settings, 'sleep_nose_below_px_threshold', -55) if self.settings else -55
 
+        # Fix 9: Soften absolute thresholds by ~15% during pre-calibration window.
+        # Gradual sleep onset during the first 10s baseline may be missed otherwise.
+        if not has_baseline:
+            head_tilt_thresh *= 0.85  # e.g. -155 → -131.75 (softer)
+            nose_below_thresh *= 0.85  # e.g. -55 → -46.75 (softer)
+
         if has_baseline:
             baseline_nose = baseline.get('nose_below_px')
             is_nose_drooping = (nose_below_px is not None and baseline_nose is not None and
@@ -1474,6 +1486,17 @@ class SleepDetector:
             return result
 
         gray_roi = cv2.cvtColor(face_roi, cv2.COLOR_BGR2GRAY) if len(face_roi.shape) == 3 else face_roi
+
+        # Fix 10: If face ROI is very dark (IR/low-light), skip face detection
+        # and fall through to posture-only detection. Haar cascades are unreliable in near-dark.
+        roi_mean_intensity = float(np.mean(gray_roi))
+        if roi_mean_intensity < 50:
+            self.logger.debug(
+                f"[HAAR] Face ROI too dark (mean={roi_mean_intensity:.0f}), skipping face detection"
+            )
+            result['low_light_skip'] = True
+            return result
+
         gray_roi = cv2.equalizeHist(gray_roi)
 
         # --- Detect face within ROI ---

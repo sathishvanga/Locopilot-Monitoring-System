@@ -787,7 +787,7 @@ class VideoMultiprocessingOrchestrator:
                    f"raw detections from {len(self.state.completed_ranges)} workers")
 
         from ..services.temporal_filtering_service import TemporalFilteringService
-        from locopilot_monitor import ACTIVITY_REGISTRY, _build_activity_registry
+        from locopilot_monitor import ACTIVITY_REGISTRY
 
         # Build activity thresholds, type maps, descriptions, evidence rules
         # These mirror the monitor's __init__ setup
@@ -800,19 +800,13 @@ class VideoMultiprocessingOrchestrator:
                 'grace_frames': _cfg.grace_frames,
             }
             activity_thresholds[_name] = _entry
-        # Add alp_not_standing (manually added in monitor __init__)
-        activity_thresholds['alp_not_standing'] = {
-            'min_duration': 0.0,
-            'required_consecutive': 2,
-            'margin': None,
-            'grace_frames': 5,
-        }
+        # Fix 17: alp_not_standing is now in ACTIVITY_REGISTRY (no manual override needed)
 
         activity_type_map = {
             'cell_phone': 2, 'microsleep': 3, 'sleep': 4, 'writing': 5,
             'packing_bags': 6, 'group_detected': 7, 'lp_hand_gesture': 8,
             'alp_hand_gesture': 9, 'mind_diversion': 10, 'no_person_detected': 11,
-            'alp_not_standing': 12,
+            'alp_not_standing': 12, 'eating_drinking': 13,
         }
         activity_descriptions = {
             'cell_phone': 'Using mobile phone',
@@ -826,6 +820,7 @@ class VideoMultiprocessingOrchestrator:
             'mind_diversion': 'Mind diversion - attention diverted from controls',
             'no_person_detected': 'No person detected in frame',
             'alp_not_standing': 'ALP not standing during pre-arrival window',
+            'eating_drinking': 'Eating or drinking while on duty',
         }
         evidence_rules = {
             'cell_phone': 'phone_in_hand',
@@ -839,6 +834,7 @@ class VideoMultiprocessingOrchestrator:
             'mind_diversion': 'attention_diverted_from_controls',
             'no_person_detected': 'zero_persons_in_frame',
             'alp_not_standing': 'alp_seated_during_pre_arrival_window',
+            'eating_drinking': 'cup_or_bottle_near_hand_and_face',
         }
 
         # Initialize VLM service for Pass 2 verification (if enabled)

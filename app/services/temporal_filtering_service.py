@@ -76,6 +76,7 @@ class TemporalFilteringService:
             'group_detected': 'group_detected',
             'no_person_detected': 'no_person_detected',
             'alp_not_standing': 'alp_not_standing',
+            'eating_drinking': 'eating_drinking',
         }
         self._ACT_TO_PA = {
             'mind_diversion': 'mind_diversion',
@@ -86,6 +87,7 @@ class TemporalFilteringService:
             'packing_bags': 'packing',
             'lp_hand_gesture': 'lp_hand_gesture',
             'alp_hand_gesture': 'alp_hand_gesture',
+            'eating_drinking': 'eating_drinking',
         }
 
     # ------------------------------------------------------------------
@@ -195,9 +197,9 @@ class TemporalFilteringService:
 
             min_duration = self.activity_thresholds[activity_name]['min_duration']
             if actual_clip_duration < min_duration:
-                self.logger.debug(
-                    f"Activity '{activity_name}' too short "
-                    f"({actual_clip_duration:.2f}s < {min_duration}s) - discarded"
+                self.logger.info(
+                    f"[PASS 2] Activity DISCARDED: {activity_name} — too short "
+                    f"({actual_clip_duration:.2f}s < {min_duration}s min, {total_clip_frames} frames)"
                 )
                 act['frames'] = []
                 consecutive_detections[activity_name] = 0
@@ -292,8 +294,9 @@ class TemporalFilteringService:
             all_activities.append(json_data)
 
             self.logger.info(
-                f"[PASS 2] Activity ended: {activity_name} "
-                f"({first_det_sec:.2f}s - {last_det_sec:.2f}s, "
+                f"[PASS 2] Activity ENDED: {activity_name} "
+                f"(span={first_det_sec:.2f}s–{last_det_sec:.2f}s, "
+                f"duration={actual_clip_duration:.2f}s, "
                 f"{total_clip_frames} frames, clip: {clip_filename})"
             )
 
@@ -324,8 +327,20 @@ class TemporalFilteringService:
                     grace_counters[activity_name] = 0
 
                     required = self.activity_thresholds[activity_name]['required_consecutive']
+
+                    # Log consecutive frame buildup
+                    if not activities[activity_name]['active']:
+                        self.logger.debug(
+                            f"[PASS 2] [{timestamp_str}] [TEMPORAL] {activity_name}: consecutive "
+                            f"{consecutive_detections[activity_name]}/{required}"
+                        )
+
                     if consecutive_detections[activity_name] >= required:
                         if not activities[activity_name]['active']:
+                            self.logger.info(
+                                f"[PASS 2] [{timestamp_str}] [TEMPORAL] {activity_name}: threshold reached "
+                                f"({consecutive_detections[activity_name]}/{required} consecutive frames)"
+                            )
                             # VLM one-shot verification before starting
                             if self.vlm_service is not None:
                                 vlm_confirmed = self._vlm_verify_at_start(
@@ -333,6 +348,10 @@ class TemporalFilteringService:
                                     det.get('persons_data_summary', {})
                                 )
                                 if not vlm_confirmed:
+                                    self.logger.info(
+                                        f"[PASS 2] [{timestamp_str}] [TEMPORAL] {activity_name}: VLM rejected "
+                                        f"→ resetting consecutive counter (was {consecutive_detections[activity_name]})"
+                                    )
                                     consecutive_detections[activity_name] = 0
                                     grace_counters[activity_name] = 0
                                     continue
@@ -346,8 +365,15 @@ class TemporalFilteringService:
                             activities[activity_name]['first_detection_time'] = timestamp_str
                             activities[activity_name]['last_detection_time'] = timestamp_str
                             activities[activity_name]['last_detected_frame'] = frame_idx
+                            roles_str = ""
+                            if person_roles:
+                                roles_str = ", persons=" + "+".join(
+                                    f"p{pidx}({info.get('role', '?')})" for pidx, info in sorted(person_roles.items())
+                                )
+                            vlm_str = " [VLM confirmed]" if self.vlm_service is not None else ""
                             self.logger.info(
-                                f"[PASS 2] [{timestamp_str}] Activity started: {activity_name}"
+                                f"[PASS 2] [{timestamp_str}] Activity STARTED: {activity_name}{vlm_str}"
+                                f" (frame={frame_idx}{roles_str})"
                             )
 
                         if activities[activity_name]['active']:
@@ -362,10 +388,25 @@ class TemporalFilteringService:
                         grace_frames = self.activity_thresholds[activity_name]['grace_frames']
 
                         if grace_counters[activity_name] <= grace_frames:
-                            pass  # Still in grace period
+                            # Log first entry into grace period
+                            if grace_counters[activity_name] == 1:
+                                state = "ACTIVE" if activities[activity_name]['active'] else f"building ({consecutive_detections[activity_name]} consecutive)"
+                                self.logger.debug(
+                                    f"[PASS 2] [{timestamp_str}] [GRACE] {activity_name}: not detected, "
+                                    f"entering grace period (1/{grace_frames} frames, state={state})"
+                                )
                         else:
                             if activities[activity_name]['active']:
+                                self.logger.info(
+                                    f"[PASS 2] [{timestamp_str}] [GRACE] {activity_name}: grace period exceeded "
+                                    f"({grace_counters[activity_name]}/{grace_frames}) → ending activity"
+                                )
                                 _end_activity(activity_name, timestamp_str, frame_idx)
+                            else:
+                                self.logger.debug(
+                                    f"[PASS 2] [{timestamp_str}] [GRACE] {activity_name}: grace period exceeded "
+                                    f"→ resetting counter (was {consecutive_detections[activity_name]} consecutive)"
+                                )
                             consecutive_detections[activity_name] = 0
                             grace_counters[activity_name] = 0
                     else:

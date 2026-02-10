@@ -30,15 +30,15 @@ logger = logging.getLogger(__name__)
 ACTIVITY_DESCRIPTIONS = {
     "cell_phone": "potential mobile phone usage by the locomotive operator",
     "writing": "the operator appears to be writing or reading a document/book",
-    "packing_bags": "the operator appears to be packing or reaching into a bag",
+    "packing_bags": "the operator appears to be handling, packing, or organizing a bag/backpack instead of focusing on duties",
     "eating_drinking": "the operator appears to be eating or drinking",
-    "sleeping": "the operator may be sleeping or has their eyes closed with head drooping",
-    "microsleep": "the operator may be experiencing a brief microsleep episode",
+    "sleeping": "the operator may be sleeping — head slumped, eyes closed, or relaxed/limp posture",
+    "microsleep": "the operator may be drowsy or experiencing microsleep — head drooping, eyes heavy, or slouched posture",
     "mind_diversion": "the operator's attention appears diverted from the track ahead",
     "group_detected": "three or more people are detected in the locomotive cab",
     "no_person_detected": "no person is detected in the locomotive cab",
-    "lp_hand_gesture": "the Loco Pilot (LP) has not raised their hand for coordination",
-    "alp_hand_gesture": "the Assistant Loco Pilot (ALP) has not raised their hand for coordination",
+    "lp_hand_gesture": "the Loco Pilot (LP) failed to exchange a coordination hand gesture — appears distracted, sleeping, or otherwise not participating in crew coordination",
+    "alp_hand_gesture": "the Assistant Loco Pilot (ALP) failed to exchange a coordination hand gesture — appears distracted, sleeping, or otherwise not participating in crew coordination",
     "alp_not_standing": "the Assistant Loco Pilot (ALP) is not standing during pre-arrival",
 }
 
@@ -48,28 +48,42 @@ ACTIVITY_RULES = {
    - Reflections, shiny objects, or unclear items -> verified=false
    - If hands are not clearly visible -> verified=false""",
 
-    "writing": """   - verified=true if the person's head is down and hands are positioned as if writing or reading
-   - A book, paper, or clipboard in the lap or on the dashboard counts as writing
-   - Hands close together with head tilted down in a writing posture -> verified=true
+    "writing": """   - verified=true ONLY if the person is actively writing or reading — hands engaged with a book, paper, or clipboard
+   - A book, paper, or clipboard must be visible or hands must be clearly in a writing motion
    - Person sitting upright looking forward with hands on controls -> verified=false
-   - Hands simply resting on thighs with no writing posture -> verified=false""",
+   - Hands simply resting on thighs or in lap with no book/paper visible -> verified=false
+   - CRITICAL: If the person's eyes appear closed, head is slumped, or they appear drowsy/sleeping -> verified=false (sleeping, not writing)
+   - Head down with hands idle in lap and no visible document -> verified=false (likely resting or dozing)""",
 
-    "packing_bags": """   - verified=true ONLY if the person's hands are clearly inside or reaching into a bag
-   - Hands resting near a bag but not interacting with it -> verified=false
-   - Bag visible but person not touching it -> verified=false""",
+    "packing_bags": """   - verified=true if the person is interacting with a bag or backpack in any way:
+     * Hands touching, holding, or gripping the bag -> verified=true
+     * Adjusting bag straps, zippers, or buckles -> verified=true
+     * Moving, lifting, or repositioning a bag -> verified=true
+     * Reaching into or taking items out of a bag -> verified=true
+     * Hands on bag while looking down at it -> verified=true
+   - verified=false ONLY if there is no interaction:
+     * Bag visible nearby but person is not touching it at all -> verified=false
+     * Person's hands are on controls or lap with no bag contact -> verified=false
+   - A bag/backpack must be visible in the frame for verified=true""",
 
     "eating_drinking": """   - verified=true ONLY if a cup, bottle, or food item is in the person's hand near their face
    - Objects on a shelf or dashboard not being held -> verified=false
    - Water bottle in a holder not being used -> verified=false""",
 
-    "sleeping": """   - verified=true ONLY if the person clearly has eyes closed AND head is drooping or slumped
-   - Person looking down at instruments or controls -> verified=false
+    "sleeping": """   - verified=true if the person shows signs of sleeping: eyes closed, head drooping/slumped, or relaxed/limp posture
+   - Head slumped forward or sideways with hands idle in lap -> verified=true
+   - Body slouched or reclined with no active engagement of controls -> verified=true
+   - Person actively looking down at instruments or controls with hands engaged -> verified=false
    - Brief blinks or natural eye movements -> verified=false
-   - If face is not clearly visible -> verified=false""",
+   - If face is not clearly visible, judge by posture: slumped/limp body = verified=true""",
 
-    "microsleep": """   - verified=true ONLY if the person shows clear signs of drowsiness with eyes closing
-   - Natural blinks or looking down -> verified=false
-   - Alert person with normal eye movements -> verified=false""",
+    "microsleep": """   - verified=true if the person shows ANY signs of drowsiness or reduced alertness
+   - Head nodding, drooping, or tilted with relaxed posture -> verified=true
+   - Eyes heavy, half-closed, or fully closed -> verified=true
+   - Head slumped forward or sideways with hands idle -> verified=true
+   - Body slouched, relaxed posture with no active control engagement -> verified=true
+   - Person sitting upright, alert, actively operating controls -> verified=false
+   - Person clearly looking at instruments or documents with engaged hands -> verified=false""",
 
     "mind_diversion": """   - verified=true ONLY if the person is clearly distracted and looking away from the forward direction
    - Checking side mirrors, signals, or track infrastructure -> verified=false
@@ -84,13 +98,33 @@ ACTIVITY_RULES = {
    - If any part of a person (arm, leg, torso) is visible -> verified=false
    - If the image is dark/unclear and you cannot determine -> verified=false""",
 
-    "lp_hand_gesture": """   - verified=true ONLY if the Loco Pilot clearly has NOT raised their hand
-   - If the person's hand/arm is raised above shoulder level -> verified=false
-   - If hands are not clearly visible -> verified=false""",
+    "lp_hand_gesture": """   - This detection means the LP failed to participate in a coordination hand gesture exchange
+   - verified=true ONLY if the Loco Pilot shows clear signs of NOT participating in crew coordination:
+     * Person is sleeping, drowsy, head slumped, or eyes closed -> verified=true (not participating)
+     * Person is smoking, hand near face/mouth with cigarette -> verified=true (distracted)
+     * Person is using a cell phone or looking at a device -> verified=true (distracted)
+     * Person is looking away from the track, turned around, or clearly inattentive -> verified=true
+     * Person appears idle and disengaged — slouched back, hands clasped, staring blankly -> verified=true
+   - verified=false if the person appears alert and engaged in normal duties:
+     * Both crew members are alert, sitting upright, looking forward -> verified=false (normal operations)
+     * Person is actively operating controls, levers, or switches -> verified=false (doing their job)
+     * Person has hand/arm extended toward controls or instruments -> verified=false (working)
+     * Both persons appear attentive and engaged -> verified=false (no coordination failure)
+   - IMPORTANT: Normal locomotive operation where both crew are alert and working is NOT a violation""",
 
-    "alp_hand_gesture": """   - verified=true ONLY if the Assistant Loco Pilot clearly has NOT raised their hand
-   - If the person's hand/arm is raised above shoulder level -> verified=false
-   - If hands are not clearly visible -> verified=false""",
+    "alp_hand_gesture": """   - This detection means the ALP failed to participate in a coordination hand gesture exchange
+   - verified=true ONLY if the Assistant Loco Pilot shows clear signs of NOT participating in crew coordination:
+     * Person is sleeping, drowsy, head slumped, or eyes closed -> verified=true (not participating)
+     * Person is smoking, hand near face/mouth with cigarette -> verified=true (distracted)
+     * Person is using a cell phone or looking at a device -> verified=true (distracted)
+     * Person is looking away from the track, turned around, or clearly inattentive -> verified=true
+     * Person appears idle and disengaged — slouched back, hands clasped, staring blankly -> verified=true
+   - verified=false if the person appears alert and engaged in normal duties:
+     * Both crew members are alert, sitting upright, looking forward -> verified=false (normal operations)
+     * Person is actively operating controls, levers, or switches -> verified=false (doing their job)
+     * Person has hand/arm extended toward controls or instruments -> verified=false (working)
+     * Both persons appear attentive and engaged -> verified=false (no coordination failure)
+   - IMPORTANT: Normal locomotive operation where both crew are alert and working is NOT a violation""",
 
     "alp_not_standing": """   - verified=true ONLY if the ALP is clearly seated or crouching, not standing
    - If the person appears to be standing upright -> verified=false
@@ -284,6 +318,10 @@ class VLMVerificationService:
     def _set_cache(self, cache_key: str, result: Dict):
         """Store result in cache."""
         self._cache[cache_key] = (result, time.time())
+        self._log.debug(
+            f"[VLM] Cache set: {result.get('activity_type', '?')} "
+            f"verified={result.get('verified', '?')} (cache_size={len(self._cache)})"
+        )
         # Evict old entries periodically
         if len(self._cache) > 100:
             cutoff = time.time() - self._cache_ttl
@@ -341,9 +379,16 @@ class VLMVerificationService:
             "top_logprobs": 5,
         }
 
+        self._log.debug(
+            f"[VLM] Calling vLLM for {activity_type} "
+            f"(prompt={len(prompt)} chars, model={self.model_name})"
+        )
         response = self.sync_client.post("/chat/completions", json=payload)
         response.raise_for_status()
-        return response.json()
+        data = response.json()
+        raw_content = data.get("choices", [{}])[0].get("message", {}).get("content", "")[:200]
+        self._log.debug(f"[VLM] Raw response for {activity_type}: {raw_content}")
+        return data
 
     def _parse_vlm_response(self, response_data: Dict) -> Dict:
         """Parse VLM JSON response and extract confidence from logprobs."""
@@ -496,6 +541,10 @@ class VLMVerificationService:
                 # Throttle future calls if this was a rejection
                 if not is_confirmed:
                     self._rejection_throttle[throttle_key] = (result, time.time())
+                    self._log.debug(
+                        f"[VLM] Rejection throttle set: {throttle_key} "
+                        f"(cooldown={cooldown}s)"
+                    )
 
                 return is_confirmed, result
 
@@ -545,6 +594,12 @@ class VLMVerificationService:
         if not activities:
             return {}
 
+        activity_summary = ", ".join(f"{a['type']}_p{a.get('person_idx', 0)}" for a in activities)
+        self._log.info(
+            f"[VLM BATCH] Verifying {len(activities)} activities at t={timestamp_sec:.2f}s: "
+            f"[{activity_summary}]"
+        )
+
         # For a single activity, just call directly (no thread overhead)
         if len(activities) == 1:
             act = activities[0]
@@ -582,6 +637,13 @@ class VLMVerificationService:
                     self._log.error(f"[VLM BATCH] Error for {key}: {e}")
                     results[key] = (False, {"source": "error", "reason": str(e)})
 
+        confirmed = [k for k, (c, _) in results.items() if c]
+        rejected = [k for k, (c, _) in results.items() if not c]
+        self._log.info(
+            f"[VLM BATCH] Complete: {len(confirmed)} confirmed, {len(rejected)} rejected"
+            + (f" — confirmed=[{', '.join(confirmed)}]" if confirmed else "")
+            + (f" — rejected=[{', '.join(rejected)}]" if rejected else "")
+        )
         return results
 
     # ─── Fallback & Stats ─────────────────────────────────────

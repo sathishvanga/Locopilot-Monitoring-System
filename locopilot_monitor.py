@@ -90,7 +90,7 @@ def _build_activity_registry() -> Dict[str, ActivityConfig]:
         ),
         'writing': ActivityConfig(
             min_duration=0.1,
-            required_consecutive=1,
+            required_consecutive=3,
             margin=writing_margin,
             grace_frames=10,
         ),
@@ -127,9 +127,21 @@ def _build_activity_registry() -> Dict[str, ActivityConfig]:
             margin=None,
             grace_frames=5,
         ),
+        'eating_drinking': ActivityConfig(
+            min_duration=0.0,
+            required_consecutive=2,
+            margin=None,
+            grace_frames=5,
+        ),
         'no_person_detected': ActivityConfig(
             min_duration=5.0,
             required_consecutive=3,
+            margin=None,
+            grace_frames=3,
+        ),
+        'alp_not_standing': ActivityConfig(
+            min_duration=0.0,
+            required_consecutive=2,
             margin=None,
             grace_frames=3,
         ),
@@ -555,7 +567,7 @@ class LocopilotActivityMonitor:
         # TEMPORAL SUPPRESSION: Track recent activities per person for gesture suppression
         # Format: {person_idx: {'writing': last_timestamp, 'packing': last_timestamp, 'cell_phone': last_timestamp}}
         self.recent_person_activities = {}
-        self.temporal_suppression_window = 10.0  # Suppress hand gestures for 10 seconds after detecting work activity
+        self.temporal_suppression_window = 5.0  # Suppress hand gestures for 5 seconds after detecting work activity (reduced from 10s for faster response)
 
         # Hand gesture coordination temporal window
         # Suppress coordination failure alerts if both LP and ALP raised hands within this window
@@ -655,9 +667,10 @@ class LocopilotActivityMonitor:
             'alp_hand_gesture': 9,
             'mind_diversion': 10,
             'no_person_detected': 11,
-            'alp_not_standing': 12  # ALP not standing in pre-arrival window
+            'alp_not_standing': 12,
+            'eating_drinking': 13,
         }
-        
+
         # Activity descriptions
         self.activity_descriptions = {
             'cell_phone': 'Using mobile phone',
@@ -670,9 +683,10 @@ class LocopilotActivityMonitor:
             'alp_hand_gesture': 'ALP not exchanging hand gesture',
             'mind_diversion': 'Mind diversion - attention diverted from controls',
             'no_person_detected': 'No person detected in frame',
-            'alp_not_standing': 'ALP not standing during pre-arrival window'
+            'alp_not_standing': 'ALP not standing during pre-arrival window',
+            'eating_drinking': 'Eating or drinking while on duty',
         }
-        
+
         # Evidence rules
         self.evidence_rules = {
             'cell_phone': 'phone_in_hand',
@@ -683,9 +697,10 @@ class LocopilotActivityMonitor:
             'group_detected': 'more_than_2_deduplicated_persons',
             'lp_hand_gesture': 'lp_hand_raised_gesture_detected',
             'alp_hand_gesture': 'alp_hand_raised_gesture_detected',
-            'mind_diversion': 'attention_diverted_from_controls',  # Sub-type stored in evidence details
+            'mind_diversion': 'attention_diverted_from_controls',
             'no_person_detected': 'zero_persons_in_frame',
-            'alp_not_standing': 'alp_seated_during_pre_arrival_window'
+            'alp_not_standing': 'alp_seated_during_pre_arrival_window',
+            'eating_drinking': 'cup_or_bottle_near_hand_and_face',
         }
         
         # Default crew/trip information (None until set by API input)
@@ -739,16 +754,7 @@ class LocopilotActivityMonitor:
             else:
                 self.logger.info("[VLM] VLMVerificationService not available")
 
-        # Add activity tracking for alp_not_standing
-        self.activities['alp_not_standing'] = {'active': False, 'start_time': None, 'ocr_start_time': None, 'frames': [], 'duration': 0}
-        self.consecutive_detections['alp_not_standing'] = 0
-        self.grace_counters['alp_not_standing'] = 0
-        self.activity_thresholds['alp_not_standing'] = {
-            'min_duration': 0.0,
-            'required_consecutive': 2,  # 2 samples @ 0.5fps = 4 seconds
-            'margin': None,
-            'grace_frames': 3
-        }
+        # Fix 17: alp_not_standing is now in ACTIVITY_REGISTRY (no manual addition needed)
 
         # ---------------------------------------------------------------------------
         # Initialize extracted detector modules
@@ -931,7 +937,7 @@ class LocopilotActivityMonitor:
             self.logger.debug(f"Exception in check_hands_below_shoulders: {e}")
             return False
 
-    def detect_writing_by_wrist_proximity(self, pose_landmarks: Any, frame_shape: Tuple[int, ...], person_idx: int, timestamp_sec: float) -> bool:
+    def detect_writing_by_wrist_proximity(self, pose_landmarks: Any, frame_shape: Tuple[int, ...], person_idx: int, timestamp_sec: float, person_bbox: Optional[List] = None) -> bool:
         """Detect writing activity based on wrist/elbow proximity + head posture heuristic.
 
         When both wrists (or elbows as fallback) are close together AND head is tilted down
@@ -948,6 +954,7 @@ class LocopilotActivityMonitor:
             frame_shape: Tuple of (height, width) of the frame
             person_idx: Index of the person being analyzed
             timestamp_sec: Current timestamp in seconds
+            person_bbox: Optional person bounding box [x1, y1, x2, y2] for control zone filtering
 
         Returns:
             bool: True if writing detected by pose-based heuristic, False otherwise
@@ -970,12 +977,36 @@ class LocopilotActivityMonitor:
         else:
             self.logger.debug(f"Person {person_idx}: {source.capitalize()} distance = {distance:.1f}px")
 
+        # Fix 4: Suppress writing if both wrists are in the upper 40% of the person bbox
+        # (control zone). This prevents false positives when hands are on brake/throttle.
+        if person_bbox and len(person_bbox) >= 4 and source in ('wrist', 'single_wrist'):
+            h_frame, w_frame = frame_shape[:2]
+            try:
+                rw = self.get_keypoint(pose_landmarks, 'right_wrist')
+                lw = self.get_keypoint(pose_landmarks, 'left_wrist')
+                rw_vis = getattr(rw, 'visibility', 0) if rw else 0
+                lw_vis = getattr(lw, 'visibility', 0) if lw else 0
+                bbox_top = person_bbox[1]
+                bbox_height = person_bbox[3] - person_bbox[1]
+                control_zone_y = bbox_top + bbox_height * 0.40  # upper 40%
+                if rw_vis > 0.3 and lw_vis > 0.3 and bbox_height > 0:
+                    rw_y = rw.y * h_frame
+                    lw_y = lw.y * h_frame
+                    if rw_y < control_zone_y and lw_y < control_zone_y:
+                        self.logger.debug(
+                            f"Person {person_idx}: Both wrists in control zone (upper 40% of bbox) — suppressing writing"
+                        )
+                        return False
+            except Exception:
+                pass  # Non-critical — continue with normal detection
+
         # Initialize tracking for this person if needed
         if person_idx not in self.wrist_proximity_tracking:
             self.wrist_proximity_tracking[person_idx] = {
                 'start_time': None,
                 'duration': 0.0,
-                'consecutive_frames': 0
+                'consecutive_frames': 0,
+                'head_up_grace': 0,  # Fix 15: Grace frames before resetting on head-up
             }
 
         # Configurable thresholds - different for wrist vs elbow
@@ -999,19 +1030,29 @@ class LocopilotActivityMonitor:
             self.logger.debug(f"Person {person_idx}: Head looking down = {head_looking_down} (source={source})")
 
             if not head_looking_down:
-                # Head not down - reset tracking (not a writing posture)
-                if person_tracking['start_time'] is not None:
-                    # Was tracking, now stopped because head is up
+                # Fix 15: Allow 2 frames grace before resetting on single head-up frame.
+                # Brief glances up during writing shouldn't reset the entire tracker.
+                person_tracking['head_up_grace'] = person_tracking.get('head_up_grace', 0) + 1
+                if person_tracking['head_up_grace'] <= 2 and person_tracking['start_time'] is not None:
                     self.logger.debug(
                         f"Person {person_idx}: {source.capitalize()}s close ({distance:.1f}px) but head not down - "
-                        f"resetting writing tracker"
+                        f"grace frame {person_tracking['head_up_grace']}/2"
+                    )
+                    return False
+                # Grace exhausted — reset tracking
+                if person_tracking['start_time'] is not None:
+                    self.logger.debug(
+                        f"Person {person_idx}: {source.capitalize()}s close ({distance:.1f}px) but head not down - "
+                        f"resetting writing tracker (grace exhausted)"
                     )
                 person_tracking['start_time'] = None
                 person_tracking['duration'] = 0.0
                 person_tracking['consecutive_frames'] = 0
+                person_tracking['head_up_grace'] = 0
                 return False
 
             # BOTH conditions met: distance close AND head down
+            person_tracking['head_up_grace'] = 0  # Reset grace counter
             # Update tracking
             if person_tracking['start_time'] is None:
                 # Start new proximity event
@@ -1579,6 +1620,28 @@ class LocopilotActivityMonitor:
     # NOTE: detect_pose_per_person removed - replaced by YOLOv8-Pose
     # NOTE: translate_pose_landmarks removed - not needed with YOLOv8-Pose (native multi-person)
 
+    def _scale_margin(self, base_margin: int, person_bbox: Optional[List] = None, reference_height: int = 400) -> int:
+        """Scale pixel margin relative to person bbox height.
+
+        Fix 13: Hard-coded pixel thresholds (100px, 180px, etc.) behave differently
+        at 360p vs 4K. This helper normalizes them relative to the person's bounding
+        box height, using a reference height of 400px.
+
+        Args:
+            base_margin: Margin in pixels calibrated for a 400px-tall person bbox.
+            person_bbox: [x1, y1, x2, y2] bounding box. If None, returns base_margin unchanged.
+            reference_height: Reference person height in pixels (default 400).
+
+        Returns:
+            Scaled margin as int.
+        """
+        if not person_bbox or len(person_bbox) < 4:
+            return base_margin
+        bbox_height = person_bbox[3] - person_bbox[1]
+        if bbox_height <= 0:
+            return base_margin
+        return int(base_margin * bbox_height / reference_height)
+
     def validate_pose_landmarks(self, pose_landmarks: Any, min_landmarks: Optional[int] = None, min_visibility: Optional[float] = None) -> bool:
         """Validate that pose landmarks are valid and usable for activity detection.
         
@@ -2098,6 +2161,12 @@ class LocopilotActivityMonitor:
         # For a seated operator, control panel is typically in the frontal zone
         # We define this as: hand in upper portion of frame AND not laterally extended
         
+        # Fix 14: Normalize control zone thresholds relative to person bbox height
+        ctrl_zone_min = self._scale_margin(30, matched_bbox)
+        ctrl_zone_max = self._scale_margin(100, matched_bbox)
+        ctrl_zone_elbow_dist = self._scale_margin(50, matched_bbox)
+        ctrl_zone_elbow_shoulder = self._scale_margin(30, matched_bbox)
+
         # Right hand: Check if it's in control operation zone
         # This identifies forward reaches to operate controls vs upward signaling
         # IMPROVED: More specific detection - only filter if it's CLEARLY a forward reach, not upward raise
@@ -2107,20 +2176,15 @@ class LocopilotActivityMonitor:
             right_wrist_coords[1] > (my1 + (my2 - my1) * 0.2) and
             right_wrist_coords[1] < (my1 + (my2 - my1) * 0.8) and
 
-            # CRITICAL: Wrist above shoulder but NOT too far (control panel operations: 30-100px)
-            # True hand signals are typically >100px above shoulder (RELAXED from 120px)
-            # Only filter if wrist is in the ambiguous range (30-100px) AND other conditions suggest control operation
-            30 < right_wrist_shoulder_vertical < 100 and
+            # CRITICAL: Wrist above shoulder but NOT too far (control panel operations)
+            # True hand signals are typically beyond ctrl_zone_max above shoulder
+            ctrl_zone_min < right_wrist_shoulder_vertical < ctrl_zone_max and
 
             # IMPROVED: Elbow-wrist distance check - must be SMALL (forward reach, not vertical extension)
-            # Control panel: elbow NOT significantly below wrist (forward reach pattern)
-            # Hand signal: elbow MUST be significantly below wrist (vertical arm extension)
-            # RELAXED: Only filter if wrist-elbow distance is very small (<50px), indicating forward reach
-            right_wrist_elbow_distance < 50 and  # RELAXED from 80 to 50 - only filter clear forward reaches
+            right_wrist_elbow_distance < ctrl_zone_elbow_dist and
 
             # ADDITIONAL: Elbow must be BELOW shoulder (forward reach pattern)
-            # If elbow is at or above shoulder, it's likely an upward raise, not forward reach
-            right_elbow_coords[1] > right_shoulder_coords[1] + 30  # Elbow significantly below shoulder
+            right_elbow_coords[1] > right_shoulder_coords[1] + ctrl_zone_elbow_shoulder
         )
         
         # Left hand: Check if it's in control operation zone
@@ -2130,20 +2194,15 @@ class LocopilotActivityMonitor:
             left_wrist_coords[1] > (my1 + (my2 - my1) * 0.2) and
             left_wrist_coords[1] < (my1 + (my2 - my1) * 0.8) and
 
-            # CRITICAL: Wrist above shoulder but NOT too far (control panel operations: 30-100px)
-            # True hand signals are typically >100px above shoulder (RELAXED from 120px)
-            # Only filter if wrist is in the ambiguous range (30-100px) AND other conditions suggest control operation
-            30 < left_wrist_shoulder_vertical < 100 and
+            # CRITICAL: Wrist above shoulder but NOT too far (control panel operations)
+            # Fix 14: Use scaled thresholds from Fix 13
+            ctrl_zone_min < left_wrist_shoulder_vertical < ctrl_zone_max and
 
             # IMPROVED: Elbow-wrist distance check - must be SMALL (forward reach, not vertical extension)
-            # Control panel: elbow NOT significantly below wrist (forward reach pattern)
-            # Hand signal: elbow MUST be significantly below wrist (vertical arm extension)
-            # RELAXED: Only filter if wrist-elbow distance is very small (<50px), indicating forward reach
-            left_wrist_elbow_distance < 50 and  # RELAXED from 80 to 50 - only filter clear forward reaches
+            left_wrist_elbow_distance < ctrl_zone_elbow_dist and
 
             # ADDITIONAL: Elbow must be BELOW shoulder (forward reach pattern)
-            # If elbow is at or above shoulder, it's likely an upward raise, not forward reach
-            left_elbow_coords[1] > left_shoulder_coords[1] + 30  # Elbow significantly below shoulder
+            left_elbow_coords[1] > left_shoulder_coords[1] + ctrl_zone_elbow_shoulder
         )
         
         # Right hand gesture detection (HAND RAISED TO FACE OR ABOVE)
@@ -2513,6 +2572,7 @@ class LocopilotActivityMonitor:
                     'packing_detected': False,
                     'lp_hand_gesture_detected': False,
                     'alp_hand_gesture_detected': False,
+                    'eating_drinking_detected': False,
                     'performing_person': -1
                 }
             }
@@ -2630,7 +2690,8 @@ class LocopilotActivityMonitor:
                         'writing': False,
                         'packing': False,
                         'lp_hand_gesture': False,
-                        'alp_hand_gesture': False
+                        'alp_hand_gesture': False,
+                        'eating_drinking': False,
                     }
                     no_pose_debug = {
                         'head_pose': {},
@@ -2641,7 +2702,7 @@ class LocopilotActivityMonitor:
                     # --- Object-based eating/drinking (cup directly overlaps person bbox) ---
                     if getattr(self.settings, 'eating_drinking_detection_enabled', True):
                         cup_bottle_bboxes = []
-                        cup_conf_threshold = getattr(self.settings, 'eating_drinking_cup_confidence', 0.25)
+                        cup_conf_threshold = getattr(self.settings, 'eating_drinking_cup_confidence', 0.35)
                         for roi_det in detections.get('roi_detections', []):
                             if roi_det['class'] in ('cup', 'bottle') and roi_det['confidence'] > cup_conf_threshold:
                                 det_bbox = roi_det['bbox']
@@ -2653,15 +2714,21 @@ class LocopilotActivityMonitor:
                                 cup_bottle_bboxes.append(cb_bbox)
 
                         if cup_bottle_bboxes:
-                            # Cup overlaps person bbox directly → eating/drinking (no hand-face check possible)
-                            no_pose_activities['mind_diversion'] = True
-                            no_pose_debug['head_pose']['sub_type'] = 'eating_drinking'
-                            no_pose_debug['head_pose']['detected'] = True
-                            no_pose_debug['head_pose']['method'] = 'no_pose_cup_overlap'
-                            self.logger.info(
-                                f"[NO-POSE EATING/DRINKING] Person {person_idx}: cup/bottle overlaps bbox, "
-                                f"no pose available - flagging eating/drinking"
-                            )
+                            # Fix 6: Restrict to cups in upper 60% of person bbox (near face/hands).
+                            # Cups on shelves or at foot level inside the bbox are not being held.
+                            person_upper_y = bbox[1] + (bbox[3] - bbox[1]) * 0.60
+                            upper_cups = [cb for cb in cup_bottle_bboxes if cb[1] < person_upper_y]
+                            if upper_cups:
+                                # Cup overlaps upper region of person bbox → eating/drinking
+                                # Fix 12: Set independent eating_drinking activity
+                                no_pose_activities['eating_drinking'] = True
+                                no_pose_debug['head_pose']['sub_type'] = 'eating_drinking'
+                                no_pose_debug['head_pose']['detected'] = True
+                                no_pose_debug['head_pose']['method'] = 'no_pose_cup_overlap'
+                                self.logger.info(
+                                    f"[NO-POSE EATING/DRINKING] Person {person_idx}: cup/bottle in upper region of bbox, "
+                                    f"no pose available - flagging eating/drinking"
+                                )
 
                     # --- Low-confidence pose fallback for sleep detection ---
                     # When normal confidence misses a sleeping person, try low-confidence poses
@@ -2765,7 +2832,8 @@ class LocopilotActivityMonitor:
                     'writing': False,
                     'packing': False,
                     'lp_hand_gesture': False,
-                    'alp_hand_gesture': False
+                    'alp_hand_gesture': False,
+                    'eating_drinking': False,
                 }
 
                 person_debug_info = {
@@ -2862,46 +2930,75 @@ class LocopilotActivityMonitor:
                     right_hand = self.get_keypoint(translated_landmarks, 'right_wrist')
                     left_hand = self.get_keypoint(translated_landmarks, 'left_wrist')
 
-                    right_hand_coords = (int(right_hand.x * w), int(right_hand.y * h))
-                    left_hand_coords = (int(left_hand.x * w), int(left_hand.y * h))
-                    
-                    # STRICTER MARGIN: Reduced from default to ensure phone is really near hand
-                    margin = 100  # Reduced from activity_thresholds margin to be more strict
-                    
-                    for phone_bbox in detections['cell_phone']:
-                        # Check if phone bbox overlaps with person bbox (with margin)
-                        phone_in_person_region = bbox_overlap_with_margin(phone_bbox, bbox, margin)
-                        
-                        if phone_in_person_region:
-                            # Check if hand is near the phone (stricter check)
-                            right_hand_near = self.check_hand_object_interaction(right_hand_coords, phone_bbox, margin)
-                            left_hand_near = self.check_hand_object_interaction(left_hand_coords, phone_bbox, margin)
+                    # Fix 3: Only use wrists with sufficient visibility — low-visibility
+                    # keypoints from YOLO-Pose can have wildly inaccurate positions
+                    right_valid = right_hand and getattr(right_hand, 'visibility', 0) >= 0.3
+                    left_valid = left_hand and getattr(left_hand, 'visibility', 0) >= 0.3
+                    if not right_valid and not left_valid:
+                        # Skip cell phone check — can't verify hand-phone interaction
+                        self.logger.debug(
+                            f"[CELL PHONE] Skipping person {person_idx}: both wrists low visibility"
+                        )
+                    else:
 
-                            if right_hand_near or left_hand_near:
-                                # Use per-person temporal filtering (2-3 frame requirement)
-                                should_trigger = self.update_per_person_detection(
-                                    person_idx, 'cell_phone', True, timestamp_sec
+                        right_hand_coords = (int(right_hand.x * w), int(right_hand.y * h)) if right_valid else (-9999, -9999)
+                        left_hand_coords = (int(left_hand.x * w), int(left_hand.y * h)) if left_valid else (-9999, -9999)
+
+                        # STRICTER MARGIN: Reduced from default to ensure phone is really near hand
+                        # Fix 13: Scale margin relative to person bbox height
+                        margin = self._scale_margin(100, bbox)
+
+                        # Fix 8: Radio handset zone suppression thresholds
+                        radio_x_min = getattr(self.settings, 'radio_zone_x_min', 0.6)
+                        radio_y_max = getattr(self.settings, 'radio_zone_y_max', 0.4)
+
+                        for phone_bbox in detections['cell_phone']:
+                            # Fix 8: If phone bbox center is in the radio zone (upper-right quadrant
+                            # where control panel radios are mounted), skip — likely radio handset.
+                            phone_cx = (phone_bbox[0] + phone_bbox[2]) / 2
+                            phone_cy = (phone_bbox[1] + phone_bbox[3]) / 2
+                            if phone_cx > w * radio_x_min and phone_cy < h * radio_y_max:
+                                self.logger.debug(
+                                    f"[CELL PHONE] Skipping phone in radio zone "
+                                    f"(cx={phone_cx:.0f}, cy={phone_cy:.0f})"
                                 )
+                                continue
 
-                                person_activities['cell_phone'] = should_trigger
-                                break
+                            # Check if phone bbox overlaps with person bbox (with margin)
+                            phone_in_person_region = bbox_overlap_with_margin(phone_bbox, bbox, margin)
+
+                            if phone_in_person_region:
+                                # Check if hand is near the phone (stricter check)
+                                right_hand_near = self.check_hand_object_interaction(right_hand_coords, phone_bbox, margin)
+                                left_hand_near = self.check_hand_object_interaction(left_hand_coords, phone_bbox, margin)
+
+                                if right_hand_near or left_hand_near:
+                                    # Use per-person temporal filtering (2-3 frame requirement)
+                                    should_trigger = self.update_per_person_detection(
+                                        person_idx, 'cell_phone', True, timestamp_sec
+                                    )
+
+                                    person_activities['cell_phone'] = should_trigger
+                                    break
 
                 # 3b. EATING/DRINKING DETECTION (cup/bottle near face = mind diversion)
                 eating_drinking_detected = False
                 if getattr(self.settings, 'eating_drinking_detection_enabled', True) and not person_activities.get('mind_diversion', False):
                     # Check if cup/bottle detected in ROI near this person
                     cup_bottle_bboxes = []
-                    cup_conf_threshold = getattr(self.settings, 'eating_drinking_cup_confidence', 0.25)
+                    cup_conf_threshold = getattr(self.settings, 'eating_drinking_cup_confidence', 0.35)
+                    # Fix 13: Scale cup-person overlap margin relative to person bbox
+                    cup_person_margin = self._scale_margin(100, bbox)
                     for roi_det in detections.get('roi_detections', []):
                         if roi_det['class'] in ('cup', 'bottle') and roi_det['confidence'] > cup_conf_threshold:
                             det_bbox = roi_det['bbox']
-                            if bbox_overlap_with_margin(det_bbox, bbox, 100):
+                            if bbox_overlap_with_margin(det_bbox, bbox, cup_person_margin):
                                 cup_bottle_bboxes.append(det_bbox)
 
                     # Also check full-frame cup/bottle detections
                     for cb_xyxy in detections.get('cup_bottle', []):
                         cb_bbox = [float(cb_xyxy[0]), float(cb_xyxy[1]), float(cb_xyxy[2]), float(cb_xyxy[3])]
-                        if bbox_overlap_with_margin(cb_bbox, bbox, 100):
+                        if bbox_overlap_with_margin(cb_bbox, bbox, cup_person_margin):
                             cup_bottle_bboxes.append(cb_bbox)
 
                     if cup_bottle_bboxes:
@@ -2947,12 +3044,11 @@ class LocopilotActivityMonitor:
                                         break
 
                     if eating_drinking_detected:
-                        person_activities['mind_diversion'] = True
+                        # Fix 12: Set independent eating_drinking activity instead of overloading mind_diversion
+                        person_activities['eating_drinking'] = True
                         person_debug_info['head_pose']['sub_type'] = 'eating_drinking'
                         person_debug_info['head_pose']['detected'] = True
                         person_debug_info['head_pose']['method'] = 'object_proximity'
-                        # Skip voting for eating/drinking — voting re-checks head pose angles
-                        # which doesn't apply to cup-based detection, causing 0/10 false rejections
 
                 # 4. WRITING DETECTION (check if hand near book OR wrist/elbow proximity heuristic)
                 # MOVED BEFORE HAND GESTURE: Need to detect this first for context-aware filtering
@@ -2975,7 +3071,8 @@ class LocopilotActivityMonitor:
                         hand_margin = self.activity_thresholds['writing']['margin']
                         # Use larger margin for book-to-person association since book is typically in lap area
                         # (below the person's detected bounding box which mainly covers upper body)
-                        person_book_margin = 250  # INCREASED from 150 to 250 - books in lap area extend beyond person bbox
+                        # Fix 13: Scale margin relative to person bbox height
+                        person_book_margin = self._scale_margin(250, bbox)  # books in lap area extend beyond person bbox
                         for book_bbox in detections['book']:
                             # Check if book is in this person's region (use large margin for lap area)
                             book_in_person_region = bbox_overlap_with_margin(book_bbox, bbox, person_book_margin)
@@ -3005,7 +3102,8 @@ class LocopilotActivityMonitor:
                     translated_landmarks,
                     frame.shape,
                     person_idx,
-                    timestamp_sec
+                    timestamp_sec,
+                    person_bbox=bbox
                 )
                 self.logger.debug(f"Person {person_idx}: Writing detection result = {writing_detected_by_wrist}")
 
@@ -3309,6 +3407,7 @@ class LocopilotActivityMonitor:
             'packing_detected': False,
             'lp_hand_gesture_detected': False,
             'alp_hand_gesture_detected': False,
+            'eating_drinking_detected': False,
             'performing_person': -1,
             'performing_persons': []  # List of person indices who performed activities
         }
@@ -3334,6 +3433,9 @@ class LocopilotActivityMonitor:
                 aggregated['lp_hand_gesture_detected'] = True
             if activities['alp_hand_gesture']:
                 aggregated['alp_hand_gesture_detected'] = True
+            if activities.get('eating_drinking', False):
+                aggregated['eating_drinking_detected'] = True
+                aggregated['performing_persons'].append(person_idx)
         
         # Set performing_person to the first detected person (for backward compatibility)
         if aggregated['performing_persons']:
@@ -3444,6 +3546,7 @@ class LocopilotActivityMonitor:
         'group_detected': 'group_detected',
         'no_person_detected': 'no_person_detected',
         'alp_not_standing': 'alp_not_standing',
+        'eating_drinking': 'eating_drinking',
     }
 
     # Map activities_map keys → person_activities keys
@@ -3456,6 +3559,7 @@ class LocopilotActivityMonitor:
         'packing_bags': 'packing',
         'lp_hand_gesture': 'lp_hand_gesture',
         'alp_hand_gesture': 'alp_hand_gesture',
+        'eating_drinking': 'eating_drinking',
     }
 
     def _vlm_verify_at_start(
@@ -3545,11 +3649,19 @@ class LocopilotActivityMonitor:
             self.activities[activity_name]['first_detection_time'] = timestamp
             self.activities[activity_name]['last_detection_time'] = timestamp
 
-            # Log with OCR timestamp if available
-            if ocr_ts:
-                self.logger.info(f"[{timestamp}] Activity started: {activity_name} (Frame timestamp: {ocr_ts})")
-            else:
-                self.logger.info(f"[{timestamp}] Activity started: {activity_name}")
+            # Log with details
+            roles_str = ""
+            if person_roles:
+                roles_str = ", persons=" + "+".join(
+                    f"p{pidx}({info.get('role', '?')})" for pidx, info in sorted(person_roles.items())
+                )
+            vlm_str = " [VLM confirmed]" if self.vlm_service is not None else ""
+            ocr_str = f" (Frame timestamp: {ocr_ts})" if ocr_ts else ""
+            self.logger.info(
+                f"[{timestamp}] Activity STARTED: {activity_name}{vlm_str}{ocr_str}"
+                f" (frame={frame_count}, consecutive={self.consecutive_detections.get(activity_name, '?')}"
+                f"{roles_str})"
+            )
     
     def _cleanup_stale_person_tracking(self, active_person_indices):
         """CR-012: Remove entries from per-person tracking dicts for persons no longer detected.
@@ -3631,7 +3743,7 @@ class LocopilotActivityMonitor:
             min_duration = self.activity_thresholds[activity_name]['min_duration']
 
             if actual_clip_duration < min_duration:
-                self.logger.debug(f"[{timestamp}] Activity '{activity_name}' too short ({actual_clip_duration:.2f}s < {min_duration}s) - discarded")
+                self.logger.info(f"[{timestamp}] Activity DISCARDED: {activity_name} — too short ({actual_clip_duration:.2f}s < {min_duration}s min, {total_clip_frames} frames)")
                 activity['frames'] = []
                 activity['duration'] = 0
                 self.consecutive_detections[activity_name] = 0
@@ -3837,8 +3949,12 @@ class LocopilotActivityMonitor:
             # Calculate end time string for logging
             end_time_str = str(timedelta(seconds=activity_end_seconds))
             
-            self.logger.info(f"[{end_time_str}] Activity ended: {activity_name}")
-            self.logger.info(f"  Clip Duration: {actual_clip_duration:.2f}s ({total_clip_frames} frames @ {self.sample_fps} FPS)")
+            start_time_str = str(timedelta(seconds=float(activity.get('start_time', 0)))) if activity.get('start_time') else '?'
+            self.logger.info(
+                f"[{end_time_str}] Activity ENDED: {activity_name} "
+                f"(started={start_time_str}, duration={actual_clip_duration:.2f}s, "
+                f"{total_clip_frames} frames @ {self.sample_fps} FPS)"
+            )
             self.logger.debug(f"  Min Duration Threshold: {min_duration}s | Required Consecutive: {self.activity_thresholds[activity_name]['required_consecutive']} frames")
             self.logger.info(f"  Evidence saved: {clip_filename}")
             self.logger.info(f"  Activity image: {image_filename}")
@@ -4090,6 +4206,7 @@ class LocopilotActivityMonitor:
             lp_hand_gesture_detected = aggregated['lp_hand_gesture_detected']
             alp_hand_gesture_detected = aggregated['alp_hand_gesture_detected']
             mind_diversion_detected = aggregated['mind_diversion_detected']
+            eating_drinking_detected = aggregated['eating_drinking_detected']
 
             # Log detections for each person (only on first detection)
             if log_per_person_detections:
@@ -4153,11 +4270,10 @@ class LocopilotActivityMonitor:
                     microsleep_detected = False
                     sleep_detected = False
 
-            # CRITICAL: Exclude sleep detection if person is holding objects or in active posture
-            # If someone has a phone, book, or backpack in hand, they're clearly NOT sleeping
-            # EXCEPTION: If the sleep state machine is in DROWSY/MICROSLEEP/SLEEPING, don't let
-            # writing suppress sleep — during microsleep, hands-in-lap + head-down can look like
-            # writing posture but the state machine has already determined the person is drowsy.
+            # ── Writing vs Sleep disambiguation ──
+            # If both writing and sleep/microsleep are detected, check sleep
+            # indicators to decide which wins. Sleep posture (head down, eyes
+            # closed, hands in lap) often overlaps with writing posture.
             sleep_state_overrides_writing = False
             if sleep_detected or microsleep_detected:
                 for _pidx, _pdata in persons_data.items():
@@ -4166,15 +4282,33 @@ class LocopilotActivityMonitor:
                     if _state in ('DROWSY', 'MICROSLEEP', 'SLEEPING'):
                         sleep_state_overrides_writing = True
                         break
-            # Also check if person shows drowsiness indicators (reclined posture
-            # or significant nose drop) even before state machine reaches DROWSY.
-            # This breaks the chicken-and-egg: writing suppresses sleep → state
-            # machine never reaches DROWSY → writing always wins.
+
+            # Also check drowsiness indicators even before state machine
+            # reaches DROWSY. This breaks the chicken-and-egg: writing
+            # suppresses sleep → state machine never advances → writing wins.
             if not sleep_state_overrides_writing:
                 for _pidx, _pdata in persons_data.items():
                     _sleep_info = _pdata.get('debug_info', {}).get('sleep_info', {})
                     if _sleep_info.get('is_reclined_sleep') or _sleep_info.get('nose_y_drop', 0) < -0.05:
                         sleep_state_overrides_writing = True
+                        break
+
+            # NEW: If writing is detected but ANY person shows head_drop or
+            # haar-detected eye closure, suppress writing in favor of sleep.
+            # Writing requires active engagement; closed eyes = not writing.
+            if writing_detected and not sleep_state_overrides_writing:
+                for _pidx, _pdata in persons_data.items():
+                    _sleep_info = _pdata.get('debug_info', {}).get('sleep_info', {})
+                    _haar_info = _pdata.get('debug_info', {}).get('haar_eye_info', {})
+                    _head_drop = _sleep_info.get('head_drop', False)
+                    _haar_closed = _haar_info.get('is_sleep', False) or _haar_info.get('is_microsleep', False)
+                    if _head_drop or _haar_closed:
+                        sleep_state_overrides_writing = True
+                        writing_detected = False
+                        self.logger.info(
+                            f"[{timestamp}] [DISAMBIG] Writing SUPPRESSED in favor of sleep — "
+                            f"head_drop={_head_drop}, haar_eye_closed={_haar_closed} (person {_pidx})"
+                        )
                         break
 
             suppress_activities = cell_phone_detected or packing_detected
@@ -4247,11 +4381,15 @@ class LocopilotActivityMonitor:
             # Activity Type 9 (ALP not exchanging): Triggers when LP raises hand BUT ALP does NOT
             # This ensures we detect COORDINATION FAILURES, not individual gestures
             # Uses temporal window to prevent false positives when both people raise hands within window
-            lp_not_coordinating, alp_not_coordinating = self._check_hand_gesture_coordination(
-                lp_hand_gesture_detected,
-                alp_hand_gesture_detected,
-                timestamp_sec
-            )
+            # Fix 1: Only check coordination when BOTH persons are visible — single-person
+            # frames cannot determine coordination failure (the absent person isn't in frame).
+            lp_not_coordinating, alp_not_coordinating = False, False
+            if person_roles and len(person_roles) >= 2:
+                lp_not_coordinating, alp_not_coordinating = self._check_hand_gesture_coordination(
+                    lp_hand_gesture_detected,
+                    alp_hand_gesture_detected,
+                    timestamp_sec
+                )
 
             # Debug logging for coordination check
             if lp_not_coordinating and self.consecutive_detections['lp_hand_gesture'] == 0:
@@ -4262,21 +4400,25 @@ class LocopilotActivityMonitor:
             # Detect when no person is in frame
             no_person_detected_flag = (len(detections.get('deduplicated_person', [])) == 0)
 
-            # ALP-not-standing detection: if LP is standing (tall bbox aspect ratio)
-            # while ALP remains seated, flag ALP as not standing.
+            # ALP-not-standing detection: LP must be standing (tall bbox) AND ALP must be seated.
+            # Fix 2: Check BOTH persons — only flag when LP is standing AND ALP is NOT standing.
+            # Previous logic only checked LP, causing false positives when both stand.
             alp_not_standing = False
             if person_roles and len(person_roles) >= 2:
+                lp_standing = False
+                alp_seated = False
                 for pidx, prole_info in person_roles.items():
-                    if prole_info.get('role') == 'LP':
-                        lp_data = persons_data.get(pidx, {})
-                        lp_bbox = lp_data.get('bbox', [])
-                        if lp_bbox and len(lp_bbox) >= 4:
-                            bbox_height = lp_bbox[3] - lp_bbox[1]
-                            bbox_width = lp_bbox[2] - lp_bbox[0]
-                            # Standing person has tall aspect ratio (height >> width)
-                            if bbox_height > 0 and bbox_height / max(bbox_width, 1) > 2.5:
-                                alp_not_standing = True
-                        break
+                    pdata = persons_data.get(pidx, {})
+                    pbbox = pdata.get('bbox', [])
+                    if pbbox and len(pbbox) >= 4:
+                        ph = pbbox[3] - pbbox[1]
+                        pw = pbbox[2] - pbbox[0]
+                        ratio = ph / max(pw, 1) if ph > 0 else 0
+                        if prole_info.get('role') == 'LP' and ratio > 2.5:
+                            lp_standing = True
+                        elif prole_info.get('role') == 'ALP' and ratio <= 2.5:
+                            alp_seated = True
+                alp_not_standing = lp_standing and alp_seated
 
             # Update activity states with temporal filtering
             activities_map = {
@@ -4291,6 +4433,7 @@ class LocopilotActivityMonitor:
                 'mind_diversion': mind_diversion_detected,
                 'no_person_detected': no_person_detected_flag,
                 'alp_not_standing': alp_not_standing,
+                'eating_drinking': eating_drinking_detected,
             }
 
             # NOTE: Per-frame VLM for frame-level activities also removed.
@@ -4326,9 +4469,20 @@ class LocopilotActivityMonitor:
                     # Only start recording after required consecutive frames threshold is met
                     required_consecutive = self.activity_thresholds[activity_name]['required_consecutive']
 
+                    # Log consecutive frame buildup (every increment when building toward threshold)
+                    if not self.activities[activity_name]['active']:
+                        self.logger.debug(
+                            f"[{timestamp}] [TEMPORAL] {activity_name}: consecutive "
+                            f"{self.consecutive_detections[activity_name]}/{required_consecutive}"
+                        )
+
                     if self.consecutive_detections[activity_name] >= required_consecutive:
                         # Start activity if not already active
                         if not self.activities[activity_name]['active']:
+                            self.logger.info(
+                                f"[{timestamp}] [TEMPORAL] {activity_name}: threshold reached "
+                                f"({self.consecutive_detections[activity_name]}/{required_consecutive} consecutive frames)"
+                            )
                             # One-shot VLM verification before starting activity
                             if self.vlm_service is not None:
                                 vlm_confirmed = self._vlm_verify_at_start(
@@ -4336,6 +4490,10 @@ class LocopilotActivityMonitor:
                                 )
                                 if not vlm_confirmed:
                                     # VLM rejected — reset counter and skip
+                                    self.logger.info(
+                                        f"[{timestamp}] [TEMPORAL] {activity_name}: VLM rejected → "
+                                        f"resetting consecutive counter (was {self.consecutive_detections[activity_name]})"
+                                    )
                                     self.consecutive_detections[activity_name] = 0
                                     self.grace_counters[activity_name] = 0
                                     continue
@@ -4360,18 +4518,32 @@ class LocopilotActivityMonitor:
 
                         # If still within grace period, keep activity alive but DON'T add frames
                         if self.grace_counters[activity_name] <= grace_frames:
-                            # Still in grace period - keep activity active but don't record frames
-                            # This allows brief interruptions without ending the activity
-                            pass
+                            # Log first entry into grace period
+                            if self.grace_counters[activity_name] == 1:
+                                state = "ACTIVE" if self.activities[activity_name]['active'] else f"building ({self.consecutive_detections[activity_name]} consecutive)"
+                                self.logger.debug(
+                                    f"[{timestamp}] [GRACE] {activity_name}: not detected, entering grace period "
+                                    f"(1/{grace_frames} frames, state={state})"
+                                )
                         else:
                             # Grace period exceeded - end activity and reset counters
                             if self.activities[activity_name]['active']:
+                                self.logger.info(
+                                    f"[{timestamp}] [GRACE] {activity_name}: grace period exceeded "
+                                    f"({self.grace_counters[activity_name]}/{grace_frames}) → ending activity"
+                                )
                                 # No ocr_timestamp: current frame is post-grace-period, not when activity ended.
                                 # end_activity computes ocr_end from ocr_start + duration instead (more accurate).
                                 if save_clips:
                                     self.end_activity(activity_name, timestamp, fps, frame_idx, people_count)
                                 else:
                                     self.end_activity(activity_name, timestamp, fps, frame_idx, people_count, save_clips=save_clips)
+                            else:
+                                self.logger.debug(
+                                    f"[{timestamp}] [GRACE] {activity_name}: grace period exceeded "
+                                    f"({self.grace_counters[activity_name]}/{grace_frames}) → resetting counter "
+                                    f"(was {self.consecutive_detections[activity_name]} consecutive)"
+                                )
                             self.consecutive_detections[activity_name] = 0
                             self.grace_counters[activity_name] = 0
                     else:

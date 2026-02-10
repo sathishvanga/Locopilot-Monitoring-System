@@ -106,7 +106,7 @@ async def process_video_job(job: Job) -> dict:
     lp_crew_id = config.get("lp_crew_id", "N/A")
     use_mock = config.get("use_mock_detection", False)
     use_mp = config.get("use_multiprocessing", settings.enable_multiprocessing)
-    save_clips = config.get("save_clips", False)
+    save_clips = config.get("save_clips", True)
 
     # Create video processing service instance
     video_service = VideoProcessingService()

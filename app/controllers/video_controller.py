@@ -109,7 +109,7 @@ s3_upload_service = get_s3_upload_service()
     - videoStartTime: Video recording start time in HH:MM:SS format (optional, for motion rules when OCR unavailable)
     - useMockDetection: Use mock detection for testing (optional, default: false)
     - useMultiprocessing: Enable parallel processing (optional, default: from config)
-    - saveClips: Save annotated frames for debugging (optional, default: false). Clips and images are always saved for UI evidence.
+    - saveClips: Save evidence clips and annotated frames (optional, default: true).
     - cameraAngle: Camera angle for LP/ALP role assignment (1 = LP Side, 2 = ALP Side, default: 1)
 
     Returns:
@@ -134,7 +134,7 @@ async def process_video(
     videoStartTime: Optional[str] = Form(default=None, description="Video recording start time in HH:MM:SS format (for motion rules when OCR unavailable)"),
     useMockDetection: Optional[bool] = Form(default=False, description="Use mock detection for testing"),
     useMultiprocessing: Optional[bool] = Form(default=None, description="Enable multiprocessing (default: from config)"),
-    saveClips: Optional[bool] = Form(default=False, description="Save annotated frames for debugging (default: false). Clips/images always saved."),
+    saveClips: Optional[bool] = Form(default=True, description="Save evidence clips and annotated frames (default: true)."),
     cameraAngle: Optional[int] = Form(default=1, description="Camera angle: 1 = LP Side (default), 2 = ALP Side")
 ):
     """
@@ -534,7 +534,7 @@ async def process_and_upload_video(
     videoStartTime: Optional[str] = Form(default=None, description="Video recording start time in HH:MM:SS format (for motion rules when OCR unavailable)"),
     useMultiprocessing: Optional[bool] = Form(default=None, description="Enable multiprocessing (default: from config)"),
     useMockDetection: Optional[bool] = Form(default=False, description="Use mock detection for testing"),
-    saveClips: Optional[bool] = Form(default=False, description="Save annotated frames for debugging")
+    saveClips: Optional[bool] = Form(default=True, description="Save evidence clips and annotated frames (default: true).")
 ):
     """
     Process video and upload everything to S3

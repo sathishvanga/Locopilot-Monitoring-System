@@ -321,10 +321,15 @@ class Settings(BaseSettings):
 
     # Eating/Drinking Detection (mind diversion sub-type)
     eating_drinking_detection_enabled: bool = bool(int(os.getenv("EATING_DRINKING_ENABLED", "1")))
-    eating_drinking_cup_confidence: float = float(os.getenv("EATING_DRINKING_CUP_CONF", "0.25"))  # Lower threshold for cups in IR
+    eating_drinking_cup_confidence: float = float(os.getenv("EATING_DRINKING_CUP_CONF", "0.35"))  # Raised from 0.25 to reduce FP from reflective objects
     eating_drinking_hand_face_margin: int = int(os.getenv("EATING_DRINKING_HAND_FACE_MARGIN", "80"))  # Wrist within 80px of nose height
     eating_drinking_hand_object_margin: int = int(os.getenv("EATING_DRINKING_HAND_OBJ_MARGIN", "150"))  # Hand-to-cup proximity
     eating_drinking_cup_floor_confidence: float = float(os.getenv("EATING_DRINKING_CUP_FLOOR_CONF", "0.20"))  # Pre-filter floor for cup/bottle in full-frame detection
+
+    # Radio Handset Zone Suppression (cell phone false positive filter)
+    # Phone bbox center in this zone is likely a radio handset, not cell phone
+    radio_zone_x_min: float = float(os.getenv("RADIO_ZONE_X_MIN", "0.6"))  # Fraction of frame width (right side)
+    radio_zone_y_max: float = float(os.getenv("RADIO_ZONE_Y_MAX", "0.4"))  # Fraction of frame height (upper portion)
 
     # Mind Diversion Suppression Settings
     # Suppress false positives when LP is doing legitimate document work

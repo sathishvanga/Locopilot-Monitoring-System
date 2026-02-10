@@ -55,6 +55,8 @@ sshpass -p "$SERVER_PASS" rsync -avz --progress \
     --exclude 'output' \
     --exclude 'example_data' \
     --exclude '.claude' \
+    --exclude 'debug_frames' \
+    --exclude 'activity_frames' \
     --exclude 'build' \
     --exclude 'dist' \
     --exclude 'yolo*.pt' \
