@@ -55,16 +55,17 @@ ACTIVITY_RULES = {
    - CRITICAL: If the person's eyes appear closed, head is slumped, or they appear drowsy/sleeping -> verified=false (sleeping, not writing)
    - Head down with hands idle in lap and no visible document -> verified=false (likely resting or dozing)""",
 
-    "packing_bags": """   - verified=true if the person is interacting with a bag or backpack in any way:
-     * Hands touching, holding, or gripping the bag -> verified=true
-     * Adjusting bag straps, zippers, or buckles -> verified=true
-     * Moving, lifting, or repositioning a bag -> verified=true
-     * Reaching into or taking items out of a bag -> verified=true
-     * Hands on bag while looking down at it -> verified=true
-   - verified=false ONLY if there is no interaction:
-     * Bag visible nearby but person is not touching it at all -> verified=false
-     * Person's hands are on controls or lap with no bag contact -> verified=false
-   - A bag/backpack must be visible in the frame for verified=true""",
+    "packing_bags": """   - verified=true ONLY if the person is DIRECTLY handling a bag with clear hand-on-bag contact:
+     * Hands gripping, lifting, or carrying the bag -> verified=true
+     * Reaching INTO the bag (arm extends inside) -> verified=true
+     * Actively zipping, buckling, or opening the bag -> verified=true
+   - verified=false in these common scenarios:
+     * Person sitting with a bag on the floor nearby but NOT touching it -> verified=false
+     * Hands resting on lap, controls, or papers near a bag -> verified=false
+     * Person reading, writing, or sitting idle with bag visible in background -> verified=false
+     * Bag between seats on the floor while person sits upright -> verified=false
+     * Wrists near bag area but hands not gripping/reaching into bag -> verified=false
+   - When in doubt, return verified=false""",
 
     "eating_drinking": """   - verified=true ONLY if a cup, bottle, or food item is in the person's hand near their face
    - Objects on a shelf or dashboard not being held -> verified=false
@@ -234,7 +235,7 @@ class VLMVerificationService:
         'writing': 150,         # Need to capture book in lap
         'sleeping': 100,        # Need full body posture
         'microsleep': 100,
-        'packing_bags': 100,
+        'packing_bags': 50,
         'lp_hand_gesture': 100, # Combined bbox of both persons — extra context
         'alp_hand_gesture': 100,
     }
@@ -289,6 +290,7 @@ class VLMVerificationService:
         # Key: "activity_type_pN" -> (result_dict, timestamp)
         self._rejection_throttle: Dict[str, Tuple[Dict, float]] = {}
         self._rejection_cooldown = rejection_cooldown_sec
+        self._throttle_last_eviction: float = time.time()
 
         # Stats
         self._stats = {
@@ -531,17 +533,30 @@ class VLMVerificationService:
         # recently, return the cached rejection without calling VLM again.
         throttle_key = f"{activity_type}_p{person_idx}"
         cooldown = self.ACTIVITY_COOLDOWNS.get(activity_type, self._rejection_cooldown)
+        now = time.time()
         if throttle_key in self._rejection_throttle:
             prev_result, prev_ts = self._rejection_throttle[throttle_key]
-            if time.time() - prev_ts < cooldown:
+            if now - prev_ts < cooldown:
                 self._stats["throttle_hits"] += 1
                 self._log.debug(
                     f"[VLM] Throttled {throttle_key} "
-                    f"({time.time() - prev_ts:.1f}s since last rejection)"
+                    f"({now - prev_ts:.1f}s since last rejection)"
                 )
                 return False, prev_result
             else:
                 del self._rejection_throttle[throttle_key]
+
+        # Periodic eviction of stale throttle entries (every 60s)
+        if now - self._throttle_last_eviction > 60.0:
+            self._throttle_last_eviction = now
+            stale_keys = [
+                k for k, (_, ts) in self._rejection_throttle.items()
+                if now - ts > self._rejection_cooldown
+            ]
+            for k in stale_keys:
+                del self._rejection_throttle[k]
+            if stale_keys:
+                self._log.debug(f"[VLM] Evicted {len(stale_keys)} stale throttle entries")
 
         # Circuit breaker check
         if self._is_circuit_open():

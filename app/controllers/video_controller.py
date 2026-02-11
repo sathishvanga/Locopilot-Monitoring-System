@@ -9,6 +9,7 @@ import asyncio
 import re
 from typing import Optional, Dict, Any
 import os
+import time
 
 from fastapi import APIRouter, UploadFile, File, Form, HTTPException, BackgroundTasks, Request, Response
 
@@ -48,7 +49,7 @@ def sanitize_identifier(value: Optional[str], field_name: str, required: bool = 
         raise HTTPException(status_code=400, detail=f"{field_name} exceeds maximum length of {max_length} characters")
 
     return sanitized
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, FileResponse
 
 from ..models.video_models import (
     VideoProcessingResponse,
@@ -248,29 +249,47 @@ async def process_video(
                     detail=f"Failed to download video from MinIO: {str(e)}"
                 )
         else:
-            # Read video content from upload
-            video_content = await video.read()
-            file_size = len(video_content)
+            # Stream video to disk in chunks to avoid loading entire file into memory
             video_filename = video.filename
 
+            # Validate extension before streaming
+            file_ext = os.path.splitext(video_filename)[1].lower()
+            if file_ext not in settings.allowed_video_extensions:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Invalid file extension. Allowed: {', '.join(settings.allowed_video_extensions)}"
+                )
+
+            # Stream to disk with size limit enforcement
+            safe_filename = f"{tripId}_{int(time.time())}{file_ext}"
+            video_path = os.path.join(settings.upload_dir, safe_filename)
+            os.makedirs(settings.upload_dir, exist_ok=True)
+
+            file_size = 0
+            try:
+                with open(video_path, 'wb') as f:
+                    while True:
+                        chunk = await video.read(8 * 1024 * 1024)  # 8MB chunks
+                        if not chunk:
+                            break
+                        file_size += len(chunk)
+                        if file_size > settings.max_upload_size:
+                            raise HTTPException(
+                                status_code=400,
+                                detail=f"File too large. Maximum size: {settings.max_upload_size / (1024 * 1024):.0f} MB"
+                            )
+                        f.write(chunk)
+            except HTTPException:
+                if os.path.exists(video_path):
+                    os.remove(video_path)
+                raise
+
+            if file_size == 0:
+                if os.path.exists(video_path):
+                    os.remove(video_path)
+                raise HTTPException(status_code=400, detail="File is empty")
+
             logger.info(f"[OK] Uploaded video: {video_filename} ({file_size / (1024*1024):.2f} MB)")
-
-            # Validate video file
-            is_valid, error_message = video_processing_service.validate_video_file(
-                filename=video_filename,
-                file_size=file_size
-            )
-
-            if not is_valid:
-                logger.warning(f"[WARN] Video validation failed: {error_message}")
-                raise HTTPException(status_code=400, detail=error_message)
-
-            # Save uploaded video
-            video_path = await video_processing_service.save_uploaded_video(
-                file_content=video_content,
-                filename=video_filename,
-                trip_id=tripId
-            )
         
         # Determine multiprocessing setting
         # Priority: request parameter > config setting > default (False)
@@ -493,14 +512,15 @@ async def get_run_media(run_id: str, filename: str, request: Request) -> Respons
             # Fallback to full-file response below
             pass
 
-    # Full-file response
-    with open(file_path, "rb") as f:
-        data = f.read()
-    resp = Response(content=data, status_code=200, media_type=mime or "application/octet-stream")
+    # Full-file response using FileResponse (avoids loading entire file into memory)
+    headers = {}
     if mime == "video/mp4":
-        resp.headers["Accept-Ranges"] = "bytes"
-    resp.headers["Content-Length"] = str(file_size)
-    return resp
+        headers["Accept-Ranges"] = "bytes"
+    return FileResponse(
+        path=file_path,
+        media_type=mime or "application/octet-stream",
+        headers=headers
+    )
 
 
 @router.post(
@@ -591,12 +611,34 @@ async def process_and_upload_video(
                 detail=f"Invalid file extension {file_ext}. Allowed: {', '.join(settings.allowed_video_extensions)}"
             )
         
-        # Save uploaded video
-        video_path = await video_processing_service.save_uploaded_video(
-            video_file.file.read(),
-            filename,
-            tripId
-        )
+        # Stream uploaded video to disk in chunks to avoid loading entire file into memory
+        safe_filename = f"{tripId}_{int(time.time())}{file_ext}"
+        video_path = os.path.join(settings.upload_dir, safe_filename)
+        os.makedirs(settings.upload_dir, exist_ok=True)
+
+        file_size = 0
+        try:
+            with open(video_path, 'wb') as f:
+                while True:
+                    chunk = await video_file.read(8 * 1024 * 1024)  # 8MB chunks
+                    if not chunk:
+                        break
+                    file_size += len(chunk)
+                    if file_size > settings.max_upload_size:
+                        raise HTTPException(
+                            status_code=400,
+                            detail=f"File too large. Maximum size: {settings.max_upload_size / (1024 * 1024):.0f} MB"
+                        )
+                    f.write(chunk)
+        except HTTPException:
+            if os.path.exists(video_path):
+                os.remove(video_path)
+            raise
+
+        if file_size == 0:
+            if os.path.exists(video_path):
+                os.remove(video_path)
+            raise HTTPException(status_code=400, detail="Uploaded video file is empty")
         
         logger.info(f"[OK] Video saved: {video_path}")
         
@@ -809,15 +851,13 @@ async def process_and_upload_video(
         )
     
     finally:
-        # Optional: Clean up uploaded video file
-        # Uncomment if you want to delete the original after upload
-        # if video_path and os.path.exists(video_path):
-        #     try:
-        #         os.remove(video_path)
-        #         logger.info(f"Cleaned up uploaded video: {video_path}")
-        #     except Exception as e:
-        #         logger.warning(f"Failed to clean up video: {e}")
-        pass
+        # Clean up uploaded video file after processing
+        if video_path and os.path.exists(video_path):
+            try:
+                os.remove(video_path)
+                logger.info(f"Cleaned up uploaded video: {video_path}")
+            except Exception as e:
+                logger.warning(f"Failed to clean up video: {e}")
 
 
 # =============================================================================
@@ -852,8 +892,19 @@ async def submit_video_job(request: JobSubmitRequest) -> JobSubmitResponse:
     """
     logger.info(f"Received job submission request - video_path={request.video_path}")
 
+    # Validate path is within allowed directories (prevent path traversal)
+    abs_video_path = os.path.abspath(request.video_path)
+    allowed_dirs = [os.path.abspath(settings.upload_dir), os.path.abspath(settings.output_dir)]
+    if not any(abs_video_path.startswith(allowed_dir + os.sep) or abs_video_path == allowed_dir
+               for allowed_dir in allowed_dirs):
+        logger.warning(f"Path traversal attempt blocked: {request.video_path}")
+        raise HTTPException(
+            status_code=400,
+            detail="Video path must be within the configured upload or output directory"
+        )
+
     # Validate video path exists
-    if not os.path.exists(request.video_path):
+    if not os.path.exists(abs_video_path):
         logger.warning(f"Video file not found: {request.video_path}")
         raise HTTPException(
             status_code=400,
@@ -869,9 +920,9 @@ async def submit_video_job(request: JobSubmitRequest) -> JobSubmitResponse:
         )
 
     try:
-        # Submit job to queue
+        # Submit job to queue (use validated absolute path)
         job_id = await job_manager.submit_job(
-            video_path=request.video_path,
+            video_path=abs_video_path,
             config=request.config
         )
 

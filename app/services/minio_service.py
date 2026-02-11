@@ -160,10 +160,6 @@ class MinioService:
             return False
 
 
-# Singleton instance
-_minio_service: Optional[MinioService] = None
-
-
 @lru_cache()
 def get_minio_service() -> MinioService:
     """
@@ -172,7 +168,4 @@ def get_minio_service() -> MinioService:
     Returns:
         MinioService instance
     """
-    global _minio_service
-    if _minio_service is None:
-        _minio_service = MinioService()
-    return _minio_service
+    return MinioService()

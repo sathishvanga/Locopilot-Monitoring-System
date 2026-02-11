@@ -159,8 +159,9 @@ class EvidenceManager:
         """
         temp_path = input_path + ".temp.mp4"
         try:
+            ffmpeg_path = os.environ.get('FFMPEG_PATH', 'ffmpeg')
             result = subprocess.run([
-                '/usr/bin/ffmpeg', '-y', '-i', input_path,
+                ffmpeg_path, '-y', '-i', input_path,
                 '-c:v', 'libx264', '-preset', 'fast',
                 '-crf', '23', '-pix_fmt', 'yuv420p',
                 '-movflags', '+faststart',

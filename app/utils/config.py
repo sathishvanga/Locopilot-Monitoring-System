@@ -29,44 +29,44 @@ cv2.setNumThreads(opencv_threads)
 class Settings(BaseSettings):
     """
     Application settings with environment variable support
-    
+
     All settings can be overridden via environment variables.
     """
-    
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
         case_sensitive=False,
         extra="ignore"
     )
-    
+
     # Application settings
     app_name: str = "Locopilot Monitoring System"
     app_version: str = "1.0.0"
     debug: bool = False
-    
+
     # Server settings
     host: str = "0.0.0.0"
     port: int = 8000
-    
+
     # File upload settings
     max_upload_size: int = 5 * 1024 * 1024 * 1024  # 5 GB
     allowed_video_extensions: List[str] = [".mp4", ".avi", ".mov", ".mkv"]
     # Use cross-platform temp directory (works on Windows, macOS, and Linux)
     upload_dir: str = os.getenv("UPLOAD_DIR", os.path.join(tempfile.gettempdir(), "locopilot_uploads"))
-    
+
     # Output settings
     # Convert to absolute path to avoid path resolution issues
     output_dir: str = os.path.join(
-        os.path.dirname(os.path.dirname(os.path.dirname(__file__))), 
+        os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
         "locopilot_evidence"
     )
     save_annotated_frames: bool = True
     frame_save_interval: int = 1
-    
+
     # Video processing settings
     sample_fps: float = 0.5  # Sample at 0.5 FPS (1 frame every 2 seconds)
-    
+
     # Multiprocessing settings
     enable_multiprocessing: bool = bool(int(os.getenv("ENABLE_MULTIPROCESSING", "1")))
     # ✅ 15s chunks ensure hand gesture coordination detection works correctly
@@ -75,7 +75,7 @@ class Settings(BaseSettings):
     mp_chunk_duration: float = 15.0  # Chunk duration in seconds (optimized for coordination detection)
     mp_max_workers: Optional[int] = None  # None = auto-detect (uses min(CPU count, max_workers_cap))
     mp_max_workers_cap: int = 12  # Maximum number of workers (11 cores + slight oversubscription)
-    
+
     # Model settings - YOLO11 (latest, better accuracy, faster, fewer parameters)
     yolo_weights: str = os.getenv("YOLO_WEIGHTS_PRELOAD", "yolo11m.pt")  # YOLO11m for object detection
     yolo_pose_weights: str = os.getenv("YOLO_POSE_WEIGHTS", "yolo11m-pose.pt")  # YOLO11m-pose for multi-person pose
@@ -107,7 +107,7 @@ class Settings(BaseSettings):
     environment: str = os.getenv("ENVIRONMENT", "development")  # production or development
     prod_log_level: str = os.getenv("PROD_LOG_LEVEL", "INFO")
     dev_log_level: str = os.getenv("DEV_LOG_LEVEL", "DEBUG")
-    
+
     # External API settings (CVVR API)
     # Use {division} placeholder in URL - will be replaced with actual division value at runtime
     cvvr_api_url: str = os.getenv(
@@ -124,13 +124,16 @@ class Settings(BaseSettings):
     cvvr_api_enabled: bool = bool(int(os.getenv("CVVR_API_ENABLED", "1")))  # Enable by default
     host_url: str = os.getenv("HOST_URL", "https://celebxmedia.info")  # URL for building fileUrl
 
+    # S3 Upload API settings
+    s3_upload_api_url: str = os.getenv("S3_UPLOAD_API_URL", "https://api.mindcoinapps.com/ai_demo_api/amazonUpload/uploadWithFolder")
+
     # MinIO settings for video downloads
     minio_endpoint: str = os.getenv("MINIO_ENDPOINT", "mind.snikbtel.uk:9000")
     minio_access_key: str = os.getenv("MINIO_ACCESS_KEY", "admin")
     minio_secret_key: str = os.getenv("MINIO_SECRET_KEY", "login123")
     minio_secure: bool = bool(int(os.getenv("MINIO_SECURE", "1")))
     minio_bucket: str = os.getenv("MINIO_BUCKET", "cvss")
-    
+
     # Image preprocessing settings (for MediaPipe detection enhancement)
     enable_image_preprocessing: bool = bool(int(os.getenv("ENABLE_IMAGE_PREPROCESSING", "1")))  # Enable by default
     use_clahe: bool = bool(int(os.getenv("USE_CLAHE", "1")))  # CLAHE is most effective
@@ -139,7 +142,7 @@ class Settings(BaseSettings):
     use_noise_reduction: bool = bool(int(os.getenv("USE_NOISE_REDUCTION", "1")))
     adaptive_preprocessing: bool = bool(int(os.getenv("ADAPTIVE_PREPROCESSING", "1")))  # Use quality metrics
     clahe_clip_limit: float = float(os.getenv("CLAHE_CLIP_LIMIT", "1.5"))  # REDUCED from 2.0 (less aggressive CLAHE)
-    
+
     # Parse tile grid size from environment variable (JSON array string)
     @field_validator('clahe_tile_grid_size', mode='before')
     @classmethod
@@ -158,7 +161,7 @@ class Settings(BaseSettings):
         if isinstance(v, list) and len(v) == 2:
             return [int(v[0]), int(v[1])]
         return [8, 8]
-    
+
     clahe_tile_grid_size: List[int] = json.loads(os.getenv("CLAHE_TILE_GRID_SIZE", "[16, 16]"))  # INCREASED from [8,8] (larger tiles, smoother)
     gamma_value: float = float(os.getenv("GAMMA_VALUE", "1.2"))
     unsharp_strength: float = float(os.getenv("UNSHARP_STRENGTH", "1.5"))
@@ -416,7 +419,7 @@ class Settings(BaseSettings):
     activity_writing_margin: int = int(os.getenv("ACTIVITY_WRITING_MARGIN", "180"))
     activity_packing_margin: int = int(os.getenv("ACTIVITY_PACKING_MARGIN", "100"))
     activity_packing_region_margin: int = int(os.getenv("ACTIVITY_PACKING_REGION_MARGIN", "150"))
-    activity_packing_wrist_inside_margin: int = int(os.getenv("ACTIVITY_PACKING_WRIST_INSIDE_MARGIN", "80"))
+    activity_packing_wrist_inside_margin: int = int(os.getenv("ACTIVITY_PACKING_WRIST_INSIDE_MARGIN", "30"))
 
     # ==========================================
     # Voting Service Margins
@@ -438,6 +441,9 @@ class Settings(BaseSettings):
     # Trip API Settings (RailRadar API)
     trip_api_url: str = os.getenv("TRIP_API_URL", "https://api.railradar.in/api/v1/trains")
     trip_api_timeout: int = int(os.getenv("TRIP_API_TIMEOUT", "10"))
+
+    # FFmpeg path (centralized for all components)
+    ffmpeg_path: str = os.getenv("FFMPEG_PATH", "ffmpeg")
 
     # OCR Timestamp Extraction Settings
     ocr_enabled: bool = bool(int(os.getenv("OCR_ENABLED", "0")))
@@ -536,9 +542,9 @@ class Settings(BaseSettings):
 def get_settings() -> Settings:
     """
     Get cached settings instance
-    
+
     Uses LRU cache to ensure settings are loaded only once.
-    
+
     Returns:
         Settings: Application settings instance
     """

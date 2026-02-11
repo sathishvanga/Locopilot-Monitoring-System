@@ -14,7 +14,6 @@ from typing import Optional, List, Dict, Tuple, Any, Union, Generator
 import gc
 import contextlib
 import sys
-import subprocess
 
 # ---------------------------------------------------------------------------
 # Extracted module imports (refactored components)
@@ -67,7 +66,7 @@ def _build_activity_registry() -> Dict[str, ActivityConfig]:
     writing_margin = _settings.activity_writing_margin if _settings else 180
     packing_margin = _settings.activity_packing_margin if _settings else 100
     packing_region_margin = _settings.activity_packing_region_margin if _settings else 150
-    packing_wrist_inside_margin = _settings.activity_packing_wrist_inside_margin if _settings else 80
+    packing_wrist_inside_margin = _settings.activity_packing_wrist_inside_margin if _settings else 30
 
     return {
         'microsleep': ActivityConfig(
@@ -96,7 +95,7 @@ def _build_activity_registry() -> Dict[str, ActivityConfig]:
         ),
         'packing_bags': ActivityConfig(
             min_duration=0.0,
-            required_consecutive=1,
+            required_consecutive=2,
             margin=packing_margin,
             grace_frames=5,
             region_margin=packing_region_margin,
@@ -3320,11 +3319,13 @@ class LocopilotActivityMonitor:
                         if backpack_in_person_region:
                             # ===== SIMPLIFIED CHECK: Is wrist INSIDE backpack bbox? =====
                             # This directly detects if hand is interacting with the bag
+                            wrist_inside_margin_base = self.activity_thresholds['packing_bags'].get('wrist_inside_margin', 15)
+                            wrist_inside_margin = self._scale_margin(wrist_inside_margin_base, bbox)
                             right_inside, right_dist = self.activity_detector.is_wrist_inside_backpack(
-                                right_hand_coords, backpack_bbox, margin=40  # 40px margin for tolerance
+                                right_hand_coords, backpack_bbox, margin=wrist_inside_margin
                             )
                             left_inside, left_dist = self.activity_detector.is_wrist_inside_backpack(
-                                left_hand_coords, backpack_bbox, margin=40
+                                left_hand_coords, backpack_bbox, margin=wrist_inside_margin
                             )
                             
                             wrist_inside_backpack = right_inside or left_inside
@@ -3340,6 +3341,44 @@ class LocopilotActivityMonitor:
                                 'backpack_bbox': list(backpack_bbox[:4])
                             }
                             
+                            # ===== POSTURE GUARD: Suppress packing for seated-upright persons =====
+                            # Fix C: Wrists near a floor bag while person sits upright = false positive.
+                            # Require (a) leaning forward OR (b) triggering wrist in lower half of person bbox.
+                            packing_posture_ok = False
+                            nose_kp = self.get_keypoint(translated_landmarks, 'nose')
+                            l_shoulder = self.get_keypoint(translated_landmarks, 'left_shoulder')
+                            r_shoulder = self.get_keypoint(translated_landmarks, 'right_shoulder')
+                            if (nose_kp.visibility > 0.3 and
+                                    l_shoulder.visibility > 0.3 and r_shoulder.visibility > 0.3):
+                                shoulder_mid_y = (l_shoulder.y + r_shoulder.y) / 2
+                                # (a) Leaning forward: nose well below shoulder midpoint (normalized coords)
+                                if nose_kp.y > shoulder_mid_y + 0.03:
+                                    packing_posture_ok = True
+                            else:
+                                # Pose not visible enough — allow detection (benefit of doubt)
+                                packing_posture_ok = True
+
+                            if not packing_posture_ok:
+                                # (b) Check if triggering wrist is in lower half of person bbox
+                                bx1, by1, bx2, by2 = bbox[:4]
+                                bbox_mid_y = (by1 + by2) / 2
+                                triggering_wrist_coords = right_hand_coords if right_inside else left_hand_coords
+                                if triggering_wrist_coords and triggering_wrist_coords[1] > bbox_mid_y:
+                                    packing_posture_ok = True
+
+                            if not packing_posture_ok:
+                                self.logger.info(
+                                    f"PACKING SUPPRESSED (posture guard): person {person_idx} seated upright, "
+                                    f"wrist near bag but not leaning/reaching down"
+                                )
+                                person_debug_info['packing_posture_suppressed'] = True
+                                # Reset counter since this is a false positive
+                                should_trigger = self.update_per_person_detection(
+                                    person_idx, 'packing_bags', False, timestamp_sec
+                                )
+                                person_activities['packing'] = should_trigger
+                                break
+
                             # ===== PRIMARY DETECTION: Wrist inside backpack bbox =====
                             if wrist_inside_backpack:
                                 packing_detected_simple = True
@@ -4054,78 +4093,6 @@ class LocopilotActivityMonitor:
             
             self.evidence_counter += 1
 
-    def _reencode_to_h264(self, input_path: str) -> bool:
-        """Re-encode video to H.264 for browser compatibility.
-
-        OpenCV's mp4v codec (MPEG-4 Part 2) doesn't play in browsers.
-        This re-encodes to H.264 which has universal browser support.
-
-        Args:
-            input_path: Path to the video file to re-encode
-
-        Returns:
-            True if re-encoding succeeded, False otherwise
-        """
-        import subprocess
-        temp_path = input_path + ".temp.mp4"
-        try:
-            result = subprocess.run([
-                '/usr/bin/ffmpeg', '-y', '-i', input_path,
-                '-c:v', 'libx264', '-preset', 'fast',
-                '-crf', '23', '-pix_fmt', 'yuv420p',
-                '-movflags', '+faststart',
-                '-loglevel', 'error',
-                temp_path
-            ], capture_output=True, timeout=120)
-            if result.returncode == 0 and os.path.exists(temp_path):
-                os.replace(temp_path, input_path)
-                self.logger.debug(f"Re-encoded to H.264: {input_path}")
-                return True
-            else:
-                stderr = result.stderr.decode() if result.stderr else ""
-                self.logger.warning(f"H.264 re-encoding failed (code {result.returncode}): {stderr}")
-        except FileNotFoundError:
-            self.logger.warning("ffmpeg not found - videos will use mp4v codec (may not play in browsers)")
-        except subprocess.TimeoutExpired:
-            self.logger.warning(f"H.264 re-encoding timed out for: {input_path}")
-        except Exception as e:
-            self.logger.warning(f"H.264 re-encoding failed: {e}")
-        finally:
-            if os.path.exists(temp_path):
-                try:
-                    os.remove(temp_path)
-                except Exception:
-                    pass
-        return False
-
-    def save_video_clip(self, frames: List[Any], output_path: str, fps: float) -> None:
-        """Save frames as video clip at sample FPS for full-duration playback.
-        
-        Args:
-            frames: List of frames to save
-            output_path: Path to save video
-            fps: FPS to use for video (should be sample_fps for real-time duration)
-        """
-        if len(frames) == 0:
-            return
-        
-        height, width = frames[0].shape[:2]
-        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-        
-        # Use the provided FPS (sample_fps) to create full-duration clips
-        # Example: 13 frames @ 0.5 FPS = 26 seconds (real-time)
-        # instead of: 13 frames @ 30 FPS = 0.43 seconds (fast-motion)
-        out = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
-        
-        for frame in frames:
-            out.write(frame)
-
-        out.release()
-
-        # Re-encode to H.264 for browser compatibility
-        # (mp4v codec from OpenCV doesn't play in browsers)
-        self._reencode_to_h264(output_path)
-
     def extract_video_segment(self, source_video: str, output_path: str, start_seconds: float, end_seconds: float) -> bool:
         """Extract video segment - delegates to EvidenceManager.
 
@@ -4594,6 +4561,16 @@ class LocopilotActivityMonitor:
                                     activity_name, frame, persons_data, timestamp_sec
                                 )
                                 if not vlm_confirmed:
+                                    # Self-reclassification = confirmation (VLM can't suggest different activity)
+                                    if parse_reclassify_target is not None:
+                                        reclassify_target = parse_reclassify_target(vlm_reason)
+                                        if reclassify_target and reclassify_target == activity_name:
+                                            self.logger.info(
+                                                f"[{timestamp}] [TEMPORAL] {activity_name}: "
+                                                f"VLM self-reclassified → treating as confirmed"
+                                            )
+                                            vlm_confirmed = True
+                                if not vlm_confirmed:
                                     # VLM rejected — reset counter and skip
                                     self.logger.info(
                                         f"[{timestamp}] [TEMPORAL] {activity_name}: VLM rejected → "
@@ -5061,6 +5038,13 @@ class LocopilotActivityMonitor:
         since they are shared across tasks in the same worker.
         """
         try:
+            # Close VLM service HTTP client to release TCP connections
+            if hasattr(self, 'vlm_service') and self.vlm_service is not None:
+                try:
+                    self.vlm_service.close()
+                except Exception:
+                    pass
+
             # Only close models if they were loaded fresh (not pre-loaded from worker pool)
             if not getattr(self, '_models_preloaded', False):
                 # Close YOLOv8-Pose model
@@ -5076,7 +5060,7 @@ class LocopilotActivityMonitor:
                 self.yolo_pose = None
                 self.yolo_model = None
                 self.face_mesh = None
-            
+
             # Clear frame buffers (always)
             if hasattr(self, 'frame_buffer'):
                 self.frame_buffer.clear()
@@ -5088,10 +5072,10 @@ class LocopilotActivityMonitor:
                 for activity_name in self.activities:
                     if 'frames' in self.activities[activity_name]:
                         self.activities[activity_name]['frames'].clear()
-            
+
             # Force garbage collection
             gc.collect()
-            
+
             self.logger.info("Cleanup completed: Models closed, buffers cleared")
         except Exception as e:
             self.logger.warning(f"Warning during cleanup: {e}")

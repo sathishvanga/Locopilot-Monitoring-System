@@ -370,9 +370,11 @@ class TemporalFilteringService:
                         )
                         try:
                             cap = cv2.VideoCapture(video_path)
-                            cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
-                            ret, vlm_frame = cap.read()
-                            cap.release()
+                            try:
+                                cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
+                                ret, vlm_frame = cap.read()
+                            finally:
+                                cap.release()
                             if ret and vlm_frame is not None:
                                 p_bbox = pdata.get('bbox', [0, 0, vlm_frame.shape[1], vlm_frame.shape[0]])
                                 is_confirmed, details = self.vlm_service.verify_detection_sync(
@@ -424,6 +426,16 @@ class TemporalFilteringService:
                                     activity_name, video_path, frame_idx,
                                     det.get('persons_data_summary', {})
                                 )
+                                if not vlm_confirmed:
+                                    # Self-reclassification = confirmation (VLM can't suggest different activity)
+                                    if parse_reclassify_target is not None:
+                                        reclassify_target = parse_reclassify_target(vlm_reason)
+                                        if reclassify_target and reclassify_target == activity_name:
+                                            self.logger.info(
+                                                f"[PASS 2] [{timestamp_str}] [TEMPORAL] {activity_name}: "
+                                                f"VLM self-reclassified → treating as confirmed"
+                                            )
+                                            vlm_confirmed = True
                                 if not vlm_confirmed:
                                     self.logger.info(
                                         f"[PASS 2] [{timestamp_str}] [TEMPORAL] {activity_name}: VLM rejected "
@@ -540,9 +552,11 @@ class TemporalFilteringService:
 
         # Extract frame from video
         cap = cv2.VideoCapture(video_path)
-        cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
-        ret, frame = cap.read()
-        cap.release()
+        try:
+            cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
+            ret, frame = cap.read()
+        finally:
+            cap.release()
 
         if not ret or frame is None:
             self.logger.warning(f"[VLM PASS2] Could not read frame {frame_idx}")
@@ -617,13 +631,16 @@ class TemporalFilteringService:
 # Module-level helpers (no state)
 # ------------------------------------------------------------------
 
-def _time_to_seconds(time_str: str) -> float:
-    """Convert HH:MM:SS[.microseconds] to seconds."""
-    parts = time_str.split(':')
-    hours = float(parts[0])
-    minutes = float(parts[1])
-    seconds = float(parts[2])
-    return hours * 3600 + minutes * 60 + seconds
+try:
+    from app.utils.time_utils import time_to_seconds as _time_to_seconds
+except ImportError:
+    def _time_to_seconds(time_str: str) -> float:
+        """Convert HH:MM:SS[.microseconds] to seconds."""
+        parts = time_str.split(':')
+        hours = float(parts[0])
+        minutes = float(parts[1])
+        seconds = float(parts[2])
+        return hours * 3600 + minutes * 60 + seconds
 
 
 def _extract_clip(
@@ -668,9 +685,11 @@ def _save_activity_image(
 
     middle_idx = frame_indices[len(frame_indices) // 2]
     cap = cv2.VideoCapture(video_path)
-    cap.set(cv2.CAP_PROP_POS_FRAMES, middle_idx)
-    ret, frame = cap.read()
-    cap.release()
+    try:
+        cap.set(cv2.CAP_PROP_POS_FRAMES, middle_idx)
+        ret, frame = cap.read()
+    finally:
+        cap.release()
 
     if ret and frame is not None:
         cv2.imwrite(output_path, frame)

@@ -317,15 +317,25 @@ class JobManager:
         Worker coroutine that processes jobs from the queue.
 
         Runs continuously until shutdown, pulling jobs from queue and
-        processing them one at a time.
+        processing them one at a time. Periodically cleans up completed
+        jobs to prevent unbounded memory growth.
 
         Args:
             worker_id: Worker identifier for logging
         """
         logger.info(f"Worker {worker_id} started")
+        _cleanup_counter = 0
 
         while not self._shutdown:
             try:
+                # Periodic cleanup of completed jobs (every ~50s)
+                _cleanup_counter += 1
+                if _cleanup_counter >= 50:
+                    _cleanup_counter = 0
+                    removed = await self.cleanup_completed_jobs(max_age_seconds=3600)
+                    if removed > 0:
+                        logger.info(f"Worker {worker_id}: Auto-cleaned {removed} old jobs")
+
                 # Wait for job with timeout (allows checking shutdown flag)
                 queue = self._ensure_queue()
                 try:
