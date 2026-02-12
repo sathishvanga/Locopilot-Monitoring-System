@@ -4532,6 +4532,34 @@ class LocopilotActivityMonitor:
                     },
                 }
 
+            # --- Fix 5: Conflicting activity suppression ---
+            # packing_bags takes priority over writing when both detected in same frame
+            if activities_map.get('packing_bags') and activities_map.get('writing'):
+                activities_map['writing'] = False
+                self.logger.debug(
+                    f"[{timestamp}] Suppressed writing (packing_bags active in same frame)"
+                )
+
+            # --- Fix 3: Writing max duration cap ---
+            # Force-end excessively long writing to allow re-evaluation
+            # (may actually be sleeping/resting misclassified as writing)
+            _writing_max_dur = getattr(self.settings, 'writing_max_duration', 120.0) if self.settings else 120.0
+            if self.activities['writing']['active']:
+                _wr_start_frame = self.activities['writing'].get('start_frame_count', 0)
+                if _wr_start_frame and frame_idx > _wr_start_frame and fps > 0:
+                    _wr_wall_duration = (frame_idx - _wr_start_frame) / fps
+                    if _wr_wall_duration > _writing_max_dur:
+                        self.logger.info(
+                            f"[{timestamp}] Writing max duration ({_writing_max_dur:.0f}s) exceeded "
+                            f"→ force-ending for re-evaluation (actual={_wr_wall_duration:.1f}s)"
+                        )
+                        self.end_activity('writing', timestamp, fps, frame_idx, people_count, save_clips=save_clips)
+                        # Suppress writing for this frame so it doesn't immediately restart
+                        activities_map['writing'] = False
+
+            # Track reclassified activities for post-loop processing (Fix 1)
+            reclassified_this_frame = set()
+
             for activity_name, detected in activities_map.items():
                 if detected:
                     # Activity detected - increment consecutive counter and reset grace period
@@ -4561,32 +4589,31 @@ class LocopilotActivityMonitor:
                                     activity_name, frame, persons_data, timestamp_sec
                                 )
                                 if not vlm_confirmed:
-                                    # Self-reclassification = confirmation (VLM can't suggest different activity)
-                                    if parse_reclassify_target is not None:
-                                        reclassify_target = parse_reclassify_target(vlm_reason)
-                                        if reclassify_target and reclassify_target == activity_name:
-                                            self.logger.info(
-                                                f"[{timestamp}] [TEMPORAL] {activity_name}: "
-                                                f"VLM self-reclassified → treating as confirmed"
-                                            )
-                                            vlm_confirmed = True
-                                if not vlm_confirmed:
-                                    # VLM rejected — reset counter and skip
+                                    # Extract reclassification target once
+                                    reclassify_target = parse_reclassify_target(vlm_reason) if parse_reclassify_target else None
+
+                                    # Fix 4: Self-reclassification = VLM confusion
+                                    if reclassify_target and reclassify_target == activity_name:
+                                        self.logger.info(
+                                            f"[{timestamp}] [TEMPORAL] {activity_name}: "
+                                            f"VLM self-reclassified → treating as rejection"
+                                        )
+                                        reclassify_target = None  # Don't process as reclassification
+
                                     self.logger.info(
                                         f"[{timestamp}] [TEMPORAL] {activity_name}: VLM rejected → "
                                         f"resetting consecutive counter (was {self.consecutive_detections[activity_name]})"
                                     )
-                                    # Check if VLM detected a different activity (reclassification)
-                                    if parse_reclassify_target is not None:
-                                        reclassify_target = parse_reclassify_target(vlm_reason)
-                                        if reclassify_target and reclassify_target in self.consecutive_detections:
-                                            self.consecutive_detections[reclassify_target] = self.consecutive_detections.get(reclassify_target, 0) + 1
-                                            self.grace_counters[reclassify_target] = 0
-                                            self.logger.info(
-                                                f"[{timestamp}] [TEMPORAL] {activity_name}: "
-                                                f"VLM reclassified → {reclassify_target} "
-                                                f"(consecutive={self.consecutive_detections[reclassify_target]})"
-                                            )
+                                    # Reclassify to a different activity if VLM suggested one
+                                    if reclassify_target and reclassify_target in self.consecutive_detections:
+                                        self.consecutive_detections[reclassify_target] = self.consecutive_detections.get(reclassify_target, 0) + 1
+                                        self.grace_counters[reclassify_target] = 0
+                                        reclassified_this_frame.add(reclassify_target)
+                                        self.logger.info(
+                                            f"[{timestamp}] [TEMPORAL] {activity_name}: "
+                                            f"VLM reclassified → {reclassify_target} "
+                                            f"(consecutive={self.consecutive_detections[reclassify_target]})"
+                                        )
                                     self.consecutive_detections[activity_name] = 0
                                     self.grace_counters[activity_name] = 0
                                     continue
@@ -4627,10 +4654,7 @@ class LocopilotActivityMonitor:
                                 )
                                 # No ocr_timestamp: current frame is post-grace-period, not when activity ended.
                                 # end_activity computes ocr_end from ocr_start + duration instead (more accurate).
-                                if save_clips:
-                                    self.end_activity(activity_name, timestamp, fps, frame_idx, people_count)
-                                else:
-                                    self.end_activity(activity_name, timestamp, fps, frame_idx, people_count, save_clips=save_clips)
+                                self.end_activity(activity_name, timestamp, fps, frame_idx, people_count, save_clips=save_clips)
                             else:
                                 self.logger.debug(
                                     f"[{timestamp}] [GRACE] {activity_name}: grace period exceeded "
@@ -4642,6 +4666,41 @@ class LocopilotActivityMonitor:
                     else:
                         # Reset grace counter if nothing is being tracked
                         self.grace_counters[activity_name] = 0
+
+            # --- Fix 1: Post-loop reclassification check ---
+            # When an activity (e.g. writing) is reclassified to another (e.g. sleep)
+            # whose dict iteration already passed, the target's threshold was skipped.
+            for target in reclassified_this_frame:
+                if target not in self.consecutive_detections:
+                    continue
+                if self.activities[target]['active']:
+                    # Already active — just track this frame as a detection
+                    self.activities[target]['frames'].append(frame_idx)
+                    self.activities[target]['last_frame_count'] = frame_idx
+                    self.activities[target]['last_detected_frame'] = frame_idx
+                    self.activities[target]['last_detection_time'] = timestamp
+                    if person_roles:
+                        self.activities[target]['person_roles'] = person_roles
+                    continue
+
+                required = self.activity_thresholds[target]['required_consecutive']
+                if self.consecutive_detections[target] < required:
+                    continue
+
+                self.logger.info(
+                    f"[{timestamp}] [RECLASSIFY] {target}: threshold reached "
+                    f"({self.consecutive_detections[target]}/{required}) → starting activity"
+                )
+                # Start activity (VLM already suggested this — skip re-verification)
+                self.start_activity(target, timestamp, fps, frame_idx, person_roles=person_roles)
+                # Append current frame
+                if self.activities[target]['active']:
+                    self.activities[target]['frames'].append(frame_idx)
+                    self.activities[target]['last_frame_count'] = frame_idx
+                    self.activities[target]['last_detected_frame'] = frame_idx
+                    self.activities[target]['last_detection_time'] = timestamp
+                    if person_roles:
+                        self.activities[target]['person_roles'] = person_roles
 
             # CR-012: Clean up stale per-person tracking dicts after each frame
             if enable_stale_cleanup and persons_data:

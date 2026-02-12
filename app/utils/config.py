@@ -371,6 +371,7 @@ class Settings(BaseSettings):
     # Writing Detection Thresholds
     # ==========================================
     writing_min_duration: float = float(os.getenv("WRITING_MIN_DURATION", "1.0"))
+    writing_max_duration: float = float(os.getenv("WRITING_MAX_DURATION", "120.0"))  # Force-end writing after this many seconds for re-evaluation
     writing_required_consecutive: int = int(os.getenv("WRITING_REQUIRED_CONSECUTIVE", "2"))
     book_posture_min_duration: float = float(os.getenv("BOOK_POSTURE_MIN_DURATION", "2.0"))
     book_posture_required_consecutive: int = int(os.getenv("BOOK_POSTURE_REQUIRED_CONSECUTIVE", "2"))

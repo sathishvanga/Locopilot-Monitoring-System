@@ -397,6 +397,32 @@ class TemporalFilteringService:
                         except Exception as e:
                             self.logger.error(f"[PASS 2] [VLM SLEEP SCREEN] Error: {e}")
 
+            # --- Fix 5: Conflicting activity suppression ---
+            # packing_bags takes priority over writing when both detected in same frame
+            if activities_map.get('packing_bags') and activities_map.get('writing'):
+                activities_map['writing'] = False
+                self.logger.debug(
+                    f"[PASS 2] [{timestamp_str}] Suppressed writing (packing_bags active in same frame)"
+                )
+
+            # --- Fix 3: Writing max duration cap ---
+            # Force-end excessively long writing to allow re-evaluation
+            # (may actually be sleeping/resting misclassified as writing)
+            _writing_max_dur = getattr(self.settings, 'writing_max_duration', 120.0) if self.settings else 120.0
+            if activities['writing']['active'] and activities['writing']['first_detection_time']:
+                writing_start_sec = _time_to_seconds(activities['writing']['first_detection_time'])
+                if timestamp_sec - writing_start_sec > _writing_max_dur:
+                    self.logger.info(
+                        f"[PASS 2] [{timestamp_str}] Writing max duration ({_writing_max_dur:.0f}s) exceeded "
+                        f"→ force-ending for re-evaluation"
+                    )
+                    _end_activity('writing', timestamp_str, frame_idx)
+                    # Suppress writing for this frame so it doesn't immediately restart
+                    activities_map['writing'] = False
+
+            # Track reclassified activities for post-loop processing (Fix 1)
+            reclassified_this_frame = set()
+
             for activity_name, detected in activities_map.items():
                 if activity_name not in consecutive_detections:
                     continue
@@ -427,32 +453,32 @@ class TemporalFilteringService:
                                     det.get('persons_data_summary', {})
                                 )
                                 if not vlm_confirmed:
-                                    # Self-reclassification = confirmation (VLM can't suggest different activity)
-                                    if parse_reclassify_target is not None:
-                                        reclassify_target = parse_reclassify_target(vlm_reason)
-                                        if reclassify_target and reclassify_target == activity_name:
-                                            self.logger.info(
-                                                f"[PASS 2] [{timestamp_str}] [TEMPORAL] {activity_name}: "
-                                                f"VLM self-reclassified → treating as confirmed"
-                                            )
-                                            vlm_confirmed = True
-                                if not vlm_confirmed:
+                                    # Extract reclassification target once
+                                    reclassify_target = parse_reclassify_target(vlm_reason) if parse_reclassify_target else None
+
+                                    # Fix 4: Self-reclassification = VLM confusion
+                                    if reclassify_target and reclassify_target == activity_name:
+                                        self.logger.info(
+                                            f"[PASS 2] [{timestamp_str}] [TEMPORAL] {activity_name}: "
+                                            f"VLM self-reclassified → treating as rejection"
+                                        )
+                                        reclassify_target = None  # Don't process as reclassification
+
                                     self.logger.info(
                                         f"[PASS 2] [{timestamp_str}] [TEMPORAL] {activity_name}: VLM rejected "
                                         f"→ resetting consecutive counter (was {consecutive_detections[activity_name]})"
                                     )
-                                    # Check if VLM detected a different activity (reclassification)
-                                    if parse_reclassify_target is not None:
-                                        reclassify_target = parse_reclassify_target(vlm_reason)
-                                        if reclassify_target and reclassify_target in consecutive_detections:
-                                            activities_map[reclassify_target] = True
-                                            consecutive_detections[reclassify_target] = consecutive_detections.get(reclassify_target, 0) + 1
-                                            grace_counters[reclassify_target] = 0
-                                            self.logger.info(
-                                                f"[PASS 2] [{timestamp_str}] [TEMPORAL] {activity_name}: "
-                                                f"VLM reclassified → {reclassify_target} "
-                                                f"(consecutive={consecutive_detections[reclassify_target]})"
-                                            )
+                                    # Reclassify to a different activity if VLM suggested one
+                                    if reclassify_target and reclassify_target in consecutive_detections:
+                                        activities_map[reclassify_target] = True
+                                        consecutive_detections[reclassify_target] = consecutive_detections.get(reclassify_target, 0) + 1
+                                        grace_counters[reclassify_target] = 0
+                                        reclassified_this_frame.add(reclassify_target)
+                                        self.logger.info(
+                                            f"[PASS 2] [{timestamp_str}] [TEMPORAL] {activity_name}: "
+                                            f"VLM reclassified → {reclassify_target} "
+                                            f"(consecutive={consecutive_detections[reclassify_target]})"
+                                        )
                                     consecutive_detections[activity_name] = 0
                                     grace_counters[activity_name] = 0
                                     continue
@@ -512,6 +538,50 @@ class TemporalFilteringService:
                             grace_counters[activity_name] = 0
                     else:
                         grace_counters[activity_name] = 0
+
+            # --- Fix 1: Post-loop reclassification check ---
+            # When an activity (e.g. writing) is reclassified to another (e.g. sleep)
+            # whose dict iteration already passed, the target's threshold check was skipped.
+            # Process reclassified targets here to start activities immediately.
+            for target in reclassified_this_frame:
+                if target not in consecutive_detections:
+                    continue
+                if activities[target]['active']:
+                    # Already active — just track this frame as a detection
+                    activities[target]['frames'].append(frame_idx)
+                    activities[target]['last_detected_frame'] = frame_idx
+                    activities[target]['last_detection_time'] = timestamp_str
+                    if person_roles:
+                        activities[target]['person_roles'] = person_roles
+                    continue
+
+                required = self.activity_thresholds[target]['required_consecutive']
+                if consecutive_detections[target] < required:
+                    continue
+
+                self.logger.info(
+                    f"[PASS 2] [{timestamp_str}] [RECLASSIFY] {target}: threshold reached "
+                    f"({consecutive_detections[target]}/{required}) → starting activity"
+                )
+                # Start activity (VLM already suggested this — skip re-verification)
+                activities[target]['active'] = True
+                activities[target]['start_time'] = timestamp_str
+                activities[target]['start_frame'] = frame_idx
+                activities[target]['frames'] = list(frame_idx_buffer)
+                activities[target]['person_roles'] = person_roles
+                activities[target]['first_detection_time'] = timestamp_str
+                activities[target]['last_detection_time'] = timestamp_str
+                activities[target]['last_detected_frame'] = frame_idx
+                activities[target]['frames'].append(frame_idx)
+                roles_str = ""
+                if person_roles:
+                    roles_str = ", persons=" + "+".join(
+                        f"p{pidx}({info.get('role', '?')})" for pidx, info in sorted(person_roles.items())
+                    )
+                self.logger.info(
+                    f"[PASS 2] [{timestamp_str}] Activity STARTED (via reclassification): "
+                    f"{target} (frame={frame_idx}{roles_str})"
+                )
 
         # End any remaining active activities
         if frame_detections:
