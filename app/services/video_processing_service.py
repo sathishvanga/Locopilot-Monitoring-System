@@ -154,7 +154,6 @@ class VideoProcessingService:
         crew_name: str = "John Doe",
         crew_id: str = "C-001",
         crew_role: int = 1,
-        use_mock_detection: bool = False,
         use_multiprocessing: bool = False,
         save_clips: bool = True,
         skip_external_api: bool = False,
@@ -174,7 +173,6 @@ class VideoProcessingService:
             crew_name: [Legacy] Crew member name
             crew_id: [Legacy] Crew member ID
             crew_role: [Legacy] Crew role
-            use_mock_detection: Use mock detection instead of real ML models
             use_multiprocessing: Enable multiprocessing for faster processing
             save_clips: Whether to save video clips and images (default: True)
             skip_external_api: Skip posting to external API (for process-and-upload endpoint)
@@ -196,7 +194,7 @@ class VideoProcessingService:
             logger.info(
                 f"[START] Starting video processing for trip {trip_id} - "
                 f"Multiprocessing: {'enabled' if use_multiprocessing else 'disabled'}, "
-                f"Save clips: {save_clips}, Mock detection: {use_mock_detection}"
+                f"Save clips: {save_clips}"
             )
 
             # Validate video file exists
@@ -278,54 +276,43 @@ class VideoProcessingService:
             logger.info(f"[OK] Created run directory: {run_dir}")
             
             # Run activity detection
-            if use_mock_detection:
-                logger.info("[MOCK] Using mock activity detection")
-                activities = self.activity_detection_service.detect_activities_mock(
+            logger.info(
+                f"[DETECT] Using real activity detection - "
+                f"Multiprocessing: {'enabled' if use_multiprocessing else 'disabled'}"
+            )
+
+            # Pass run_dir and save_clips settings
+            if use_multiprocessing:
+                activities = self.activity_detection_service._detect_activities_multiprocess(
                     video_path=video_path,
                     trip_id=trip_id,
                     crew_members=crew_members,
                     crew_name=crew_name,
                     crew_id=crew_id,
-                    crew_role=crew_role
+                    crew_role=crew_role,
+                    output_dir=settings.output_dir,
+                    sample_fps=settings.sample_fps,
+                    run_dir=run_dir,  # Pass existing run_dir to avoid nested directories
+                    save_clips=save_clips,
+                    trip_schedule=trip_schedule,  # Pass trip schedule for motion rules
+                    video_start_time=video_start_time,  # Pass video start time for motion rules
+                    camera_angle=camera_angle
                 )
             else:
-                logger.info(
-                    f"[DETECT] Using real activity detection - "
-                    f"Multiprocessing: {'enabled' if use_multiprocessing else 'disabled'}"
+                activities = self.activity_detection_service._detect_activities_single_process(
+                    video_path=video_path,
+                    trip_id=trip_id,
+                    crew_members=crew_members,
+                    crew_name=crew_name,
+                    crew_id=crew_id,
+                    crew_role=crew_role,
+                    output_dir=settings.output_dir,
+                    sample_fps=settings.sample_fps,
+                    run_dir=run_dir,  # Pass existing run_dir
+                    trip_schedule=trip_schedule,  # Pass trip schedule for motion rules
+                    video_start_time=video_start_time,  # Pass video start time for motion rules
+                    camera_angle=camera_angle
                 )
-                
-                # Pass run_dir and save_clips settings
-                if use_multiprocessing:
-                    activities = self.activity_detection_service._detect_activities_multiprocess(
-                        video_path=video_path,
-                        trip_id=trip_id,
-                        crew_members=crew_members,
-                        crew_name=crew_name,
-                        crew_id=crew_id,
-                        crew_role=crew_role,
-                        output_dir=settings.output_dir,
-                        sample_fps=settings.sample_fps,
-                        run_dir=run_dir,  # Pass existing run_dir to avoid nested directories
-                        save_clips=save_clips,
-                        trip_schedule=trip_schedule,  # Pass trip schedule for motion rules
-                        video_start_time=video_start_time,  # Pass video start time for motion rules
-                        camera_angle=camera_angle
-                    )
-                else:
-                    activities = self.activity_detection_service._detect_activities_single_process(
-                        video_path=video_path,
-                        trip_id=trip_id,
-                        crew_members=crew_members,
-                        crew_name=crew_name,
-                        crew_id=crew_id,
-                        crew_role=crew_role,
-                        output_dir=settings.output_dir,
-                        sample_fps=settings.sample_fps,
-                        run_dir=run_dir,  # Pass existing run_dir
-                        trip_schedule=trip_schedule,  # Pass trip schedule for motion rules
-                        video_start_time=video_start_time,  # Pass video start time for motion rules
-                        camera_angle=camera_angle
-                    )
             
             # Save activities to JSON
             activities_json_path = self.activity_repository.save_activities(

@@ -104,7 +104,6 @@ async def process_video_job(job: Job) -> dict:
     crew_members = config.get("crew_members", {})
     lp_crew_name = config.get("lp_crew_name", "Unknown")
     lp_crew_id = config.get("lp_crew_id", "N/A")
-    use_mock = config.get("use_mock_detection", False)
     use_mp = config.get("use_multiprocessing", settings.enable_multiprocessing)
     save_clips = config.get("save_clips", True)
 
@@ -121,7 +120,6 @@ async def process_video_job(job: Job) -> dict:
             crew_name=lp_crew_name,
             crew_id=lp_crew_id,
             crew_role=1,
-            use_mock_detection=use_mock,
             use_multiprocessing=use_mp,
             save_clips=save_clips
         )

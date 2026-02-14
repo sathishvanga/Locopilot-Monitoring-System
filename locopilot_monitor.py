@@ -913,33 +913,6 @@ class LocopilotActivityMonitor:
 
     # Activity detection methods now accessed via self.activity_detector directly
 
-    def check_hands_below_shoulders(self, pose_landmarks: Any) -> bool:
-        """Check if both hands are below shoulder level.
-
-        A more relaxed check than "hands in lap" for various camera angles.
-
-        Args:
-            pose_landmarks: YoloPoseLandmarks or MediaPipe pose landmarks
-
-        Returns:
-            bool: True if both hands are below shoulders, False otherwise
-        """
-        try:
-            left_shoulder = self.get_keypoint(pose_landmarks, 'left_shoulder')
-            right_shoulder = self.get_keypoint(pose_landmarks, 'right_shoulder')
-            left_wrist = self.get_keypoint(pose_landmarks, 'left_wrist')
-            right_wrist = self.get_keypoint(pose_landmarks, 'right_wrist')
-
-            if any(p is None for p in [left_shoulder, right_shoulder, left_wrist, right_wrist]):
-                return False
-
-            shoulder_y = (left_shoulder.y + right_shoulder.y) / 2
-            return left_wrist.y > shoulder_y and right_wrist.y > shoulder_y
-
-        except Exception as e:
-            self.logger.debug(f"Exception in check_hands_below_shoulders: {e}")
-            return False
-
     def detect_writing_by_wrist_proximity(self, pose_landmarks: Any, frame_shape: Tuple[int, ...], person_idx: int, timestamp_sec: float, person_bbox: Optional[List] = None) -> bool:
         """Detect writing activity based on wrist/elbow proximity + head posture heuristic.
 
@@ -1249,120 +1222,6 @@ class LocopilotActivityMonitor:
         return all_poses
 
     # Visualization methods now accessed via self.frame_annotator directly
-    
-    def draw_mediapipe_outputs(self, frame: Any, pose_results: Any, face_results: Any, pose_sleep_info: Optional[Dict[str, Any]] = None, head_pose_info: Optional[Dict[str, Any]] = None) -> Any:
-        """Draw MediaPipe pose and face mesh landmarks on frame"""
-        annotated_frame = frame.copy()
-        
-        face_detected = face_results.multi_face_landmarks is not None and len(face_results.multi_face_landmarks) > 0
-        
-        if pose_results.pose_landmarks:
-            self.mp_drawing.draw_landmarks(
-                annotated_frame,
-                pose_results.pose_landmarks,
-                self.mp_pose.POSE_CONNECTIONS,
-                landmark_drawing_spec=self.mp_drawing_styles.get_default_pose_landmarks_style()
-            )
-        
-        if face_detected:
-            for face_landmarks in face_results.multi_face_landmarks:
-                self.mp_drawing.draw_landmarks(
-                    image=annotated_frame,
-                    landmark_list=face_landmarks,
-                    connections=self.mp_face_mesh.FACEMESH_TESSELATION,
-                    landmark_drawing_spec=None,
-                    connection_drawing_spec=self.mp_drawing_styles.get_default_face_mesh_tesselation_style()
-                )
-                self.mp_drawing.draw_landmarks(
-                    image=annotated_frame,
-                    landmark_list=face_landmarks,
-                    connections=self.mp_face_mesh.FACEMESH_CONTOURS,
-                    landmark_drawing_spec=None,
-                    connection_drawing_spec=self.mp_drawing_styles.get_default_face_mesh_contours_style()
-                )
-        
-        if face_detected:
-            cv2.putText(annotated_frame, "FACE DETECTED", (10, 30),
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2, cv2.LINE_AA)
-        else:
-            cv2.putText(annotated_frame, "FACE NOT DETECTED", (10, 30),
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 165, 255), 2, cv2.LINE_AA)
-
-        # Display pose-based sleep detection info
-        if pose_sleep_info and pose_results.pose_landmarks:
-            y_offset = 60 if not face_detected else 120
-            
-            # Head tilt angle
-            if 'head_tilt' in pose_sleep_info and pose_sleep_info['head_tilt'] is not None:
-                head_tilt = pose_sleep_info['head_tilt']
-                tilt_color = (0, 0, 255) if head_tilt < -15 else (0, 255, 0)
-                tilt_text = f"Head Tilt: {head_tilt:.1f}deg"
-                cv2.putText(annotated_frame, tilt_text, (10, y_offset), 
-                           cv2.FONT_HERSHEY_SIMPLEX, 0.6, tilt_color, 2, cv2.LINE_AA)
-                y_offset += 30
-            
-            # Movement score
-            if 'avg_movement' in pose_sleep_info:
-                movement = pose_sleep_info['avg_movement']
-                movement_color = (0, 0, 255) if movement < 0.02 else (0, 255, 0)  # Updated threshold
-                movement_text = f"Movement: {movement:.4f}"
-                cv2.putText(annotated_frame, movement_text, (10, y_offset), 
-                           cv2.FONT_HERSHEY_SIMPLEX, 0.6, movement_color, 2, cv2.LINE_AA)
-                y_offset += 30
-            
-            # Pose sleep duration
-            if 'pose_sleep_duration' in pose_sleep_info and pose_sleep_info['pose_sleep_duration'] > 0:
-                duration = pose_sleep_info['pose_sleep_duration']
-                duration_text = f"Pose Sleep: {duration:.1f}s"
-                
-                if duration >= self.SLEEP_STRONG_DURATION:
-                    duration_text += " - SLEEP DETECTED!"
-                    duration_color = (0, 0, 255)
-                elif duration >= self.SLEEP_MICROSLEEP_DURATION:
-                    duration_text += " - MICROSLEEP!"
-                    duration_color = (0, 140, 255)
-                else:
-                    duration_color = (0, 165, 255)
-                
-                cv2.putText(annotated_frame, duration_text, (10, y_offset), 
-                           cv2.FONT_HERSHEY_SIMPLEX, 0.7, duration_color, 2, cv2.LINE_AA)
-        
-        # Display head pose angles for mind diversion detection
-        if head_pose_info and head_pose_info.get('method') != 'none':
-            y_offset = 60 if not face_detected else (120 if not pose_sleep_info else 180)
-            
-            yaw = head_pose_info.get('yaw', 0)
-            pitch = head_pose_info.get('pitch', 0)
-            detected = head_pose_info.get('detected', False)
-            method = head_pose_info.get('method', 'unknown')
-            
-            # Display yaw (side turn)
-            yaw_direction = "RIGHT" if yaw > 0 else "LEFT"
-            yaw_color = (0, 0, 255) if abs(yaw) > 45 else (0, 255, 0)
-            yaw_text = f"Head Yaw: {abs(yaw):.1f}° {yaw_direction}"
-            cv2.putText(annotated_frame, yaw_text, (10, y_offset), 
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.7, yaw_color, 2, cv2.LINE_AA)
-            
-            # Display pitch (up/down tilt)
-            pitch_direction = "DOWN" if pitch > 0 else "UP"
-            pitch_color = (0, 0, 255) if pitch > 15 else (0, 255, 0)
-            pitch_text = f"Head Pitch: {abs(pitch):.1f}° {pitch_direction}"
-            cv2.putText(annotated_frame, pitch_text, (10, y_offset + 30), 
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.7, pitch_color, 2, cv2.LINE_AA)
-            
-            # Display mind diversion alert if detected
-            if detected:
-                alert_text = "[WARN] MIND DIVERSION - ATTENTION DIVERTED!"
-                cv2.putText(annotated_frame, alert_text, (10, y_offset + 60), 
-                           cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2, cv2.LINE_AA)
-                
-                # Show detection method
-                method_text = f"(Method: {method})"
-                cv2.putText(annotated_frame, method_text, (10, y_offset + 85), 
-                           cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1, cv2.LINE_AA)
-        
-        return annotated_frame
-    
 
     def draw_multi_person_mediapipe_outputs(self, frame: Any, persons_data: Dict[int, Dict[str, Any]], face_results: Any) -> Any:
         """Draw MediaPipe pose landmarks for ALL detected persons
@@ -2489,21 +2348,7 @@ class LocopilotActivityMonitor:
             'analysis_quality': 'good' if len(history['timestamps']) >= 5 else 'limited'
         }
 
-    def analyze_packing_hand_motion(self, person_idx: int, landmarks: Any, frame_shape: Tuple[int, ...], timestamp_sec: float, backpack_bbox: List[int]) -> Dict[str, Any]:
-        """Analyze hand motion patterns to detect actual packing activity - delegates to ActivityDetector."""
-        return self.activity_detector.analyze_packing_hand_motion(
-            person_idx, landmarks, frame_shape, timestamp_sec, backpack_bbox
-        )
-
     # NOTE: detect_multi_person_pose_and_gestures removed - replaced by YOLOv8-Pose
-
-    def _match_pose_to_roles(self, yolo_pose_results, person_roles):
-        """Match YOLOv8-Pose detections to identified person roles by bounding box IoU.
-
-        DELEGATION: This method delegates to PersonTracker.match_pose_to_roles().
-        Kept for backward compatibility during refactoring transition.
-        """
-        return self.person_tracker.match_pose_to_roles(yolo_pose_results, person_roles)
 
     def process_all_persons_activities(self, frame: Any, detections: Dict[str, List[Any]], person_roles: Dict[int, Dict[str, Any]], timestamp_sec: float, face_results: Any = None, frame_number: Optional[int] = None, precomputed_pose_results: Optional[Any] = None, precomputed_sleep_pose_results: Optional[Any] = None, is_dark_frame: Optional[bool] = None) -> Dict[str, Any]:
         """Process all detected persons for ALL activity detections (mind diversion, sleep, etc.)
@@ -2593,12 +2438,12 @@ class LocopilotActivityMonitor:
             yolo_pose_results = self.yolo_pose.process(frame)
 
         # Match YOLO pose detections to person_roles by bounding box IoU
-        matched_poses = self._match_pose_to_roles(yolo_pose_results, person_roles)
+        matched_poses = self.person_tracker.match_pose_to_roles(yolo_pose_results, person_roles)
 
         # Match low-confidence sleep poses as fallback for persons not found at normal confidence
         matched_sleep_poses = {}
         if precomputed_sleep_pose_results is not None and precomputed_sleep_pose_results:
-            matched_sleep_poses = self._match_pose_to_roles(precomputed_sleep_pose_results, person_roles)
+            matched_sleep_poses = self.person_tracker.match_pose_to_roles(precomputed_sleep_pose_results, person_roles)
 
         # Dark frame flag for IR forward lean detection (compute if not passed by caller)
         if is_dark_frame is None:
@@ -2865,7 +2710,7 @@ class LocopilotActivityMonitor:
                 # ============ ACTIVITY DETECTION FOR THIS PERSON ============
                 
                 # 1. MIND DIVERSION DETECTION
-                head_pose_info = self.calculate_head_pose_angles(
+                head_pose_info = self.mind_diversion_detector.calculate_head_pose_angles(
                     translated_landmarks,
                     face_results,
                     frame.shape
@@ -3407,7 +3252,7 @@ class LocopilotActivityMonitor:
 
                             if hand_near_backpack:
                                 # Analyze hand motion patterns to confirm packing activity
-                                packing_motion_analysis = self.analyze_packing_hand_motion(
+                                packing_motion_analysis = self.activity_detector.analyze_packing_hand_motion(
                                     person_idx, translated_landmarks, frame.shape, timestamp_sec, backpack_bbox
                                 )
 
@@ -3559,12 +3404,6 @@ class LocopilotActivityMonitor:
     # CR-NEW-001: _calculate_bbox_iou removed - use calculate_iou() instead (consolidated IoU methods)
     # CR-NEW-002: bbox_overlap_with_margin removed - use bbox_overlap_with_margin() from app.core.utils.geometry
 
-    def calculate_head_pose_angles(self, pose_landmarks: Any, face_landmarks: Any, frame_shape: Tuple[int, ...]) -> Dict[str, Any]:
-        """Calculate head pose angles (yaw and pitch) to detect mind diversion - delegates to MindDiversionDetector."""
-        return self.mind_diversion_detector.calculate_head_pose_angles(
-            pose_landmarks, face_landmarks, frame_shape
-        )
-
     def should_suppress_mind_diversion(self, person_idx: int, person_activities: Dict[str, Any], pose_landmarks: Any, detections: Dict[str, List[Any]], frame_shape: Tuple[int, ...], current_time: Optional[float] = None) -> Tuple[bool, str]:
         """
         Suppress mind diversion if person is doing legitimate work activity.
@@ -3632,16 +3471,6 @@ class LocopilotActivityMonitor:
     # CR-NEW-003: calculate_iou, deduplicate_person_boxes, _compute_iou removed
     # Use calculate_iou(), deduplicate_person_boxes() from app.core.utils.geometry
 
-    def identify_person_roles(self, frame: Any, person_boxes: List[List[int]], detections: Dict[str, List[Any]]) -> Dict[int, Dict[str, Any]]:
-        """Identify LP (Loco Pilot) and ALP (Assistant Loco Pilot) based on camera angle.
-
-        DELEGATION: This method delegates to PersonTracker.identify_person_roles().
-        Kept for backward compatibility during refactoring transition.
-        """
-        # Sync camera_angle in case it was changed
-        self.person_tracker.camera_angle = self.camera_angle
-        return self.person_tracker.identify_person_roles(person_boxes, frame, detections)
-    
     # ─── VLM one-shot verification at activity start ─────────────
     # Map activities_map keys → VLM activity type names
     _ACT_TO_VLM = {
@@ -4209,7 +4038,8 @@ class LocopilotActivityMonitor:
                 deduplicated_count = len(deduplicated_persons)
 
                 # Identify person roles (LP, ALP, etc.)
-                person_roles = self.identify_person_roles(frame, deduplicated_persons, detections)
+                self.person_tracker.camera_angle = self.camera_angle
+                person_roles = self.person_tracker.identify_person_roles(deduplicated_persons, frame, detections)
 
                 # Log role identification (only once per detection cycle)
                 if self.consecutive_detections['group_detected'] == 0 and person_roles:

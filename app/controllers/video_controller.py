@@ -108,7 +108,6 @@ s3_upload_service = get_s3_upload_service()
     - trainNumber: Train number for motion-based rules (optional, e.g., "12345")
     - tripDate: Trip date in YYYY-MM-DD format for motion-based rules (optional)
     - videoStartTime: Video recording start time in HH:MM:SS format (optional, for motion rules when OCR unavailable)
-    - useMockDetection: Use mock detection for testing (optional, default: false)
     - useMultiprocessing: Enable parallel processing (optional, default: from config)
     - saveClips: Save evidence clips and annotated frames (optional, default: true).
     - cameraAngle: Camera angle for LP/ALP role assignment (1 = LP Side, 2 = ALP Side, default: 1)
@@ -133,7 +132,6 @@ async def process_video(
     trainNumber: Optional[str] = Form(default=None, description="Train number for motion-based rules (e.g., '12345')"),
     tripDate: Optional[str] = Form(default=None, description="Trip date in YYYY-MM-DD format for motion-based rules"),
     videoStartTime: Optional[str] = Form(default=None, description="Video recording start time in HH:MM:SS format (for motion rules when OCR unavailable)"),
-    useMockDetection: Optional[bool] = Form(default=False, description="Use mock detection for testing"),
     useMultiprocessing: Optional[bool] = Form(default=None, description="Enable multiprocessing (default: from config)"),
     saveClips: Optional[bool] = Form(default=True, description="Save evidence clips and annotated frames (default: true)."),
     cameraAngle: Optional[int] = Form(default=1, description="Camera angle: 1 = LP Side (default), 2 = ALP Side")
@@ -166,7 +164,6 @@ async def process_video(
                 trainNumber = body.get("trainNumber", trainNumber)
                 tripDate = body.get("tripDate", tripDate)
                 videoStartTime = body.get("videoStartTime", videoStartTime)
-                useMockDetection = body.get("useMockDetection", useMockDetection)
                 useMultiprocessing = body.get("useMultiprocessing", useMultiprocessing)
                 saveClips = body.get("saveClips", saveClips)
                 cameraAngle = body.get("cameraAngle", cameraAngle)
@@ -297,7 +294,7 @@ async def process_video(
         
         logger.info(
             f"[CONFIG] Processing configuration - "
-            f"Multiprocessing: {use_mp}, SaveClips: {saveClips}, Mock: {useMockDetection}"
+            f"Multiprocessing: {use_mp}, SaveClips: {saveClips}"
         )
         
         # Process video (synchronous for now, can be made async)
@@ -311,7 +308,6 @@ async def process_video(
             crew_name=lpCrewName if lpCrewName else "Unknown",  # Default if not provided
             crew_id=lpCrewId if lpCrewId else "N/A",  # Default if not provided
             crew_role=1,  # LP role
-            use_mock_detection=useMockDetection,
             use_multiprocessing=use_mp,
             save_clips=saveClips,
             division=division,
@@ -553,7 +549,6 @@ async def process_and_upload_video(
     tripDate: Optional[str] = Form(default=None, description="Trip date in YYYY-MM-DD format for motion-based rules"),
     videoStartTime: Optional[str] = Form(default=None, description="Video recording start time in HH:MM:SS format (for motion rules when OCR unavailable)"),
     useMultiprocessing: Optional[bool] = Form(default=None, description="Enable multiprocessing (default: from config)"),
-    useMockDetection: Optional[bool] = Form(default=False, description="Use mock detection for testing"),
     saveClips: Optional[bool] = Form(default=True, description="Save evidence clips and annotated frames (default: true).")
 ):
     """
@@ -648,7 +643,7 @@ async def process_and_upload_video(
         # Process video (activity detection)
         logger.info(
             f"[START] Starting video processing for trip: {tripId} - "
-            f"Multiprocessing: {use_mp}, Mock: {useMockDetection}, SaveClips: {saveClips}"
+            f"Multiprocessing: {use_mp}, SaveClips: {saveClips}"
         )
         
         result = video_processing_service.process_video(
@@ -658,8 +653,7 @@ async def process_and_upload_video(
             crew_name=list(crew_members.values())[0]['name'] if crew_members else "Unknown",
             crew_id=list(crew_members.values())[0]['id'] if crew_members else "N/A",
             crew_role=1,  # LP role
-            use_mock_detection=useMockDetection,
-            use_multiprocessing=use_mp,  # ✅ Now using multiprocessing!
+            use_multiprocessing=use_mp,
             save_clips=saveClips,
             skip_external_api=True,  # Skip here - will call after S3 uploads with correct S3 URLs
             train_number=trainNumber,

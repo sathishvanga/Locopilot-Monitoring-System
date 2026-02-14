@@ -113,7 +113,6 @@ class JobSubmitRequest(BaseModel):
                     "trip_id": "TRIP-20250106-001",
                     "lp_crew_name": "John Doe",
                     "lp_crew_id": "LP-001",
-                    "use_mock_detection": False,
                     "save_clips": True
                 }
             }
