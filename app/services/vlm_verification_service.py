@@ -27,142 +27,71 @@ logger = logging.getLogger(__name__)
 # Each prompt instructs the VLM to verify whether the flagged activity is genuine
 # ============================================================
 
-ACTIVITY_DESCRIPTIONS = {
-    "cell_phone": "potential mobile phone usage by the locomotive operator",
-    "writing": "the operator appears to be writing or reading a document/book",
-    "packing_bags": "the operator appears to be handling, packing, or organizing a bag/backpack instead of focusing on duties",
-    "eating_drinking": "the operator appears to be eating or drinking",
-    "sleeping": "the operator may be sleeping — head slumped, eyes closed, or relaxed/limp posture",
-    "microsleep": "the operator may be drowsy or experiencing microsleep — head drooping, eyes heavy, or slouched posture",
-    "mind_diversion": "the operator's attention appears diverted from the track ahead",
-    "group_detected": "three or more people are detected in the locomotive cab",
-    "no_person_detected": "no person is detected in the locomotive cab",
-    "lp_hand_gesture": "the LP appears to be giving a hand signal but the ALP is NOT reciprocating — possible crew coordination failure",
-    "alp_hand_gesture": "the ALP appears to be giving a hand signal but the LP is NOT reciprocating — possible crew coordination failure",
-    "alp_not_standing": "the Assistant Loco Pilot (ALP) is not standing during pre-arrival",
+ACTIVITY_PROMPTS = {
+    "cell_phone": """Flagged: mobile phone usage.
+TRUE: phone/smartphone clearly visible in hand.
+FALSE: radio handset, walkie-talkie, control device, clipboard, reflection, shiny object, or hands not visible.""",
+
+    "writing": """Flagged: writing or reading a document.
+TRUE: hands actively engaged with a visible book, paper, or clipboard.
+FALSE: hands on controls or resting in lap with no document visible. Eyes closed or head slumped = sleeping, not writing.""",
+
+    "packing_bags": """Flagged: handling a bag/backpack.
+TRUE: hands directly gripping, lifting, reaching into, or zipping a bag.
+FALSE: bag nearby but not being touched, hands on lap/controls/papers near a bag, bag on floor in background.""",
+
+    "eating_drinking": """Flagged: eating or drinking.
+TRUE: cup, bottle, or food item held in hand near face.
+FALSE: bottle in holder not being used, objects on shelf/dashboard not being held.""",
+
+    "sleeping": """Flagged: operator sleeping.
+TRUE: eyes closed, head slumped/drooping, body limp or slouched with no control engagement. If face not visible, judge by posture.
+FALSE: actively looking at instruments with hands engaged, brief blinks.""",
+
+    "microsleep": """Flagged: drowsiness or microsleep.
+TRUE: any sign of reduced alertness — head nodding/drooping, eyes heavy or closed, slouched posture with no control engagement.
+FALSE: sitting upright and alert, actively operating controls or reading instruments.""",
+
+    "mind_diversion": """Flagged: attention diverted from track.
+TRUE: clearly looking away from forward direction with no operational purpose.
+FALSE: checking mirrors, signals, track infrastructure, control panel instruments, or natural head scanning.""",
+
+    "group_detected": """Flagged: 3+ people in cab.
+TRUE: 3 or more clearly distinct individuals visible.
+FALSE: reflections, shadows, or partially visible figures — count only clearly visible people.""",
+
+    "no_person_detected": """Flagged: no person in cab.
+TRUE: cab is genuinely empty with no person visible.
+FALSE: any part of a person (arm, leg, torso) is visible. If image is dark/unclear, return false.""",
+
+    "lp_hand_gesture": """Flagged: LP giving hand signal but ALP not reciprocating.
+Context: Indian Railways crew must exchange hand signals at signals/stations — one raises hand, other must acknowledge.
+TRUE: one person has a FREE hand raised in air (not touching anything) and the other person's hands are down/on controls.
+FALSE: both hands raised (coordination OK), neither signaling, or arm movement involves touching controls/switches/equipment. Operating overhead switches or controls is NOT a hand signal.""",
+
+    "alp_hand_gesture": """Flagged: ALP giving hand signal but LP not reciprocating.
+Context: Indian Railways crew must exchange hand signals at signals/stations — one raises hand, other must acknowledge.
+TRUE: one person has a FREE hand raised in air (not touching anything) and the other person's hands are down/on controls.
+FALSE: both hands raised (coordination OK), neither signaling, or arm movement involves touching controls/switches/equipment. Operating overhead switches or controls is NOT a hand signal.""",
+
+    "alp_not_standing": """Flagged: ALP not standing during pre-arrival.
+TRUE: ALP is clearly seated or crouching.
+FALSE: ALP appears standing upright, or posture is unclear.""",
 }
 
-ACTIVITY_RULES = {
-    "cell_phone": """   - verified=true ONLY if a phone/smartphone is clearly visible in the person's hand
-   - Radio handsets, walkie-talkies, control devices, clipboards -> verified=false
-   - Reflections, shiny objects, or unclear items -> verified=false
-   - If hands are not clearly visible -> verified=false""",
+VERIFICATION_PROMPT_TEMPLATE = """Locomotive cab safety monitor. Analyze the image.
+{activity_prompt}
 
-    "writing": """   - verified=true ONLY if the person is actively writing or reading — hands engaged with a book, paper, or clipboard
-   - A book, paper, or clipboard must be visible or hands must be clearly in a writing motion
-   - Person sitting upright looking forward with hands on controls -> verified=false
-   - Hands simply resting on thighs or in lap with no book/paper visible -> verified=false
-   - CRITICAL: If the person's eyes appear closed, head is slumped, or they appear drowsy/sleeping -> verified=false (sleeping, not writing)
-   - Head down with hands idle in lap and no visible document -> verified=false (likely resting or dozing)""",
+Respond ONLY with JSON: {{"verified": true/false, "confidence": "high"/"medium"/"low", "reason": "brief explanation"}}"""
 
-    "packing_bags": """   - verified=true ONLY if the person is DIRECTLY handling a bag with clear hand-on-bag contact:
-     * Hands gripping, lifting, or carrying the bag -> verified=true
-     * Reaching INTO the bag (arm extends inside) -> verified=true
-     * Actively zipping, buckling, or opening the bag -> verified=true
-   - verified=false in these common scenarios:
-     * Person sitting with a bag on the floor nearby but NOT touching it -> verified=false
-     * Hands resting on lap, controls, or papers near a bag -> verified=false
-     * Person reading, writing, or sitting idle with bag visible in background -> verified=false
-     * Bag between seats on the floor while person sits upright -> verified=false
-     * Wrists near bag area but hands not gripping/reaching into bag -> verified=false
-   - When in doubt, return verified=false""",
-
-    "eating_drinking": """   - verified=true ONLY if a cup, bottle, or food item is in the person's hand near their face
-   - Objects on a shelf or dashboard not being held -> verified=false
-   - Water bottle in a holder not being used -> verified=false""",
-
-    "sleeping": """   - verified=true if the person shows signs of sleeping: eyes closed, head drooping/slumped, or relaxed/limp posture
-   - Head slumped forward or sideways with hands idle in lap -> verified=true
-   - Body slouched or reclined with no active engagement of controls -> verified=true
-   - Person actively looking down at instruments or controls with hands engaged -> verified=false
-   - Brief blinks or natural eye movements -> verified=false
-   - If face is not clearly visible, judge by posture: slumped/limp body = verified=true""",
-
-    "microsleep": """   - verified=true if the person shows ANY signs of drowsiness or reduced alertness
-   - Head nodding, drooping, or tilted with relaxed posture -> verified=true
-   - Eyes heavy, half-closed, or fully closed -> verified=true
-   - Head slumped forward or sideways with hands idle -> verified=true
-   - Body slouched, relaxed posture with no active control engagement -> verified=true
-   - Person sitting upright, alert, actively operating controls -> verified=false
-   - Person clearly looking at instruments or documents with engaged hands -> verified=false""",
-
-    "mind_diversion": """   - verified=true ONLY if the person is clearly distracted and looking away from the forward direction
-   - Checking side mirrors, signals, or track infrastructure -> verified=false
-   - Slight head movements or natural scanning of surroundings -> verified=false
-   - Looking at control panel instruments -> verified=false""",
-
-    "group_detected": """   - verified=true ONLY if you can clearly count 3 or more distinct people in the cab
-   - Reflections, shadows, or partially visible people should not be counted
-   - Count only clearly visible, distinct individuals""",
-
-    "no_person_detected": """   - verified=true ONLY if the locomotive cab is genuinely empty with no person visible
-   - If any part of a person (arm, leg, torso) is visible -> verified=false
-   - If the image is dark/unclear and you cannot determine -> verified=false""",
-
-    "lp_hand_gesture": """   - The image shows BOTH crew members in the locomotive cab.
-   - CONTEXT: In Indian Railways, crew must exchange hand signals at signals/stations. One person raises their hand as a signal, and the other MUST raise their hand to acknowledge.
-   - The detection system flagged: the LP (Loco Pilot) raised their hand to give a signal, but the ALP (Assistant Loco Pilot) did NOT raise their hand to reciprocate.
-   - STEP 1: Is anyone ACTUALLY giving a deliberate hand signal (open palm raised, arm extended upward/outward in a clear signaling gesture, NOT touching any control)?
-     * A hand signal is a DELIBERATE gesture — arm/hand raised freely in the air, NOT gripping or touching anything
-     * If NEITHER person is giving a hand signal -> verified=false (no signal exchange is happening, false detection)
-   - STEP 2: If one person IS giving a hand signal, is the other person ALSO raising their hand to respond?
-     * One person signaling + other person's hands are down/on controls/in lap -> verified=true (failed coordination)
-     * Both persons have hands raised in signaling gestures -> verified=false (coordination successful)
-   - These are NOT hand signals (verified=false for all):
-     * Reaching for or operating overhead switches, levers, or controls -> verified=false
-     * Hands gripping brake handle, throttle, or dashboard controls -> verified=false
-     * Reaching for radio handset, equipment, or cabin fixtures -> verified=false
-     * Adjusting instruments, buttons, or control panel -> verified=false
-     * Both crew sitting normally with hands on/near controls -> verified=false
-     * Any arm movement where the hand is touching or gripping equipment -> verified=false
-   - CRITICAL: Raising arm to operate controls/switches is NOT a hand signal. Only a FREE hand raised in the air with no contact with equipment counts as a signal.
-   - When in doubt, return verified=false.""",
-
-    "alp_hand_gesture": """   - The image shows BOTH crew members in the locomotive cab.
-   - CONTEXT: In Indian Railways, crew must exchange hand signals at signals/stations. One person raises their hand as a signal, and the other MUST raise their hand to acknowledge.
-   - The detection system flagged: the ALP (Assistant Loco Pilot) raised their hand to give a signal, but the LP (Loco Pilot) did NOT raise their hand to reciprocate.
-   - STEP 1: Is anyone ACTUALLY giving a deliberate hand signal (open palm raised, arm extended upward/outward in a clear signaling gesture, NOT touching any control)?
-     * A hand signal is a DELIBERATE gesture — arm/hand raised freely in the air, NOT gripping or touching anything
-     * If NEITHER person is giving a hand signal -> verified=false (no signal exchange is happening, false detection)
-   - STEP 2: If one person IS giving a hand signal, is the other person ALSO raising their hand to respond?
-     * One person signaling + other person's hands are down/on controls/in lap -> verified=true (failed coordination)
-     * Both persons have hands raised in signaling gestures -> verified=false (coordination successful)
-   - These are NOT hand signals (verified=false for all):
-     * Reaching for or operating overhead switches, levers, or controls -> verified=false
-     * Hands gripping brake handle, throttle, or dashboard controls -> verified=false
-     * Reaching for radio handset, equipment, or cabin fixtures -> verified=false
-     * Adjusting instruments, buttons, or control panel -> verified=false
-     * Both crew sitting normally with hands on/near controls -> verified=false
-     * Any arm movement where the hand is touching or gripping equipment -> verified=false
-   - CRITICAL: Raising arm to operate controls/switches is NOT a hand signal. Only a FREE hand raised in the air with no contact with equipment counts as a signal.
-   - When in doubt, return verified=false.""",
-
-    "alp_not_standing": """   - verified=true ONLY if the ALP is clearly seated or crouching, not standing
-   - If the person appears to be standing upright -> verified=false
-   - If posture is unclear -> verified=false""",
-}
-
-VERIFICATION_PROMPT_TEMPLATE = """You are a safety monitor analyzing locomotive cab footage from Indian Railways.
-A detection system flagged: {activity_description}
-
-Analyze the image and respond ONLY in this exact JSON format:
-{{"verified": true/false, "confidence": "high"/"medium"/"low", "reason": "brief explanation"}}
-
-Evaluate whether the flagged activity is genuinely occurring:
-{activity_rules}
-
-If the flagged activity is NOT occurring, respond with verified=false and a brief reason.
-
-IMPORTANT: Respond with ONLY the JSON object, no other text."""
 
 def build_verification_prompt(activity_type: str) -> str:
     """Build the verification prompt for a specific activity type."""
-    description = ACTIVITY_DESCRIPTIONS.get(activity_type, f"a potential {activity_type} violation")
-    rules = ACTIVITY_RULES.get(activity_type, "   - Evaluate whether this activity is genuinely occurring")
-    return VERIFICATION_PROMPT_TEMPLATE.format(
-        activity_description=description,
-        activity_rules=rules,
+    activity_prompt = ACTIVITY_PROMPTS.get(
+        activity_type,
+        f"Flagged: {activity_type}. Evaluate whether this activity is genuinely occurring.",
     )
+    return VERIFICATION_PROMPT_TEMPLATE.format(activity_prompt=activity_prompt)
 
 
 class VLMVerificationService:
@@ -185,25 +114,6 @@ class VLMVerificationService:
     - ThreadPoolExecutor for concurrent batch verification
     """
 
-    # Per-activity crop padding (px). Larger padding captures more context
-    # (e.g. book in lap for writing, full body posture for sleeping).
-    ACTIVITY_CROP_PADDING = {
-        'writing': 150,         # Need to capture book in lap
-        'sleeping': 100,        # Need full body posture
-        'microsleep': 100,
-        'packing_bags': 100,    # Need bag context around person
-        'lp_hand_gesture': 200, # Combined bbox of both persons — wide crop for dashboard/controls context
-        'alp_hand_gesture': 200,
-    }
-
-    # Per-activity rejection cooldown (seconds). Sustained activities like
-    # writing/sleeping use shorter cooldowns to allow re-checking more frequently.
-    ACTIVITY_COOLDOWNS = {
-        'writing': 3.0,
-        'sleeping': 3.0,
-        'microsleep': 3.0,
-    }
-
     def __init__(
         self,
         vllm_base_url: str = "http://localhost:8001/v1",
@@ -213,9 +123,9 @@ class VLMVerificationService:
         circuit_breaker_threshold: int = 5,
         circuit_breaker_reset_sec: float = 60.0,
         cache_ttl_sec: float = 5.0,
-        crop_padding: int = 50,
+        crop_padding: int = 200,
         jpeg_quality: int = 85,
-        rejection_cooldown_sec: float = 15.0,
+        rejection_cooldown_sec: float = 3.0,
         ext_logger: Optional[logging.Logger] = None,
     ):
         self.vllm_base_url = vllm_base_url
@@ -488,7 +398,7 @@ class VLMVerificationService:
         # Rejection throttle: if VLM already rejected this activity+person
         # recently, return the cached rejection without calling VLM again.
         throttle_key = f"{activity_type}_p{person_idx}"
-        cooldown = self.ACTIVITY_COOLDOWNS.get(activity_type, self._rejection_cooldown)
+        cooldown = self._rejection_cooldown
         now = time.time()
         if throttle_key in self._rejection_throttle:
             prev_result, prev_ts = self._rejection_throttle[throttle_key]
@@ -520,8 +430,7 @@ class VLMVerificationService:
             return False, result
 
         # Crop detection region (activity-specific padding)
-        pad = self.ACTIVITY_CROP_PADDING.get(activity_type, self.crop_padding)
-        cropped = self._crop_detection_region(frame, bbox, padding=pad)
+        cropped = self._crop_detection_region(frame, bbox)
         if cropped.size == 0:
             result = self._fallback_result(activity_type, "empty_crop")
             return False, result
