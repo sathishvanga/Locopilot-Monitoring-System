@@ -115,8 +115,6 @@ ACTIVITY_RULES = {
      * Adjusting instruments, buttons, or control panel -> verified=false
      * Both crew sitting normally with hands on/near controls -> verified=false
      * Any arm movement where the hand is touching or gripping equipment -> verified=false
-   - verified=false with reason "reclassify:microsleep" if:
-     * Either person is sleeping, drowsy, head slumped, or eyes closed -> verified=false, reason="reclassify:microsleep"
    - CRITICAL: Raising arm to operate controls/switches is NOT a hand signal. Only a FREE hand raised in the air with no contact with equipment counts as a signal.
    - When in doubt, return verified=false.""",
 
@@ -136,8 +134,6 @@ ACTIVITY_RULES = {
      * Adjusting instruments, buttons, or control panel -> verified=false
      * Both crew sitting normally with hands on/near controls -> verified=false
      * Any arm movement where the hand is touching or gripping equipment -> verified=false
-   - verified=false with reason "reclassify:microsleep" if:
-     * Either person is sleeping, drowsy, head slumped, or eyes closed -> verified=false, reason="reclassify:microsleep"
    - CRITICAL: Raising arm to operate controls/switches is NOT a hand signal. Only a FREE hand raised in the air with no contact with equipment counts as a signal.
    - When in doubt, return verified=false.""",
 
@@ -155,14 +151,9 @@ Analyze the image and respond ONLY in this exact JSON format:
 Evaluate whether the flagged activity is genuinely occurring:
 {activity_rules}
 
-If the flagged activity is NOT occurring, but you observe a DIFFERENT safety violation from this list:
-  cell_phone, writing, packing_bags, eating_drinking, sleeping, microsleep, mind_diversion,
-  group_detected, no_person_detected, alp_not_standing, lp_hand_gesture, alp_hand_gesture
-then respond with verified=false and set reason to "reclassify:<activity_name>" (e.g. "reclassify:sleeping").
-Only reclassify if you are confident the alternative activity is genuinely occurring.
+If the flagged activity is NOT occurring, respond with verified=false and a brief reason.
 
 IMPORTANT: Respond with ONLY the JSON object, no other text."""
-
 
 def build_verification_prompt(activity_type: str) -> str:
     """Build the verification prompt for a specific activity type."""
@@ -172,41 +163,6 @@ def build_verification_prompt(activity_type: str) -> str:
         activity_description=description,
         activity_rules=rules,
     )
-
-
-# ============================================================
-# Reclassification support
-# ============================================================
-
-# Activities that are valid reclassification targets (use ACTIVITY_REGISTRY key names)
-RECLASSIFIABLE_ACTIVITIES = {
-    'cell_phone', 'writing', 'packing_bags', 'eating_drinking',
-    'sleep', 'microsleep', 'mind_diversion',
-    'group_detected', 'no_person_detected', 'alp_not_standing',
-    'lp_hand_gesture', 'alp_hand_gesture',
-}
-
-# VLM prompt names → ACTIVITY_REGISTRY key names
-_VLM_TO_REGISTRY = {
-    'sleeping': 'sleep',
-    'packing': 'packing_bags',
-}
-
-
-def parse_reclassify_target(reason: str) -> Optional[str]:
-    """Extract and validate reclassification target from VLM reason string.
-
-    Returns the target activity name (registry key) if valid, None otherwise.
-    """
-    if not reason or 'reclassify:' not in reason:
-        return None
-    idx = reason.index('reclassify:') + len('reclassify:')
-    target = reason[idx:].split()[0].strip().strip('"').strip("'")
-    # Normalize VLM prompt names to registry keys
-    target = _VLM_TO_REGISTRY.get(target, target)
-    if target in RECLASSIFIABLE_ACTIVITIES:
-        return target
-    return None
 
 
 class VLMVerificationService:
@@ -235,9 +191,9 @@ class VLMVerificationService:
         'writing': 150,         # Need to capture book in lap
         'sleeping': 100,        # Need full body posture
         'microsleep': 100,
-        'packing_bags': 50,
-        'lp_hand_gesture': 100, # Combined bbox of both persons — extra context
-        'alp_hand_gesture': 100,
+        'packing_bags': 100,    # Need bag context around person
+        'lp_hand_gesture': 200, # Combined bbox of both persons — wide crop for dashboard/controls context
+        'alp_hand_gesture': 200,
     }
 
     # Per-activity rejection cooldown (seconds). Sustained activities like

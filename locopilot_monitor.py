@@ -95,7 +95,7 @@ def _build_activity_registry() -> Dict[str, ActivityConfig]:
         ),
         'packing_bags': ActivityConfig(
             min_duration=0.0,
-            required_consecutive=2,
+            required_consecutive=3,
             margin=packing_margin,
             grace_frames=5,
             region_margin=packing_region_margin,
@@ -191,10 +191,9 @@ except ImportError:
 
 # Import VLM verification service (secondary verification via Qwen2.5-VL)
 try:
-    from app.services.vlm_verification_service import VLMVerificationService, parse_reclassify_target
+    from app.services.vlm_verification_service import VLMVerificationService
 except ImportError:
     VLMVerificationService = None
-    parse_reclassify_target = None
 
 # Build activity registry now that get_settings is available
 ACTIVITY_REGISTRY: Dict[str, ActivityConfig] = _build_activity_registry()
@@ -567,7 +566,7 @@ class LocopilotActivityMonitor:
         # TEMPORAL SUPPRESSION: Track recent activities per person for gesture suppression
         # Format: {person_idx: {'writing': last_timestamp, 'packing': last_timestamp, 'cell_phone': last_timestamp}}
         self.recent_person_activities = {}
-        self.temporal_suppression_window = 5.0  # Suppress hand gestures for 5 seconds after detecting work activity (reduced from 10s for faster response)
+        self.temporal_suppression_window = 10.0  # Suppress hand gestures for 10 seconds after detecting work activity
 
         # Hand gesture coordination temporal window
         # Suppress coordination failure alerts if both LP and ALP raised hands within this window
@@ -2023,14 +2022,7 @@ class LocopilotActivityMonitor:
         # For a seated operator, control panel is typically in the frontal zone
         # We define this as: hand in upper portion of frame AND not laterally extended
         
-        # Fix 14: Normalize control zone thresholds relative to person bbox height
-        ctrl_zone_min = self._scale_margin(30, matched_bbox)
-        ctrl_zone_max = self._scale_margin(100, matched_bbox)
-        ctrl_zone_elbow_dist = self._scale_margin(50, matched_bbox)
-        ctrl_zone_elbow_shoulder = self._scale_margin(30, matched_bbox)
-
         # Right hand: Check if it's in control operation zone
-        # This identifies forward reaches to operate controls vs upward signaling
         # IMPROVED: More specific detection - only filter if it's CLEARLY a forward reach, not upward raise
         # For overhead cameras, we need to be more lenient to avoid false negatives
         right_in_control_zone = (
@@ -2038,17 +2030,17 @@ class LocopilotActivityMonitor:
             right_wrist_coords[1] > (my1 + (my2 - my1) * 0.2) and
             right_wrist_coords[1] < (my1 + (my2 - my1) * 0.8) and
 
-            # CRITICAL: Wrist above shoulder but NOT too far (control panel operations)
-            # True hand signals are typically beyond ctrl_zone_max above shoulder
-            ctrl_zone_min < right_wrist_shoulder_vertical < ctrl_zone_max and
+            # CRITICAL: Wrist above shoulder but NOT too far (control panel operations: 30-100px)
+            # True hand signals are typically >100px above shoulder
+            30 < right_wrist_shoulder_vertical < 100 and
 
             # IMPROVED: Elbow-wrist distance check - must be SMALL (forward reach, not vertical extension)
-            right_wrist_elbow_distance < ctrl_zone_elbow_dist and
+            right_wrist_elbow_distance < 50 and
 
             # ADDITIONAL: Elbow must be BELOW shoulder (forward reach pattern)
-            right_elbow_coords[1] > right_shoulder_coords[1] + ctrl_zone_elbow_shoulder
+            right_elbow_coords[1] > right_shoulder_coords[1] + 30
         )
-        
+
         # Left hand: Check if it's in control operation zone
         # IMPROVED: More specific detection - only filter if it's CLEARLY a forward reach, not upward raise
         left_in_control_zone = (
@@ -2056,15 +2048,15 @@ class LocopilotActivityMonitor:
             left_wrist_coords[1] > (my1 + (my2 - my1) * 0.2) and
             left_wrist_coords[1] < (my1 + (my2 - my1) * 0.8) and
 
-            # CRITICAL: Wrist above shoulder but NOT too far (control panel operations)
-            # Fix 14: Use scaled thresholds from Fix 13
-            ctrl_zone_min < left_wrist_shoulder_vertical < ctrl_zone_max and
+            # CRITICAL: Wrist above shoulder but NOT too far (control panel operations: 30-100px)
+            # True hand signals are typically >100px above shoulder
+            30 < left_wrist_shoulder_vertical < 100 and
 
             # IMPROVED: Elbow-wrist distance check - must be SMALL (forward reach, not vertical extension)
-            left_wrist_elbow_distance < ctrl_zone_elbow_dist and
+            left_wrist_elbow_distance < 50 and
 
             # ADDITIONAL: Elbow must be BELOW shoulder (forward reach pattern)
-            left_elbow_coords[1] > left_shoulder_coords[1] + ctrl_zone_elbow_shoulder
+            left_elbow_coords[1] > left_shoulder_coords[1] + 30
         )
         
         # Right hand gesture detection (HAND RAISED TO FACE OR ABOVE)
@@ -4279,15 +4271,11 @@ class LocopilotActivityMonitor:
             # Activity Type 9 (ALP not exchanging): Triggers when LP raises hand BUT ALP does NOT
             # This ensures we detect COORDINATION FAILURES, not individual gestures
             # Uses temporal window to prevent false positives when both people raise hands within window
-            # Fix 1: Only check coordination when BOTH persons are visible — single-person
-            # frames cannot determine coordination failure (the absent person isn't in frame).
-            lp_not_coordinating, alp_not_coordinating = False, False
-            if person_roles and len(person_roles) >= 2:
-                lp_not_coordinating, alp_not_coordinating = self._check_hand_gesture_coordination(
-                    lp_hand_gesture_detected,
-                    alp_hand_gesture_detected,
-                    timestamp_sec
-                )
+            lp_not_coordinating, alp_not_coordinating = self._check_hand_gesture_coordination(
+                lp_hand_gesture_detected,
+                alp_hand_gesture_detected,
+                timestamp_sec
+            )
 
             # Debug logging for coordination check
             if lp_not_coordinating and self.consecutive_detections['lp_hand_gesture'] == 0:
@@ -4387,9 +4375,6 @@ class LocopilotActivityMonitor:
                         # Suppress writing for this frame so it doesn't immediately restart
                         activities_map['writing'] = False
 
-            # Track reclassified activities for post-loop processing (Fix 1)
-            reclassified_this_frame = set()
-
             for activity_name, detected in activities_map.items():
                 if detected:
                     # Activity detected - increment consecutive counter and reset grace period
@@ -4415,35 +4400,14 @@ class LocopilotActivityMonitor:
                             )
                             # One-shot VLM verification before starting activity
                             if self.vlm_service is not None:
-                                vlm_confirmed, vlm_reason = self._vlm_verify_at_start(
+                                vlm_confirmed, _ = self._vlm_verify_at_start(
                                     activity_name, frame, persons_data, timestamp_sec
                                 )
                                 if not vlm_confirmed:
-                                    # Extract reclassification target once
-                                    reclassify_target = parse_reclassify_target(vlm_reason) if parse_reclassify_target else None
-
-                                    # Fix 4: Self-reclassification = VLM confusion
-                                    if reclassify_target and reclassify_target == activity_name:
-                                        self.logger.info(
-                                            f"[{timestamp}] [TEMPORAL] {activity_name}: "
-                                            f"VLM self-reclassified → treating as rejection"
-                                        )
-                                        reclassify_target = None  # Don't process as reclassification
-
                                     self.logger.info(
                                         f"[{timestamp}] [TEMPORAL] {activity_name}: VLM rejected → "
                                         f"resetting consecutive counter (was {self.consecutive_detections[activity_name]})"
                                     )
-                                    # Reclassify to a different activity if VLM suggested one
-                                    if reclassify_target and reclassify_target in self.consecutive_detections:
-                                        self.consecutive_detections[reclassify_target] = self.consecutive_detections.get(reclassify_target, 0) + 1
-                                        self.grace_counters[reclassify_target] = 0
-                                        reclassified_this_frame.add(reclassify_target)
-                                        self.logger.info(
-                                            f"[{timestamp}] [TEMPORAL] {activity_name}: "
-                                            f"VLM reclassified → {reclassify_target} "
-                                            f"(consecutive={self.consecutive_detections[reclassify_target]})"
-                                        )
                                     self.consecutive_detections[activity_name] = 0
                                     self.grace_counters[activity_name] = 0
                                     continue
@@ -4497,35 +4461,6 @@ class LocopilotActivityMonitor:
                         # Reset grace counter if nothing is being tracked
                         self.grace_counters[activity_name] = 0
 
-            # --- Fix 1: Post-loop reclassification check ---
-            # When an activity (e.g. writing) is reclassified to another (e.g. sleep)
-            # whose dict iteration already passed, the target's threshold was skipped.
-            for target in reclassified_this_frame:
-                if target not in self.consecutive_detections:
-                    continue
-                if self.activities[target]['active']:
-                    # Already active — just track this frame as a detection
-                    self.activities[target]['frames'].append(frame_idx)
-                    self.activities[target]['last_frame_count'] = frame_idx
-                    self.activities[target]['last_detected_frame'] = frame_idx
-                    self.activities[target]['last_detection_time'] = timestamp
-                    if person_roles:
-                        self.activities[target]['person_roles'] = person_roles
-                    continue
-
-                required = self.activity_thresholds[target]['required_consecutive']
-                if self.consecutive_detections[target] < required:
-                    continue
-
-                self.logger.info(
-                    f"[{timestamp}] [RECLASSIFY] {target}: threshold reached "
-                    f"({self.consecutive_detections[target]}/{required}) → starting activity"
-                )
-                # Start activity (VLM already suggested this — skip re-verification)
-                self.start_activity(target, timestamp, fps, frame_idx, person_roles=person_roles)
-                # Append current frame
-                if self.activities[target]['active']:
-                    self.activities[target]['frames'].append(frame_idx)
                     self.activities[target]['last_frame_count'] = frame_idx
                     self.activities[target]['last_detected_frame'] = frame_idx
                     self.activities[target]['last_detection_time'] = timestamp

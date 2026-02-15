@@ -261,7 +261,10 @@ class YOLOHandler:
                 elif class_name in ['backpack', 'handbag', 'suitcase']:
                     if conf > self.bag_log_confidence:
                         self.logger.debug(f"BAG DETECTED: {class_name} conf={conf:.2f} bbox={xyxy}")
-                    if conf > self.bag_confidence:
+                    effective_conf = self.bag_confidence
+                    if class_name == 'suitcase':
+                        effective_conf = getattr(self.settings, 'yolo_suitcase_confidence', 0.65) if self.settings else 0.65
+                    if conf > effective_conf:
                         if self._validate_bag_detection(xyxy):
                             detections['backpack'].append(xyxy)
                             self.logger.info(
@@ -714,7 +717,10 @@ class YOLOHandler:
                             detections['person'].append(xyxy)
                             person_boxes.append(xyxy)
                         elif class_name in ['backpack', 'handbag', 'suitcase']:
-                            if conf > self.bag_confidence:
+                            effective_conf = self.bag_confidence
+                            if class_name == 'suitcase':
+                                effective_conf = getattr(self.settings, 'yolo_suitcase_confidence', 0.65) if self.settings else 0.65
+                            if conf > effective_conf:
                                 if self._validate_bag_detection(xyxy):
                                     detections['backpack'].append(xyxy)
                         elif class_name == 'book' and conf > self.book_confidence:

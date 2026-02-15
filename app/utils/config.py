@@ -236,12 +236,12 @@ class Settings(BaseSettings):
     sleep_nose_below_px_threshold: float = float(os.getenv("SLEEP_NOSE_BELOW_PX_THRESH", "-55"))
     sleep_head_tilt_threshold: float = float(os.getenv("SLEEP_HEAD_TILT_THRESH", "-155"))
     sleep_nose_y_norm_threshold: float = float(os.getenv("SLEEP_NOSE_Y_NORM_THRESH", "0.30"))
-    sleep_score_threshold: int = int(os.getenv("SLEEP_SCORE_THRESH", "3"))
+    sleep_score_threshold: int = int(os.getenv("SLEEP_SCORE_THRESH", "5"))
 
     # Baseline calibration for camera-angle adaptation
     sleep_baseline_enabled: bool = os.getenv("SLEEP_BASELINE_ENABLED", "true").lower() == "true"
-    sleep_baseline_calibration_window: float = float(os.getenv("SLEEP_BASELINE_WINDOW", "10.0"))
-    sleep_baseline_min_samples: int = int(os.getenv("SLEEP_BASELINE_MIN_SAMPLES", "5"))
+    sleep_baseline_calibration_window: float = float(os.getenv("SLEEP_BASELINE_WINDOW", "2.0"))
+    sleep_baseline_min_samples: int = int(os.getenv("SLEEP_BASELINE_MIN_SAMPLES", "1"))
 
     # Delta-from-baseline thresholds
     sleep_baseline_nose_below_delta: float = float(os.getenv("SLEEP_BASELINE_NOSE_BELOW_DELTA", "40"))
@@ -352,6 +352,7 @@ class Settings(BaseSettings):
     # ==========================================
     yolo_person_confidence: float = float(os.getenv("YOLO_PERSON_CONFIDENCE", "0.5"))
     yolo_bag_confidence: float = float(os.getenv("YOLO_BAG_CONFIDENCE", "0.45"))
+    yolo_suitcase_confidence: float = float(os.getenv("YOLO_SUITCASE_CONFIDENCE", "0.65"))
     yolo_bag_log_confidence: float = float(os.getenv("YOLO_BAG_LOG_CONFIDENCE", "0.25"))
     yolo_book_confidence: float = float(os.getenv("YOLO_BOOK_CONFIDENCE", "0.4"))
     yolo_cell_phone_confidence: float = float(os.getenv("YOLO_CELL_PHONE_CONFIDENCE", "0.3"))
