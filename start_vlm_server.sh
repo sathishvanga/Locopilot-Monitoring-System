@@ -1,6 +1,6 @@
 #!/bin/bash
 # ============================================================
-# VLM Verification Server - Qwen2.5-VL-7B-Instruct-AWQ via vLLM
+# VLM Verification Server - Qwen3-VL-8B-Instruct-AWQ via vLLM
 # ============================================================
 # Serves the vision-language model for secondary verification
 # of YOLO detections. Runs alongside the main Locopilot app.
@@ -15,13 +15,13 @@ set -e
 
 # Configuration
 VENV_PATH="/opt/poc2/venv"
-MODEL_NAME="Qwen/Qwen2.5-VL-7B-Instruct-AWQ"
+MODEL_NAME="cyankiwi/Qwen3-VL-8B-Instruct-AWQ-4bit"
 PORT=8001
 HOST="0.0.0.0"
 
 # GPU settings - Reserve ~10GB for VLM, leave ~10GB for YOLO
 # Tested: AWQ model takes ~6.6GB, KV cache needs headroom for inference
-GPU_MEMORY_UTILIZATION=0.50  # 50% of 20GB = ~10GB for AWQ model + KV cache
+GPU_MEMORY_UTILIZATION=0.60  # 60% of 20GB = ~12GB for model + KV cache
 MAX_MODEL_LEN=2048           # Sufficient for single-image prompts
 MAX_NUM_SEQS=4               # Low concurrency (sequential frame verification)
 
@@ -48,8 +48,7 @@ export MKL_NUM_THREADS=1
 # Launch vLLM server
 exec python -m vllm.entrypoints.openai.api_server \
     --model "${MODEL_NAME}" \
-    --quantization awq \
-    --dtype float16 \
+    --dtype auto \
     --port "${PORT}" \
     --host "${HOST}" \
     --max-model-len "${MAX_MODEL_LEN}" \

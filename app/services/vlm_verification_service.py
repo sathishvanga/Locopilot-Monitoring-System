@@ -1,5 +1,5 @@
 """
-VLM Verification Service - Secondary verification using Qwen2.5-VL-7B
+VLM Verification Service - Secondary verification using Qwen3-VL-8B
 
 Uses a Vision-Language Model served via vLLM to verify detections from
 the primary YOLO + Pose pipeline. Reduces false positives by providing
@@ -96,7 +96,7 @@ def build_verification_prompt(activity_type: str) -> str:
 
 class VLMVerificationService:
     """
-    Synchronous VLM-based verification service using Qwen2.5-VL via vLLM.
+    Synchronous VLM-based verification service using Qwen3-VL via vLLM.
 
     Verifies YOLO/Pose detections by sending cropped frame regions to
     the VLM for semantic analysis. Also determines train motion state.
@@ -117,7 +117,7 @@ class VLMVerificationService:
     def __init__(
         self,
         vllm_base_url: str = "http://localhost:8001/v1",
-        model_name: str = "Qwen/Qwen2.5-VL-7B-Instruct-AWQ",
+        model_name: str = "cyankiwi/Qwen3-VL-8B-Instruct-AWQ-4bit",
         timeout: float = 10.0,
         max_retries: int = 2,
         circuit_breaker_threshold: int = 5,

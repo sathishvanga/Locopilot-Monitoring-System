@@ -500,14 +500,14 @@ class Settings(BaseSettings):
     etrain_cache_ttl: int = int(os.getenv("ETRAIN_CACHE_TTL", "1800"))
 
     # ==========================================
-    # VLM Verification Settings (Qwen2.5-VL)
+    # VLM Verification Settings (Qwen3-VL)
     # ==========================================
     # Enable/disable VLM-based secondary verification of detections
     vlm_verification_enabled: bool = bool(int(os.getenv("VLM_VERIFICATION_ENABLED", "0")))
 
     # vLLM server endpoint (runs alongside the main app on a different port)
     vlm_server_url: str = os.getenv("VLM_SERVER_URL", "http://localhost:8001/v1")
-    vlm_model_name: str = os.getenv("VLM_MODEL_NAME", "Qwen/Qwen2.5-VL-7B-Instruct-AWQ")
+    vlm_model_name: str = os.getenv("VLM_MODEL_NAME", "cyankiwi/Qwen3-VL-8B-Instruct-AWQ-4bit")
 
     # VLM request timeout (seconds)
     vlm_timeout: float = float(os.getenv("VLM_TIMEOUT", "10.0"))

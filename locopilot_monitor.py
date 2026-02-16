@@ -189,7 +189,7 @@ except ImportError:
         get_settings = None
 
 
-# Import VLM verification service (secondary verification via Qwen2.5-VL)
+# Import VLM verification service (secondary verification via Qwen3-VL)
 try:
     from app.services.vlm_verification_service import VLMVerificationService
 except ImportError:
@@ -725,13 +725,13 @@ class LocopilotActivityMonitor:
 
         self.current_video_path = video_path  # Track current video
 
-        # Initialize VLM verification service (Qwen2.5-VL verification)
+        # Initialize VLM verification service (Qwen3-VL verification)
         vlm_enabled = getattr(self.settings, 'vlm_verification_enabled', False) if self.settings else False
         if vlm_enabled and VLMVerificationService is not None:
             try:
                 self.vlm_service = VLMVerificationService(
                     vllm_base_url=getattr(self.settings, 'vlm_server_url', 'http://localhost:8001/v1'),
-                    model_name=getattr(self.settings, 'vlm_model_name', 'Qwen/Qwen2.5-VL-7B-Instruct-AWQ'),
+                    model_name=getattr(self.settings, 'vlm_model_name', 'cyankiwi/Qwen3-VL-8B-Instruct-AWQ-4bit'),
                     timeout=getattr(self.settings, 'vlm_timeout', 10.0),
                     max_retries=getattr(self.settings, 'vlm_max_retries', 2),
                     circuit_breaker_threshold=getattr(self.settings, 'vlm_circuit_breaker_threshold', 5),

@@ -846,7 +846,7 @@ class VideoMultiprocessingOrchestrator:
                 from ..services.vlm_verification_service import VLMVerificationService
                 vlm_service = VLMVerificationService(
                     vllm_base_url=getattr(worker_settings, 'vlm_server_url', 'http://localhost:8001/v1'),
-                    model_name=getattr(worker_settings, 'vlm_model_name', 'Qwen/Qwen2.5-VL-7B-Instruct-AWQ'),
+                    model_name=getattr(worker_settings, 'vlm_model_name', 'cyankiwi/Qwen3-VL-8B-Instruct-AWQ-4bit'),
                     timeout=getattr(worker_settings, 'vlm_timeout', 10.0),
                     max_retries=getattr(worker_settings, 'vlm_max_retries', 2),
                     circuit_breaker_threshold=getattr(worker_settings, 'vlm_circuit_breaker_threshold', 5),
