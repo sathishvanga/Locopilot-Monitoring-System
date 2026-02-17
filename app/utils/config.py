@@ -81,10 +81,16 @@ class Settings(BaseSettings):
     mp_max_workers: Optional[int] = None  # None = auto-detect (uses min(CPU count, max_workers_cap))
     mp_max_workers_cap: int = 12  # Maximum number of workers (11 cores + slight oversubscription)
     
-    # Model settings - YOLO11 (latest, better accuracy, faster, fewer parameters)
-    yolo_weights: str = os.getenv("YOLO_WEIGHTS_PRELOAD", "yolo11m.pt")  # YOLO11m for object detection
-    yolo_pose_weights: str = os.getenv("YOLO_POSE_WEIGHTS", "yolo11m-pose.pt")  # YOLO11m-pose for multi-person pose
+    # Model settings - YOLO26 (NMS-free, 43% faster CPU inference than YOLO11)
+    # Detection: nano for fast bulk frame processing (~57K frames)
+    yolo_weights: str = os.getenv("YOLO_WEIGHTS_PRELOAD", "yolo26n.pt")  # YOLO26 nano for object detection
+    yolo_pose_weights: str = os.getenv("YOLO_POSE_WEIGHTS", "yolo26n-pose.pt")  # YOLO26 nano-pose for multi-person pose
     yolo_pose_confidence: float = float(os.getenv("YOLO_POSE_CONFIDENCE", "0.45"))  # Pose detection confidence
+
+    # Voting: large model for accurate verification (~160 frames)
+    # When empty, voting uses the same model as detection (backward compatible)
+    yolo_voting_weights: str = os.getenv("YOLO_VOTING_WEIGHTS", "yolo26l.pt")  # YOLO26 large for voting verification
+    yolo_voting_pose_weights: str = os.getenv("YOLO_VOTING_POSE_WEIGHTS", "yolo26l-pose.pt")  # YOLO26 large-pose for voting
 
     # Phase 2: Inference optimization settings
     # CHANGED from 416 to 640 for better accuracy on small objects (cell phones)

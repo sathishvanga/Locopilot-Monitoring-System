@@ -65,12 +65,17 @@ class MultiprocessingConfig:
     opencv_threads: int = int(os.getenv("OPENCV_THREADS", "3"))  # OpenCV thread count per worker (synced at init)
     disable_opencv_opencl: bool = True  # Disable OpenCV OpenCL
     
-    # Model preloading settings - YOLO11 (latest, better accuracy, faster)
+    # Model preloading settings - YOLO26 (NMS-free, 43% faster CPU inference)
     # Configurable via environment variables: YOLO_WEIGHTS_PRELOAD, YOLO_POSE_WEIGHTS
     preload_models: bool = True  # Preload models in worker initializer
-    yolo_model_path: str = os.getenv("YOLO_WEIGHTS_PRELOAD", "yolo11m.pt")  # YOLO model for object detection
-    yolo_pose_model_path: str = os.getenv("YOLO_POSE_WEIGHTS", "yolo11m-pose.pt")  # YOLO-Pose for body pose estimation
+    yolo_model_path: str = os.getenv("YOLO_WEIGHTS_PRELOAD", "yolo26n.pt")  # YOLO26 nano for detection
+    yolo_pose_model_path: str = os.getenv("YOLO_POSE_WEIGHTS", "yolo26n-pose.pt")  # YOLO26 nano-pose for body pose
     yolo_device: str = os.getenv("YOLO_DEVICE", "cpu")  # Device for YOLO inference (cpu, cuda:0, 0)
+
+    # Dual-model: separate (heavier) YOLO weights for voting verification
+    # When empty, voting uses the same model as detection (backward compatible)
+    yolo_voting_model_path: str = os.getenv("YOLO_VOTING_WEIGHTS", "")
+    yolo_voting_pose_model_path: str = os.getenv("YOLO_VOTING_POSE_WEIGHTS", "")
 
     # GPU Batch Processing Settings
     # These settings optimize GPU utilization by processing multiple frames at once
@@ -105,6 +110,11 @@ class MultiprocessingConfig:
             self.gpu_batch_size = _get_settings_gpu_batch_size()
         if self.gpu_batch_enabled is None:
             self.gpu_batch_enabled = _get_settings_gpu_batch_enabled()
+        # Resolve voting model paths: fall back to detection model paths when empty
+        if not self.yolo_voting_model_path:
+            self.yolo_voting_model_path = self.yolo_model_path
+        if not self.yolo_voting_pose_model_path:
+            self.yolo_voting_pose_model_path = self.yolo_pose_model_path
 
     def get_num_workers(self) -> int:
         """

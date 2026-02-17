@@ -474,8 +474,8 @@ class LocopilotActivityMonitor:
             # Load models fresh (slow path - for standalone use)
             # Get model paths from config (configurable via environment variables)
             # Note: settings is already defined above
-            yolo_weights = settings.yolo_weights if settings else 'yolo11m.pt'
-            yolo_pose_weights = settings.yolo_pose_weights if settings else 'yolo11m-pose.pt'
+            yolo_weights = settings.yolo_weights if settings else 'yolo26n.pt'
+            yolo_pose_weights = settings.yolo_pose_weights if settings else 'yolo26n-pose.pt'
             yolo_pose_conf = settings.yolo_pose_confidence if settings else 0.45
             
             self.logger.info(f"Loading YOLO model: {yolo_weights}")
@@ -746,11 +746,18 @@ class LocopilotActivityMonitor:
         self.current_video_path = video_path  # Track current video for voting
         if VotingVerificationService is not None:
             try:
+                # Use separate voting models if available (dual-model optimization:
+                # nano for detection, large for voting verification)
+                voting_yolo = (preloaded_models.get('yolo_voting') if preloaded_models else None) or self.yolo_model
+                voting_yolo_pose = (preloaded_models.get('yolo_pose_voting') if preloaded_models else None) or self.yolo_pose
                 self.voting_service = VotingVerificationService(
-                    yolo_model=self.yolo_model,
-                    yolo_pose_model=self.yolo_pose
+                    yolo_model=voting_yolo,
+                    yolo_pose_model=voting_yolo_pose
                 )
-                self.logger.info("VotingVerificationService initialized successfully")
+                if preloaded_models and preloaded_models.get('yolo_voting') is not None and preloaded_models.get('yolo_voting') is not self.yolo_model:
+                    self.logger.info("VotingVerificationService initialized with separate voting model")
+                else:
+                    self.logger.info("VotingVerificationService initialized (same model as detection)")
             except Exception as e:
                 self.logger.warning(f"Failed to initialize VotingVerificationService: {e}")
                 self.voting_service = None

@@ -241,7 +241,40 @@ def worker_initializer(config: MultiprocessingConfig):
                 'preprocessing_service': preprocessing_service
             }
 
-            logger.info(f"Worker {os.getpid()} all models loaded successfully (YOLO, YOLOv8-Pose, FaceMesh)")
+            # 5. Load separate voting models if configured (dual-model optimization)
+            # When voting model paths differ from detection, load heavier models for voting only
+            if config.yolo_voting_model_path != config.yolo_model_path:
+                logger.info(f"Worker {os.getpid()} loading voting YOLO model: {config.yolo_voting_model_path}")
+                yolo_voting_model = YOLO(config.yolo_voting_model_path)
+                if config.yolo_device and config.yolo_device != 'cpu':
+                    device = int(config.yolo_device) if config.yolo_device.isdigit() else config.yolo_device
+                    yolo_voting_model.to(device)
+                if hasattr(yolo_voting_model.model, 'fuse'):
+                    yolo_voting_model.fuse()
+                _worker_models['yolo_voting'] = yolo_voting_model
+            else:
+                _worker_models['yolo_voting'] = yolo_model
+
+            if config.yolo_voting_pose_model_path != config.yolo_pose_model_path:
+                logger.info(f"Worker {os.getpid()} loading voting YOLO-Pose model: {config.yolo_voting_pose_model_path}")
+                yolo_voting_pose_raw = YOLO(config.yolo_voting_pose_model_path)
+                if config.yolo_device and config.yolo_device != 'cpu':
+                    device = int(config.yolo_device) if config.yolo_device.isdigit() else config.yolo_device
+                    yolo_voting_pose_raw.to(device)
+                if hasattr(yolo_voting_pose_raw.model, 'fuse'):
+                    yolo_voting_pose_raw.fuse()
+                yolo_voting_pose = YoloPoseAdapter(
+                    model_path=config.yolo_voting_pose_model_path,
+                    conf_threshold=0.45,
+                    preloaded_model=yolo_voting_pose_raw
+                )
+                _worker_models['yolo_pose_voting'] = yolo_voting_pose
+            else:
+                _worker_models['yolo_pose_voting'] = yolo_pose
+
+            logger.info(f"Worker {os.getpid()} all models loaded successfully "
+                       f"(detection: {config.yolo_model_path}, "
+                       f"voting: {config.yolo_voting_model_path})")
 
     except Exception as e:
         logger.error(f"Worker {os.getpid()} initialization failed: {e}", exc_info=True)
