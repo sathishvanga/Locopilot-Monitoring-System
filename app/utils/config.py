@@ -226,11 +226,11 @@ class Settings(BaseSettings):
 
     # Packing bags verification thresholds (stricter than initial detection)
     # TUNED 2026-01-21: Stricter thresholds to reduce false positives from bags on floor near seated crew
-    packing_wrist_visibility_threshold: float = float(os.getenv("PACKING_WRIST_VIS", "0.5"))  # Min wrist visibility 50% (was 40%)
-    packing_voting_margin: int = int(os.getenv("PACKING_VOTING_MARGIN", "0"))  # No margin - wrist must be truly inside (was 30)
-    packing_max_distance_ratio: float = float(os.getenv("PACKING_MAX_DIST_RATIO", "0.30"))  # Wrist must be within 30% of bag diagonal from center (was 0.45)
-    packing_min_bag_area: int = int(os.getenv("PACKING_MIN_BAG_AREA", "25000"))  # Min bag area 25,000 sq pixels (was 20000)
-    packing_require_wrist_truly_inside: bool = bool(int(os.getenv("PACKING_STRICT_INSIDE", "1")))  # Require wrist truly inside bbox (no margin)
+    packing_wrist_visibility_threshold: float = float(os.getenv("PACKING_WRIST_VIS", "0.3"))  # Min wrist visibility 30%
+    packing_voting_margin: int = int(os.getenv("PACKING_VOTING_MARGIN", "30"))  # 30px margin for wrist-in-bag check
+    packing_max_distance_ratio: float = float(os.getenv("PACKING_MAX_DIST_RATIO", "0.45"))  # Wrist within 45% of bag diagonal from center
+    packing_min_bag_area: int = int(os.getenv("PACKING_MIN_BAG_AREA", "15000"))  # Min bag area 15,000 sq pixels
+    packing_require_wrist_truly_inside: bool = bool(int(os.getenv("PACKING_STRICT_INSIDE", "0")))  # Use margin-based check (not strict)
 
     # Clip duration settings - Precise clip extraction matching actual activity duration
     clip_buffer_before: float = float(os.getenv("CLIP_BUFFER_BEFORE", "1.0"))  # Seconds before activity start
