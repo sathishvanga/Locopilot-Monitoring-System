@@ -1323,8 +1323,22 @@ class VotingVerificationService:
                     break
 
         # Method 2: Wrist proximity heuristic (hands close together + head down)
+        # Additional check: verify white region (paper/notebook) exists between hands
+        white_ratio = 0.0
         if not detected_by_book and wrist_dist < 300 and head_down:
-            detected_by_wrist = True
+            if left_hand_coords and right_hand_coords:
+                white_ratio = self._check_white_region_between_hands(
+                    frame, left_hand_coords, right_hand_coords)
+                if white_ratio >= 0.25:
+                    detected_by_wrist = True
+                    logger.debug(f"[VOTING:WRITING] Frame {frame_num}: "
+                                f"white_ratio={white_ratio:.2f} >= 0.25 - paper detected between hands")
+                else:
+                    logger.debug(f"[VOTING:WRITING] Frame {frame_num}: "
+                                f"white_ratio={white_ratio:.2f} < 0.25 - no paper between hands, SKIP wrist method")
+            else:
+                logger.debug(f"[VOTING:WRITING] Frame {frame_num}: "
+                            f"wrist heuristic skipped - need both hands visible")
 
         detected = detected_by_book or detected_by_wrist
         method = 'book' if detected_by_book else ('wrist' if detected_by_wrist else 'none')
@@ -1336,8 +1350,50 @@ class VotingVerificationService:
             'by_book': detected_by_book,
             'by_wrist': detected_by_wrist,
             'wrist_dist': wrist_dist,
-            'head_down': head_down
+            'head_down': head_down,
+            'white_ratio': round(white_ratio, 2)
         }
+
+    def _check_white_region_between_hands(
+        self,
+        frame: np.ndarray,
+        left_hand: tuple,
+        right_hand: tuple,
+        pad_y: int = 40
+    ) -> float:
+        """Check for white/light region (paper) in the rectangle between two hand positions.
+
+        Extracts the region between the hands, converts to grayscale, and measures
+        the ratio of bright pixels (>180) to total pixels. Paper/notebook typically
+        produces a high bright-pixel ratio (>0.25).
+
+        Returns:
+            Ratio of bright pixels (0.0 to 1.0). Higher = more white/paper-like.
+        """
+        import cv2
+        h, w = frame.shape[:2]
+
+        # Build a bounding box between the two wrist points
+        x1 = max(0, min(left_hand[0], right_hand[0]))
+        x2 = min(w, max(left_hand[0], right_hand[0]))
+        y1 = max(0, min(left_hand[1], right_hand[1]) - pad_y)
+        y2 = min(h, max(left_hand[1], right_hand[1]) + pad_y)
+
+        # Need a minimum region size to be meaningful
+        if (x2 - x1) < 20 or (y2 - y1) < 20:
+            return 0.0
+
+        roi = frame[y1:y2, x1:x2]
+        gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
+        bright_pixels = int((gray > 180).sum())
+        total_pixels = gray.size
+        if total_pixels == 0:
+            return 0.0
+
+        ratio = bright_pixels / total_pixels
+        logger.debug(f"[VOTING:WRITING] White region check: "
+                    f"roi=({x1},{y1})-({x2},{y2}), bright={bright_pixels}/{total_pixels}, ratio={ratio:.3f}")
+        return ratio
 
     def _verify_packing(
         self,
