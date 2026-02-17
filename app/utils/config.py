@@ -49,9 +49,9 @@ class Settings(BaseSettings):
     host: str = "0.0.0.0"
     port: int = 8000
 
-    # CORS settings - explicit allowed origins (no wildcard with credentials)
+    # CORS settings - allow all origins by default
     cors_allowed_origins: List[str] = json.loads(
-        os.getenv("CORS_ALLOWED_ORIGINS", '["http://localhost:3000", "http://localhost:8080"]')
+        os.getenv("CORS_ALLOWED_ORIGINS", '["*"]')
     )
 
     # File upload settings

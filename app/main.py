@@ -259,12 +259,11 @@ app = FastAPI(
     lifespan=lifespan
 )
 
-# Configure CORS - use explicit allowed origins instead of wildcard to prevent
-# any arbitrary origin from making authenticated requests (C-05 security fix)
+# Configure CORS - allow all origins
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_allowed_origins,
-    allow_credentials=True,
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
