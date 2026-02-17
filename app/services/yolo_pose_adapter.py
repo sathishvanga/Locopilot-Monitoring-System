@@ -297,9 +297,6 @@ def get_keypoint_by_name(landmarks, keypoint_name: str) -> YoloLandmark:
 
     name_lower = keypoint_name.lower()
 
-    # Handle MediaPipe-style names with underscores
-    name_lower = name_lower.replace('_', '_')
-
     # Check if it's a valid YOLO keypoint
     if name_lower in YOLO_KEYPOINT_INDICES:
         idx = YOLO_KEYPOINT_INDICES[name_lower]

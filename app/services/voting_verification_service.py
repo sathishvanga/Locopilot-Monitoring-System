@@ -51,20 +51,56 @@ class LRUCache:
 
     Caches by (video_path, timestamp_key) to avoid redundant video seeking
     and model inference when multiple activities trigger at the same timestamp.
+
+    Memory budget rationale (C-08):
+        Each cache entry can hold ~10 raw 1080p numpy frames (~60MB per entry).
+        The original max_size of 32 could consume up to ~1.9GB RAM.
+        max_size is capped at 8 (max ~480MB) and a hard memory budget of 512MB
+        is enforced so that even entries with larger-than-expected frames are
+        evicted before total cache memory becomes excessive.
     """
 
-    def __init__(self, max_size: int = 32):
+    # Hard memory budget: 512 MB. This caps total cached numpy frame data
+    # regardless of max_size, protecting against unexpectedly large frames.
+    _DEFAULT_MEMORY_BUDGET_BYTES: int = 512 * 1024 * 1024  # 512 MB
+
+    def __init__(self, max_size: int = 8, memory_budget_bytes: Optional[int] = None):
         """
         Initialize LRU cache.
 
         Args:
-            max_size: Maximum number of entries to cache (default 32 = ~3.2 seconds of video at 10 frames/verification)
+            max_size: Maximum number of entries to cache (default 8, reduced
+                      from 32 to limit memory -- see C-08).
+            memory_budget_bytes: Maximum total memory (bytes) allowed for cached
+                                 entries.  Defaults to 512 MB.
         """
         self._cache: OrderedDict = OrderedDict()
         self._max_size = max_size
+        self._memory_budget_bytes = (
+            memory_budget_bytes if memory_budget_bytes is not None
+            else self._DEFAULT_MEMORY_BUDGET_BYTES
+        )
+        self._current_memory_bytes: int = 0
         self._lock = Lock()
         self._hits = 0
         self._misses = 0
+
+    @staticmethod
+    def _estimate_entry_bytes(data: Dict) -> int:
+        """Estimate memory footprint of a cache entry in bytes.
+
+        Counts the nbytes of every numpy array found in the entry's 'frames'
+        list plus a flat overhead for the rest of the metadata.
+        """
+        total = 0
+        frames = data.get('frames')
+        if frames is not None:
+            for frame in frames:
+                if isinstance(frame, np.ndarray):
+                    total += frame.nbytes
+        # Small overhead for detection/pose dicts (negligible vs frames)
+        total += 4096
+        return total
 
     def _make_key(self, video_path: str, timestamp_sec: float, num_frames: int) -> str:
         """Create a cache key from video path and timestamp."""
@@ -99,34 +135,49 @@ class LRUCache:
         """
         Cache entry for (video_path, timestamp).
 
+        Enforces both a max entry count (max_size) and a total memory budget
+        so that raw numpy frames do not consume excessive RAM (C-08).
+
         Args:
             video_path: Path to video file
             timestamp_sec: Timestamp in seconds
             num_frames: Number of frames extracted
             data: Dict with 'frames', 'detections', 'poses'
         """
+        entry_bytes = self._estimate_entry_bytes(data)
         key = self._make_key(video_path, timestamp_sec, num_frames)
         with self._lock:
             if key in self._cache:
+                # Subtract old entry size before replacing
+                old_data = self._cache[key]
+                self._current_memory_bytes -= self._estimate_entry_bytes(old_data)
                 # Update existing and move to end
                 self._cache[key] = data
+                self._current_memory_bytes += entry_bytes
                 self._cache.move_to_end(key)
             else:
                 # Add new entry
                 self._cache[key] = data
-                # Evict oldest if over capacity
-                while len(self._cache) > self._max_size:
-                    self._cache.popitem(last=False)
+                self._current_memory_bytes += entry_bytes
+                # Evict oldest entries while over entry-count OR memory budget
+                while (len(self._cache) > self._max_size
+                       or self._current_memory_bytes > self._memory_budget_bytes):
+                    if len(self._cache) <= 1:
+                        # Always keep at least the entry we just added
+                        break
+                    evicted_key, evicted_data = self._cache.popitem(last=False)
+                    self._current_memory_bytes -= self._estimate_entry_bytes(evicted_data)
 
     def clear(self) -> None:
-        """Clear all cached entries."""
+        """Clear all cached entries and reset memory accounting."""
         with self._lock:
             self._cache.clear()
+            self._current_memory_bytes = 0
             self._hits = 0
             self._misses = 0
 
-    def get_stats(self) -> Dict[str, int]:
-        """Get cache hit/miss statistics."""
+    def get_stats(self) -> Dict[str, Any]:
+        """Get cache hit/miss statistics and memory usage."""
         with self._lock:
             total = self._hits + self._misses
             hit_rate = (self._hits / total * 100) if total > 0 else 0
@@ -136,7 +187,10 @@ class LRUCache:
                 'total': total,
                 'hit_rate': hit_rate,
                 'size': len(self._cache),
-                'max_size': self._max_size
+                'max_size': self._max_size,
+                'memory_bytes': self._current_memory_bytes,
+                'memory_budget_bytes': self._memory_budget_bytes,
+                'memory_mb': round(self._current_memory_bytes / (1024 * 1024), 1),
             }
 
 
@@ -342,15 +396,15 @@ class VotingVerificationService:
         self.mind_div_exempt_forward = getattr(self.settings, 'mind_diversion_exempt_forward_looking', True)
 
         # OPTIMIZATION: LRU cache for frame extraction and inference results
-        # Cache size of 32 covers ~3 timestamps with room for overlap
-        self._inference_cache = LRUCache(max_size=32)
+        # Cache size of 8 to limit memory (raw frames can consume ~60MB each)
+        self._inference_cache = LRUCache(max_size=8)
 
         logger.info("="*60)
         logger.info("VotingVerificationService initialized (v2.0 - Batch Optimized)")
         logger.info(f"  voting_enabled: {self.settings.voting_enabled}")
         logger.info(f"  voting_num_frames: {self.settings.voting_num_frames}")
         logger.info(f"  voting_frame_spread_ms: {self.settings.voting_frame_spread_ms}")
-        logger.info(f"  inference_cache_size: 32")
+        logger.info(f"  inference_cache_size: 8 (memory budget: 512MB)")
         logger.info(f"  Thresholds:")
         logger.info(f"    cell_phone: {self.settings.voting_threshold_cell_phone}")
         logger.info(f"    writing: {self.settings.voting_threshold_writing}")

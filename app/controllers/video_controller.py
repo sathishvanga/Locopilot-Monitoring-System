@@ -6,6 +6,7 @@ Includes both synchronous and async job-based endpoints.
 """
 
 import asyncio
+import functools
 import re
 from typing import Optional, Dict, Any
 import os
@@ -281,25 +282,30 @@ async def process_video(
             f"Multiprocessing: {use_mp}, SaveClips: {saveClips}, Mock: {useMockDetection}"
         )
         
-        # Process video (synchronous for now, can be made async)
+        # Process video in a thread executor to avoid blocking the async event loop
         # Validate cameraAngle (must be 1 or 2)
         camera_angle = cameraAngle if cameraAngle in (1, 2) else 1
 
-        result = video_processing_service.process_video(
-            video_path=video_path,
-            trip_id=tripId,
-            crew_members=crew_members,  # Pass crew members dict
-            crew_name=lpCrewName if lpCrewName else "Unknown",  # Default if not provided
-            crew_id=lpCrewId if lpCrewId else "N/A",  # Default if not provided
-            crew_role=1,  # LP role
-            use_mock_detection=useMockDetection,
-            use_multiprocessing=use_mp,
-            save_clips=saveClips,
-            division=division,
-            train_number=trainNumber,
-            trip_date=tripDate,
-            video_start_time=videoStartTime,
-            camera_angle=camera_angle
+        loop = asyncio.get_running_loop()
+        result = await loop.run_in_executor(
+            None,
+            functools.partial(
+                video_processing_service.process_video,
+                video_path=video_path,
+                trip_id=tripId,
+                crew_members=crew_members,  # Pass crew members dict
+                crew_name=lpCrewName if lpCrewName else "Unknown",  # Default if not provided
+                crew_id=lpCrewId if lpCrewId else "N/A",  # Default if not provided
+                crew_role=1,  # LP role
+                use_mock_detection=useMockDetection,
+                use_multiprocessing=use_mp,
+                save_clips=saveClips,
+                division=division,
+                train_number=trainNumber,
+                trip_date=tripDate,
+                video_start_time=videoStartTime,
+                camera_angle=camera_angle,
+            )
         )
 
         # Schedule cleanup of uploaded video after processing (production mode)
@@ -603,26 +609,31 @@ async def process_and_upload_video(
         # Determine multiprocessing setting
         use_mp = useMultiprocessing if useMultiprocessing is not None else settings.enable_multiprocessing
 
-        # Process video (activity detection)
+        # Process video (activity detection) in a thread executor to avoid blocking the async event loop
         logger.info(
             f"[START] Starting video processing for trip: {tripId} - "
             f"Multiprocessing: {use_mp}, Mock: {useMockDetection}, SaveClips: {saveClips}"
         )
-        
-        result = video_processing_service.process_video(
-            video_path=video_path,
-            trip_id=tripId,
-            crew_members=crew_members,
-            crew_name=list(crew_members.values())[0]['name'] if crew_members else "Unknown",
-            crew_id=list(crew_members.values())[0]['id'] if crew_members else "N/A",
-            crew_role=1,  # LP role
-            use_mock_detection=useMockDetection,
-            use_multiprocessing=use_mp,  # ✅ Now using multiprocessing!
-            save_clips=saveClips,
-            skip_external_api=True,  # Skip here - will call after S3 uploads with correct S3 URLs
-            train_number=trainNumber,
-            trip_date=tripDate,
-            video_start_time=videoStartTime
+
+        loop = asyncio.get_running_loop()
+        result = await loop.run_in_executor(
+            None,
+            functools.partial(
+                video_processing_service.process_video,
+                video_path=video_path,
+                trip_id=tripId,
+                crew_members=crew_members,
+                crew_name=list(crew_members.values())[0]['name'] if crew_members else "Unknown",
+                crew_id=list(crew_members.values())[0]['id'] if crew_members else "N/A",
+                crew_role=1,  # LP role
+                use_mock_detection=useMockDetection,
+                use_multiprocessing=use_mp,
+                save_clips=saveClips,
+                skip_external_api=True,  # Skip here - will call after S3 uploads with correct S3 URLs
+                train_number=trainNumber,
+                trip_date=tripDate,
+                video_start_time=videoStartTime,
+            )
         )
         
         logger.info(

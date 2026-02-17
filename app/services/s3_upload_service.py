@@ -5,6 +5,8 @@ This service centralizes all S3 upload logic in the backend.
 """
 
 import os
+import threading
+import time
 from typing import Optional, List, Tuple
 from pathlib import Path
 import requests
@@ -17,14 +19,20 @@ logger = get_logger(__name__)
 settings = get_settings()
 
 
+RETRIABLE_STATUS_CODES = {429, 500, 502, 503}
+MAX_RETRIES = 3
+BACKOFF_BASE = 1  # Base delay in seconds for exponential backoff
+
+
 class S3UploadService:
     """
     Service for uploading files to S3 via remote API
     """
-    
+
     def __init__(self):
         """Initialize S3 upload service"""
-        self.api_url = "https://api.mindcoinapps.com/ai_demo_api/amazonUpload/uploadWithFolder"
+        self.settings = settings
+        self.api_url = self.settings.s3_upload_api_url
         self.timeout = 300  # 5 minutes timeout for uploads
         logger.info("S3 upload service initialized")
     
@@ -59,35 +67,67 @@ class S3UploadService:
                 f"to S3 subfolder '{subfolder}'"
             )
             
-            # Prepare multipart form data
-            with open(file_path, 'rb') as f:
-                files = {
-                    'file': (file_name, f, 'application/octet-stream')
-                }
-                
-                data = {
-                    'subFolderName': subfolder
-                }
-                
-                # Prepare headers - Use Authorization header (same as desktop app)
-                headers = {}
-                if auth_token:
-                    # Use Bearer token in Authorization header (same format as desktop app)
-                    headers['Authorization'] = f'Bearer {auth_token}'
-                    logger.debug(f"S3 upload with Bearer token (length: {len(auth_token)})")
-                else:
-                    logger.warning("S3 upload attempted without auth token")
-                
-                # Make upload request
-                response = requests.post(
-                    self.api_url,
-                    files=files,
-                    data=data,
-                    headers=headers,
-                    timeout=self.timeout
-                )
-                response.raise_for_status()
-            
+            # Prepare headers - Use Authorization header (same as desktop app)
+            headers = {}
+            if auth_token:
+                # Use Bearer token in Authorization header (same format as desktop app)
+                headers['Authorization'] = f'Bearer {auth_token}'
+                logger.debug(f"S3 upload with Bearer token (length: {len(auth_token)})")
+            else:
+                logger.warning("S3 upload attempted without auth token")
+
+            # Upload with exponential backoff retry for retriable errors
+            response = None
+            for attempt in range(1, MAX_RETRIES + 1):
+                try:
+                    # Re-open file each attempt so the stream starts from the beginning
+                    with open(file_path, 'rb') as f:
+                        files = {
+                            'file': (file_name, f, 'application/octet-stream')
+                        }
+                        data = {
+                            'subFolderName': subfolder
+                        }
+                        response = requests.post(
+                            self.api_url,
+                            files=files,
+                            data=data,
+                            headers=headers,
+                            timeout=self.timeout
+                        )
+
+                    # Check if we got a retriable status code
+                    if response.status_code in RETRIABLE_STATUS_CODES:
+                        logger.warning(
+                            f"S3 upload attempt {attempt}/{MAX_RETRIES} returned "
+                            f"status {response.status_code} for {file_name}"
+                        )
+                        if attempt < MAX_RETRIES:
+                            delay = BACKOFF_BASE * (2 ** (attempt - 1))
+                            logger.info(f"Retrying in {delay}s...")
+                            time.sleep(delay)
+                            continue
+                        # Final attempt still retriable -- raise so outer handler catches it
+                        response.raise_for_status()
+
+                    # Non-retriable status -- raise immediately if error
+                    response.raise_for_status()
+                    # Success -- break out of retry loop
+                    break
+
+                except (requests.ConnectionError, requests.Timeout) as exc:
+                    logger.warning(
+                        f"S3 upload attempt {attempt}/{MAX_RETRIES} failed "
+                        f"with {type(exc).__name__} for {file_name}"
+                    )
+                    if attempt < MAX_RETRIES:
+                        delay = BACKOFF_BASE * (2 ** (attempt - 1))
+                        logger.info(f"Retrying in {delay}s...")
+                        time.sleep(delay)
+                        continue
+                    # Exhausted retries -- re-raise so outer handlers catch it
+                    raise
+
             # Parse response
             result = response.json()
             s3_url = None
@@ -194,17 +234,22 @@ class S3UploadService:
 
 # Singleton instance
 _s3_service: Optional[S3UploadService] = None
+_s3_service_lock = threading.Lock()
 
 
 def get_s3_upload_service() -> S3UploadService:
     """
-    Get S3 upload service (singleton)
-    
+    Get S3 upload service (singleton).
+
+    M-25: Thread-safe double-checked locking pattern.
+
     Returns:
         S3UploadService: S3 upload service instance
     """
     global _s3_service
     if _s3_service is None:
-        _s3_service = S3UploadService()
+        with _s3_service_lock:
+            if _s3_service is None:
+                _s3_service = S3UploadService()
     return _s3_service
 

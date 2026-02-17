@@ -6,8 +6,10 @@ CVVR API endpoints for trip violation tracking.
 """
 
 import os
+import threading
+import time
 import requests
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Tuple
 from datetime import datetime
 
 from ..utils.logger import get_logger
@@ -26,6 +28,12 @@ class ExternalAPIService:
     and handles HTTP communication with error recovery.
     """
     
+    # Retry configuration
+    MAX_RETRIES = 3
+    INITIAL_BACKOFF_SECONDS = 1.0
+    BACKOFF_MULTIPLIER = 2.0
+    RETRIABLE_STATUS_CODES = {429, 500, 502, 503, 504}
+
     def __init__(self):
         """Initialize external API service"""
         self.settings = get_settings()
@@ -35,6 +43,96 @@ class ExternalAPIService:
             f"URL: {self.settings.cvvr_api_url}, "
             f"Timeout: {self.settings.cvvr_api_timeout}s"
         )
+
+    def _request_with_retry(
+        self,
+        url: str,
+        json_payload: Any,
+        headers: Dict[str, str],
+        timeout: int,
+        context_label: str
+    ) -> Tuple[Optional[requests.Response], Optional[str]]:
+        """
+        Execute an HTTP POST request with exponential backoff retry logic.
+
+        Retries on retriable HTTP status codes (429, 500, 502, 503, 504),
+        connection errors, and timeouts. Uses exponential backoff between
+        attempts (1s, 2s, 4s by default).
+
+        Args:
+            url: The endpoint URL to POST to
+            json_payload: JSON-serializable payload for the request body
+            headers: HTTP headers dict
+            timeout: Request timeout in seconds
+            context_label: Human-readable label for log messages (e.g. "no-events notice", "violations")
+
+        Returns:
+            Tuple of (response, error_string). On success or non-retriable failure,
+            response is set. On exhausted retries or exception, error_string describes
+            the final failure.
+        """
+        last_exception = None
+        last_response = None
+
+        for attempt in range(1, self.MAX_RETRIES + 1):
+            try:
+                response = requests.post(
+                    url,
+                    json=json_payload,
+                    headers=headers,
+                    timeout=timeout
+                )
+                last_response = response
+
+                # If success or non-retriable status, return immediately
+                if response.status_code not in self.RETRIABLE_STATUS_CODES:
+                    return response, None
+
+                # Retriable status code -- retry unless this was the last attempt
+                if attempt < self.MAX_RETRIES:
+                    backoff = self.INITIAL_BACKOFF_SECONDS * (self.BACKOFF_MULTIPLIER ** (attempt - 1))
+                    logger.warning(
+                        f"[external_api] {context_label} received retriable status "
+                        f"{response.status_code} on attempt {attempt}/{self.MAX_RETRIES}. "
+                        f"Retrying in {backoff:.1f}s..."
+                    )
+                    time.sleep(backoff)
+                else:
+                    logger.error(
+                        f"[external_api] {context_label} received retriable status "
+                        f"{response.status_code} on final attempt {attempt}/{self.MAX_RETRIES}. "
+                        f"All retries exhausted."
+                    )
+                    return response, None
+
+            except (requests.exceptions.ConnectionError, requests.exceptions.Timeout) as e:
+                last_exception = e
+                if attempt < self.MAX_RETRIES:
+                    backoff = self.INITIAL_BACKOFF_SECONDS * (self.BACKOFF_MULTIPLIER ** (attempt - 1))
+                    logger.warning(
+                        f"[external_api] {context_label} attempt {attempt}/{self.MAX_RETRIES} "
+                        f"failed with {type(e).__name__}: {e}. Retrying in {backoff:.1f}s..."
+                    )
+                    time.sleep(backoff)
+                else:
+                    logger.error(
+                        f"[external_api] {context_label} attempt {attempt}/{self.MAX_RETRIES} "
+                        f"failed with {type(e).__name__}: {e}. All retries exhausted. "
+                        f"Data may need dead-letter queue recovery."
+                    )
+
+            except Exception as e:
+                # Non-retriable exception (e.g. invalid JSON, programming error)
+                logger.error(
+                    f"[external_api] {context_label} failed with non-retriable error: {e}",
+                    exc_info=True
+                )
+                return None, str(e)
+
+        # All retries exhausted
+        if last_exception:
+            return None, str(last_exception)
+        return last_response, None
     
     def post_cvvr_results(
         self,
@@ -129,61 +227,57 @@ class ExternalAPIService:
         # Prepare payload
         payload = {"tripId": trip_id}
         
-        try:
-            logger.info(
-                f"📭 [external_api] Posting no-events notice to {url_no_events} "
-                f"for trip_id={trip_id} (job_id={job_id})"
+        logger.info(
+            f"📭 [external_api] Posting no-events notice to {url_no_events} "
+            f"for trip_id={trip_id} (job_id={job_id})"
+        )
+
+        response, error = self._request_with_retry(
+            url=url_no_events,
+            json_payload=payload,
+            headers=headers,
+            timeout=timeout,
+            context_label=f"No-events notice for trip_id={trip_id}"
+        )
+
+        # Handle complete failure (all retries exhausted with exceptions)
+        if response is None:
+            logger.error(
+                f"❌ [external_api] Failed to post no-events notice after "
+                f"{self.MAX_RETRIES} attempts: {error}. "
+                f"Consider dead-letter queue recovery for trip_id={trip_id}."
             )
-            
-            response = requests.post(
-                url_no_events,
-                json=payload,
-                headers=headers,
-                timeout=timeout
-            )
-            
-            # Check response
-            if response.status_code in [200, 201]:
-                logger.info(
-                    f"✅ [external_api] No-events notice posted successfully: "
-                    f"{response.status_code} - {response.text[:200]}"
-                )
-                return {
-                    "success": True,
-                    "message": "No-events notice posted successfully",
-                    "posted": True,
-                    "status_code": response.status_code,
-                    "response": response.json() if response.text else {}
-                }
-            else:
-                logger.warning(
-                    f"⚠️ [external_api] No-events notice posting got non-2xx: "
-                    f"{response.status_code} - {response.text[:200]}"
-                )
-                return {
-                    "success": False,
-                    "message": f"API returned status {response.status_code}",
-                    "posted": False,
-                    "status_code": response.status_code,
-                    "response_text": response.text[:500]
-                }
-        
-        except requests.exceptions.Timeout:
-            logger.error(f"⏱️ [external_api] No-events notice posting timed out after {timeout}s")
             return {
                 "success": False,
-                "message": "Request timed out",
+                "message": f"Failed to post no-events notice: {error}",
                 "posted": False,
-                "error": "timeout"
+                "error": error
             }
-        
-        except Exception as e:
-            logger.error(f"❌ [external_api] Failed to post no-events notice: {e}", exc_info=True)
+
+        # Check response status
+        if response.status_code in [200, 201]:
+            logger.info(
+                f"✅ [external_api] No-events notice posted successfully: "
+                f"{response.status_code} - {response.text[:200]}"
+            )
+            return {
+                "success": True,
+                "message": "No-events notice posted successfully",
+                "posted": True,
+                "status_code": response.status_code,
+                "response": response.json() if response.text else {}
+            }
+        else:
+            logger.warning(
+                f"⚠️ [external_api] No-events notice posting got non-2xx: "
+                f"{response.status_code} - {response.text[:200]}"
+            )
             return {
                 "success": False,
-                "message": f"Failed to post no-events notice: {str(e)}",
+                "message": f"API returned status {response.status_code}",
                 "posted": False,
-                "error": str(e)
+                "status_code": response.status_code,
+                "response_text": response.text[:500]
             }
     
     def _post_violations(
@@ -237,61 +331,55 @@ class ExternalAPIService:
             f"(from {len(violations)} total) to {url} for trip_id={trip_id}"
         )
         
-        try:
-            # Send payload as array of violation objects
-            response = requests.post(
-                url,
-                json=unique_violations,
-                headers=headers,
-                timeout=timeout
+        response, error = self._request_with_retry(
+            url=url,
+            json_payload=unique_violations,
+            headers=headers,
+            timeout=timeout,
+            context_label=f"Violations for trip_id={trip_id}"
+        )
+
+        # Handle complete failure (all retries exhausted with exceptions)
+        if response is None:
+            logger.error(
+                f"❌ [external_api] Failed to post violations after "
+                f"{self.MAX_RETRIES} attempts: {error}. "
+                f"Consider dead-letter queue recovery for trip_id={trip_id}."
             )
-            
-            # Check response
-            if response.status_code in [200, 201]:
-                logger.info(
-                    f"✅ [external_api] Violations posted successfully: "
-                    f"{response.status_code} - {response.text[:200]}"
-                )
-                return {
-                    "success": True,
-                    "message": f"Posted {len(unique_violations)} violations successfully",
-                    "posted": True,
-                    "violations_count": len(unique_violations),
-                    "status_code": response.status_code,
-                    "response": response.json() if response.text else {}
-                }
-            else:
-                logger.warning(
-                    f"⚠️ [external_api] Violations posting got non-2xx: "
-                    f"{response.status_code} - {response.text[:200]}"
-                )
-                return {
-                    "success": False,
-                    "message": f"API returned status {response.status_code}",
-                    "posted": False,
-                    "violations_count": len(unique_violations),
-                    "status_code": response.status_code,
-                    "response_text": response.text[:500]
-                }
-        
-        except requests.exceptions.Timeout:
-            logger.error(f"⏱️ [external_api] Violations posting timed out after {timeout}s")
             return {
                 "success": False,
-                "message": "Request timed out",
+                "message": f"Failed to post violations: {error}",
                 "posted": False,
                 "violations_count": len(unique_violations),
-                "error": "timeout"
+                "error": error
             }
-        
-        except Exception as e:
-            logger.error(f"❌ [external_api] Failed to post violations: {e}", exc_info=True)
+
+        # Check response status
+        if response.status_code in [200, 201]:
+            logger.info(
+                f"✅ [external_api] Violations posted successfully: "
+                f"{response.status_code} - {response.text[:200]}"
+            )
+            return {
+                "success": True,
+                "message": f"Posted {len(unique_violations)} violations successfully",
+                "posted": True,
+                "violations_count": len(unique_violations),
+                "status_code": response.status_code,
+                "response": response.json() if response.text else {}
+            }
+        else:
+            logger.warning(
+                f"⚠️ [external_api] Violations posting got non-2xx: "
+                f"{response.status_code} - {response.text[:200]}"
+            )
             return {
                 "success": False,
-                "message": f"Failed to post violations: {str(e)}",
+                "message": f"API returned status {response.status_code}",
                 "posted": False,
                 "violations_count": len(unique_violations),
-                "error": str(e)
+                "status_code": response.status_code,
+                "response_text": response.text[:500]
             }
     
     def _transform_events_to_violations(
@@ -521,17 +609,22 @@ class ExternalAPIService:
 
 # Singleton instance
 _external_api_service = None
+_external_api_service_lock = threading.Lock()
 
 
 def get_external_api_service() -> ExternalAPIService:
     """
-    Get singleton instance of external API service
-    
+    Get singleton instance of external API service.
+
+    M-25: Thread-safe double-checked locking pattern.
+
     Returns:
         ExternalAPIService: Singleton service instance
     """
     global _external_api_service
     if _external_api_service is None:
-        _external_api_service = ExternalAPIService()
+        with _external_api_service_lock:
+            if _external_api_service is None:
+                _external_api_service = ExternalAPIService()
     return _external_api_service
 

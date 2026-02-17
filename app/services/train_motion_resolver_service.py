@@ -8,6 +8,7 @@ Enhanced with optical flow verification for unscheduled stops.
 """
 
 import logging
+import threading
 import numpy as np
 from typing import Optional, Tuple, List
 
@@ -580,16 +581,21 @@ class TrainMotionResolverService:
 
 # Global service instance
 _motion_resolver: Optional[TrainMotionResolverService] = None
+_motion_resolver_lock = threading.Lock()
 
 
 def get_motion_resolver_service() -> TrainMotionResolverService:
     """
-    Get the global motion resolver service instance
+    Get the global motion resolver service instance.
+
+    M-25: Thread-safe double-checked locking pattern.
 
     Returns:
         TrainMotionResolverService instance
     """
     global _motion_resolver
     if _motion_resolver is None:
-        _motion_resolver = TrainMotionResolverService()
+        with _motion_resolver_lock:
+            if _motion_resolver is None:
+                _motion_resolver = TrainMotionResolverService()
     return _motion_resolver

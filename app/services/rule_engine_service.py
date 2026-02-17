@@ -6,6 +6,7 @@ detection based on whether the train is running or stopped.
 """
 
 import logging
+import threading
 from typing import Dict, Optional
 
 from ..models.trip_models import (
@@ -47,6 +48,7 @@ class RuleEngineService:
         ActivityTypeEnum.ALP_NOT_EXCHANGING_HAND_GESTURE: 'alp_hand_gesture',
         ActivityTypeEnum.MIND_DIVERSION: 'mind_diversion',
         ActivityTypeEnum.NO_PERSON_DETECTED: 'no_person_detected',
+        ActivityTypeEnum.EATING_DRINKING: 'eating_drinking',
     }
 
     # Activities ALLOWED when train is STOPPED at station
@@ -56,7 +58,8 @@ class RuleEngineService:
         'mind_diversion',   # Brief attention diversion allowed at stations
         'cell_phone',       # Cell phone usage allowed at stations
         'lp_hand_gesture',  # Hand signaling not required at stations
-        'alp_hand_gesture'  # Hand signaling not required at stations
+        'alp_hand_gesture',  # Hand signaling not required at stations
+        'eating_drinking'   # Eating/drinking allowed at stations
     }
 
     # Activities that are always violations regardless of motion state
@@ -378,22 +381,28 @@ class RuleEngineService:
             'alp_hand_gesture': ActivityTypeEnum.ALP_NOT_EXCHANGING_HAND_GESTURE,
             'mind_diversion': ActivityTypeEnum.MIND_DIVERSION,
             'no_person_detected': ActivityTypeEnum.NO_PERSON_DETECTED,
+            'eating_drinking': ActivityTypeEnum.EATING_DRINKING,
         }
         return name_to_type.get(activity_name, ActivityTypeEnum.UNKNOWN)
 
 
 # Global service instance
 _rule_engine: Optional[RuleEngineService] = None
+_rule_engine_lock = threading.Lock()
 
 
 def get_rule_engine_service() -> RuleEngineService:
     """
-    Get the global rule engine service instance
+    Get the global rule engine service instance.
+
+    M-25: Thread-safe double-checked locking pattern.
 
     Returns:
         RuleEngineService instance
     """
     global _rule_engine
     if _rule_engine is None:
-        _rule_engine = RuleEngineService()
+        with _rule_engine_lock:
+            if _rule_engine is None:
+                _rule_engine = RuleEngineService()
     return _rule_engine

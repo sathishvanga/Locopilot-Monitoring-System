@@ -259,10 +259,11 @@ app = FastAPI(
     lifespan=lifespan
 )
 
-# Configure CORS
+# Configure CORS - use explicit allowed origins instead of wildcard to prevent
+# any arbitrary origin from making authenticated requests (C-05 security fix)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=settings.cors_allowed_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -273,49 +274,114 @@ app.add_middleware(LoggingMiddleware)
 
 
 # Exception handlers
+#
+# Security (M-22): All exception handlers guard against leaking internal details
+# (file paths, database info, stack traces) in production responses.
+# Full error details are always logged internally for debugging.
+# In debug mode, detailed errors are returned for development convenience.
+
+
+def _sanitize_validation_errors(errors: list) -> list:
+    """
+    Sanitize validation errors for production responses.
+
+    Strips internal context (e.g. raw input values, internal URLs) from
+    validation error details, keeping only field location, message, and type.
+    """
+    sanitized = []
+    for err in errors:
+        sanitized.append({
+            "loc": err.get("loc", []),
+            "msg": err.get("msg", "Invalid value"),
+            "type": err.get("type", "value_error"),
+        })
+    return sanitized
+
+
 @app.exception_handler(StarletteHTTPException)
 async def http_exception_handler(request: Request, exc: StarletteHTTPException):
-    """Handle HTTP exceptions"""
+    """Handle HTTP exceptions with production-safe error messages (M-22)"""
     logger.warning(f"HTTP {exc.status_code}: {exc.detail}")
+
+    # For server errors (5xx), avoid leaking internal details in production.
+    # Controller code often raises HTTPException(500, detail=str(e)) which
+    # can expose file paths, database errors, or stack trace fragments.
+    if exc.status_code >= 500 and not settings.debug:
+        return JSONResponse(
+            status_code=exc.status_code,
+            content={
+                "status": "error",
+                "message": "Internal server error",
+            }
+        )
+
+    # For client errors (4xx) and debug mode, return the detail as-is
+    # since these are intentional user-facing messages.
+    if settings.debug:
+        return JSONResponse(
+            status_code=exc.status_code,
+            content={
+                "status": "error",
+                "message": exc.detail,
+                "error": str(exc.detail),
+            }
+        )
+
     return JSONResponse(
         status_code=exc.status_code,
         content={
             "status": "error",
             "message": exc.detail,
-            "error": str(exc.detail)
         }
     )
 
 
 @app.exception_handler(RequestValidationError)
 async def validation_exception_handler(request: Request, exc: RequestValidationError):
-    """Handle request validation errors"""
+    """Handle request validation errors with sanitized output (M-22)"""
     logger.warning(f"Validation error: {exc.errors()}")
+
+    # In production, sanitize validation errors to remove internal context
+    # (e.g. raw input values that may contain sensitive data).
+    if settings.debug:
+        errors_detail = exc.errors()
+    else:
+        errors_detail = _sanitize_validation_errors(exc.errors())
+
     return JSONResponse(
         status_code=422,
         content={
             "status": "error",
             "message": "Validation error",
-            "errors": exc.errors()
+            "errors": errors_detail,
         }
     )
 
 
 @app.exception_handler(Exception)
 async def general_exception_handler(request: Request, exc: Exception):
-    """Handle unexpected exceptions"""
+    """Handle unexpected exceptions without leaking internals (M-22)"""
     error_msg = str(exc) if exc else "Unknown error"
     logger.error(f"Unexpected error: {error_msg}", exc_info=True)
-    
-    # Include error details in response for better debugging
-    # In production, we still want to see the error for desktop app debugging
+
+    # Return generic message to clients to avoid leaking internal details
+    # (file paths, database details, stack traces) in production.
+    # In debug mode, include the actual error for local development convenience.
+    if settings.debug:
+        return JSONResponse(
+            status_code=500,
+            content={
+                "status": "error",
+                "message": f"Internal server error: {error_msg}",
+                "error": error_msg,
+                "detail": error_msg,
+            }
+        )
     return JSONResponse(
         status_code=500,
         content={
             "status": "error",
-            "message": f"Internal server error: {error_msg}",
-            "error": error_msg,
-            "detail": error_msg
+            "message": "Internal server error",
         }
     )
 

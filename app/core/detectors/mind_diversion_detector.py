@@ -18,7 +18,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 
-from app.core.models import YOLO_KEYPOINT_INDICES
+from app.core.utils.pose_utils import get_keypoint as _canonical_get_keypoint
 
 
 def _setup_module_logger(name: str, level: int = logging.DEBUG) -> logging.Logger:
@@ -104,8 +104,10 @@ class MindDiversionDetector:
     def _get_keypoint(self, landmarks: Any, keypoint_name: str) -> Optional[Any]:
         """Get a keypoint from landmarks by name.
 
-        Supports both YOLO pose landmarks (YoloPoseLandmarks) and MediaPipe
-        NormalizedLandmarkList formats.
+        Thin wrapper around the canonical ``get_keypoint`` in
+        ``app.core.utils.pose_utils`` that returns ``None`` instead of
+        raising on unknown/missing keypoints (preserving this detector's
+        existing error-handling contract).
 
         Args:
             landmarks: Pose landmarks object with .landmark attribute
@@ -117,20 +119,9 @@ class MindDiversionDetector:
         if landmarks is None:
             return None
 
-        # Normalize keypoint name to lowercase
-        name_lower = keypoint_name.lower()
-
-        # Get index from YOLO keypoint map
-        idx = YOLO_KEYPOINT_INDICES.get(name_lower)
-        if idx is None:
-            self.logger.debug(f"Unknown keypoint name: {keypoint_name}")
-            return None
-
         try:
-            if hasattr(landmarks, 'landmark') and len(landmarks.landmark) > idx:
-                return landmarks.landmark[idx]
-            return None
-        except (IndexError, AttributeError):
+            return _canonical_get_keypoint(landmarks, keypoint_name)
+        except (ValueError, IndexError, AttributeError):
             return None
 
     def calculate_head_pose_angles(
@@ -179,6 +170,21 @@ class MindDiversionDetector:
             # Check visibility
             if not nose or nose.visibility < 0.5:
                 # FALLBACK: When nose not visible, use ear asymmetry for yaw estimation
+                result = self._estimate_yaw_from_ear_asymmetry(
+                    left_ear, right_ear, result
+                )
+                return result
+
+            # Validate shoulder and ear visibility before using them
+            min_shoulder_vis = 0.3
+            min_ear_vis = 0.3
+            if (not left_shoulder or getattr(left_shoulder, 'visibility', 0) < min_shoulder_vis or
+                    not right_shoulder or getattr(right_shoulder, 'visibility', 0) < min_shoulder_vis):
+                return result  # Cannot compute angles without visible shoulders
+
+            if (not left_ear or getattr(left_ear, 'visibility', 0) < min_ear_vis or
+                    not right_ear or getattr(right_ear, 'visibility', 0) < min_ear_vis):
+                # Ears not visible -- fall back to ear asymmetry estimation
                 result = self._estimate_yaw_from_ear_asymmetry(
                     left_ear, right_ear, result
                 )
@@ -348,9 +354,18 @@ class MindDiversionDetector:
             # Use first detected face
             face_lm = face_landmarks.multi_face_landmarks[0].landmark
 
+            # Bounds check: MediaPipe face mesh should have 468 landmarks.
+            # The highest index we access is 454; verify the list is large enough.
+            required_landmark_count = 468
+            if len(face_lm) < required_landmark_count:
+                self.logger.debug(
+                    f"Face mesh has only {len(face_lm)} landmarks "
+                    f"(need {required_landmark_count}), skipping refinement"
+                )
+                return
+
             # Key face mesh landmarks for 3D pose estimation
             nose_tip = face_lm[1]  # Nose tip
-            chin = face_lm[152]     # Chin
             left_face_edge = face_lm[234]  # Left face edge
             right_face_edge = face_lm[454]  # Right face edge
             left_eye = face_lm[33]  # Left eye outer corner

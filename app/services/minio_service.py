@@ -6,6 +6,7 @@ Handles video downloads from MinIO URLs for processing.
 
 import os
 import tempfile
+import threading
 import urllib3
 from typing import Optional, Tuple
 from urllib.parse import urlparse, unquote
@@ -162,17 +163,22 @@ class MinioService:
 
 # Singleton instance
 _minio_service: Optional[MinioService] = None
+_minio_service_lock = threading.Lock()
 
 
 @lru_cache()
 def get_minio_service() -> MinioService:
     """
-    Get or create the MinIO service singleton
+    Get or create the MinIO service singleton.
+
+    M-25: Thread-safe double-checked locking pattern.
 
     Returns:
         MinioService instance
     """
     global _minio_service
     if _minio_service is None:
-        _minio_service = MinioService()
+        with _minio_service_lock:
+            if _minio_service is None:
+                _minio_service = MinioService()
     return _minio_service

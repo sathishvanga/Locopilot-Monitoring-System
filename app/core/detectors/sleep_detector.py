@@ -20,27 +20,10 @@ import logging
 import numpy as np
 import cv2
 
-
-# YOLO Keypoint indices (COCO format) for direct access
-YOLO_KEYPOINT_INDICES = {
-    'nose': 0,
-    'left_eye': 1,
-    'right_eye': 2,
-    'left_ear': 3,
-    'right_ear': 4,
-    'left_shoulder': 5,
-    'right_shoulder': 6,
-    'left_elbow': 7,
-    'right_elbow': 8,
-    'left_wrist': 9,
-    'right_wrist': 10,
-    'left_hip': 11,
-    'right_hip': 12,
-    'left_knee': 13,
-    'right_knee': 14,
-    'left_ankle': 15,
-    'right_ankle': 16
-}
+from app.core.utils.pose_utils import (
+    calculate_wrist_distance as _calculate_wrist_distance,
+    get_keypoint as _get_keypoint,
+)
 
 
 class SleepDetector:
@@ -269,6 +252,9 @@ class SleepDetector:
     def get_keypoint(self, landmarks: Any, keypoint_name: str) -> Any:
         """Get a keypoint from landmarks by name.
 
+        Delegates to the canonical ``get_keypoint`` in
+        ``app.core.utils.pose_utils``.
+
         Args:
             landmarks: Landmark list (either .landmark attribute or direct list)
             keypoint_name: String name like 'nose', 'left_wrist', etc.
@@ -276,31 +262,7 @@ class SleepDetector:
         Returns:
             Landmark object with x, y, z, visibility attributes
         """
-        # Support both YoloPoseLandmarks (has .landmark) and plain list
-        landmark_list = landmarks.landmark if hasattr(landmarks, 'landmark') else landmarks
-
-        name_lower = keypoint_name.lower()
-
-        if name_lower in YOLO_KEYPOINT_INDICES:
-            idx = YOLO_KEYPOINT_INDICES[name_lower]
-            return landmark_list[idx]
-
-        # Handle MediaPipe-specific keypoints that don't exist in YOLO
-        fallback_map = {
-            'left_index': 'left_wrist',
-            'right_index': 'right_wrist',
-            'left_pinky': 'left_wrist',
-            'right_pinky': 'right_wrist',
-            'left_thumb': 'left_wrist',
-            'right_thumb': 'right_wrist',
-        }
-
-        if name_lower in fallback_map:
-            fallback_name = fallback_map[name_lower]
-            idx = YOLO_KEYPOINT_INDICES[fallback_name]
-            return landmark_list[idx]
-
-        raise ValueError(f"Unknown keypoint: {keypoint_name}")
+        return _get_keypoint(landmarks, keypoint_name)
 
     def validate_pose_landmarks(
         self,
@@ -438,7 +400,8 @@ class SleepDetector:
         """Calculate Euclidean distance between left and right wrists.
 
         Falls back to elbow distance or single wrist-to-shoulder if wrists
-        are not both visible.
+        are not both visible. Delegates to the shared utility in
+        ``app.core.utils.pose_utils.calculate_wrist_distance``.
 
         Args:
             pose_landmarks: Pose landmarks object
@@ -454,69 +417,13 @@ class SleepDetector:
         if not self.validate_pose_landmarks(pose_landmarks):
             return None, None
 
-        try:
-            landmarks = pose_landmarks.landmark if hasattr(pose_landmarks, 'landmark') else pose_landmarks
-            h, w = frame_shape[:2]
-
-            right_wrist = self.get_keypoint(landmarks, 'right_wrist')
-            left_wrist = self.get_keypoint(landmarks, 'left_wrist')
-
-            # Try wrists first
-            if (right_wrist.visibility >= self.WRIST_VISIBILITY_THRESHOLD and
-                    left_wrist.visibility >= self.WRIST_VISIBILITY_THRESHOLD):
-                right_wrist_px = (right_wrist.x * w, right_wrist.y * h)
-                left_wrist_px = (left_wrist.x * w, left_wrist.y * h)
-
-                distance = np.sqrt(
-                    (right_wrist_px[0] - left_wrist_px[0])**2 +
-                    (right_wrist_px[1] - left_wrist_px[1])**2
-                )
-                return distance, 'wrist'
-
-            # Fallback: elbows
-            right_elbow = self.get_keypoint(landmarks, 'right_elbow')
-            left_elbow = self.get_keypoint(landmarks, 'left_elbow')
-
-            if (right_elbow.visibility >= self.ELBOW_VISIBILITY_THRESHOLD and
-                    left_elbow.visibility >= self.ELBOW_VISIBILITY_THRESHOLD):
-                right_elbow_px = (right_elbow.x * w, right_elbow.y * h)
-                left_elbow_px = (left_elbow.x * w, left_elbow.y * h)
-                distance = np.sqrt(
-                    (right_elbow_px[0] - left_elbow_px[0])**2 +
-                    (right_elbow_px[1] - left_elbow_px[1])**2
-                )
-                return distance, 'elbow'
-
-            # Fallback: single wrist to shoulder midpoint
-            right_shoulder = self.get_keypoint(landmarks, 'right_shoulder')
-            left_shoulder = self.get_keypoint(landmarks, 'left_shoulder')
-            SINGLE_WRIST_VIS = 0.5
-            SHOULDER_VIS = 0.3
-
-            visible_wrist = None
-            if right_wrist.visibility >= SINGLE_WRIST_VIS and left_wrist.visibility < SINGLE_WRIST_VIS:
-                visible_wrist = right_wrist
-            elif left_wrist.visibility >= SINGLE_WRIST_VIS and right_wrist.visibility < SINGLE_WRIST_VIS:
-                visible_wrist = left_wrist
-
-            if (visible_wrist is not None and
-                    right_shoulder.visibility >= SHOULDER_VIS and
-                    left_shoulder.visibility >= SHOULDER_VIS):
-                wrist_px = (visible_wrist.x * w, visible_wrist.y * h)
-                shoulder_mid_px = (
-                    (right_shoulder.x + left_shoulder.x) / 2 * w,
-                    (right_shoulder.y + left_shoulder.y) / 2 * h
-                )
-                distance = np.sqrt(
-                    (wrist_px[0] - shoulder_mid_px[0])**2 +
-                    (wrist_px[1] - shoulder_mid_px[1])**2
-                )
-                return distance, 'single_wrist'
-
-            return None, None
-        except Exception as e:
-            self.logger.debug(f"Exception in calculate_wrist_distance: {e}")
-            return None, None
+        return _calculate_wrist_distance(
+            pose_landmarks,
+            frame_shape,
+            get_keypoint_func=self.get_keypoint,
+            wrist_visibility_threshold=self.WRIST_VISIBILITY_THRESHOLD,
+            elbow_visibility_threshold=self.ELBOW_VISIBILITY_THRESHOLD,
+        )
 
     def _calculate_body_movement(
         self,
@@ -628,6 +535,11 @@ class SleepDetector:
         elif current_state == 'SLEEPING':
             if has_hand_activity:
                 new_state = 'ALERT'
+            elif not is_sustained_low_eyes and not head_bob_detected:
+                # Duration dropped below sleep threshold but still showing
+                # drowsy/microsleep signals -- transition back to MICROSLEEP
+                # instead of jumping straight to ALERT.
+                new_state = 'MICROSLEEP'
 
         # Handle state transition
         if new_state != current_state:
@@ -1105,7 +1017,7 @@ class SleepDetector:
             haar_boost = getattr(self.settings, 'haar_eye_score_boost', 5) if self.settings else 5
             sleep_score += haar_boost
 
-        score_thresh = getattr(self.settings, 'sleep_score_threshold', 3) if self.settings else 3
+        score_thresh = getattr(self.settings, 'sleep_score_threshold', 5) if self.settings else 5
         sleep_indicators_met = sleep_score >= score_thresh
 
         debug_info = {
@@ -1539,6 +1451,45 @@ class SleepDetector:
                     result['is_microsleep'] = True
 
         return result
+
+    def cleanup_stale_tracking(self, active_person_indices: set) -> None:
+        """Remove tracking entries for person indices that are no longer active.
+
+        In long-running or 24/7 monitoring scenarios, person indices may shift
+        over time as people enter and leave the frame.  The defaultdict-backed
+        tracking dictionaries grow without bound unless stale entries are
+        pruned.  Call this method periodically (e.g. from the monitor's
+        existing cleanup cycle) with the set of currently-active person
+        indices so that entries for persons who are no longer present are
+        freed.
+
+        Args:
+            active_person_indices: Set (or any iterable) of person indices
+                that are currently active in the scene.  Entries whose keys
+                are *not* in this set will be removed from both
+                ``per_person_tracking`` and ``ir_forward_lean_tracking``.
+        """
+        active = set(active_person_indices)
+
+        stale_person_keys = [
+            k for k in self.per_person_tracking if k not in active
+        ]
+        for k in stale_person_keys:
+            del self.per_person_tracking[k]
+
+        stale_ir_keys = [
+            k for k in self.ir_forward_lean_tracking if k not in active
+        ]
+        for k in stale_ir_keys:
+            del self.ir_forward_lean_tracking[k]
+
+        if stale_person_keys or stale_ir_keys:
+            self.logger.debug(
+                f"[SleepDetector] Cleaned up stale tracking: "
+                f"removed {len(stale_person_keys)} person entries, "
+                f"{len(stale_ir_keys)} IR entries. "
+                f"Active indices: {active}"
+            )
 
     def reset_tracking(self, person_idx: Optional[int] = None) -> None:
         """Reset tracking state for a person or all persons.

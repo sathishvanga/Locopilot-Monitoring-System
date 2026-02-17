@@ -48,7 +48,12 @@ class Settings(BaseSettings):
     # Server settings
     host: str = "0.0.0.0"
     port: int = 8000
-    
+
+    # CORS settings - explicit allowed origins (no wildcard with credentials)
+    cors_allowed_origins: List[str] = json.loads(
+        os.getenv("CORS_ALLOWED_ORIGINS", '["http://localhost:3000", "http://localhost:8080"]')
+    )
+
     # File upload settings
     max_upload_size: int = 5 * 1024 * 1024 * 1024  # 5 GB
     allowed_video_extensions: List[str] = [".mp4", ".avi", ".mov", ".mkv"]
@@ -91,6 +96,10 @@ class Settings(BaseSettings):
     gpu_device: str = os.getenv("GPU_DEVICE", "cuda:0")  # CUDA device identifier
     gpu_memory_fraction: float = float(os.getenv("GPU_MEMORY_FRACTION", "0.85"))  # Max GPU memory to use (85%)
 
+    # GPU Batch Processing Settings - maximize GPU utilization
+    gpu_batch_size: int = int(os.getenv("GPU_BATCH_SIZE", "8"))  # Frames per GPU batch
+    gpu_batch_enabled: bool = bool(int(os.getenv("GPU_BATCH_ENABLED", "1")))  # Enable GPU batch processing
+
     # Concurrency Settings - Control parallel video processing
     max_concurrent_videos: int = int(os.getenv("MAX_CONCURRENT_VIDEOS", "3"))  # Max videos processed simultaneously
     inference_batch_size: int = int(os.getenv("INFERENCE_BATCH_SIZE", "8"))  # Frames per inference batch
@@ -108,6 +117,12 @@ class Settings(BaseSettings):
     prod_log_level: str = os.getenv("PROD_LOG_LEVEL", "INFO")
     dev_log_level: str = os.getenv("DEV_LOG_LEVEL", "DEBUG")
     
+    # S3 Upload API settings
+    s3_upload_api_url: str = os.getenv(
+        "S3_UPLOAD_API_URL",
+        "https://api.mindcoinapps.com/ai_demo_api/amazonUpload/uploadWithFolder"
+    )
+
     # External API settings (CVVR API)
     # Use {division} placeholder in URL - will be replaced with actual division value at runtime
     cvvr_api_url: str = os.getenv(
@@ -190,6 +205,14 @@ class Settings(BaseSettings):
     # Session-based tracking: session starts on first raise, ends after timeout with no activity
     # Violation only if one person NEVER raised during the entire session
     hand_gesture_session_timeout: float = float(os.getenv("HAND_GESTURE_SESSION_TIMEOUT", "10.0"))
+
+    # Hand gesture coordination temporal window (seconds)
+    # Suppress coordination failure alerts if both LP and ALP raised hands within this window
+    hand_gesture_coordination_window: float = float(os.getenv("HAND_GESTURE_COORDINATION_WINDOW", "5.0"))
+
+    # Temporal suppression window (seconds)
+    # Suppress hand gestures for this duration after detecting a work activity (writing, packing, cell phone)
+    temporal_suppression_window: float = float(os.getenv("TEMPORAL_SUPPRESSION_WINDOW", "10.0"))
 
     # Voting debug settings - save annotated frames for troubleshooting
     voting_save_debug_frames: bool = bool(int(os.getenv("VOTING_SAVE_DEBUG_FRAMES", "0")))  # Disabled by default (enable locally for debugging)
@@ -348,6 +371,9 @@ class Settings(BaseSettings):
     yolo_book_confidence: float = float(os.getenv("YOLO_BOOK_CONFIDENCE", "0.4"))
     yolo_cell_phone_confidence: float = float(os.getenv("YOLO_CELL_PHONE_CONFIDENCE", "0.3"))
 
+    # Cell phone detection confidence threshold (activity-level, distinct from YOLO detection threshold)
+    cell_phone_confidence: float = float(os.getenv("CELL_PHONE_CONFIDENCE", "0.40"))
+
     # ==========================================
     # Wrist/Elbow Detection Thresholds
     # ==========================================
@@ -390,7 +416,7 @@ class Settings(BaseSettings):
     # ==========================================
     # Object Detection Geometry
     # ==========================================
-    bag_max_aspect_ratio: float = float(os.getenv("BAG_MAX_ASPECT_RATIO", "1.2"))
+    bag_max_aspect_ratio: float = float(os.getenv("BAG_MAX_ASPECT_RATIO", "1.5"))  # L-08: Relaxed from 1.2 to accept more legitimate bags
     bag_min_area: int = int(os.getenv("BAG_MIN_AREA", "5000"))
     bag_max_area: int = int(os.getenv("BAG_MAX_AREA", "100000"))
     book_person_margin: int = int(os.getenv("BOOK_PERSON_MARGIN", "150"))

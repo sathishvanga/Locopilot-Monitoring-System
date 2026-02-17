@@ -6,6 +6,7 @@ the pre-arrival window (30-60 seconds before station arrival).
 """
 
 import logging
+import threading
 from typing import Dict, Optional, Tuple
 import numpy as np
 
@@ -240,16 +241,21 @@ class ALPAlertnessService:
 
 # Global service instance
 _alp_alertness_service: Optional[ALPAlertnessService] = None
+_alp_alertness_service_lock = threading.Lock()
 
 
 def get_alp_alertness_service() -> ALPAlertnessService:
     """
-    Get the global ALP alertness service instance
+    Get the global ALP alertness service instance.
+
+    M-25: Thread-safe double-checked locking pattern.
 
     Returns:
         ALPAlertnessService instance
     """
     global _alp_alertness_service
     if _alp_alertness_service is None:
-        _alp_alertness_service = ALPAlertnessService()
+        with _alp_alertness_service_lock:
+            if _alp_alertness_service is None:
+                _alp_alertness_service = ALPAlertnessService()
     return _alp_alertness_service

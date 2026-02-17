@@ -65,7 +65,8 @@ class JobManager:
     def __init__(
         self,
         max_queue_size: Optional[int] = None,
-        num_workers: Optional[int] = None
+        num_workers: Optional[int] = None,
+        max_retained_jobs: int = 100
     ):
         """
         Initialize the job manager.
@@ -73,6 +74,8 @@ class JobManager:
         Args:
             max_queue_size: Maximum number of jobs in queue (default: from settings)
             num_workers: Number of concurrent worker tasks (default: from settings)
+            max_retained_jobs: Maximum number of jobs to retain in memory (default: 100).
+                When exceeded, the oldest completed/failed/cancelled jobs are removed.
         """
         if self._initialized:
             return
@@ -81,6 +84,7 @@ class JobManager:
         # Use settings values if not explicitly provided
         self._max_queue_size = max_queue_size or settings.job_queue_max_size
         self._num_workers = num_workers or settings.job_queue_num_workers
+        self._max_retained_jobs = max_retained_jobs
         self._queue: Optional[asyncio.Queue] = None
         self._jobs: Dict[str, Job] = {}
         self._workers: List[asyncio.Task] = []
@@ -90,7 +94,7 @@ class JobManager:
 
         logger.info(
             f"Entering __init__ - max_queue_size={max_queue_size}, "
-            f"num_workers={num_workers}"
+            f"num_workers={num_workers}, max_retained_jobs={max_retained_jobs}"
         )
         logger.info("Exiting __init__ - JobManager singleton created")
 
@@ -135,9 +139,10 @@ class JobManager:
             created_at=datetime.utcnow()
         )
 
-        # Store job in memory
+        # Store job in memory and auto-cleanup if limit exceeded
         async with self._jobs_lock:
             self._jobs[job_id] = job
+            self._evict_oldest_completed_jobs()
 
         # Attempt to add to queue (non-blocking)
         queue = self._ensure_queue()
@@ -223,6 +228,7 @@ class JobManager:
             job.status = JobStatus.CANCELLED
             job.completed_at = datetime.utcnow()
             job.error = "Job cancelled by user"
+            self._evict_oldest_completed_jobs()
 
         logger.info(
             f"Exiting cancel_job - job_id={job_id}, result=True, "
@@ -367,6 +373,51 @@ class JobManager:
 
         logger.info(f"Worker {worker_id} stopped")
 
+    def _evict_oldest_completed_jobs(self) -> None:
+        """
+        Remove the oldest completed/failed/cancelled jobs when the total
+        number of retained jobs exceeds ``max_retained_jobs``.
+
+        Must be called while ``self._jobs_lock`` is held.
+        """
+        if len(self._jobs) <= self._max_retained_jobs:
+            return
+
+        # Collect terminal jobs (completed, failed, cancelled) with their
+        # completion timestamps so we can evict the oldest first.
+        terminal_statuses = (
+            JobStatus.COMPLETED,
+            JobStatus.FAILED,
+            JobStatus.CANCELLED,
+        )
+        terminal_jobs = [
+            (job_id, job)
+            for job_id, job in self._jobs.items()
+            if job.status in terminal_statuses
+        ]
+
+        if not terminal_jobs:
+            # Nothing safe to evict -- all jobs are still active.
+            return
+
+        # Sort by completed_at ascending (oldest first); jobs without
+        # completed_at are treated as oldest so they get evicted first.
+        terminal_jobs.sort(
+            key=lambda pair: pair[1].completed_at or datetime.min
+        )
+
+        excess = len(self._jobs) - self._max_retained_jobs
+        to_remove = terminal_jobs[:excess]
+
+        for job_id, _ in to_remove:
+            del self._jobs[job_id]
+
+        if to_remove:
+            logger.info(
+                f"Auto-cleanup evicted {len(to_remove)} old completed job(s); "
+                f"retained={len(self._jobs)}"
+            )
+
     async def _process_job(self, worker_id: int, job: Job) -> None:
         """
         Process a single job.
@@ -412,6 +463,7 @@ class JobManager:
                     job.progress = 100
                     job.result = result
                     job.completed_at = datetime.utcnow()
+                    self._evict_oldest_completed_jobs()
 
                 logger.info(
                     f"Worker {worker_id}: Job {job.id} completed successfully"
@@ -430,6 +482,7 @@ class JobManager:
                 job.status = JobStatus.FAILED
                 job.error = error_msg
                 job.completed_at = datetime.utcnow()
+                self._evict_oldest_completed_jobs()
 
     def get_queue_status(self) -> Dict[str, Any]:
         """

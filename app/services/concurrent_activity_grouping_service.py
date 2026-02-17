@@ -33,6 +33,7 @@ Output format:
 
 import os
 import subprocess
+import threading
 from typing import List, Dict, Any, Optional
 from collections import defaultdict
 
@@ -149,94 +150,6 @@ class ConcurrentActivityGroupingService:
             minute_role_groups[key].append(activity)
 
         return list(minute_role_groups.values())
-
-    def _find_overlapping_groups(
-        self,
-        activities: List[Dict[str, Any]]
-    ) -> List[List[Dict[str, Any]]]:
-        """
-        Find groups of overlapping activities using Union-Find algorithm.
-
-        Uses Union-Find (Disjoint Set) for efficient grouping of overlapping intervals.
-        Time complexity: O(n^2 * alpha(n)) where alpha is inverse Ackermann
-        Space complexity: O(n)
-
-        Args:
-            activities: List of activity dictionaries
-
-        Returns:
-            List of groups, where each group is a list of overlapping activities
-        """
-        n = len(activities)
-        if n <= 1:
-            return [activities] if activities else []
-
-        # Initialize Union-Find
-        parent = list(range(n))
-        rank = [0] * n
-
-        def find(x: int) -> int:
-            """Find root with path compression"""
-            if parent[x] != x:
-                parent[x] = find(parent[x])
-            return parent[x]
-
-        def union(x: int, y: int) -> None:
-            """Union by rank"""
-            px, py = find(x), find(y)
-            if px != py:
-                if rank[px] < rank[py]:
-                    px, py = py, px
-                parent[py] = px
-                if rank[px] == rank[py]:
-                    rank[px] += 1
-
-        # Parse times and roles once for efficiency
-        times = []
-        for a in activities:
-            start = parse_time_to_seconds(a.get('activityStartTime', 0))
-            end = parse_time_to_seconds(a.get('activityEndTime', 0))
-            role = a.get('performingRole', 'LP')
-            times.append((start, end, role))
-
-        # Find overlapping pairs and union them
-        for i in range(n):
-            for j in range(i + 1, n):
-                s1, e1, r1 = times[i]
-                s2, e2, r2 = times[j]
-
-                # Must be same performer role and have overlapping time ranges
-                if r1 == r2 and self._times_overlap(s1, e1, s2, e2):
-                    union(i, j)
-
-        # Group activities by their root parent
-        groups_dict = defaultdict(list)
-        for i in range(n):
-            root = find(i)
-            groups_dict[root].append(activities[i])
-
-        return list(groups_dict.values())
-
-    def _times_overlap(
-        self,
-        s1: float,
-        e1: float,
-        s2: float,
-        e2: float
-    ) -> bool:
-        """
-        Check if two time ranges overlap.
-
-        Overlap condition: s1 < e2 AND s2 < e1
-
-        Args:
-            s1, e1: Start and end of first interval
-            s2, e2: Start and end of second interval
-
-        Returns:
-            True if intervals overlap, False otherwise
-        """
-        return s1 < e2 and s2 < e1
 
     def _ensure_array_format(self, activity: Dict[str, Any]) -> Dict[str, Any]:
         """
@@ -496,11 +409,17 @@ class ConcurrentActivityGroupingService:
 
 # Singleton instance
 _concurrent_grouping_service: Optional[ConcurrentActivityGroupingService] = None
+_concurrent_grouping_service_lock = threading.Lock()
 
 
 def get_concurrent_grouping_service() -> ConcurrentActivityGroupingService:
-    """Get singleton instance of concurrent activity grouping service."""
+    """Get singleton instance of concurrent activity grouping service.
+
+    M-25: Thread-safe double-checked locking pattern.
+    """
     global _concurrent_grouping_service
     if _concurrent_grouping_service is None:
-        _concurrent_grouping_service = ConcurrentActivityGroupingService()
+        with _concurrent_grouping_service_lock:
+            if _concurrent_grouping_service is None:
+                _concurrent_grouping_service = ConcurrentActivityGroupingService()
     return _concurrent_grouping_service

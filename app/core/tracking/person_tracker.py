@@ -55,7 +55,7 @@ class PersonTracker:
         self.iou_threshold = iou_threshold
 
         # Temporal tracking state
-        self._prev_person_boxes: List[List[float]] = []
+        self._prev_person_boxes: Dict[int, List[float]] = {}
         self._prev_person_roles: Dict[int, Dict[str, str]] = {}
 
     def reset_tracking(self) -> None:
@@ -63,7 +63,7 @@ class PersonTracker:
 
         Call this when starting a new video or when tracking should be reset.
         """
-        self._prev_person_boxes = []
+        self._prev_person_boxes = {}
         self._prev_person_roles = {}
 
     def identify_person_roles(
@@ -213,7 +213,7 @@ class PersonTracker:
             curr_box = curr_info['bbox']
             best_iou = 0.0
             best_prev_idx = None
-            for prev_idx, prev_box in enumerate(self._prev_person_boxes):
+            for prev_idx, prev_box in self._prev_person_boxes.items():
                 iou = calculate_iou(curr_box, prev_box)
                 if iou > best_iou:
                     best_iou = iou
@@ -261,17 +261,23 @@ class PersonTracker:
     def _update_tracking_state(self, person_roles: Dict[int, Dict[str, Any]]) -> None:
         """Update tracking state for the next frame.
 
+        Stores previous boxes as a dict keyed by person index so that the
+        index mapping between ``_prev_person_boxes`` and
+        ``_prev_person_roles`` stays consistent even when person indices are
+        non-contiguous (e.g. {0, 2} after a visitor leaves).
+
         Args:
             person_roles: Current frame's role assignments
         """
-        self._prev_person_boxes = [info['bbox'] for idx, info in sorted(person_roles.items())]
+        self._prev_person_boxes = {idx: info['bbox'] for idx, info in person_roles.items()}
         self._prev_person_roles = {idx: {'role': info['role'], 'role_name': info['role_name']}
                                    for idx, info in person_roles.items()}
 
     def match_pose_to_roles(
         self,
         yolo_pose_results: Dict[int, Dict[str, Any]],
-        person_roles: Dict[int, Dict[str, Any]]
+        person_roles: Dict[int, Dict[str, Any]],
+        frame_shape: Optional[Tuple[int, ...]] = None
     ) -> Dict[int, Any]:
         """Match YOLOv8-Pose detections to identified person roles by bounding box IoU.
 
@@ -282,6 +288,10 @@ class PersonTracker:
                 {person_idx: {'bbox': [...], 'keypoints': YoloPoseLandmarks}}
             person_roles: Dict from identify_person_roles() containing:
                 {person_idx: {'bbox': [...], 'role': 'LP'/'ALP', ...}}
+            frame_shape: Optional (height, width, ...) of the frame. Used for
+                converting normalized keypoints to pixel coordinates in the
+                torso-center tiebreaker. If None, dimensions are estimated
+                from the bounding box coordinates.
 
         Returns:
             Dict mapping person_idx (from person_roles) to YoloPoseLandmarks
@@ -340,10 +350,15 @@ class PersonTracker:
                         left_shoulder = keypoints.landmark[5]
                         right_shoulder = keypoints.landmark[6]
 
-                        # Get frame dimensions from bbox (approximate)
-                        bbox = c['bbox']
-                        frame_w = max(bbox[2], 1920)  # Estimate frame width
-                        frame_h = max(bbox[3], 1080)  # Estimate frame height
+                        # Get frame dimensions (prefer actual frame_shape)
+                        if frame_shape is not None:
+                            frame_h = frame_shape[0]
+                            frame_w = frame_shape[1] if len(frame_shape) > 1 else frame_shape[0]
+                        else:
+                            # Fallback: estimate from max bbox coordinate
+                            bbox = c['bbox']
+                            frame_w = max(int(bbox[2]) + 1, 640)
+                            frame_h = max(int(bbox[3]) + 1, 480)
 
                         # Calculate torso center in pixel coords
                         torso_x = ((left_shoulder.x + right_shoulder.x) / 2) * frame_w

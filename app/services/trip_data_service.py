@@ -9,6 +9,7 @@ Enhanced with etrain.info delay integration for actual arrival/departure times.
 
 import logging
 import requests
+import threading
 from typing import Optional
 from datetime import datetime
 from functools import lru_cache
@@ -397,16 +398,21 @@ class TripDataService:
 
 # Global service instance
 _trip_data_service: Optional[TripDataService] = None
+_trip_data_service_lock = threading.Lock()
 
 
 def get_trip_data_service() -> TripDataService:
     """
-    Get the global trip data service instance
+    Get the global trip data service instance.
+
+    M-25: Thread-safe double-checked locking pattern.
 
     Returns:
         TripDataService instance
     """
     global _trip_data_service
     if _trip_data_service is None:
-        _trip_data_service = TripDataService()
+        with _trip_data_service_lock:
+            if _trip_data_service is None:
+                _trip_data_service = TripDataService()
     return _trip_data_service

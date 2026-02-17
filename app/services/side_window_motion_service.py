@@ -9,6 +9,7 @@ This catches unscheduled stops (signals, crossings) that schedule data cannot de
 import cv2
 import logging
 import numpy as np
+import threading
 from typing import Optional, Tuple, Dict, List
 from dataclasses import dataclass
 from enum import Enum
@@ -101,6 +102,9 @@ class SideWindowMotionService:
         self._prev_gray_frame: Optional[np.ndarray] = None
         self._prev_roi: Optional[np.ndarray] = None
 
+        # M-24: Lock to protect mutable state (_prev_roi, _prev_gray_frame)
+        self._lock = threading.Lock()
+
         logger.info(
             f"SideWindowMotionService initialized - "
             f"enabled: {self.enabled}, "
@@ -132,91 +136,93 @@ class SideWindowMotionService:
                 debug_info={'reason': 'service_disabled'}
             )
 
-        try:
-            # Extract ROI from frame
-            roi = self._extract_roi(frame)
-            if roi is None:
-                return MotionDetectionResult(
-                    motion_state=OpticalFlowMotionState.UNCERTAIN,
-                    magnitude=0.0,
-                    confidence=0.0,
-                    debug_info={'reason': 'roi_extraction_failed'}
-                )
+        # M-24: Acquire lock to protect mutable state (_prev_roi)
+        with self._lock:
+            try:
+                # Extract ROI from frame
+                roi = self._extract_roi(frame)
+                if roi is None:
+                    return MotionDetectionResult(
+                        motion_state=OpticalFlowMotionState.UNCERTAIN,
+                        magnitude=0.0,
+                        confidence=0.0,
+                        debug_info={'reason': 'roi_extraction_failed'}
+                    )
 
-            # Convert to grayscale
-            gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
+                # Convert to grayscale
+                gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
 
-            # Get previous frame ROI
-            if prev_frame is not None:
-                prev_roi = self._extract_roi(prev_frame)
-                if prev_roi is not None:
-                    prev_gray = cv2.cvtColor(prev_roi, cv2.COLOR_BGR2GRAY)
+                # Get previous frame ROI
+                if prev_frame is not None:
+                    prev_roi = self._extract_roi(prev_frame)
+                    if prev_roi is not None:
+                        prev_gray = cv2.cvtColor(prev_roi, cv2.COLOR_BGR2GRAY)
+                    else:
+                        prev_gray = self._prev_roi
                 else:
                     prev_gray = self._prev_roi
-            else:
-                prev_gray = self._prev_roi
 
-            # Store current for next iteration
-            self._prev_roi = gray.copy()
+                # Store current for next iteration
+                self._prev_roi = gray.copy()
 
-            # Need previous frame for optical flow
-            if prev_gray is None:
+                # Need previous frame for optical flow
+                if prev_gray is None:
+                    return MotionDetectionResult(
+                        motion_state=OpticalFlowMotionState.UNCERTAIN,
+                        magnitude=0.0,
+                        confidence=0.0,
+                        debug_info={'reason': 'no_previous_frame'}
+                    )
+
+                # Calculate optical flow using Farneback method
+                flow = cv2.calcOpticalFlowFarneback(
+                    prev_gray, gray, None,
+                    self.flow_params['pyr_scale'],
+                    self.flow_params['levels'],
+                    self.flow_params['winsize'],
+                    self.flow_params['iterations'],
+                    self.flow_params['poly_n'],
+                    self.flow_params['poly_sigma'],
+                    self.flow_params['flags']
+                )
+
+                # Calculate magnitude and angle of flow vectors
+                magnitude, angle = cv2.cartToPolar(flow[..., 0], flow[..., 1])
+
+                # Calculate mean magnitude (excluding outliers)
+                # Use percentile to avoid noise spikes
+                mean_magnitude = float(np.percentile(magnitude, 90))
+
+                # Classify motion state
+                motion_state, confidence = self._classify_motion(mean_magnitude)
+
+                logger.debug(
+                    f"[OPTICAL-FLOW] Magnitude={mean_magnitude:.2f}, "
+                    f"State={motion_state.value}, Confidence={confidence:.2f}"
+                )
+
+                return MotionDetectionResult(
+                    motion_state=motion_state,
+                    magnitude=mean_magnitude,
+                    confidence=confidence,
+                    roi_used=(self.roi_x_ratio, self.roi_y_ratio,
+                             self.roi_width_ratio, self.roi_height_ratio),
+                    debug_info={
+                        'flow_shape': flow.shape,
+                        'percentile_90': mean_magnitude,
+                        'mean': float(np.mean(magnitude)),
+                        'max': float(np.max(magnitude))
+                    }
+                )
+
+            except Exception as e:
+                logger.warning(f"[OPTICAL-FLOW] Error in detect_motion: {e}")
                 return MotionDetectionResult(
                     motion_state=OpticalFlowMotionState.UNCERTAIN,
                     magnitude=0.0,
                     confidence=0.0,
-                    debug_info={'reason': 'no_previous_frame'}
+                    debug_info={'error': str(e)}
                 )
-
-            # Calculate optical flow using Farneback method
-            flow = cv2.calcOpticalFlowFarneback(
-                prev_gray, gray, None,
-                self.flow_params['pyr_scale'],
-                self.flow_params['levels'],
-                self.flow_params['winsize'],
-                self.flow_params['iterations'],
-                self.flow_params['poly_n'],
-                self.flow_params['poly_sigma'],
-                self.flow_params['flags']
-            )
-
-            # Calculate magnitude and angle of flow vectors
-            magnitude, angle = cv2.cartToPolar(flow[..., 0], flow[..., 1])
-
-            # Calculate mean magnitude (excluding outliers)
-            # Use percentile to avoid noise spikes
-            mean_magnitude = float(np.percentile(magnitude, 90))
-
-            # Classify motion state
-            motion_state, confidence = self._classify_motion(mean_magnitude)
-
-            logger.debug(
-                f"[OPTICAL-FLOW] Magnitude={mean_magnitude:.2f}, "
-                f"State={motion_state.value}, Confidence={confidence:.2f}"
-            )
-
-            return MotionDetectionResult(
-                motion_state=motion_state,
-                magnitude=mean_magnitude,
-                confidence=confidence,
-                roi_used=(self.roi_x_ratio, self.roi_y_ratio,
-                         self.roi_width_ratio, self.roi_height_ratio),
-                debug_info={
-                    'flow_shape': flow.shape,
-                    'percentile_90': mean_magnitude,
-                    'mean': float(np.mean(magnitude)),
-                    'max': float(np.max(magnitude))
-                }
-            )
-
-        except Exception as e:
-            logger.warning(f"[OPTICAL-FLOW] Error in detect_motion: {e}")
-            return MotionDetectionResult(
-                motion_state=OpticalFlowMotionState.UNCERTAIN,
-                magnitude=0.0,
-                confidence=0.0,
-                debug_info={'error': str(e)}
-            )
 
     def detect_motion_batch(
         self,
@@ -396,8 +402,9 @@ class SideWindowMotionService:
 
     def reset(self):
         """Reset internal state (call when switching videos)."""
-        self._prev_gray_frame = None
-        self._prev_roi = None
+        with self._lock:
+            self._prev_gray_frame = None
+            self._prev_roi = None
         logger.debug("[OPTICAL-FLOW] Internal state reset")
 
     def get_roi_coordinates(
@@ -424,16 +431,21 @@ class SideWindowMotionService:
 
 # Global service instance
 _motion_service: Optional[SideWindowMotionService] = None
+_motion_service_lock = threading.Lock()
 
 
 def get_side_window_motion_service() -> SideWindowMotionService:
     """
     Get the global side window motion service instance.
 
+    M-25: Thread-safe double-checked locking pattern.
+
     Returns:
         SideWindowMotionService instance
     """
     global _motion_service
     if _motion_service is None:
-        _motion_service = SideWindowMotionService()
+        with _motion_service_lock:
+            if _motion_service is None:
+                _motion_service = SideWindowMotionService()
     return _motion_service

@@ -59,6 +59,10 @@ class ImagePreprocessingService:
             )
         else:
             self.clahe = None
+
+        # Cache for gamma lookup tables keyed by gamma value, so the LUT is
+        # not recomputed on every frame for the same gamma.
+        self._gamma_lut_cache: Dict[float, np.ndarray] = {}
         
         logger.info(
             f"ImagePreprocessingService initialized - "
@@ -240,13 +244,19 @@ class ImagePreprocessingService:
             gamma = self.gamma_value
         
         try:
-            # Build lookup table for gamma correction
-            inv_gamma = 1.0 / gamma
-            table = np.array([
-                ((i / 255.0) ** inv_gamma) * 255
-                for i in np.arange(0, 256)
-            ]).astype("uint8")
-            
+            # Use cached lookup table for this gamma value to avoid
+            # recomputing the LUT on every frame.
+            gamma_key = round(gamma, 4)
+            if gamma_key not in self._gamma_lut_cache:
+                inv_gamma = 1.0 / gamma
+                table = np.array([
+                    ((i / 255.0) ** inv_gamma) * 255
+                    for i in np.arange(0, 256)
+                ]).astype("uint8")
+                self._gamma_lut_cache[gamma_key] = table
+            else:
+                table = self._gamma_lut_cache[gamma_key]
+
             # Apply lookup table
             corrected_frame = cv2.LUT(frame, table)
             

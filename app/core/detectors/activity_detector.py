@@ -13,6 +13,10 @@ from collections import deque, defaultdict
 import numpy as np
 
 from app.core.utils.geometry import bbox_overlap_with_margin, calculate_iou
+from app.core.utils.pose_utils import (
+    calculate_wrist_distance as _calculate_wrist_distance,
+    get_keypoint as _canonical_get_keypoint,
+)
 
 
 class ActivityDetector:
@@ -101,6 +105,9 @@ class ActivityDetector:
     def get_keypoint(self, landmarks: Any, keypoint_name: str) -> Any:
         """Get a keypoint from landmarks by name.
 
+        Delegates to the canonical ``get_keypoint`` in
+        ``app.core.utils.pose_utils`` (or a user-supplied override).
+
         Args:
             landmarks: Pose landmarks (YoloPoseLandmarks or similar)
             keypoint_name: Name of keypoint (e.g., 'left_wrist', 'nose')
@@ -111,16 +118,16 @@ class ActivityDetector:
         if self._get_keypoint_func is not None:
             return self._get_keypoint_func(landmarks, keypoint_name)
 
-        # Fallback: try to access by index using YOLO keypoint mapping
-        from app.services.yolo_pose_adapter import get_keypoint_by_name
-        return get_keypoint_by_name(landmarks, keypoint_name)
+        return _canonical_get_keypoint(landmarks, keypoint_name)
 
     def calculate_wrist_distance(
         self, pose_landmarks: Any, frame_shape: Tuple[int, ...]
     ) -> Tuple[Optional[float], Optional[str]]:
         """Calculate Euclidean distance between left and right wrists.
 
-        Falls back to elbow distance if wrists are not visible.
+        Falls back to elbow distance or single wrist-to-shoulder midpoint
+        if wrists are not visible. Delegates to the shared utility in
+        ``app.core.utils.pose_utils.calculate_wrist_distance``.
 
         Args:
             pose_landmarks: Pose landmarks with visibility scores
@@ -130,75 +137,13 @@ class ActivityDetector:
             tuple: (distance in pixels, source) where source is 'wrist', 'elbow',
                    or 'single_wrist', or (None, None) if not detectable
         """
-        if not pose_landmarks:
-            return None, None
-
-        try:
-            landmarks = pose_landmarks.landmark if hasattr(pose_landmarks, 'landmark') else pose_landmarks
-            h, w = frame_shape[:2]
-
-            # Get wrist landmarks
-            right_wrist = self.get_keypoint(landmarks, 'right_wrist')
-            left_wrist = self.get_keypoint(landmarks, 'left_wrist')
-
-            # Try wrists first (primary method)
-            if (right_wrist.visibility >= self.wrist_visibility_threshold and
-                left_wrist.visibility >= self.wrist_visibility_threshold):
-                # Convert normalized coordinates to pixel coordinates
-                right_wrist_px = (right_wrist.x * w, right_wrist.y * h)
-                left_wrist_px = (left_wrist.x * w, left_wrist.y * h)
-
-                # Calculate Euclidean distance
-                distance = np.sqrt(
-                    (right_wrist_px[0] - left_wrist_px[0])**2 +
-                    (right_wrist_px[1] - left_wrist_px[1])**2
-                )
-                return distance, 'wrist'
-
-            # FALLBACK: Use elbows if wrists not visible
-            right_elbow = self.get_keypoint(landmarks, 'right_elbow')
-            left_elbow = self.get_keypoint(landmarks, 'left_elbow')
-
-            if (right_elbow.visibility >= self.elbow_visibility_threshold and
-                left_elbow.visibility >= self.elbow_visibility_threshold):
-                right_elbow_px = (right_elbow.x * w, right_elbow.y * h)
-                left_elbow_px = (left_elbow.x * w, left_elbow.y * h)
-                distance = np.sqrt(
-                    (right_elbow_px[0] - left_elbow_px[0])**2 +
-                    (right_elbow_px[1] - left_elbow_px[1])**2
-                )
-                return distance, 'elbow'
-
-            # FALLBACK: Single wrist to shoulder midpoint
-            right_shoulder = self.get_keypoint(landmarks, 'right_shoulder')
-            left_shoulder = self.get_keypoint(landmarks, 'left_shoulder')
-            SINGLE_WRIST_VIS = 0.5
-            SHOULDER_VIS = 0.3
-
-            visible_wrist = None
-            if right_wrist.visibility >= SINGLE_WRIST_VIS and left_wrist.visibility < SINGLE_WRIST_VIS:
-                visible_wrist = right_wrist
-            elif left_wrist.visibility >= SINGLE_WRIST_VIS and right_wrist.visibility < SINGLE_WRIST_VIS:
-                visible_wrist = left_wrist
-
-            if (visible_wrist is not None and
-                right_shoulder.visibility >= SHOULDER_VIS and
-                left_shoulder.visibility >= SHOULDER_VIS):
-                wrist_px = (visible_wrist.x * w, visible_wrist.y * h)
-                shoulder_mid_px = (
-                    (right_shoulder.x + left_shoulder.x) / 2 * w,
-                    (right_shoulder.y + left_shoulder.y) / 2 * h
-                )
-                distance = np.sqrt(
-                    (wrist_px[0] - shoulder_mid_px[0])**2 +
-                    (wrist_px[1] - shoulder_mid_px[1])**2
-                )
-                return distance, 'single_wrist'
-
-            return None, None
-        except Exception as e:
-            self.logger.debug(f"Exception in calculate_wrist_distance: {e}")
-            return None, None
+        return _calculate_wrist_distance(
+            pose_landmarks,
+            frame_shape,
+            get_keypoint_func=self.get_keypoint,
+            wrist_visibility_threshold=self.wrist_visibility_threshold,
+            elbow_visibility_threshold=self.elbow_visibility_threshold,
+        )
 
     def detect_head_looking_down(self, pose_landmarks: Any) -> bool:
         """Check if head is tilted down (looking at lap area).
@@ -284,6 +229,19 @@ class ActivityDetector:
             wrist_distance = ((left_wrist_x - right_wrist_x) ** 2 +
                             (left_wrist_y_px - right_wrist_y_px) ** 2) ** 0.5
 
+            # Scale-normalize thresholds by shoulder width so they adapt to
+            # the person's apparent size in the frame.  The default 300px /
+            # 400px thresholds were calibrated at ~1080p with a shoulder
+            # width of roughly 200px, giving base ratios of 1.5 and 2.0.
+            shoulder_width_px = abs(left_shoulder.x - right_shoulder.x) * w
+            if shoulder_width_px > 0:
+                scale_writing = (shoulder_width_px / 200.0)  # 200px reference shoulder width
+                scaled_writing_dist = self.writing_wrist_distance * scale_writing
+                scaled_relaxed_dist = self.relaxed_wrist_distance * scale_writing
+            else:
+                scaled_writing_dist = self.writing_wrist_distance
+                scaled_relaxed_dist = self.relaxed_wrist_distance
+
             # Check if head is looking down
             head_looking_down = self.detect_head_looking_down(pose_landmarks)
 
@@ -292,8 +250,8 @@ class ActivityDetector:
             hands_below_shoulders = left_below_shoulders and right_below_shoulders
             hands_in_writing_position = hands_in_lap or hands_below_shoulders
 
-            # Detect if wrists are close enough
-            wrists_close = wrist_distance <= self.writing_wrist_distance
+            # Detect if wrists are close enough (using scaled threshold)
+            wrists_close = wrist_distance <= scaled_writing_dist
 
             # Writing detected if:
             # - Hands below shoulders + wrists close, OR
@@ -301,7 +259,7 @@ class ActivityDetector:
             if hands_in_writing_position and wrists_close:
                 return True
 
-            if head_looking_down and hands_below_shoulders and wrist_distance <= self.relaxed_wrist_distance:
+            if head_looking_down and hands_below_shoulders and wrist_distance <= scaled_relaxed_dist:
                 return True
 
             return False
@@ -443,8 +401,16 @@ class ActivityDetector:
         right_wrist = self.get_keypoint(landmarks, 'right_wrist')
         left_wrist = self.get_keypoint(landmarks, 'left_wrist')
 
-        right_hand_coords = (int(right_wrist.x * w), int(right_wrist.y * h))
-        left_hand_coords = (int(left_wrist.x * w), int(left_wrist.y * h))
+        # Check visibility before converting to pixel coordinates
+        visibility_threshold = getattr(self, 'wrist_visibility_threshold', 0.3)
+        right_visible = getattr(right_wrist, 'visibility', 0) >= visibility_threshold
+        left_visible = getattr(left_wrist, 'visibility', 0) >= visibility_threshold
+
+        if not right_visible and not left_visible:
+            return False, evidence
+
+        right_hand_coords = (int(right_wrist.x * w), int(right_wrist.y * h)) if right_visible else None
+        left_hand_coords = (int(left_wrist.x * w), int(left_wrist.y * h)) if left_visible else None
 
         # Use stricter margin for phone detection
         check_margin = min(margin, 100)

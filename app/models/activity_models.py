@@ -21,6 +21,7 @@ class ActivityTypeEnum(IntEnum):
     MIND_DIVERSION = 10
     NO_PERSON_DETECTED = 11
     ALP_NOT_STANDING_PRE_ARRIVAL = 12  # ALP not standing in pre-arrival window (30-60s before station)
+    EATING_DRINKING = 13  # Eating or drinking activity detected
 
 
 class EvidenceModel(BaseModel):

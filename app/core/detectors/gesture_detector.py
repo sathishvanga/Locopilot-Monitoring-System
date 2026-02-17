@@ -16,6 +16,8 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 
+from app.core.utils.pose_utils import get_keypoint as _canonical_get_keypoint
+
 
 class GestureDetector:
     """Detects hand gesture coordination between LP and ALP.
@@ -36,16 +38,23 @@ class GestureDetector:
     MIN_LANDMARKS = 8
     MIN_VISIBILITY = 0.25
 
-    # Thresholds for raised hand detection
-    WRIST_SHOULDER_VERTICAL_MIN = 80  # Wrist must be this many pixels above shoulder
-    WRIST_ELBOW_DISTANCE_MIN = -30  # Allow slightly bent arm
-    ARM_EXTENSION_MIN = 20  # Minimum lateral arm extension in pixels
+    # Thresholds for raised hand detection (proportional to person bbox height)
+    # Calibrated so that at 1080p with ~500px person bbox height, values match
+    # the original absolute pixel thresholds (80, 30, 20, 150 respectively).
+    WRIST_SHOULDER_VERTICAL_RATIO = 0.16  # orig 80px / 500px
+    WRIST_ELBOW_DISTANCE_RATIO = -0.06  # orig -30px / 500px (negative = bent OK)
+    ARM_EXTENSION_RATIO = 0.04  # orig 20px / 500px
+    ELBOW_SHOULDER_TOLERANCE_RATIO = 0.30  # orig 150px / 500px
 
-    # Thresholds for control zone filtering (forward reach detection)
-    CONTROL_ZONE_WRIST_SHOULDER_MIN = 30
-    CONTROL_ZONE_WRIST_SHOULDER_MAX = 100
-    CONTROL_ZONE_WRIST_ELBOW_MAX = 50
-    CONTROL_ZONE_ELBOW_SHOULDER_OFFSET = 30
+    # Thresholds for control zone filtering (proportional to person bbox height)
+    # Calibrated at 1080p / 500px person bbox height.
+    CONTROL_ZONE_WRIST_SHOULDER_MIN_RATIO = 0.06  # orig 30px / 500px
+    CONTROL_ZONE_WRIST_SHOULDER_MAX_RATIO = 0.20  # orig 100px / 500px
+    CONTROL_ZONE_WRIST_ELBOW_MAX_RATIO = 0.10  # orig 50px / 500px
+    CONTROL_ZONE_ELBOW_SHOULDER_OFFSET_RATIO = 0.06  # orig 30px / 500px
+
+    # Minimum absolute pixel floor for all scaled thresholds
+    MIN_PIXEL_THRESHOLD = 20
 
     # Visibility thresholds
     WRIST_VISIBILITY_MIN = 0.3
@@ -56,11 +65,11 @@ class GestureDetector:
     BBOX_MARGIN_X_FACTOR = 1.0  # 100% of box width
     BBOX_MARGIN_Y_FACTOR = 1.5  # 150% of box height for raised hands
 
-    # Object proximity threshold for backpack detection
-    BACKPACK_PROXIMITY_THRESHOLD = 250  # pixels
+    # Object proximity threshold for backpack detection (proportional to bbox height)
+    BACKPACK_PROXIMITY_RATIO = 0.50  # orig 250px / 500px
 
-    # Velocity analysis thresholds
-    RAPID_RAISE_VELOCITY = 150  # pixels per second
+    # Velocity analysis thresholds (proportional to bbox height per second)
+    RAPID_RAISE_VELOCITY_RATIO = 0.30  # orig 150px/s / 500px
     HAND_HISTORY_MAX_LENGTH = 10
 
     def __init__(
@@ -97,14 +106,15 @@ class GestureDetector:
 
         # Keypoint extraction function
         if get_keypoint_func is None:
-            # Import default implementation
-            from app.services.yolo_pose_adapter import get_keypoint_by_name
-            self._get_keypoint = get_keypoint_by_name
+            self._get_keypoint = _canonical_get_keypoint
         else:
             self._get_keypoint = get_keypoint_func
 
     def get_keypoint(self, landmarks: Any, keypoint_name: str) -> Any:
         """Get a keypoint from landmarks by name.
+
+        Delegates to the canonical ``get_keypoint`` in
+        ``app.core.utils.pose_utils`` (or a user-supplied override).
 
         Args:
             landmarks: Pose landmarks object
@@ -114,6 +124,27 @@ class GestureDetector:
             Landmark object with x, y, z, visibility attributes
         """
         return self._get_keypoint(landmarks, keypoint_name)
+
+    def _scale_threshold(self, ratio: float, bbox_height: int) -> int:
+        """Scale a proportional threshold by person bounding box height.
+
+        Converts a resolution-independent ratio into an absolute pixel value
+        scaled to the detected person's size. Applies a minimum floor to
+        prevent thresholds from becoming too small at very low resolutions.
+
+        Args:
+            ratio: Proportional threshold relative to bbox height.
+                   Positive ratios return positive results (with floor).
+                   Negative ratios return negative results (floor applied
+                   to magnitude then negated).
+            bbox_height: Height of the person bounding box in pixels.
+
+        Returns:
+            Scaled pixel threshold, guaranteed to have magnitude >= MIN_PIXEL_THRESHOLD.
+        """
+        if ratio < 0:
+            return -max(self.MIN_PIXEL_THRESHOLD, int(abs(ratio) * bbox_height))
+        return max(self.MIN_PIXEL_THRESHOLD, int(ratio * bbox_height))
 
     def detect_raised_hand(
         self,
@@ -178,6 +209,13 @@ class GestureDetector:
         box_width = mx2 - mx1
         box_height = my2 - my1
 
+        # Compute resolution-normalized thresholds scaled by person bbox height
+        wrist_shoulder_vertical_min = self._scale_threshold(self.WRIST_SHOULDER_VERTICAL_RATIO, box_height)
+        wrist_elbow_distance_min = self._scale_threshold(self.WRIST_ELBOW_DISTANCE_RATIO, box_height)
+        arm_extension_min = self._scale_threshold(self.ARM_EXTENSION_RATIO, box_height)
+        elbow_shoulder_tolerance = self._scale_threshold(self.ELBOW_SHOULDER_TOLERANCE_RATIO, box_height)
+        backpack_proximity_threshold = self._scale_threshold(self.BACKPACK_PROXIMITY_RATIO, box_height)
+
         # Expand bounding box for arm extension tolerance
         margin_x = box_width * self.BBOX_MARGIN_X_FACTOR
         margin_y = box_height * self.BBOX_MARGIN_Y_FACTOR
@@ -220,7 +258,8 @@ class GestureDetector:
         # ==========================================
         if backpack_detections and len(backpack_detections) > 0:
             proximity_result = self._check_backpack_proximity(
-                backpack_detections, right_wrist_coords, left_wrist_coords, person_idx
+                backpack_detections, right_wrist_coords, left_wrist_coords, person_idx,
+                backpack_proximity_threshold
             )
             if proximity_result is not None:
                 return False, proximity_result
@@ -243,23 +282,23 @@ class GestureDetector:
         right_in_control_zone = self._is_in_control_zone(
             right_wrist_coords, right_elbow_coords, right_shoulder_coords,
             right_wrist_shoulder_vertical, right_wrist_elbow_distance,
-            my1, my2
+            my1, my2, box_height
         )
 
         left_in_control_zone = self._is_in_control_zone(
             left_wrist_coords, left_elbow_coords, left_shoulder_coords,
             left_wrist_shoulder_vertical, left_wrist_elbow_distance,
-            my1, my2
+            my1, my2, box_height
         )
 
         # Right hand raised detection
         right_hand_raised = (
             right_wrist_in_expanded and
             not right_in_control_zone and
-            right_wrist_shoulder_vertical > self.WRIST_SHOULDER_VERTICAL_MIN and
-            right_wrist_elbow_distance > self.WRIST_ELBOW_DISTANCE_MIN and
-            right_arm_extension > self.ARM_EXTENSION_MIN and
-            (right_elbow_coords[1] < right_shoulder_coords[1] + 150) and
+            right_wrist_shoulder_vertical > wrist_shoulder_vertical_min and
+            right_wrist_elbow_distance > wrist_elbow_distance_min and
+            right_arm_extension > arm_extension_min and
+            (right_elbow_coords[1] < right_shoulder_coords[1] + elbow_shoulder_tolerance) and
             right_wrist.visibility > self.WRIST_VISIBILITY_MIN and
             right_elbow.visibility > self.ELBOW_VISIBILITY_MIN and
             right_shoulder.visibility > self.SHOULDER_VISIBILITY_MIN and
@@ -271,10 +310,10 @@ class GestureDetector:
         left_hand_raised = (
             left_wrist_in_expanded and
             not left_in_control_zone and
-            left_wrist_shoulder_vertical > self.WRIST_SHOULDER_VERTICAL_MIN and
-            left_wrist_elbow_distance > self.WRIST_ELBOW_DISTANCE_MIN and
-            left_arm_extension > self.ARM_EXTENSION_MIN and
-            (left_elbow_coords[1] < left_shoulder_coords[1] + 150) and
+            left_wrist_shoulder_vertical > wrist_shoulder_vertical_min and
+            left_wrist_elbow_distance > wrist_elbow_distance_min and
+            left_arm_extension > arm_extension_min and
+            (left_elbow_coords[1] < left_shoulder_coords[1] + elbow_shoulder_tolerance) and
             left_wrist.visibility > self.WRIST_VISIBILITY_MIN and
             left_elbow.visibility > self.ELBOW_VISIBILITY_MIN and
             left_shoulder.visibility > self.SHOULDER_VISIBILITY_MIN and
@@ -291,7 +330,7 @@ class GestureDetector:
         velocity_analysis = {}
         if person_idx is not None and current_timestamp is not None:
             velocity_analysis = self.analyze_hand_velocity(
-                person_idx, landmarks, frame_shape, current_timestamp
+                person_idx, landmarks, frame_shape, current_timestamp, box_height
             )
 
         debug_info = {
@@ -315,11 +354,13 @@ class GestureDetector:
         wrist_shoulder_vertical: float,
         wrist_elbow_distance: float,
         bbox_y1: int,
-        bbox_y2: int
+        bbox_y2: int,
+        bbox_height: int = 0
     ) -> bool:
         """Check if hand is in control operation zone (forward reach pattern).
 
         This identifies forward reaches to operate controls vs upward signaling.
+        All pixel thresholds are normalized by person bounding box height.
 
         Args:
             wrist_coords: Wrist position (x, y)
@@ -329,20 +370,29 @@ class GestureDetector:
             wrist_elbow_distance: Vertical distance from elbow to wrist
             bbox_y1: Top of person bounding box
             bbox_y2: Bottom of person bounding box
+            bbox_height: Person bounding box height for threshold scaling
 
         Returns:
             True if hand appears to be in control operation zone
         """
+        if bbox_height <= 0:
+            bbox_height = bbox_y2 - bbox_y1
+
+        cz_wrist_shoulder_min = self._scale_threshold(self.CONTROL_ZONE_WRIST_SHOULDER_MIN_RATIO, bbox_height)
+        cz_wrist_shoulder_max = self._scale_threshold(self.CONTROL_ZONE_WRIST_SHOULDER_MAX_RATIO, bbox_height)
+        cz_wrist_elbow_max = self._scale_threshold(self.CONTROL_ZONE_WRIST_ELBOW_MAX_RATIO, bbox_height)
+        cz_elbow_shoulder_offset = self._scale_threshold(self.CONTROL_ZONE_ELBOW_SHOULDER_OFFSET_RATIO, bbox_height)
+
         return (
             # Hand in reasonable vertical range
             wrist_coords[1] > (bbox_y1 + (bbox_y2 - bbox_y1) * 0.2) and
             wrist_coords[1] < (bbox_y1 + (bbox_y2 - bbox_y1) * 0.8) and
-            # Wrist above shoulder but not too far (30-100px range)
-            self.CONTROL_ZONE_WRIST_SHOULDER_MIN < wrist_shoulder_vertical < self.CONTROL_ZONE_WRIST_SHOULDER_MAX and
+            # Wrist above shoulder but not too far (scaled range)
+            cz_wrist_shoulder_min < wrist_shoulder_vertical < cz_wrist_shoulder_max and
             # Small wrist-elbow distance (forward reach pattern)
-            wrist_elbow_distance < self.CONTROL_ZONE_WRIST_ELBOW_MAX and
+            wrist_elbow_distance < cz_wrist_elbow_max and
             # Elbow below shoulder (forward reach pattern)
-            elbow_coords[1] > shoulder_coords[1] + self.CONTROL_ZONE_ELBOW_SHOULDER_OFFSET
+            elbow_coords[1] > shoulder_coords[1] + cz_elbow_shoulder_offset
         )
 
     def _check_temporal_suppression(
@@ -414,7 +464,8 @@ class GestureDetector:
         backpack_detections: List[Any],
         right_wrist_coords: Tuple[int, int],
         left_wrist_coords: Tuple[int, int],
-        person_idx: Optional[int]
+        person_idx: Optional[int],
+        proximity_threshold: int = 250
     ) -> Optional[Dict[str, Any]]:
         """Check if hands are near backpack (packing activity).
 
@@ -423,6 +474,7 @@ class GestureDetector:
             right_wrist_coords: Right wrist position
             left_wrist_coords: Left wrist position
             person_idx: Person index for logging
+            proximity_threshold: Scaled proximity threshold in pixels
 
         Returns:
             Suppression info dict if suppressed, None otherwise
@@ -441,7 +493,7 @@ class GestureDetector:
                 (left_wrist_coords[1] - backpack_center_y) ** 2
             )
 
-            if right_dist < self.BACKPACK_PROXIMITY_THRESHOLD or left_dist < self.BACKPACK_PROXIMITY_THRESHOLD:
+            if right_dist < proximity_threshold or left_dist < proximity_threshold:
                 return {
                     'suppressed': True,
                     'reason': 'Hand near backpack object (likely packing, not signaling)',
@@ -495,12 +547,16 @@ class GestureDetector:
         lp_not_coordinating = False
         alp_not_coordinating = False
 
-        if alp_gesture and not lp_gesture:
+        # Guard: if both gestures are detected in the same frame, this is
+        # successful coordination -- skip violation checks entirely to avoid
+        # a race where pre-update timestamps would incorrectly flag a violation.
+        if lp_gesture and alp_gesture:
+            pass  # Both coordinated in the same frame -- no violation
+        elif alp_gesture and not lp_gesture:
             # ALP raised hand, LP didn't in current frame
             if not both_within_window(lp_last_raise_time, alp_last_raise_time):
                 lp_not_coordinating = True
-
-        if lp_gesture and not alp_gesture:
+        elif lp_gesture and not alp_gesture:
             # LP raised hand, ALP didn't in current frame
             if not both_within_window(lp_last_raise_time, alp_last_raise_time):
                 alp_not_coordinating = True
@@ -559,17 +615,20 @@ class GestureDetector:
         person_idx: int,
         landmarks: Any,
         frame_shape: Tuple[int, ...],
-        timestamp: float
+        timestamp: float,
+        bbox_height: int = 0
     ) -> Dict[str, Any]:
         """Analyze hand velocity and trajectory patterns.
 
         Detects rapid hand raises (signaling) vs static positions (control operations).
+        Velocity threshold is normalized by person bounding box height.
 
         Args:
             person_idx: Person identifier
             landmarks: Pose landmarks
             frame_shape: Frame dimensions (h, w, ...)
             timestamp: Current timestamp
+            bbox_height: Person bounding box height for threshold scaling
 
         Returns:
             Velocity/trajectory analysis results
@@ -643,10 +702,11 @@ class GestureDetector:
         right_vel, right_traj = calculate_velocity(history['right_wrist'], history['timestamps'])
         left_vel, left_traj = calculate_velocity(history['left_wrist'], history['timestamps'])
 
-        # Detect rapid hand raise
+        # Detect rapid hand raise (velocity threshold scaled by bbox height)
+        rapid_raise_velocity = self._scale_threshold(self.RAPID_RAISE_VELOCITY_RATIO, bbox_height) if bbox_height > 0 else self.MIN_PIXEL_THRESHOLD
         rapid_raise = (
-            (right_vel > self.RAPID_RAISE_VELOCITY and right_traj == 'upward') or
-            (left_vel > self.RAPID_RAISE_VELOCITY and left_traj == 'upward')
+            (right_vel > rapid_raise_velocity and right_traj == 'upward') or
+            (left_vel > rapid_raise_velocity and left_traj == 'upward')
         )
 
         return {

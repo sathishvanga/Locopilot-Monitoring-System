@@ -10,6 +10,7 @@ EasyOCR is preferred for semi-transparent overlays common in IP cameras.
 
 import logging
 import re
+import threading
 import time
 import cv2
 import numpy as np
@@ -415,16 +416,21 @@ class OCRTimestampService:
 
 # Global service instance
 _ocr_service: Optional[OCRTimestampService] = None
+_ocr_service_lock = threading.Lock()
 
 
 def get_ocr_timestamp_service() -> OCRTimestampService:
     """
-    Get the global OCR timestamp service instance
+    Get the global OCR timestamp service instance.
+
+    M-25: Thread-safe double-checked locking pattern.
 
     Returns:
         OCRTimestampService instance
     """
     global _ocr_service
     if _ocr_service is None:
-        _ocr_service = OCRTimestampService()
+        with _ocr_service_lock:
+            if _ocr_service is None:
+                _ocr_service = OCRTimestampService()
     return _ocr_service

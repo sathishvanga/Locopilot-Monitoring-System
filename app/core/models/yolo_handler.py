@@ -174,13 +174,14 @@ class YOLOHandler:
         self.pose_sleep_confidence = settings.yolo_pose_sleep_confidence if settings else 0.30
 
         # Object Detection Geometry
-        self.bag_max_aspect_ratio = settings.bag_max_aspect_ratio if settings else 1.2
+        # NOTE: 1.5 allows taller/narrower bags while still filtering non-bag shapes.
+        self.bag_max_aspect_ratio = settings.bag_max_aspect_ratio if settings else 1.5
         self.bag_min_area = settings.bag_min_area if settings else 5000
         self.bag_max_area = settings.bag_max_area if settings else 100000
         self.book_person_margin = settings.book_person_margin if settings else 150
 
-        # Cell phone confidence for ROI detection
-        self.roi_confidence = float(os.getenv("CELL_PHONE_CONFIDENCE", "0.40"))
+        # Cell phone confidence for ROI detection (sourced from Settings)
+        self.roi_confidence = settings.cell_phone_confidence if settings else 0.40
 
         # Dark frame preprocessing threshold
         self.dark_frame_brightness_threshold = (
@@ -220,9 +221,22 @@ class YOLOHandler:
                 - 'roi_boxes': List of ROI boxes for visualization
         """
         # Stage 1: Full frame detection
+        # Use the lowest per-class confidence as a pre-filter to reduce
+        # the number of boxes YOLO returns. Per-class thresholds are
+        # still enforced below so this only removes clearly spurious boxes.
+        min_conf = min(
+            self.person_confidence,
+            self.bag_log_confidence,
+            self.book_confidence,
+            self.cell_phone_confidence,
+            getattr(self, 'eating_drinking_cup_floor_confidence',
+                    getattr(self.settings, 'eating_drinking_cup_floor_confidence', 0.20)
+                    if self.settings else 0.20),
+        )
         results = self.object_model(
             frame,
             verbose=False,
+            conf=min_conf,
             imgsz=self.imgsz,
             device=self.device
         )
@@ -354,7 +368,7 @@ class YOLOHandler:
                     detections['roi_boxes'].append((display_name, roi_bbox))
 
                     if display_name in ['RIGHT_WRIST', 'LEFT_WRIST', 'RIGHT_HIP', 'LEFT_HIP', 'NOSE']:
-                        self.logger.info(
+                        self.logger.debug(
                             f"[DEBUG ROI] Creating {display_name} ROI: "
                             f"size={roi_size}px, coords={keypoint_coords}"
                         )
@@ -481,7 +495,7 @@ class YOLOHandler:
                     person_roi_detections['roi_boxes'].append((display_name, roi_bbox))
 
                     if display_name in ['RIGHT_WRIST', 'LEFT_WRIST', 'RIGHT_HIP', 'LEFT_HIP', 'NOSE']:
-                        self.logger.info(
+                        self.logger.debug(
                             f"[DEBUG ROI] Creating {display_name} ROI: "
                             f"size={roi_size}px, coords={keypoint_coords}"
                         )
@@ -598,24 +612,24 @@ class YOLOHandler:
                             class_name, conf, global_x1, global_y1, global_x2, global_y2
                         ))
 
-            # Debug logging
+            # Debug logging -- these are diagnostic messages, not operational info
             if 'cell phone' in target_classes:
                 roi_name = roi_names[roi_bbox_idx]
                 if len(debug_all_detections) > 0:
                     cell_phones = [d for d in debug_all_detections if d[0] == 'cell phone']
                     if cell_phones:
-                        self.logger.info(
+                        self.logger.debug(
                             f"[DEBUG ROI BATCH] {roi_name}: [OK] Found "
                             f"{len(cell_phones)} cell phone(s): {cell_phones}"
                         )
                     else:
                         top_detections = sorted(debug_all_detections, key=lambda x: -x[1])[:5]
-                        self.logger.info(
+                        self.logger.debug(
                             f"[DEBUG ROI BATCH] {roi_name}: [FAIL] No phone, "
                             f"found {len(debug_all_detections)} objects: {top_detections}"
                         )
                 else:
-                    self.logger.info(f"[DEBUG ROI BATCH] {roi_name}: [WARN] YOLO detected NOTHING")
+                    self.logger.debug(f"[DEBUG ROI BATCH] {roi_name}: [WARN] YOLO detected NOTHING")
 
             all_detections[roi_bbox_idx] = detections
 

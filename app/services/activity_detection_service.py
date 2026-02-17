@@ -379,11 +379,11 @@ class ActivityDetectionService:
             run_dir = activity_repo.create_run_directory(base_name="run")
         
         # Create multiprocessing configuration
-        # ✅ PERFORMANCE: 10s chunks optimize load balancing vs overhead
-        # Smaller chunks (10s) provide better work distribution across 8 workers
-        # Each chunk processes faster (~15-20s), keeping workers busy and reducing idle time
+        # ✅ PERFORMANCE: 15s chunks ensure hand gesture coordination detection works correctly
+        # Coordination window is 10s, so 15s chunks capture full coordination sequences
+        # Each chunk processes in ~15-20s, keeping workers busy and reducing idle time
         config = MultiprocessingConfig(
-            chunk_duration_seconds=settings.mp_chunk_duration,  # Use config value (default 10.0s)
+            chunk_duration_seconds=settings.mp_chunk_duration,  # Use config value (default 15.0s)
             max_workers=None,  # Auto-detect
             max_workers_cap=settings.mp_max_workers_cap,  # Use config value (default 8)
             preload_models=True,

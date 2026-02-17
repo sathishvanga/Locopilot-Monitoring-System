@@ -7,6 +7,7 @@ for determining real arrival/departure times (scheduled + delay).
 
 import logging
 import re
+import threading
 import requests
 from typing import Optional, Dict, List
 from datetime import datetime
@@ -410,16 +411,21 @@ class EtrainDelayService:
 
 # Global service instance
 _etrain_delay_service: Optional[EtrainDelayService] = None
+_etrain_delay_service_lock = threading.Lock()
 
 
 def get_etrain_delay_service() -> EtrainDelayService:
     """
-    Get the global etrain delay service instance
+    Get the global etrain delay service instance.
+
+    M-25: Thread-safe double-checked locking pattern.
 
     Returns:
         EtrainDelayService instance
     """
     global _etrain_delay_service
     if _etrain_delay_service is None:
-        _etrain_delay_service = EtrainDelayService()
+        with _etrain_delay_service_lock:
+            if _etrain_delay_service is None:
+                _etrain_delay_service = EtrainDelayService()
     return _etrain_delay_service
