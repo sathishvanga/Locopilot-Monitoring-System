@@ -402,7 +402,7 @@ class Settings(BaseSettings):
     # ==========================================
     # Head Tilt / Sleep Detection Thresholds
     # ==========================================
-    head_down_threshold: float = float(os.getenv("HEAD_DOWN_THRESHOLD", "0.01"))
+    head_down_threshold: float = float(os.getenv("HEAD_DOWN_THRESHOLD", "0.05"))
     sleep_strong_score: int = int(os.getenv("SLEEP_STRONG_SCORE", "6"))
     sleep_strong_duration: int = int(os.getenv("SLEEP_STRONG_DURATION", "0"))
     sleep_moderate_duration: int = int(os.getenv("SLEEP_MODERATE_DURATION", "2"))

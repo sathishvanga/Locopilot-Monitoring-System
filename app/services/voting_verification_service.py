@@ -1316,7 +1316,7 @@ class VotingVerificationService:
 
                 logger.debug(f"[VOTING:WRITING] Frame {frame_num}: "
                             f"book_bbox={[int(x) for x in book_bbox]}, "
-                            f"book_in_region={book_in_region}, hand_near_book={left_near or right_near}")
+                            f"book_in_region={book_in_region}, hand_near_book={left_near or right_near}, head_down={head_down}")
 
                 if left_near or right_near:
                     detected_by_book = True
@@ -1324,8 +1324,21 @@ class VotingVerificationService:
 
         # Method 2: Wrist proximity heuristic (hands close together + head down)
         # Additional check: verify white region (paper/notebook) exists between hands
+        # Guard: wrists must be in lower 70% of person bbox (rejects arms-overhead posture)
+        # Writing happens on a surface — wrists should be at waist/desk level, not above head
         white_ratio = 0.0
-        if not detected_by_book and wrist_dist < 300 and head_down:
+        wrists_in_bbox = False
+        if left_hand_coords and right_hand_coords:
+            px1, py1, px2, py2 = person_bbox[:4]
+            bbox_height = py2 - py1
+            wrist_min_y = py1 + bbox_height * 0.3  # Wrists must be below top 30% of bbox
+            wrists_in_bbox = (left_hand_coords[1] >= wrist_min_y and
+                              right_hand_coords[1] >= wrist_min_y)
+            if not wrists_in_bbox:
+                logger.debug(f"[VOTING:WRITING] Frame {frame_num}: "
+                            f"wrists in upper body zone (left_y={left_hand_coords[1]}, right_y={right_hand_coords[1]}, "
+                            f"wrist_min_y={wrist_min_y:.0f}, bbox=[{py1:.0f},{py2:.0f}]) - NOT writing posture")
+        if not detected_by_book and wrist_dist < 300 and head_down and wrists_in_bbox:
             if left_hand_coords and right_hand_coords:
                 white_ratio = self._check_white_region_between_hands(
                     frame, left_hand_coords, right_hand_coords)
