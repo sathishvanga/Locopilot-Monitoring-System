@@ -124,7 +124,7 @@ def worker_initializer(config: MultiprocessingConfig):
     - Prevent Qt/GUI initialization (Windows compatibility)
     - Set thread counts for Torch and OpenCV
     - Disable OpenCV OpenCL
-    - Preload heavy models (YOLO, YOLOv8-Pose, MediaPipe FaceMesh, Preprocessing Service)
+    - Preload heavy models (YOLO26, YOLO26-Pose, MediaPipe FaceMesh, Preprocessing Service)
     - Set environment variables
 
     Args:
@@ -176,9 +176,9 @@ def worker_initializer(config: MultiprocessingConfig):
                 yolo_model.fuse()
                 logger.info(f"Worker {os.getpid()} YOLO model layers fused for optimized inference")
 
-            # 2. Load YOLOv8-Pose model for body pose estimation
+            # 2. Load YOLO26-Pose model for body pose estimation
             yolo_pose_model_path = config.yolo_pose_model_path
-            logger.info(f"Worker {os.getpid()} loading YOLOv8-Pose model: {yolo_pose_model_path}")
+            logger.info(f"Worker {os.getpid()} loading YOLO26-Pose model: {yolo_pose_model_path}")
             yolo_pose_raw = YOLO(yolo_pose_model_path)
 
             # Move pose model to GPU if configured

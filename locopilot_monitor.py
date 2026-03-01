@@ -1876,8 +1876,8 @@ class LocopilotActivityMonitor:
         return (x1 - margin <= hx <= x2 + margin and
                 y1 - margin <= hy <= y2 + margin)
 
-    # NOTE: detect_pose_per_person removed - replaced by YOLOv8-Pose
-    # NOTE: translate_pose_landmarks removed - not needed with YOLOv8-Pose (native multi-person)
+    # NOTE: detect_pose_per_person removed - replaced by YOLO26-Pose
+    # NOTE: translate_pose_landmarks removed - not needed with YOLO26-Pose (native multi-person)
 
     def validate_pose_landmarks(self, pose_landmarks: Any, min_landmarks: Optional[int] = None, min_visibility: Optional[float] = None) -> bool:
         """Validate that pose landmarks are valid and usable for activity detection.
@@ -2738,10 +2738,10 @@ class LocopilotActivityMonitor:
             person_idx, landmarks, frame_shape, timestamp_sec, backpack_bbox
         )
 
-    # NOTE: detect_multi_person_pose_and_gestures removed - replaced by YOLOv8-Pose
+    # NOTE: detect_multi_person_pose_and_gestures removed - replaced by YOLO26-Pose
 
     def _match_pose_to_roles(self, yolo_pose_results, person_roles):
-        """Match YOLOv8-Pose detections to identified person roles by bounding box IoU.
+        """Match YOLO26-Pose detections to identified person roles by bounding box IoU.
 
         DELEGATION: This method delegates to PersonTracker.match_pose_to_roles().
         Kept for backward compatibility during refactoring transition.
@@ -2752,7 +2752,7 @@ class LocopilotActivityMonitor:
         """Process all detected persons for ALL activity detections (mind diversion, sleep, etc.)
 
         This is the MAIN multi-person processing method that:
-        1. Runs YOLOv8-Pose once to get all persons with keypoints (or uses precomputed results)
+        1. Runs YOLO26-Pose once to get all persons with keypoints (or uses precomputed results)
         2. Matches YOLO detections to person_roles by bounding box IoU
         3. Detects ALL activities for EACH person (mind diversion, sleep, cell phone, writing, etc.)
         4. Returns aggregated results for all persons
@@ -2825,8 +2825,8 @@ class LocopilotActivityMonitor:
         h, w = frame.shape[:2]
         persons_data = {}
 
-        # ============ YOLOV8-POSE: Single inference for all persons ============
-        # Run YOLOv8-Pose once on the full frame to get all persons with keypoints
+        # ============ YOLO26-POSE: Single inference for all persons ============
+        # Run YOLO26-Pose once on the full frame to get all persons with keypoints
         # This replaces the per-person MediaPipe cropping loop for better performance
         # If precomputed_pose_results is provided (from GPU batch inference), use it directly
         if precomputed_pose_results is not None:
@@ -2860,7 +2860,7 @@ class LocopilotActivityMonitor:
             bbox = person_data['bbox']  # [x1, y1, x2, y2]
 
             # Get matched pose keypoints for this person
-            # YOLOv8-Pose provides full-frame coordinates directly (no cropping/translation needed)
+            # YOLO26-Pose provides full-frame coordinates directly (no cropping/translation needed)
             try:
                 has_pose = True
                 translated_landmarks = None
@@ -5085,7 +5085,7 @@ class LocopilotActivityMonitor:
         try:
             # Only close models if they were loaded fresh (not pre-loaded from worker pool)
             if not getattr(self, '_models_preloaded', False):
-                # Close YOLOv8-Pose model
+                # Close YOLO26-Pose model
                 if hasattr(self, 'yolo_pose') and self.yolo_pose is not None:
                     self.yolo_pose = None
 

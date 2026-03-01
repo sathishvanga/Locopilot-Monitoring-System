@@ -27,8 +27,8 @@ mkdir -p uploads
 mkdir -p locopilot_evidence
 
 # Check if YOLO weights exist
-if [ ! -f "yolo11s.pt" ]; then
-    echo "⚠️  YOLO weights (yolo11s.pt) not found!"
+if [ ! -f "yolo26n.pt" ]; then
+    echo "⚠️  YOLO weights (yolo26n.pt) not found!"
     echo "   Please download YOLO weights or the system will download automatically on first use."
 fi
 

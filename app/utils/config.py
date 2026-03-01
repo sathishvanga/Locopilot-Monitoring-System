@@ -81,7 +81,7 @@ class Settings(BaseSettings):
     mp_max_workers: Optional[int] = None  # None = auto-detect (uses min(CPU count, max_workers_cap))
     mp_max_workers_cap: int = 12  # Maximum number of workers (11 cores + slight oversubscription)
     
-    # Model settings - YOLO26 (NMS-free, 43% faster CPU inference than YOLO11)
+    # Model settings - YOLO26 (NMS-free, 43% faster CPU inference)
     # Detection: nano for fast bulk frame processing (~57K frames)
     yolo_weights: str = os.getenv("YOLO_WEIGHTS_PRELOAD", "yolo26n.pt")  # YOLO26 nano for object detection
     yolo_pose_weights: str = os.getenv("YOLO_POSE_WEIGHTS", "yolo26n-pose.pt")  # YOLO26 nano-pose for multi-person pose

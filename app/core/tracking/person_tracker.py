@@ -279,7 +279,7 @@ class PersonTracker:
         person_roles: Dict[int, Dict[str, Any]],
         frame_shape: Optional[Tuple[int, ...]] = None
     ) -> Dict[int, Any]:
-        """Match YOLOv8-Pose detections to identified person roles by bounding box IoU.
+        """Match YOLO26-Pose detections to identified person roles by bounding box IoU.
 
         Enhanced with torso-center fallback for cases where bboxes overlap significantly.
 

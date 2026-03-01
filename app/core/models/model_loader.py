@@ -79,7 +79,7 @@ class ModelLoader:
         from ultralytics import YOLO
 
         if weights_path is None:
-            weights_path = getattr(self.settings, 'yolo_weights', 'yolo11m.pt') if self.settings else 'yolo11m.pt'
+            weights_path = getattr(self.settings, 'yolo_weights', 'yolo26n.pt') if self.settings else 'yolo26n.pt'
 
         self.logger.info(f"Loading YOLO model: {weights_path}")
         model = YOLO(weights_path)
@@ -109,7 +109,7 @@ class ModelLoader:
         from app.services.yolo_pose_adapter import YoloPoseAdapter
 
         if weights_path is None:
-            weights_path = getattr(self.settings, 'yolo_pose_weights', 'yolo11m-pose.pt') if self.settings else 'yolo11m-pose.pt'
+            weights_path = getattr(self.settings, 'yolo_pose_weights', 'yolo26n-pose.pt') if self.settings else 'yolo26n-pose.pt'
 
         if conf_threshold is None:
             conf_threshold = getattr(self.settings, 'yolo_pose_confidence', 0.45) if self.settings else 0.45

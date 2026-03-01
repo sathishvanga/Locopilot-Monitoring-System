@@ -5,7 +5,7 @@ This module provides a MediaPipe-compatible interface for YOLO-Pose results,
 enabling seamless migration from MediaPipe Pose to YOLO-Pose while maintaining
 backward compatibility with existing activity detection logic.
 
-Supports YOLO11-Pose (recommended) and YOLOv8-Pose models.
+Supports YOLO26-Pose models.
 
 YOLO-Pose provides 17 keypoints (COCO format):
     0: nose, 1: left_eye, 2: right_eye, 3: left_ear, 4: right_ear
@@ -179,14 +179,14 @@ class YoloPoseAdapter:
     """Adapter class to convert YOLO-Pose keypoints to MediaPipe-like landmark format.
 
     This enables backward compatibility with existing activity detection logic
-    that was written for MediaPipe Pose. Supports YOLO11-Pose and YOLOv8-Pose.
+    that was written for MediaPipe Pose. Supports YOLO26-Pose.
     
     Model can be configured via YOLO_POSE_WEIGHTS environment variable.
 
     Example:
         adapter = YoloPoseAdapter()  # Uses YOLO_POSE_WEIGHTS env var or default
         # OR specify explicitly:
-        adapter = YoloPoseAdapter(model_path='yolo11m-pose.pt')
+        adapter = YoloPoseAdapter(model_path='yolo26n-pose.pt')
         results = adapter.process(frame)
 
         for person_idx, person_data in results.items():
@@ -201,13 +201,13 @@ class YoloPoseAdapter:
 
         Args:
             model_path: Path to YOLO-Pose weights file. If None, reads from 
-                       YOLO_POSE_WEIGHTS environment variable (default: yolo11m-pose.pt)
+                       YOLO_POSE_WEIGHTS environment variable (default: yolo26n-pose.pt)
             conf_threshold: Minimum confidence threshold for detections
             preloaded_model: Optional pre-loaded YOLO model (for worker reuse)
         """
         # Get model path from config if not provided
         if model_path is None:
-            model_path = os.getenv("YOLO_POSE_WEIGHTS", "yolo11m-pose.pt")
+            model_path = os.getenv("YOLO_POSE_WEIGHTS", "yolo26n-pose.pt")
         
         if preloaded_model is not None:
             # Use pre-loaded model (avoids expensive model loading)

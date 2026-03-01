@@ -88,8 +88,8 @@ class YOLOHandler:
 
     def __init__(
         self,
-        object_model_path: str = 'yolo11m.pt',
-        pose_model_path: str = 'yolo11m-pose.pt',
+        object_model_path: str = 'yolo26n.pt',
+        pose_model_path: str = 'yolo26n-pose.pt',
         device: str = 'cpu',
         imgsz: int = 640,
         preloaded_models: Optional[Dict[str, Any]] = None,
