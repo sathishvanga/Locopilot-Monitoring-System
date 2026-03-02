@@ -593,6 +593,11 @@ class LocopilotActivityMonitor:
         # Suppress coordination failure alerts if both LP and ALP raised hands within this window
         self.hand_gesture_coordination_window = self.settings.hand_gesture_coordination_window if self.settings else 5.0
 
+        # Forward-looking hand gesture coordination tracking
+        self.hand_gesture_forward_window = self.settings.hand_gesture_forward_window if self.settings else 4.0
+        self.hand_gesture_min_raise_count = self.settings.hand_gesture_min_raise_count if self.settings else 2
+        self.pending_hand_gesture_coordination = {}  # {'lp_raised': {'time': T, 'raise_count': N}, ...}
+
         # Activity thresholds: minimum duration and required consecutive frames before recording starts
         # OPTIMIZED FOR 0.5 FPS SAMPLING (1 frame every 2 seconds)
         # CR-004: Built from ACTIVITY_REGISTRY so thresholds stay in sync with activity names
@@ -1255,6 +1260,32 @@ class LocopilotActivityMonitor:
 
         # Check if distance is within threshold
         if distance <= max_distance:
+            # Guard: Reject if wrists are above shoulder level (operating overhead controls, not writing)
+            try:
+                left_shoulder = self.activity_detector.get_keypoint(pose_landmarks, 'left_shoulder')
+                right_shoulder = self.activity_detector.get_keypoint(pose_landmarks, 'right_shoulder')
+                left_wrist_kp = self.activity_detector.get_keypoint(pose_landmarks, 'left_wrist')
+                right_wrist_kp = self.activity_detector.get_keypoint(pose_landmarks, 'right_wrist')
+                if (left_shoulder and right_shoulder and
+                    left_shoulder.visibility > 0.3 and right_shoulder.visibility > 0.3):
+                    avg_shoulder_y = (left_shoulder.y + right_shoulder.y) / 2
+                    # Check if BOTH visible wrists are above shoulder line → operating controls
+                    wrists_above = []
+                    if left_wrist_kp and left_wrist_kp.visibility > 0.3:
+                        wrists_above.append(left_wrist_kp.y < avg_shoulder_y)
+                    if right_wrist_kp and right_wrist_kp.visibility > 0.3:
+                        wrists_above.append(right_wrist_kp.y < avg_shoulder_y)
+                    if wrists_above and all(wrists_above):
+                        self.logger.debug(
+                            f"Person {person_idx}: Wrists above shoulders — operating controls, not writing"
+                        )
+                        person_tracking['start_time'] = None
+                        person_tracking['duration'] = 0.0
+                        person_tracking['consecutive_frames'] = 0
+                        return False
+            except Exception:
+                pass  # If keypoints unavailable, skip this guard
+
             # NEW: Check if head is looking down (required for writing posture)
             head_looking_down = self.activity_detector.detect_head_looking_down(pose_landmarks)
 
@@ -2580,10 +2611,15 @@ class LocopilotActivityMonitor:
 
     def _check_hand_gesture_coordination(self, lp_detected, alp_detected, current_time):
         """
-        Check for hand gesture coordination failures with temporal window support.
+        Forward-looking hand gesture coordination check with pending queue.
 
-        Prevents false positives when both people raise hands within a time window
-        (collaborative discussion) but not in the exact same frame.
+        Instead of flagging violations immediately when one person raises their hand,
+        stores a pending entry with a configurable expiry window (default 4s). Only
+        flags a violation after the window expires without the other person responding
+        AND the initiator showed a repeated waving pattern (raise_count >= min threshold).
+
+        This filters out single-frame transient raises (reaching for controls, drinking)
+        which have raise_count=1, while catching genuine waving gestures (raise_count>=2).
 
         Args:
             lp_detected: LP hand gesture detected in current frame
@@ -2595,43 +2631,52 @@ class LocopilotActivityMonitor:
                 - lp_not_coordinating: True if ALP raised hand but LP failed to coordinate
                 - alp_not_coordinating: True if LP raised hand but ALP failed to coordinate
         """
-        # Get last hand raise times from recent activities
-        lp_last_raise_time = None
-        alp_last_raise_time = None
-
-        for person_idx, activities in self.recent_person_activities.items():
-            if 'lp_hand_raise' in activities:
-                t = activities['lp_hand_raise']
-                if lp_last_raise_time is None or t > lp_last_raise_time:
-                    lp_last_raise_time = t
-            if 'alp_hand_raise' in activities:
-                t = activities['alp_hand_raise']
-                if alp_last_raise_time is None or t > alp_last_raise_time:
-                    alp_last_raise_time = t
-
-        # Helper: Check if both raised hands within coordination window
-        def both_within_window(lp_time, alp_time):
-            if lp_time is None or alp_time is None:
-                return False
-            lp_recent = (current_time - lp_time) <= self.hand_gesture_coordination_window
-            alp_recent = (current_time - alp_time) <= self.hand_gesture_coordination_window
-            return lp_recent and alp_recent
-
-        # Check coordination with temporal window logic
         lp_not_coordinating = False
         alp_not_coordinating = False
 
-        if alp_detected and not lp_detected:
-            # ALP raised hand, LP didn't in current frame
-            # Check if LP raised recently (within window)
-            if not both_within_window(lp_last_raise_time, alp_last_raise_time):
-                lp_not_coordinating = True  # True coordination failure
+        # Step 1: If a pending entry exists and the OTHER person now responds, cancel it
+        if 'lp_raised' in self.pending_hand_gesture_coordination and alp_detected:
+            self.pending_hand_gesture_coordination.pop('lp_raised')
+        if 'alp_raised' in self.pending_hand_gesture_coordination and lp_detected:
+            self.pending_hand_gesture_coordination.pop('alp_raised')
 
+        # Step 2: Update raise_count for active pending entries (track waving pattern)
+        if 'lp_raised' in self.pending_hand_gesture_coordination:
+            if lp_detected:
+                self.pending_hand_gesture_coordination['lp_raised']['raise_count'] += 1
+        if 'alp_raised' in self.pending_hand_gesture_coordination:
+            if alp_detected:
+                self.pending_hand_gesture_coordination['alp_raised']['raise_count'] += 1
+
+        # Step 3: Check expired pending entries
+        min_raise_count = self.hand_gesture_min_raise_count  # default 2
+        for key in list(self.pending_hand_gesture_coordination.keys()):
+            entry = self.pending_hand_gesture_coordination[key]
+            elapsed = current_time - entry['time']
+            if elapsed >= self.hand_gesture_forward_window:
+                # Only flag if initiator showed repeated hand-raising (waving pattern)
+                if entry['raise_count'] >= min_raise_count:
+                    if key == 'lp_raised':
+                        alp_not_coordinating = True
+                    elif key == 'alp_raised':
+                        lp_not_coordinating = True
+                self.pending_hand_gesture_coordination.pop(key)
+
+        # Step 4: New detections → add to pending
         if lp_detected and not alp_detected:
-            # LP raised hand, ALP didn't in current frame
-            # Check if ALP raised recently (within window)
-            if not both_within_window(lp_last_raise_time, alp_last_raise_time):
-                alp_not_coordinating = True  # True coordination failure
+            if 'lp_raised' not in self.pending_hand_gesture_coordination:
+                self.pending_hand_gesture_coordination['lp_raised'] = {
+                    'time': current_time, 'raise_count': 1
+                }
+        if alp_detected and not lp_detected:
+            if 'alp_raised' not in self.pending_hand_gesture_coordination:
+                self.pending_hand_gesture_coordination['alp_raised'] = {
+                    'time': current_time, 'raise_count': 1
+                }
+
+        # Both detected simultaneously → coordination succeeded, clear pending
+        if lp_detected and alp_detected:
+            self.pending_hand_gesture_coordination.clear()
 
         return lp_not_coordinating, alp_not_coordinating
 

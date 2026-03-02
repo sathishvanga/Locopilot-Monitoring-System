@@ -130,6 +130,15 @@ class YOLOHandler:
         else:
             self._load_models(object_model_path, pose_model_path)
 
+        # Always-preprocess flag (bypass brightness check)
+        self.always_preprocess = getattr(settings, 'yolo_always_preprocess', False) if settings else False
+
+        # Zone suppression settings
+        self._configure_zone_suppression(settings)
+
+        # SAHI settings
+        self._configure_sahi(settings)
+
         # Configure confidence thresholds from settings
         self._configure_thresholds(settings)
 
@@ -187,6 +196,126 @@ class YOLOHandler:
         self.dark_frame_brightness_threshold = (
             getattr(settings, 'yolo_dark_frame_brightness_threshold', 0.4) if settings else 0.4
         )
+
+    def _configure_zone_suppression(self, settings: Optional[Any]) -> None:
+        """Configure static zone suppression for fixed-camera FP filtering.
+
+        Args:
+            settings: Settings object with zone suppression configuration
+        """
+        self.zone_suppression_enabled = getattr(settings, 'zone_suppression_enabled', False) if settings else False
+        self.suppressed_classes = set()
+        self.suitcase_suppression_zones = []
+
+        if not self.zone_suppression_enabled:
+            return
+
+        # Parse comma-separated suppressed class names
+        suppress_str = getattr(settings, 'zone_suppress_classes', '') if settings else ''
+        if suppress_str:
+            self.suppressed_classes = {c.strip() for c in suppress_str.split(',') if c.strip()}
+
+        # Parse suitcase suppression zones (JSON list of [x1,y1,x2,y2] normalized coords)
+        zones_str = getattr(settings, 'zone_suppress_suitcase_regions', '') if settings else ''
+        if zones_str:
+            try:
+                import json
+                parsed = json.loads(zones_str)
+                if isinstance(parsed, list):
+                    for zone in parsed:
+                        if isinstance(zone, list) and len(zone) == 4:
+                            self.suitcase_suppression_zones.append(tuple(zone))
+            except (ValueError, TypeError):
+                self.logger.warning(f"[ZONE SUPPRESS] Failed to parse suitcase zones: {zones_str}")
+
+        if self.suppressed_classes or self.suitcase_suppression_zones:
+            self.logger.info(
+                f"[ZONE SUPPRESS] Enabled: suppress_classes={self.suppressed_classes}, "
+                f"suitcase_zones={len(self.suitcase_suppression_zones)}"
+            )
+
+    def _configure_sahi(self, settings: Optional[Any]) -> None:
+        """Configure SAHI (Sliced Aided Hyper Inference) settings.
+
+        Args:
+            settings: Settings object with SAHI configuration
+        """
+        self.sahi_enabled = getattr(settings, 'sahi_enabled', False) if settings else False
+        self.sahi_slice_height = getattr(settings, 'sahi_slice_height', 640) if settings else 640
+        self.sahi_slice_width = getattr(settings, 'sahi_slice_width', 640) if settings else 640
+        self.sahi_overlap_ratio = getattr(settings, 'sahi_overlap_ratio', 0.2) if settings else 0.2
+        self.sahi_postprocess_type = getattr(settings, 'sahi_postprocess_type', 'NMM') if settings else 'NMM'
+        self.sahi_postprocess_match_threshold = getattr(settings, 'sahi_postprocess_match_threshold', 0.5) if settings else 0.5
+
+        # Conditional SAHI import and model caching
+        self._sahi_available = False
+        self._sahi_detection_model = None
+        self._sahi_get_sliced_prediction = None
+        if self.sahi_enabled:
+            try:
+                from sahi import AutoDetectionModel
+                from sahi.predict import get_sliced_prediction
+                self._sahi_available = True
+                self._sahi_get_sliced_prediction = get_sliced_prediction
+                self.logger.info("[SAHI] SAHI library loaded successfully")
+            except ImportError:
+                self.logger.warning("[SAHI] sahi library not installed. Run: pip install sahi")
+
+    def _is_in_suppression_zone(
+        self,
+        xyxy: np.ndarray,
+        frame_shape: Tuple[int, ...],
+        zones: List[Tuple[float, float, float, float]]
+    ) -> bool:
+        """Check if detection center falls within any suppression zone.
+
+        Uses center-point check (not IoU/overlap) for simplicity and speed.
+        For fixed-camera setups, configure zones slightly larger than the
+        expected FP region to account for bbox size variation.
+
+        Args:
+            xyxy: Bounding box [x1, y1, x2, y2] in pixel coords
+            frame_shape: Frame (height, width) for normalization
+            zones: List of (x1, y1, x2, y2) in normalized [0,1] coords
+
+        Returns:
+            True if detection center is inside any zone
+        """
+        if not zones:
+            return False
+
+        h, w = frame_shape[:2]
+        cx = ((xyxy[0] + xyxy[2]) / 2.0) / w
+        cy = ((xyxy[1] + xyxy[3]) / 2.0) / h
+
+        for zx1, zy1, zx2, zy2 in zones:
+            if zx1 <= cx <= zx2 and zy1 <= cy <= zy2:
+                return True
+        return False
+
+    def _is_class_suppressed(self, class_name: str, xyxy: np.ndarray, frame_shape: Tuple[int, ...]) -> bool:
+        """Check if a detection should be suppressed by zone rules.
+
+        Args:
+            class_name: YOLO class name
+            xyxy: Bounding box [x1, y1, x2, y2]
+            frame_shape: Frame (height, width)
+
+        Returns:
+            True if detection should be suppressed
+        """
+        if not self.zone_suppression_enabled:
+            return False
+
+        # Always-suppress classes (e.g., chair)
+        if class_name in self.suppressed_classes:
+            return True
+
+        # Suitcase zone suppression
+        if class_name == 'suitcase' and self.suitcase_suppression_zones:
+            return self._is_in_suppression_zone(xyxy, frame_shape, self.suitcase_suppression_zones)
+
+        return False
 
     def detect_objects(
         self,
@@ -256,6 +385,7 @@ class YOLOHandler:
         }
 
         person_boxes = []
+        frame_shape = frame.shape
 
         for r in results:
             boxes = r.boxes
@@ -265,6 +395,11 @@ class YOLOHandler:
                 xyxy = box.xyxy[0].cpu().numpy()
 
                 class_name = self.object_model.names[cls]
+
+                # Zone suppression: skip suppressed classes/regions
+                if self._is_class_suppressed(class_name, xyxy, frame_shape):
+                    self.logger.debug(f"[ZONE SUPPRESS] Suppressed {class_name} conf={conf:.2f}")
+                    continue
 
                 # Person detection
                 if class_name == 'person' and conf > self.person_confidence:
@@ -312,6 +447,18 @@ class YOLOHandler:
                 frame, pose_landmarks, detections,
                 get_keypoint_func, get_roi_func
             )
+
+        # Stage 3: SAHI sliced inference for small objects
+        if self.sahi_enabled and self._sahi_available and detections['person']:
+            sahi_dets = self.detect_objects_sahi(frame, detections['person'])
+            for key in ('cell_phone', 'book', 'cup_bottle'):
+                for sahi_box in sahi_dets.get(key, []):
+                    is_dup = any(
+                        self._calculate_iou(sahi_box, existing) > 0.5
+                        for existing in detections.get(key, [])
+                    )
+                    if not is_dup:
+                        detections[key].append(sahi_box)
 
         return detections
 
@@ -699,7 +846,8 @@ class YOLOHandler:
                 for _ in batch_frames:
                     all_detections.append({
                         'person': [], 'cell_phone': [], 'book': [],
-                        'backpack': [], 'roi_detections': [], 'roi_boxes': []
+                        'backpack': [], 'cup_bottle': [],
+                        'roi_detections': [], 'roi_boxes': []
                     })
                 continue
 
@@ -709,12 +857,14 @@ class YOLOHandler:
                     'cell_phone': [],
                     'book': [],
                     'backpack': [],
+                    'cup_bottle': [],
                     'roi_detections': [],
                     'roi_boxes': []
                 }
 
                 person_boxes = []
                 pending_books = []
+                frame_shape = frame.shape
 
                 if results.boxes is not None:
                     for box in results.boxes:
@@ -723,6 +873,10 @@ class YOLOHandler:
                         xyxy = box.xyxy[0].cpu().numpy()
 
                         class_name = self.object_model.names[cls]
+
+                        # Zone suppression: skip suppressed classes/regions
+                        if self._is_class_suppressed(class_name, xyxy, frame_shape):
+                            continue
 
                         if class_name == 'person' and conf > self.person_confidence:
                             detections['person'].append(xyxy)
@@ -747,6 +901,20 @@ class YOLOHandler:
                         detections['book'].append(book_xyxy)
 
                 all_detections.append(detections)
+
+        # SAHI pass: run sliced inference on person crops for small object detection
+        if self.sahi_enabled and self._sahi_available:
+            for idx, (frame, dets) in enumerate(zip(frames, all_detections)):
+                if dets.get('person'):
+                    sahi_dets = self.detect_objects_sahi(frame, dets['person'])
+                    for key in ('cell_phone', 'book', 'cup_bottle'):
+                        for sahi_box in sahi_dets.get(key, []):
+                            is_dup = any(
+                                self._calculate_iou(sahi_box, existing) > 0.5
+                                for existing in dets.get(key, [])
+                            )
+                            if not is_dup:
+                                dets.setdefault(key, []).append(sahi_box)
 
         self.logger.debug(
             f"[GPU BATCH] detect_objects_batch complete: {len(all_detections)} results"
@@ -843,15 +1011,32 @@ class YOLOHandler:
         gray = cv2.cvtColor(sample, cv2.COLOR_BGR2GRAY) if len(sample.shape) == 3 else sample
         brightness = float(np.mean(gray)) / 255.0
 
-        if brightness >= self.dark_frame_brightness_threshold:
-            return frames  # Well-lit, no preprocessing needed
+        is_well_lit = brightness >= self.dark_frame_brightness_threshold
 
-        self.logger.debug(
-            f"[IR PREPROCESS] Dark frames detected (brightness={brightness:.2f}), "
-            f"applying CLAHE+gamma for YOLO"
-        )
+        if not self.always_preprocess and is_well_lit:
+            return frames  # Well-lit and always_preprocess disabled, no preprocessing needed
 
         try:
+            # Well-lit + always_preprocess: lightweight pipeline (mild CLAHE only)
+            # Dark frames: full pipeline (CLAHE + gamma + noise reduction)
+            if self.always_preprocess and is_well_lit:
+                self.logger.debug(
+                    f"[IR PREPROCESS] Well-lit always_preprocess (brightness={brightness:.2f}), "
+                    f"applying lightweight CLAHE only"
+                )
+                clahe = cv2.createCLAHE(clipLimit=1.5, tileGridSize=(8, 8))
+                enhanced = []
+                for frame in frames:
+                    lab = cv2.cvtColor(frame, cv2.COLOR_BGR2LAB)
+                    l, a, b = cv2.split(lab)
+                    l = clahe.apply(l)
+                    enhanced.append(cv2.cvtColor(cv2.merge([l, a, b]), cv2.COLOR_LAB2BGR))
+                return enhanced
+
+            self.logger.debug(
+                f"[IR PREPROCESS] Dark frames (brightness={brightness:.2f}), "
+                f"applying full CLAHE+gamma for YOLO"
+            )
             enhanced = []
             for frame in frames:
                 rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
@@ -864,6 +1049,131 @@ class YOLOHandler:
                 f"[IR PREPROCESS] Preprocessing failed, using original frames: {e}"
             )
             return frames
+
+    def detect_objects_sahi(
+        self,
+        frame: np.ndarray,
+        person_boxes: List[np.ndarray]
+    ) -> Dict[str, List]:
+        """Run SAHI sliced inference on person ROI crops for small object detection.
+
+        For each detected person, crops with 20% margin and runs SAHI sliced
+        prediction to detect small objects (cell_phone, book, cup/bottle) that
+        standard YOLO misses at stride-32.
+
+        Args:
+            frame: Full BGR frame
+            person_boxes: List of person bounding boxes [x1, y1, x2, y2]
+
+        Returns:
+            Dictionary with small object detections:
+                - 'cell_phone': List of bounding boxes
+                - 'book': List of bounding boxes
+                - 'cup_bottle': List of bounding boxes
+        """
+        sahi_detections = {
+            'cell_phone': [],
+            'book': [],
+            'cup_bottle': []
+        }
+
+        if not self._sahi_available or not person_boxes:
+            return sahi_detections
+
+        get_sliced_prediction = self._sahi_get_sliced_prediction
+        if get_sliced_prediction is None:
+            return sahi_detections
+
+        try:
+            # Lazily create and cache SAHI detection model on first use
+            if self._sahi_detection_model is None:
+                from sahi import AutoDetectionModel
+                self._sahi_detection_model = AutoDetectionModel.from_pretrained(
+                    model_type='ultralytics',
+                    model=self.object_model,
+                    confidence_threshold=min(self.cell_phone_confidence, self.book_confidence, 0.20),
+                    device=self.device
+                )
+                self.logger.info("[SAHI] Detection model wrapper created and cached")
+            detection_model = self._sahi_detection_model
+
+            h, w = frame.shape[:2]
+            sahi_target_classes = {'cell phone', 'book', 'cup', 'bottle'}
+
+            for person_box in person_boxes:
+                px1, py1, px2, py2 = person_box
+                # Add 20% margin around person bbox
+                pw, ph = px2 - px1, py2 - py1
+                margin_x, margin_y = int(pw * 0.2), int(ph * 0.2)
+                crop_x1 = max(0, int(px1) - margin_x)
+                crop_y1 = max(0, int(py1) - margin_y)
+                crop_x2 = min(w, int(px2) + margin_x)
+                crop_y2 = min(h, int(py2) + margin_y)
+
+                crop = frame[crop_y1:crop_y2, crop_x1:crop_x2]
+                if crop.size == 0:
+                    continue
+
+                result = get_sliced_prediction(
+                    crop,
+                    detection_model,
+                    slice_height=self.sahi_slice_height,
+                    slice_width=self.sahi_slice_width,
+                    overlap_height_ratio=self.sahi_overlap_ratio,
+                    overlap_width_ratio=self.sahi_overlap_ratio,
+                    postprocess_type=self.sahi_postprocess_type,
+                    postprocess_match_threshold=self.sahi_postprocess_match_threshold,
+                    verbose=0
+                )
+
+                for pred in result.object_prediction_list:
+                    class_name = pred.category.name
+                    conf = pred.score.value
+
+                    if class_name not in sahi_target_classes:
+                        continue
+
+                    # Translate crop coordinates back to full frame
+                    bbox = pred.bbox
+                    gx1 = bbox.minx + crop_x1
+                    gy1 = bbox.miny + crop_y1
+                    gx2 = bbox.maxx + crop_x1
+                    gy2 = bbox.maxy + crop_y1
+                    global_xyxy = np.array([gx1, gy1, gx2, gy2])
+
+                    if class_name == 'cell phone' and conf > self.cell_phone_confidence:
+                        if self.validate_object_aspect_ratio(global_xyxy, 'cell phone'):
+                            sahi_detections['cell_phone'].append(global_xyxy)
+                            self.logger.debug(
+                                f"[SAHI] cell_phone detected conf={conf:.2f} bbox={global_xyxy}"
+                            )
+                    elif class_name == 'book' and conf > self.book_confidence:
+                        if self.validate_object_aspect_ratio(global_xyxy, 'book'):
+                            sahi_detections['book'].append(global_xyxy)
+                            self.logger.debug(
+                                f"[SAHI] book detected conf={conf:.2f} bbox={global_xyxy}"
+                            )
+                    elif class_name in ('cup', 'bottle'):
+                        floor_conf = getattr(self.settings, 'eating_drinking_cup_floor_confidence', 0.20) if self.settings else 0.20
+                        if conf > floor_conf:
+                            sahi_detections['cup_bottle'].append(global_xyxy)
+                            self.logger.debug(
+                                f"[SAHI] {class_name} detected conf={conf:.2f} bbox={global_xyxy}"
+                            )
+
+        except Exception as e:
+            self.logger.warning(f"[SAHI] Sliced inference failed: {e}")
+
+        total = sum(len(v) for v in sahi_detections.values())
+        if total > 0:
+            self.logger.info(
+                f"[SAHI] Found {total} small objects: "
+                f"cell_phone={len(sahi_detections['cell_phone'])}, "
+                f"book={len(sahi_detections['book'])}, "
+                f"cup_bottle={len(sahi_detections['cup_bottle'])}"
+            )
+
+        return sahi_detections
 
     def process_batch(
         self,
@@ -1032,6 +1342,32 @@ class YOLOHandler:
         width = xyxy[2] - xyxy[0]
         height = xyxy[3] - xyxy[1]
         return width * height
+
+    @staticmethod
+    def _calculate_iou(box1, box2) -> float:
+        """Calculate Intersection over Union between two bounding boxes.
+
+        Args:
+            box1: First bbox [x1, y1, x2, y2]
+            box2: Second bbox [x1, y1, x2, y2]
+
+        Returns:
+            IoU value between 0.0 and 1.0
+        """
+        x1 = max(float(box1[0]), float(box2[0]))
+        y1 = max(float(box1[1]), float(box2[1]))
+        x2 = min(float(box1[2]), float(box2[2]))
+        y2 = min(float(box1[3]), float(box2[3]))
+
+        intersection = max(0, x2 - x1) * max(0, y2 - y1)
+        if intersection == 0:
+            return 0.0
+
+        area1 = (float(box1[2]) - float(box1[0])) * (float(box1[3]) - float(box1[1]))
+        area2 = (float(box2[2]) - float(box2[0])) * (float(box2[3]) - float(box2[1]))
+        union = area1 + area2 - intersection
+
+        return intersection / union if union > 0 else 0.0
 
     @staticmethod
     def get_roi_around_keypoint(

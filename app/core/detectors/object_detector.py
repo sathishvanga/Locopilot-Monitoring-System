@@ -169,6 +169,15 @@ class ObjectDetector:
             getattr(settings, 'yolo_dark_frame_brightness_threshold', 0.4) if settings else 0.4
         )
 
+        # Always-preprocess flag (Phase 1 SOTA: bypass brightness check)
+        handler.always_preprocess = getattr(settings, 'yolo_always_preprocess', False) if settings else False
+
+        # Zone suppression (Phase 1 SOTA: fixed-camera FP filtering)
+        handler._configure_zone_suppression(settings)
+
+        # SAHI (Phase 1 SOTA: sliced inference for small objects)
+        handler._configure_sahi(settings)
+
         # Cache for frame results
         handler._cached_frame_objects = None
         handler._cached_frame_time = 0.0

@@ -216,6 +216,14 @@ class Settings(BaseSettings):
     # Suppress coordination failure alerts if both LP and ALP raised hands within this window
     hand_gesture_coordination_window: float = float(os.getenv("HAND_GESTURE_COORDINATION_WINDOW", "5.0"))
 
+    # Forward-looking hand gesture coordination window (seconds)
+    # When one person raises hand, wait this long for the other to respond before flagging violation
+    hand_gesture_forward_window: float = float(os.getenv("HAND_GESTURE_FORWARD_WINDOW", "4.0"))
+
+    # Minimum raise count to confirm waving gesture (raise-down-raise pattern)
+    # At 0.5fps, 2 means hand must be raised in at least 2 frames within the window
+    hand_gesture_min_raise_count: int = int(os.getenv("HAND_GESTURE_MIN_RAISE_COUNT", "2"))
+
     # Temporal suppression window (seconds)
     # Suppress hand gestures for this duration after detecting a work activity (writing, packing, cell phone)
     temporal_suppression_window: float = float(os.getenv("TEMPORAL_SUPPRESSION_WINDOW", "10.0"))
@@ -263,6 +271,7 @@ class Settings(BaseSettings):
     sleep_head_tilt_threshold: float = float(os.getenv("SLEEP_HEAD_TILT_THRESH", "-155"))
     sleep_nose_y_norm_threshold: float = float(os.getenv("SLEEP_NOSE_Y_NORM_THRESH", "0.30"))
     sleep_score_threshold: int = int(os.getenv("SLEEP_SCORE_THRESH", "5"))
+    sleep_reclined_posture_score: int = int(os.getenv("SLEEP_RECLINED_POSTURE_SCORE", "5"))  # Score boost for reclined posture (torso elongated + shoulders compressed)
 
     # Baseline calibration for camera-angle adaptation
     sleep_baseline_enabled: bool = os.getenv("SLEEP_BASELINE_ENABLED", "true").lower() == "true"
@@ -316,7 +325,7 @@ class Settings(BaseSettings):
     sleep_overhead_nose_y_threshold: float = float(os.getenv("SLEEP_OVERHEAD_NOSE_Y_THRESHOLD", "0.10"))
 
     # Haar Cascade Eye Closure Detection
-    haar_eye_detection_enabled: bool = bool(int(os.getenv("HAAR_EYE_DETECTION_ENABLED", "1")))
+    haar_eye_detection_enabled: bool = bool(int(os.getenv("HAAR_EYE_DETECTION_ENABLED", "0")))
     haar_eye_closed_consecutive_frames: int = int(os.getenv("HAAR_EYE_CLOSED_FRAMES", "3"))
     haar_eye_roi_padding: float = float(os.getenv("HAAR_EYE_ROI_PADDING", "0.4"))
     haar_eye_scale_factor: float = float(os.getenv("HAAR_EYE_SCALE_FACTOR", "1.1"))
@@ -329,6 +338,7 @@ class Settings(BaseSettings):
     yolo_pose_sleep_confidence: float = float(os.getenv("YOLO_POSE_SLEEP_CONFIDENCE", "0.30"))
 
     # IR/dark frame preprocessing for YOLO detection
+    yolo_always_preprocess: bool = bool(int(os.getenv("YOLO_ALWAYS_PREPROCESS", "1")))  # Apply preprocessing to ALL frames (not just dark)
     yolo_dark_frame_brightness_threshold: float = float(os.getenv("YOLO_DARK_BRIGHTNESS_THRESH", "0.4"))
 
     # No-pose sleep detection (for IR mode where YOLO pose fails)
@@ -372,13 +382,30 @@ class Settings(BaseSettings):
     # YOLO Confidence Thresholds
     # ==========================================
     yolo_person_confidence: float = float(os.getenv("YOLO_PERSON_CONFIDENCE", "0.5"))
-    yolo_bag_confidence: float = float(os.getenv("YOLO_BAG_CONFIDENCE", "0.45"))
+    yolo_bag_confidence: float = float(os.getenv("YOLO_BAG_CONFIDENCE", "0.35"))
     yolo_bag_log_confidence: float = float(os.getenv("YOLO_BAG_LOG_CONFIDENCE", "0.25"))
     yolo_book_confidence: float = float(os.getenv("YOLO_BOOK_CONFIDENCE", "0.4"))
     yolo_cell_phone_confidence: float = float(os.getenv("YOLO_CELL_PHONE_CONFIDENCE", "0.3"))
 
     # Cell phone detection confidence threshold (activity-level, distinct from YOLO detection threshold)
     cell_phone_confidence: float = float(os.getenv("CELL_PHONE_CONFIDENCE", "0.40"))
+
+    # ==========================================
+    # Static Zone Suppression (fixed-camera FP filtering)
+    # ==========================================
+    zone_suppression_enabled: bool = bool(int(os.getenv("ZONE_SUPPRESSION_ENABLED", "1")))
+    zone_suppress_classes: str = os.getenv("ZONE_SUPPRESS_CLASSES", "chair")  # Comma-separated classes to always ignore
+    zone_suppress_suitcase_regions: str = os.getenv("ZONE_SUPPRESS_SUITCASE_REGIONS", "")  # JSON list of [x1,y1,x2,y2] normalized coords
+
+    # ==========================================
+    # SAHI (Sliced Aided Hyper Inference) for Small Object Detection
+    # ==========================================
+    sahi_enabled: bool = bool(int(os.getenv("SAHI_ENABLED", "0")))  # Opt-in, requires `pip install sahi`
+    sahi_slice_height: int = int(os.getenv("SAHI_SLICE_HEIGHT", "640"))
+    sahi_slice_width: int = int(os.getenv("SAHI_SLICE_WIDTH", "640"))
+    sahi_overlap_ratio: float = float(os.getenv("SAHI_OVERLAP_RATIO", "0.2"))
+    sahi_postprocess_type: str = os.getenv("SAHI_POSTPROCESS_TYPE", "NMM")
+    sahi_postprocess_match_threshold: float = float(os.getenv("SAHI_POSTPROCESS_MATCH_THRESHOLD", "0.5"))
 
     # ==========================================
     # Wrist/Elbow Detection Thresholds

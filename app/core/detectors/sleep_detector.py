@@ -1017,6 +1017,12 @@ class SleepDetector:
             haar_boost = getattr(self.settings, 'haar_eye_score_boost', 5) if self.settings else 5
             sleep_score += haar_boost
 
+        # Reclined posture boost (overhead-optimized signal)
+        is_reclined_posture = is_torso_elongated and is_shoulders_compressed
+        if is_reclined_posture:
+            reclined_score = getattr(self.settings, 'sleep_reclined_posture_score', 5) if self.settings else 5
+            sleep_score += reclined_score
+
         score_thresh = getattr(self.settings, 'sleep_score_threshold', 5) if self.settings else 5
         sleep_indicators_met = sleep_score >= score_thresh
 
@@ -1043,10 +1049,13 @@ class SleepDetector:
             'sleep_state': current_sleep_state,
             'haar_eye_closed': haar_eye_closed,
             'haar_eye_info': haar_result,
+            'is_reclined_posture': is_reclined_posture,
+            'is_torso_elongated': is_torso_elongated,
+            'is_shoulders_compressed': is_shoulders_compressed,
         }
 
-        # Hard gate: head drop OR haar eye closure must be detected
-        if not head_drop_detected and not haar_eye_closed:
+        # Hard gate: head drop OR haar eye closure OR reclined posture must be detected
+        if not head_drop_detected and not haar_eye_closed and not is_reclined_posture:
             tracking['pose_sleep_start'] = None
             tracking['pose_sleep_duration'] = 0
             return False, False, debug_info
