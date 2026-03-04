@@ -8,6 +8,14 @@ mediapipe==0.10.21
 # Ultralytics YOLO for object detection
 ultralytics>=8.0.0
 
+# RTMPose via rtmlib (enabled via POSE_MODEL=rtmpose)
+# Provides 75.8 AP vs YOLO26n-Pose's 57.2 AP for keypoint estimation
+rtmlib>=0.0.12
+# onnxruntime-gpu includes CUDA/TensorRT providers — install INSTEAD of onnxruntime
+# If both are installed, uninstall both then install only onnxruntime-gpu:
+#   pip uninstall -y onnxruntime onnxruntime-gpu && pip install onnxruntime-gpu
+onnxruntime-gpu>=1.17.0
+
 # NumPy - using version compatible with both opencv and mediapipe
 numpy>=1.26.0,<2.0.0
 

@@ -26,6 +26,7 @@ from app.core.tracking import PersonTracker
 from app.core.visualization import FrameAnnotator
 from app.core.activity_tracker import ActivityTracker, ActivityConfig as ExtractedActivityConfig
 from app.core.evidence_manager import EvidenceManager
+from app.services.backpack_persistence_tracker import BackpackPersistenceTracker
 
 
 # ---------------------------------------------------------------------------
@@ -447,6 +448,10 @@ class LocopilotActivityMonitor:
         self.BOOK_PERSON_MARGIN = settings.book_person_margin if settings else 150
         self.PERSON_BOOK_OVERLAP_MARGIN = settings.person_book_overlap_margin if settings else 250
 
+        # Object detection frame saving (debug: save frames with accepted non-person detections)
+        self.save_object_detection_frames = settings.save_object_detection_frames if settings else False
+        self._object_detections_dir_created = False
+
         # Pose Validation
         self.MIN_POSE_LANDMARKS = settings.min_pose_landmarks if settings else 10
         self.MIN_POSE_VISIBILITY = settings.min_pose_visibility if settings else 0.3
@@ -486,10 +491,23 @@ class LocopilotActivityMonitor:
                 self.yolo_model.fuse()
                 self.logger.info("YOLO model layers fused for optimized inference")
 
-            # YOLO-Pose for body pose estimation (replaces MediaPipe Pose)
-            self.logger.info(f"Loading YOLO-Pose model: {yolo_pose_weights}")
-            from app.services.yolo_pose_adapter import YoloPoseAdapter
-            self.yolo_pose = YoloPoseAdapter(model_path=yolo_pose_weights, conf_threshold=yolo_pose_conf)
+            # Pose model: YOLO-Pose or RTMPose (feature-flagged via POSE_MODEL env var)
+            pose_backend = settings.pose_model_backend if settings else 'yolo'
+            if pose_backend == 'rtmpose':
+                from app.services.rtmpose_adapter import RTMPoseAdapter
+                yolo_device_str = str(settings.yolo_device) if settings else 'cpu'
+                rtm_device = 'cuda' if yolo_device_str not in ('cpu', '') else 'cpu'
+                rtm_mode = settings.rtmpose_mode if settings else 'balanced'
+                rtm_backend = settings.rtmpose_backend if settings else 'onnxruntime'
+                self.logger.info(f"Loading RTMPose: mode={rtm_mode}, device={rtm_device}")
+                self.yolo_pose = RTMPoseAdapter(
+                    conf_threshold=yolo_pose_conf, device=rtm_device,
+                    mode=rtm_mode, backend=rtm_backend,
+                )
+            else:
+                self.logger.info(f"Loading YOLO-Pose model: {yolo_pose_weights}")
+                from app.services.yolo_pose_adapter import YoloPoseAdapter
+                self.yolo_pose = YoloPoseAdapter(model_path=yolo_pose_weights, conf_threshold=yolo_pose_conf)
 
             self.logger.info("Initializing MediaPipe FaceMesh...")
             # Keep MediaPipe references for backward compatibility with landmark constants
@@ -569,6 +587,14 @@ class LocopilotActivityMonitor:
             yolo_imgsz=self.yolo_imgsz,
             yolo_device=self.yolo_device,
             cell_phone_confidence=self.cell_phone_confidence
+        )
+
+        # Initialize BackpackPersistenceTracker (bridges short YOLO detection gaps)
+        self.backpack_tracker = BackpackPersistenceTracker(
+            settings=self.settings,
+            yolo_handler=self.object_detector.yolo_handler,
+            preprocessing_service=self.preprocessing_service,
+            logger=self.logger,
         )
 
         # Initialize FrameAnnotator (extracted module for frame visualization)
@@ -1449,22 +1475,28 @@ class LocopilotActivityMonitor:
             Format matches self.yolo_pose.process() output:
             {person_idx: {'bbox': [...], 'bbox_confidence': float, 'keypoints': YoloPoseLandmarks}}
         """
-        # Import at method level (not inside loop)
-        from app.services.yolo_pose_adapter import YoloPoseLandmarks, PersonKeypoints
-
         if not frames:
             return []
 
         effective_conf = conf_threshold if conf_threshold is not None else self.yolo_pose.conf_threshold
         self.logger.debug(f"[GPU BATCH] detect_poses_batch: {len(frames)} frames, batch_size={batch_size}, conf={effective_conf}")
-        all_poses = []
 
-        # Process frames in batches
+        # Delegate to adapter's process_batch (works for both YoloPoseAdapter and RTMPoseAdapter)
+        if hasattr(self.yolo_pose, 'process_batch'):
+            all_poses = self.yolo_pose.process_batch(
+                frames, batch_size=batch_size, conf_threshold=effective_conf, device=self.yolo_device
+            )
+            self.logger.debug(f"[GPU BATCH] detect_poses_batch complete: {len(all_poses)} results")
+            return all_poses
+
+        # Fallback: legacy per-frame processing
+        from app.services.yolo_pose_adapter import YoloPoseLandmarks, PersonKeypoints
+
+        all_poses = []
         for batch_start in range(0, len(frames), batch_size):
             batch_frames = frames[batch_start:batch_start + batch_size]
 
             try:
-                # Run batch inference on pose model with device parameter
                 batch_results = self.yolo_pose.model(
                     batch_frames,
                     verbose=False,
@@ -1473,12 +1505,10 @@ class LocopilotActivityMonitor:
                 )
             except Exception as e:
                 self.logger.error(f"[GPU BATCH] Pose detection failed for batch starting at {batch_start}: {e}")
-                # Fallback: return empty poses for this batch
                 for _ in batch_frames:
                     all_poses.append({})
                 continue
 
-            # Process results for each frame in batch
             for frame_idx, (frame, results) in enumerate(zip(batch_frames, batch_results)):
                 persons = {}
 
@@ -3368,14 +3398,20 @@ class LocopilotActivityMonitor:
                         )
 
                 # Method 2: Wrist/Elbow proximity heuristic (temporal - requires sustained duration)
-                # DEBUG: Log that we're checking writing detection
-                self.logger.debug(f"Person {person_idx}: Calling writing detection (frame {frame_number})")
-                writing_detected_by_wrist = self.detect_writing_by_wrist_proximity(
-                    translated_landmarks,
-                    frame.shape,
-                    person_idx,
-                    timestamp_sec
-                )
+                # Skip for LP/ALP — their normal control-operating posture (hands together, looking forward/down)
+                # triggers persistent FPs. Writing is still caught by Method 1 (book+hand) if a book is visible.
+                current_role = person_data.get('role', 'UNKNOWN')
+                if current_role in ('LP', 'ALP'):
+                    self.logger.debug(f"Person {person_idx}: Skipping wrist proximity writing check for {current_role} role")
+                    writing_detected_by_wrist = False
+                else:
+                    self.logger.debug(f"Person {person_idx}: Calling writing detection (frame {frame_number})")
+                    writing_detected_by_wrist = self.detect_writing_by_wrist_proximity(
+                        translated_landmarks,
+                        frame.shape,
+                        person_idx,
+                        timestamp_sec
+                    )
                 self.logger.debug(f"Person {person_idx}: Writing detection result = {writing_detected_by_wrist}")
 
                 # Combine all detection methods (book+hand, wrist/elbow proximity, book+posture fallback)
@@ -3473,18 +3509,16 @@ class LocopilotActivityMonitor:
                     region_margin = self.activity_thresholds['packing_bags'].get('region_margin', 100)
                     proximity_margin = self.activity_thresholds['packing_bags']['margin']
 
-                    # ============ SIMPLIFIED PACKING DETECTION ============
-                    # Core logic: If wrist is inside/near backpack bbox -> Packing detected!
-                    # M-01 FIX: Track the best match across ALL backpacks instead of
-                    # stopping at the first match. Priority: wrist-inside > motion-confirmed.
-                    # Within the same priority, prefer the closest backpack (smallest distance).
+                    # ============ PACKING DETECTION (motion-required) ============
+                    # All paths require motion analysis to confirm actual hand-bag interaction.
+                    # Spatial proximity alone (wrist inside bbox) is not enough — static cabin
+                    # equipment misclassified as backpack would trigger FPs without motion check.
                     packing_motion_analysis = None
-                    packing_detected_simple = False
-                    best_pack_type = None        # 'wrist_inside' | 'motion' | None
                     best_pack_distance = float('inf')
                     best_pack_bbox = None
                     best_pack_motion = None
                     best_pack_debug = None
+                    best_pack_confirmed = False
 
                     for backpack_bbox in detections['backpack']:
                         # Check if backpack is in this person's region (wider margin)
@@ -3495,7 +3529,7 @@ class LocopilotActivityMonitor:
                         if not backpack_in_person_region:
                             continue
 
-                        # ===== SIMPLIFIED CHECK: Is wrist INSIDE backpack bbox? =====
+                        # Check if wrist is inside or near backpack bbox
                         right_inside, right_dist = self.activity_detector.is_wrist_inside_backpack(
                             right_hand_coords, backpack_bbox, margin=40
                         )
@@ -3506,6 +3540,14 @@ class LocopilotActivityMonitor:
                         wrist_inside_backpack = right_inside or left_inside
                         closest_distance = min(right_dist, left_dist)
 
+                        hand_near_backpack = wrist_inside_backpack or (
+                            self.check_hand_object_interaction(right_hand_coords, backpack_bbox, proximity_margin) or
+                            self.check_hand_object_interaction(left_hand_coords, backpack_bbox, proximity_margin)
+                        )
+
+                        if not hand_near_backpack:
+                            continue
+
                         cur_debug = {
                             'right_wrist_inside': right_inside,
                             'left_wrist_inside': left_inside,
@@ -3515,49 +3557,30 @@ class LocopilotActivityMonitor:
                             'backpack_bbox': list(backpack_bbox[:4])
                         }
 
-                        # ===== PRIMARY: Wrist inside backpack bbox =====
-                        if wrist_inside_backpack:
-                            if best_pack_type != 'wrist_inside' or closest_distance < best_pack_distance:
-                                best_pack_type = 'wrist_inside'
-                                best_pack_distance = closest_distance
-                                best_pack_bbox = backpack_bbox
-                                best_pack_debug = cur_debug
-                            continue  # Check remaining backpacks for a closer match
-
-                        # ===== FALLBACK: Hand near backpack with motion analysis =====
-                        # Only consider if we have not found a wrist-inside match yet
-                        if best_pack_type == 'wrist_inside':
-                            continue
-
-                        hand_near_backpack = (
-                            self.check_hand_object_interaction(right_hand_coords, backpack_bbox, proximity_margin) or
-                            self.check_hand_object_interaction(left_hand_coords, backpack_bbox, proximity_margin)
+                        # Always require motion analysis to confirm interaction
+                        cur_motion = self.analyze_packing_hand_motion(
+                            person_idx, translated_landmarks, frame.shape, timestamp_sec, backpack_bbox
                         )
+                        motion_confirmed = cur_motion['packing_motion_detected']
+                        sustained_proximity = cur_motion.get('sustained_proximity', False) and \
+                                             cur_motion.get('sustained_proximity_time', False)
 
-                        if hand_near_backpack:
-                            cur_motion = self.analyze_packing_hand_motion(
-                                person_idx, translated_landmarks, frame.shape, timestamp_sec, backpack_bbox
-                            )
-                            motion_confirmed = cur_motion['packing_motion_detected']
-                            sustained_proximity = cur_motion.get('sustained_proximity', False) and \
-                                                 cur_motion.get('sustained_proximity_time', False)
-
-                            if motion_confirmed or sustained_proximity:
-                                if best_pack_type != 'motion' or closest_distance < best_pack_distance:
-                                    best_pack_type = 'motion'
-                                    best_pack_distance = closest_distance
-                                    best_pack_bbox = backpack_bbox
-                                    best_pack_motion = cur_motion
-                                    best_pack_debug = cur_debug
+                        if (motion_confirmed or sustained_proximity) and closest_distance < best_pack_distance:
+                            best_pack_confirmed = True
+                            best_pack_distance = closest_distance
+                            best_pack_bbox = backpack_bbox
+                            best_pack_motion = cur_motion
+                            best_pack_debug = cur_debug
 
                     # ===== APPLY BEST MATCH RESULT AFTER LOOP =====
                     if best_pack_debug is not None:
                         person_debug_info['packing_wrist_check'] = best_pack_debug
 
-                    if best_pack_type == 'wrist_inside':
-                        packing_detected_simple = True
+                    if best_pack_confirmed:
+                        packing_motion_analysis = best_pack_motion
+                        person_debug_info['packing_motion'] = packing_motion_analysis
                         self.logger.info(
-                            f"PACKING DETECTED (SIMPLE): Wrist inside backpack bbox! "
+                            f"PACKING DETECTED (MOTION): Hand interacting with backpack! "
                             f"Distance: {best_pack_distance:.0f}px, "
                             f"Backpack: {list(best_pack_bbox[:4])}"
                         )
@@ -3573,23 +3596,8 @@ class LocopilotActivityMonitor:
                             self.recent_person_activities[person_idx] = {}
                         self.recent_person_activities[person_idx]['packing_bags'] = timestamp_sec
 
-                    elif best_pack_type == 'motion':
-                        packing_motion_analysis = best_pack_motion
-                        person_debug_info['packing_motion'] = packing_motion_analysis
-                        should_trigger = self.update_per_person_detection(
-                            person_idx, 'packing_bags', True, timestamp_sec
-                        )
-                        if should_trigger and voting_collector is not None:
-                            voting_collector.add('packing_bags', person_idx, list(bbox))
-                            person_activities['packing_bags'] = True
-                        else:
-                            person_activities['packing_bags'] = should_trigger
-                        if person_idx not in self.recent_person_activities:
-                            self.recent_person_activities[person_idx] = {}
-                        self.recent_person_activities[person_idx]['packing_bags'] = timestamp_sec
-
                     else:
-                        # No match found across all backpacks - reset counter
+                        # No confirmed interaction with any backpack - reset counter
                         should_trigger = self.update_per_person_detection(
                             person_idx, 'packing_bags', False, timestamp_sec
                         )
@@ -4404,6 +4412,9 @@ class LocopilotActivityMonitor:
                 else:
                     detections = self.object_detector.detect_objects(frame, None, use_pose_guided=False)
 
+            # STEP 2b: Backpack persistence — recover missed backpack/suitcase detections
+            self.backpack_tracker.update_and_recover(frame, detections, timestamp_sec)
+
             # STEP 3: Identify person roles and count people
             people_count = len(detections['person'])
             if people_count == 0:
@@ -4662,6 +4673,24 @@ class LocopilotActivityMonitor:
 
                 except Exception as e:
                     self.logger.error(f"[{timestamp}] Error saving frame {frame_idx}: {e}")
+
+            # Save annotated frames when non-person objects are accepted (debug feature)
+            if self.save_object_detection_frames and self.run_dir:
+                obj_classes = ['backpack', 'cell_phone', 'book', 'cup_bottle']
+                detected_objs = [c for c in obj_classes if detections.get(c)]
+                if detected_objs:
+                    if not self._object_detections_dir_created:
+                        os.makedirs(os.path.join(self.run_dir, "object_detections"), exist_ok=True)
+                        self._object_detections_dir_created = True
+                    obj_tag = "_".join(detected_objs)
+                    det_path = os.path.join(
+                        self.run_dir, "object_detections",
+                        f"frame_{frame_idx:08d}_{obj_tag}.jpg"
+                    )
+                    try:
+                        cv2.imwrite(det_path, annotated_frame_for_activity, [cv2.IMWRITE_JPEG_QUALITY, 90])
+                    except Exception as e:
+                        self.logger.error(f"[{timestamp}] Error saving object detection frame {frame_idx}: {e}")
 
             # CRITICAL: Hand gesture coordination check
             # Activity Type 8 (LP not exchanging): Triggers when ALP raises hand BUT LP does NOT

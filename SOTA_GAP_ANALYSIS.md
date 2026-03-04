@@ -542,7 +542,7 @@ Camera Feed (1280x720, 25fps)
 | 7 | Generate 3000-5000 RePoGen synthetic overhead pose images | +14.8 AP on pose from above | Medium |
 | 8 | Fine-tune YOLO26s on overhead object data (with negative examples) | Cell phone recall 0% → 40-60% | Medium |
 | 9 | Fine-tune RTMPose-M on COCO + overhead synthetic + real data | +15-20 AP on keypoints | Medium |
-| 10 | BoT-SORT + zone-based identity assignment | Eliminates role-swap errors | Low-Medium |
+| 10| BoT-SORT + zone-based identity assignment | Eliminates role-swap errors | Low-Medium |
 
 ### Phase 3 — Overhead-Specific Detection Redesign (3-6 weeks)
 

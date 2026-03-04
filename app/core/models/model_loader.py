@@ -97,25 +97,46 @@ class ModelLoader:
         weights_path: Optional[str] = None,
         conf_threshold: Optional[float] = None
     ) -> Any:
-        """Load the YOLO-Pose model for body pose estimation.
+        """Load the pose model (YOLO-Pose or RTMPose based on config).
 
         Args:
             weights_path: Path to YOLO-Pose weights file. If None, uses settings or default.
+                         Ignored when pose_model_backend='rtmpose'.
             conf_threshold: Confidence threshold. If None, uses settings or default.
 
         Returns:
-            YoloPoseAdapter instance
+            YoloPoseAdapter or RTMPoseAdapter instance
         """
-        from app.services.yolo_pose_adapter import YoloPoseAdapter
-
-        if weights_path is None:
-            weights_path = getattr(self.settings, 'yolo_pose_weights', 'yolo26n-pose.pt') if self.settings else 'yolo26n-pose.pt'
-
         if conf_threshold is None:
             conf_threshold = getattr(self.settings, 'yolo_pose_confidence', 0.45) if self.settings else 0.45
 
-        self.logger.info(f"Loading YOLO-Pose model: {weights_path}")
-        adapter = YoloPoseAdapter(model_path=weights_path, conf_threshold=conf_threshold)
+        pose_backend = getattr(self.settings, 'pose_model_backend', 'yolo') if self.settings else 'yolo'
+
+        if pose_backend == 'rtmpose':
+            from app.services.rtmpose_adapter import RTMPoseAdapter
+
+            rtm_mode = getattr(self.settings, 'rtmpose_mode', 'balanced') if self.settings else 'balanced'
+            rtm_backend = getattr(self.settings, 'rtmpose_backend', 'onnxruntime') if self.settings else 'onnxruntime'
+
+            # Determine device: cuda if GPU enabled, else cpu
+            yolo_device = getattr(self.settings, 'yolo_device', 'cpu') if self.settings else 'cpu'
+            rtm_device = 'cuda' if str(yolo_device) not in ('cpu', '') else 'cpu'
+
+            self.logger.info(f"Loading RTMPose: mode={rtm_mode}, backend={rtm_backend}, device={rtm_device}")
+            adapter = RTMPoseAdapter(
+                conf_threshold=conf_threshold,
+                device=rtm_device,
+                mode=rtm_mode,
+                backend=rtm_backend,
+            )
+        else:
+            from app.services.yolo_pose_adapter import YoloPoseAdapter
+
+            if weights_path is None:
+                weights_path = getattr(self.settings, 'yolo_pose_weights', 'yolo26n-pose.pt') if self.settings else 'yolo26n-pose.pt'
+
+            self.logger.info(f"Loading YOLO-Pose model: {weights_path}")
+            adapter = YoloPoseAdapter(model_path=weights_path, conf_threshold=conf_threshold)
 
         self.yolo_pose = adapter
         return adapter

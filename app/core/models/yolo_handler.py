@@ -154,7 +154,6 @@ class YOLOHandler:
             pose_model_path: Path to pose detection model weights
         """
         from ultralytics import YOLO
-        from app.services.yolo_pose_adapter import YoloPoseAdapter
 
         self.logger.info(f"Loading YOLO object model: {object_model_path}")
         self.object_model = YOLO(object_model_path)
@@ -164,9 +163,24 @@ class YOLOHandler:
             self.object_model.fuse()
             self.logger.info("YOLO model layers fused for optimized inference")
 
-        self.logger.info(f"Loading YOLO pose model: {pose_model_path}")
         pose_conf = self.settings.yolo_pose_confidence if self.settings else 0.45
-        self.pose_adapter = YoloPoseAdapter(model_path=pose_model_path, conf_threshold=pose_conf)
+        pose_backend = getattr(self.settings, 'pose_model_backend', 'yolo') if self.settings else 'yolo'
+
+        if pose_backend == 'rtmpose':
+            from app.services.rtmpose_adapter import RTMPoseAdapter
+            rtm_mode = getattr(self.settings, 'rtmpose_mode', 'balanced') if self.settings else 'balanced'
+            rtm_backend = getattr(self.settings, 'rtmpose_backend', 'onnxruntime') if self.settings else 'onnxruntime'
+            yolo_device = str(self.device) if self.device else 'cpu'
+            rtm_device = 'cuda' if yolo_device not in ('cpu', '') else 'cpu'
+            self.logger.info(f"Loading RTMPose: mode={rtm_mode}, backend={rtm_backend}, device={rtm_device}")
+            self.pose_adapter = RTMPoseAdapter(
+                conf_threshold=pose_conf, device=rtm_device,
+                mode=rtm_mode, backend=rtm_backend,
+            )
+        else:
+            from app.services.yolo_pose_adapter import YoloPoseAdapter
+            self.logger.info(f"Loading YOLO pose model: {pose_model_path}")
+            self.pose_adapter = YoloPoseAdapter(model_path=pose_model_path, conf_threshold=pose_conf)
 
     def _configure_thresholds(self, settings: Optional[Any]) -> None:
         """Configure detection confidence thresholds from settings.
@@ -386,6 +400,7 @@ class YOLOHandler:
 
         person_boxes = []
         frame_shape = frame.shape
+        _raw_confs = []  # Collect (class_name, conf) for detection summary log
 
         for r in results:
             boxes = r.boxes
@@ -395,6 +410,7 @@ class YOLOHandler:
                 xyxy = box.xyxy[0].cpu().numpy()
 
                 class_name = self.object_model.names[cls]
+                _raw_confs.append((class_name, conf))
 
                 # Zone suppression: skip suppressed classes/regions
                 if self._is_class_suppressed(class_name, xyxy, frame_shape):
@@ -459,6 +475,9 @@ class YOLOHandler:
                     )
                     if not is_dup:
                         detections[key].append(sahi_box)
+
+        # Log per-frame detection summary
+        self._log_detection_summary(detections, _raw_confs)
 
         return detections
 
@@ -865,6 +884,7 @@ class YOLOHandler:
                 person_boxes = []
                 pending_books = []
                 frame_shape = frame.shape
+                _raw_confs = []  # Collect (class_name, conf) for detection summary log
 
                 if results.boxes is not None:
                     for box in results.boxes:
@@ -873,6 +893,7 @@ class YOLOHandler:
                         xyxy = box.xyxy[0].cpu().numpy()
 
                         class_name = self.object_model.names[cls]
+                        _raw_confs.append((class_name, conf))
 
                         # Zone suppression: skip suppressed classes/regions
                         if self._is_class_suppressed(class_name, xyxy, frame_shape):
@@ -899,6 +920,9 @@ class YOLOHandler:
                                 break
                     else:
                         detections['book'].append(book_xyxy)
+
+                # Log per-frame detection summary
+                self._log_detection_summary(detections, _raw_confs)
 
                 all_detections.append(detections)
 
@@ -927,9 +951,11 @@ class YOLOHandler:
         batch_size: int = 8,
         conf_threshold: Optional[float] = None
     ) -> List[Dict[int, Dict[str, Any]]]:
-        """Run YOLO pose detection on multiple frames in a single batch.
+        """Run pose detection on multiple frames in a single batch.
 
         Maximizes GPU utilization by processing multiple frames at once.
+        Delegates to adapter's process_batch() which works for both
+        YoloPoseAdapter and RTMPoseAdapter.
 
         Args:
             frames: List of BGR frames
@@ -940,8 +966,6 @@ class YOLOHandler:
             List of pose result dictionaries, one per frame.
             Format: {person_idx: {'bbox': [...], 'bbox_confidence': float, 'keypoints': YoloPoseLandmarks}}
         """
-        from app.services.yolo_pose_adapter import YoloPoseLandmarks, PersonKeypoints
-
         if not frames:
             return []
 
@@ -950,8 +974,21 @@ class YOLOHandler:
             f"[GPU BATCH] detect_poses_batch: {len(frames)} frames, "
             f"batch_size={batch_size}, conf={effective_conf}"
         )
-        all_poses = []
 
+        # Delegate to adapter's process_batch (works for both YoloPoseAdapter and RTMPoseAdapter)
+        if hasattr(self.pose_adapter, 'process_batch'):
+            all_poses = self.pose_adapter.process_batch(
+                frames, batch_size=batch_size, conf_threshold=effective_conf, device=self.device
+            )
+            self.logger.debug(
+                f"[GPU BATCH] detect_poses_batch complete: {len(all_poses)} results"
+            )
+            return all_poses
+
+        # Fallback: legacy per-frame processing
+        from app.services.yolo_pose_adapter import YoloPoseLandmarks, PersonKeypoints
+
+        all_poses = []
         for batch_start in range(0, len(frames), batch_size):
             batch_frames = frames[batch_start:batch_start + batch_size]
 
@@ -1342,6 +1379,49 @@ class YOLOHandler:
         width = xyxy[2] - xyxy[0]
         height = xyxy[3] - xyxy[1]
         return width * height
+
+    def _log_detection_summary(
+        self,
+        detections: Dict[str, List],
+        raw_confs: List[tuple],
+    ) -> None:
+        """Log a one-line summary of YOLO detections with raw confidences.
+
+        Only logs when at least one non-person object is detected by YOLO
+        (regardless of whether it passed filtering), to avoid spamming on
+        person-only frames.
+        """
+        # Group raw confidences by class
+        from collections import defaultdict
+        conf_by_class = defaultdict(list)
+        for class_name, conf in raw_confs:
+            conf_by_class[class_name].append(conf)
+
+        # Only log if there's something interesting (non-person detections)
+        non_person_classes = {k for k in conf_by_class if k != 'person'}
+        if not non_person_classes:
+            return
+
+        # Build summary parts
+        parts = []
+        for cls in ['person', 'backpack', 'handbag', 'suitcase', 'cell phone',
+                     'book', 'cup', 'bottle', 'chair']:
+            confs = conf_by_class.get(cls, [])
+            if confs:
+                conf_str = ','.join(f'{c:.2f}' for c in sorted(confs, reverse=True))
+                parts.append(f"{cls}={len(confs)}({conf_str})")
+
+        # Also show accepted counts
+        accepted = []
+        for key in ['person', 'backpack', 'cell_phone', 'book', 'cup_bottle']:
+            count = len(detections.get(key, []))
+            if count > 0:
+                accepted.append(f"{key}={count}")
+
+        self.logger.info(
+            f"[YOLO] Raw: {', '.join(parts)} | "
+            f"Accepted: {', '.join(accepted) if accepted else 'none'}"
+        )
 
     @staticmethod
     def _calculate_iou(box1, box2) -> float:

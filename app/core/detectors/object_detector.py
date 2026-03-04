@@ -22,6 +22,7 @@ Deduplication (Task 0025):
 
 from typing import Dict, List, Any, Optional, Tuple, Callable
 import logging
+import os
 
 
 class ObjectDetector:
@@ -133,8 +134,20 @@ class ObjectDetector:
         # pose model requirement. Only object detection methods are needed.
         handler = object.__new__(YOLOHandler)
 
-        # Set up logger
-        handler.logger = logging.getLogger('YOLOHandler')
+        # Set up logger with file handler (bare getLogger has no handlers in worker subprocesses)
+        logger = logging.getLogger('YOLOHandler')
+        if not logger.handlers:
+            log_dir = os.getenv("LOG_DIR", "logs")
+            os.makedirs(log_dir, exist_ok=True)
+            fh = logging.FileHandler(os.path.join(log_dir, 'LocopilotMonitoring.log'))
+            fh.setLevel(logging.DEBUG)
+            fh.setFormatter(logging.Formatter(
+                '%(asctime)s,%(msecs)03d [N/A] [N/A] [N/A] [N/A] [%(levelname)s] [%(name)s] [N/A N/A] %(message)s',
+                datefmt='%Y-%m-%d %H:%M:%S'
+            ))
+            logger.addHandler(fh)
+            logger.setLevel(logging.DEBUG)
+        handler.logger = logger
 
         # Set core attributes needed by shared detection methods
         handler.object_model = yolo_model

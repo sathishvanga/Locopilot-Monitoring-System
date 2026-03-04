@@ -30,3 +30,5 @@ server details.txt
 deploy-gpu.sh
 debug_frames
 activity_frames
+object_detections_review
+rtm debug frames

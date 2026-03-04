@@ -63,11 +63,12 @@ class Settings(BaseSettings):
     # Output settings
     # Convert to absolute path to avoid path resolution issues
     output_dir: str = os.path.join(
-        os.path.dirname(os.path.dirname(os.path.dirname(__file__))), 
+        os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
         "locopilot_evidence"
     )
     save_annotated_frames: bool = True
     frame_save_interval: int = 1
+    save_object_detection_frames: bool = bool(int(os.getenv("SAVE_OBJECT_DETECTION_FRAMES", "0")))
     
     # Video processing settings
     sample_fps: float = 0.5  # Sample at 0.5 FPS (1 frame every 2 seconds)
@@ -86,6 +87,11 @@ class Settings(BaseSettings):
     yolo_weights: str = os.getenv("YOLO_WEIGHTS_PRELOAD", "yolo26n.pt")  # YOLO26 nano for object detection
     yolo_pose_weights: str = os.getenv("YOLO_POSE_WEIGHTS", "yolo26n-pose.pt")  # YOLO26 nano-pose for multi-person pose
     yolo_pose_confidence: float = float(os.getenv("YOLO_POSE_CONFIDENCE", "0.45"))  # Pose detection confidence
+
+    # Pose model backend: 'yolo' (YOLO26-Pose, 57.2 AP) or 'rtmpose' (RTMPose-M, 75.8 AP)
+    pose_model_backend: str = os.getenv("POSE_MODEL", "yolo")
+    rtmpose_mode: str = os.getenv("RTMPOSE_MODE", "balanced")  # balanced=RTMPose-M, performance=RTMPose-X, lightweight=RTMPose-S
+    rtmpose_backend: str = os.getenv("RTMPOSE_BACKEND", "onnxruntime")  # onnxruntime or opencv
 
     # Voting: large model for accurate verification (~160 frames)
     # When empty, voting uses the same model as detection (backward compatible)
@@ -406,6 +412,19 @@ class Settings(BaseSettings):
     sahi_overlap_ratio: float = float(os.getenv("SAHI_OVERLAP_RATIO", "0.2"))
     sahi_postprocess_type: str = os.getenv("SAHI_POSTPROCESS_TYPE", "NMM")
     sahi_postprocess_match_threshold: float = float(os.getenv("SAHI_POSTPROCESS_MATCH_THRESHOLD", "0.5"))
+
+    # ==========================================
+    # Backpack Persistence Tracker
+    # ==========================================
+    backpack_persistence_enabled: bool = bool(int(os.getenv("BACKPACK_PERSISTENCE_ENABLED", "1")))
+    backpack_persistence_history: int = int(os.getenv("BACKPACK_PERSISTENCE_HISTORY", "6"))
+    backpack_persistence_min_detections: int = int(os.getenv("BACKPACK_PERSISTENCE_MIN_DETECTIONS", "2"))
+    backpack_persistence_max_phantom: int = int(os.getenv("BACKPACK_PERSISTENCE_MAX_PHANTOM", "3"))
+    backpack_persistence_roi_margin: float = float(os.getenv("BACKPACK_PERSISTENCE_ROI_MARGIN", "0.20"))
+    backpack_persistence_roi_confidence: float = float(os.getenv("BACKPACK_PERSISTENCE_ROI_CONFIDENCE", "0.20"))
+    backpack_persistence_iou_threshold: float = float(os.getenv("BACKPACK_PERSISTENCE_IOU_THRESHOLD", "0.3"))
+    backpack_persistence_roi_upscale: int = int(os.getenv("BACKPACK_PERSISTENCE_ROI_UPSCALE", "2"))
+    backpack_persistence_roi_preprocess: bool = bool(int(os.getenv("BACKPACK_PERSISTENCE_ROI_PREPROCESS", "1")))
 
     # ==========================================
     # Wrist/Elbow Detection Thresholds

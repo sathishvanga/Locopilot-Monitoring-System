@@ -176,27 +176,40 @@ def worker_initializer(config: MultiprocessingConfig):
                 yolo_model.fuse()
                 logger.info(f"Worker {os.getpid()} YOLO model layers fused for optimized inference")
 
-            # 2. Load YOLO26-Pose model for body pose estimation
-            yolo_pose_model_path = config.yolo_pose_model_path
-            logger.info(f"Worker {os.getpid()} loading YOLO26-Pose model: {yolo_pose_model_path}")
-            yolo_pose_raw = YOLO(yolo_pose_model_path)
+            # 2. Load pose model (YOLO-Pose or RTMPose based on POSE_MODEL setting)
+            worker_settings = get_settings()
+            pose_backend = getattr(worker_settings, 'pose_model_backend', 'yolo')
 
-            # Move pose model to GPU if configured
-            if config.yolo_device and config.yolo_device != 'cpu':
-                # Convert numeric string to int (e.g., "0" -> 0 for GPU device)
-                device = int(config.yolo_device) if config.yolo_device.isdigit() else config.yolo_device
-                yolo_pose_raw.to(device)
-                logger.info(f"Worker {os.getpid()} YOLO-Pose moved to device: {device}")
+            if pose_backend == 'rtmpose':
+                from app.services.rtmpose_adapter import RTMPoseAdapter
+                rtm_device = 'cuda' if config.yolo_device and config.yolo_device != 'cpu' else 'cpu'
+                rtm_mode = getattr(worker_settings, 'rtmpose_mode', 'balanced')
+                rtm_backend = getattr(worker_settings, 'rtmpose_backend', 'onnxruntime')
+                logger.info(f"Worker {os.getpid()} loading RTMPose: mode={rtm_mode}, device={rtm_device}")
+                yolo_pose = RTMPoseAdapter(
+                    conf_threshold=0.45, device=rtm_device,
+                    mode=rtm_mode, backend=rtm_backend,
+                )
+            else:
+                yolo_pose_model_path = config.yolo_pose_model_path
+                logger.info(f"Worker {os.getpid()} loading YOLO26-Pose model: {yolo_pose_model_path}")
+                yolo_pose_raw = YOLO(yolo_pose_model_path)
 
-            # Fuse pose model layers as well
-            if hasattr(yolo_pose_raw.model, 'fuse'):
-                yolo_pose_raw.fuse()
-                logger.info(f"Worker {os.getpid()} YOLO-Pose model layers fused")
-            yolo_pose = YoloPoseAdapter(
-                model_path=yolo_pose_model_path,
-                conf_threshold=0.45,
-                preloaded_model=yolo_pose_raw
-            )
+                # Move pose model to GPU if configured
+                if config.yolo_device and config.yolo_device != 'cpu':
+                    device = int(config.yolo_device) if config.yolo_device.isdigit() else config.yolo_device
+                    yolo_pose_raw.to(device)
+                    logger.info(f"Worker {os.getpid()} YOLO-Pose moved to device: {device}")
+
+                # Fuse pose model layers as well
+                if hasattr(yolo_pose_raw.model, 'fuse'):
+                    yolo_pose_raw.fuse()
+                    logger.info(f"Worker {os.getpid()} YOLO-Pose model layers fused")
+                yolo_pose = YoloPoseAdapter(
+                    model_path=yolo_pose_model_path,
+                    conf_threshold=0.45,
+                    preloaded_model=yolo_pose_raw
+                )
 
             # 3. Initialize MediaPipe FaceMesh (for Eye Aspect Ratio detection)
             logger.info(f"Worker {os.getpid()} initializing MediaPipe FaceMesh")
@@ -255,7 +268,10 @@ def worker_initializer(config: MultiprocessingConfig):
             else:
                 _worker_models['yolo_voting'] = yolo_model
 
-            if config.yolo_voting_pose_model_path != config.yolo_pose_model_path:
+            if pose_backend == 'rtmpose':
+                # RTMPose: voting uses same adapter (no separate voting pose model)
+                _worker_models['yolo_pose_voting'] = yolo_pose
+            elif config.yolo_voting_pose_model_path != config.yolo_pose_model_path:
                 logger.info(f"Worker {os.getpid()} loading voting YOLO-Pose model: {config.yolo_voting_pose_model_path}")
                 yolo_voting_pose_raw = YOLO(config.yolo_voting_pose_model_path)
                 if config.yolo_device and config.yolo_device != 'cpu':

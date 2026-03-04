@@ -1073,7 +1073,10 @@ class VotingVerificationService:
 
     def _batch_detect_poses(self, frames: List[np.ndarray], activity_type: str) -> List[Dict]:
         """
-        Run YOLO-Pose detection on multiple frames in batch.
+        Run pose detection on multiple frames in batch.
+
+        Supports both YoloPoseAdapter and RTMPoseAdapter via process_batch(),
+        with fallback to raw YOLO model for legacy compatibility.
 
         Args:
             frames: List of BGR frames
@@ -1083,21 +1086,39 @@ class VotingVerificationService:
             List of pose dictionaries, one per frame
         """
         if not frames or self.yolo_pose_model is None:
-            logger.warning(f"[VOTING] {activity_type}: No frames or YOLO-Pose model not available")
+            logger.warning(f"[VOTING] {activity_type}: No frames or pose model not available")
             return [{'keypoints': [], 'boxes': []} for _ in frames]
 
         all_poses = []
 
         try:
-            logger.debug(f"[VOTING] {activity_type}: Running batch YOLO-Pose inference on {len(frames)} frames...")
+            logger.debug(f"[VOTING] {activity_type}: Running batch pose inference on {len(frames)} frames...")
 
-            # Handle YoloPoseAdapter vs raw YOLO model
-            # YoloPoseAdapter has .model attribute with the raw YOLO model
+            # Adapter path: use process_batch() for both YoloPoseAdapter and RTMPoseAdapter
+            if hasattr(self.yolo_pose_model, 'process_batch'):
+                conf = self.settings.yolo_pose_confidence if self.settings else 0.45
+                adapter_results = self.yolo_pose_model.process_batch(frames, conf_threshold=conf)
+
+                for i, persons in enumerate(adapter_results):
+                    poses = {'keypoints': [], 'boxes': []}
+                    for person_idx in sorted(persons.keys()):
+                        person = persons[person_idx]
+                        # Convert YoloPoseLandmarks to [17, 3] numpy array
+                        landmarks = person['keypoints']
+                        kp_array = np.zeros((17, 3), dtype=np.float32)
+                        h, w = frames[i].shape[:2]
+                        for k, lm in enumerate(landmarks.landmark):
+                            kp_array[k] = [lm.x * w, lm.y * h, lm.visibility]
+                        poses['keypoints'].append(kp_array)
+                        poses['boxes'].append(person['bbox'])
+                    all_poses.append(poses)
+                    logger.debug(f"[VOTING] {activity_type}: Frame {i+1} - poses_detected={len(poses['keypoints'])}")
+                return all_poses
+
+            # Legacy fallback: raw YOLO model path
             if hasattr(self.yolo_pose_model, 'model'):
-                # It's a YoloPoseAdapter, use the underlying model for batch inference
                 pose_model = self.yolo_pose_model.model
             else:
-                # It's a raw YOLO model
                 pose_model = self.yolo_pose_model
 
             results = pose_model(

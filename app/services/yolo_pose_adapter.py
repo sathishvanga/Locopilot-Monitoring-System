@@ -255,6 +255,58 @@ class YoloPoseAdapter:
 
         return persons
 
+    def process_batch(self, frames, batch_size=8, conf_threshold=None, device=None):
+        """Process multiple frames in a single batch for GPU efficiency.
+
+        Args:
+            frames: List of BGR frames (numpy arrays)
+            batch_size: Maximum batch size for inference (default 8)
+            conf_threshold: Optional confidence threshold override
+            device: Optional device override (e.g., 0, 'cpu', 'cuda:0')
+
+        Returns:
+            List of pose result dictionaries, one per frame.
+            Format matches self.process() output:
+            {person_idx: {'bbox': [...], 'bbox_confidence': float, 'keypoints': YoloPoseLandmarks}}
+        """
+        if not frames:
+            return []
+
+        effective_conf = conf_threshold if conf_threshold is not None else self.conf_threshold
+        all_poses = []
+
+        for batch_start in range(0, len(frames), batch_size):
+            batch_frames = frames[batch_start:batch_start + batch_size]
+
+            try:
+                kwargs = {'verbose': False, 'conf': effective_conf}
+                if device is not None:
+                    kwargs['device'] = device
+                batch_results = self.model(batch_frames, **kwargs)
+            except Exception as e:
+                logger.error(f"[GPU BATCH] Pose detection failed for batch starting at {batch_start}: {e}")
+                for _ in batch_frames:
+                    all_poses.append({})
+                continue
+
+            for frame, results in zip(batch_frames, batch_results):
+                persons = {}
+
+                if results.keypoints is not None and results.boxes is not None:
+                    for idx in range(len(results.boxes)):
+                        box = results.boxes[idx]
+                        person_keypoints = PersonKeypoints(results.keypoints, idx)
+
+                        persons[idx] = {
+                            'bbox': box.xyxy[0].cpu().numpy().tolist(),
+                            'bbox_confidence': float(box.conf[0]),
+                            'keypoints': YoloPoseLandmarks(person_keypoints, frame.shape)
+                        }
+
+                all_poses.append(persons)
+
+        return all_poses
+
     def get_keypoint_name(self, idx: int) -> str:
         """Get keypoint name by index."""
         for name, index in self.keypoint_indices.items():
