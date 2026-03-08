@@ -3024,7 +3024,7 @@ class LocopilotActivityMonitor:
                         cup_bottle_bboxes = []
                         cup_conf_threshold = getattr(self.settings, 'eating_drinking_cup_confidence', 0.25)
                         for roi_det in detections.get('roi_detections', []):
-                            if roi_det['class'] in ('cup', 'bottle') and roi_det['confidence'] > cup_conf_threshold:
+                            if roi_det['class'] == 'bottle' and roi_det['confidence'] > cup_conf_threshold:
                                 det_bbox = roi_det['bbox']
                                 if bbox_overlap_with_margin(det_bbox, bbox, 50):
                                     cup_bottle_bboxes.append(det_bbox)
@@ -3292,7 +3292,7 @@ class LocopilotActivityMonitor:
                     cup_bottle_bboxes = []
                     cup_conf_threshold = getattr(self.settings, 'eating_drinking_cup_confidence', 0.25)
                     for roi_det in detections.get('roi_detections', []):
-                        if roi_det['class'] in ('cup', 'bottle') and roi_det['confidence'] > cup_conf_threshold:
+                        if roi_det['class'] == 'bottle' and roi_det['confidence'] > cup_conf_threshold:
                             det_bbox = roi_det['bbox']
                             if bbox_overlap_with_margin(det_bbox, bbox, 100):
                                 cup_bottle_bboxes.append(det_bbox)

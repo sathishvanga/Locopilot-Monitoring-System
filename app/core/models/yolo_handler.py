@@ -136,8 +136,6 @@ class YOLOHandler:
         # Zone suppression settings
         self._configure_zone_suppression(settings)
 
-        # SAHI settings
-        self._configure_sahi(settings)
 
         # Configure confidence thresholds from settings
         self._configure_thresholds(settings)
@@ -247,33 +245,6 @@ class YOLOHandler:
                 f"[ZONE SUPPRESS] Enabled: suppress_classes={self.suppressed_classes}, "
                 f"suitcase_zones={len(self.suitcase_suppression_zones)}"
             )
-
-    def _configure_sahi(self, settings: Optional[Any]) -> None:
-        """Configure SAHI (Sliced Aided Hyper Inference) settings.
-
-        Args:
-            settings: Settings object with SAHI configuration
-        """
-        self.sahi_enabled = getattr(settings, 'sahi_enabled', False) if settings else False
-        self.sahi_slice_height = getattr(settings, 'sahi_slice_height', 640) if settings else 640
-        self.sahi_slice_width = getattr(settings, 'sahi_slice_width', 640) if settings else 640
-        self.sahi_overlap_ratio = getattr(settings, 'sahi_overlap_ratio', 0.2) if settings else 0.2
-        self.sahi_postprocess_type = getattr(settings, 'sahi_postprocess_type', 'NMM') if settings else 'NMM'
-        self.sahi_postprocess_match_threshold = getattr(settings, 'sahi_postprocess_match_threshold', 0.5) if settings else 0.5
-
-        # Conditional SAHI import and model caching
-        self._sahi_available = False
-        self._sahi_detection_model = None
-        self._sahi_get_sliced_prediction = None
-        if self.sahi_enabled:
-            try:
-                from sahi import AutoDetectionModel
-                from sahi.predict import get_sliced_prediction
-                self._sahi_available = True
-                self._sahi_get_sliced_prediction = get_sliced_prediction
-                self.logger.info("[SAHI] SAHI library loaded successfully")
-            except ImportError:
-                self.logger.warning("[SAHI] sahi library not installed. Run: pip install sahi")
 
     def _is_in_suppression_zone(
         self,
@@ -409,7 +380,7 @@ class YOLOHandler:
                 conf = float(box.conf[0])
                 xyxy = box.xyxy[0].cpu().numpy()
 
-                class_name = self.object_model.names[cls]
+                class_name = self.object_model.names[cls].replace('_', ' ')  # Normalize: cell_phone -> cell phone
                 _raw_confs.append((class_name, conf))
 
                 # Zone suppression: skip suppressed classes/regions
@@ -423,7 +394,7 @@ class YOLOHandler:
                     person_boxes.append(xyxy)
 
                 # Bag detection (backpack, handbag, suitcase)
-                elif class_name in ['backpack', 'handbag', 'suitcase']:
+                elif class_name in ['backpack', 'suitcase']:
                     if conf > self.bag_log_confidence:
                         self.logger.debug(f"BAG DETECTED: {class_name} conf={conf:.2f} bbox={xyxy}")
                     if conf > self.bag_confidence:
@@ -452,7 +423,7 @@ class YOLOHandler:
                             detections['book'].append(xyxy)
 
                 # Cup/bottle detection for eating/drinking
-                elif class_name in ['cup', 'bottle']:
+                elif class_name == 'bottle':
                     floor_conf = getattr(self.settings, 'eating_drinking_cup_floor_confidence', 0.20) if self.settings else 0.20
                     if conf > floor_conf:
                         detections['cup_bottle'].append(xyxy)
@@ -463,18 +434,6 @@ class YOLOHandler:
                 frame, pose_landmarks, detections,
                 get_keypoint_func, get_roi_func
             )
-
-        # Stage 3: SAHI sliced inference for small objects
-        if self.sahi_enabled and self._sahi_available and detections['person']:
-            sahi_dets = self.detect_objects_sahi(frame, detections['person'])
-            for key in ('cell_phone', 'book', 'cup_bottle'):
-                for sahi_box in sahi_dets.get(key, []):
-                    is_dup = any(
-                        self._calculate_iou(sahi_box, existing) > 0.5
-                        for existing in detections.get(key, [])
-                    )
-                    if not is_dup:
-                        detections[key].append(sahi_box)
 
         # Log per-frame detection summary
         self._log_detection_summary(detections, _raw_confs)
@@ -549,7 +508,7 @@ class YOLOHandler:
         valid_roi_count = sum(1 for bbox in roi_bboxes if bbox is not None)
 
         if valid_roi_count > 0:
-            target_classes = ['cell phone', 'book', 'pen', 'pencil', 'paper', 'bottle', 'cup']
+            target_classes = ['cell phone', 'book', 'bottle']
             batch_detections = self.detect_objects_in_rois_batch(
                 frame, roi_bboxes, roi_names, target_classes
             )
@@ -675,7 +634,7 @@ class YOLOHandler:
         valid_roi_count = sum(1 for bbox in roi_bboxes if bbox is not None)
 
         if valid_roi_count > 0:
-            target_classes = ['cell phone', 'book', 'pen', 'pencil', 'paper', 'bottle', 'cup']
+            target_classes = ['cell phone', 'book', 'bottle']
             batch_detections = self.detect_objects_in_rois_batch(
                 frame, roi_bboxes, roi_names, target_classes
             )
@@ -709,7 +668,7 @@ class YOLOHandler:
             Each detection: (class_name, conf, x1, y1, x2, y2) with global coordinates
         """
         if target_classes is None:
-            target_classes = ['cell phone', 'book', 'pen', 'pencil']
+            target_classes = ['cell phone', 'book', 'bottle']
 
         if not roi_bboxes or len(roi_bboxes) == 0:
             return [[] for _ in range(len(roi_names))]
@@ -762,7 +721,7 @@ class YOLOHandler:
                 conf = float(box.conf[0])
                 xyxy_local = box.xyxy[0].cpu().numpy()
 
-                class_name = self.object_model.names[cls]
+                class_name = self.object_model.names[cls].replace('_', ' ')  # Normalize: cell_phone -> cell phone
                 debug_all_detections.append((class_name, conf))
 
                 if class_name in target_classes:
@@ -892,7 +851,7 @@ class YOLOHandler:
                         conf = float(box.conf[0])
                         xyxy = box.xyxy[0].cpu().numpy()
 
-                        class_name = self.object_model.names[cls]
+                        class_name = self.object_model.names[cls].replace('_', ' ')  # Normalize: cell_phone -> cell phone
                         _raw_confs.append((class_name, conf))
 
                         # Zone suppression: skip suppressed classes/regions
@@ -902,7 +861,7 @@ class YOLOHandler:
                         if class_name == 'person' and conf > self.person_confidence:
                             detections['person'].append(xyxy)
                             person_boxes.append(xyxy)
-                        elif class_name in ['backpack', 'handbag', 'suitcase']:
+                        elif class_name in ['backpack', 'suitcase']:
                             if conf > self.bag_confidence:
                                 if self._validate_bag_detection(xyxy):
                                     detections['backpack'].append(xyxy)
@@ -925,20 +884,6 @@ class YOLOHandler:
                 self._log_detection_summary(detections, _raw_confs)
 
                 all_detections.append(detections)
-
-        # SAHI pass: run sliced inference on person crops for small object detection
-        if self.sahi_enabled and self._sahi_available:
-            for idx, (frame, dets) in enumerate(zip(frames, all_detections)):
-                if dets.get('person'):
-                    sahi_dets = self.detect_objects_sahi(frame, dets['person'])
-                    for key in ('cell_phone', 'book', 'cup_bottle'):
-                        for sahi_box in sahi_dets.get(key, []):
-                            is_dup = any(
-                                self._calculate_iou(sahi_box, existing) > 0.5
-                                for existing in dets.get(key, [])
-                            )
-                            if not is_dup:
-                                dets.setdefault(key, []).append(sahi_box)
 
         self.logger.debug(
             f"[GPU BATCH] detect_objects_batch complete: {len(all_detections)} results"
@@ -1086,131 +1031,6 @@ class YOLOHandler:
                 f"[IR PREPROCESS] Preprocessing failed, using original frames: {e}"
             )
             return frames
-
-    def detect_objects_sahi(
-        self,
-        frame: np.ndarray,
-        person_boxes: List[np.ndarray]
-    ) -> Dict[str, List]:
-        """Run SAHI sliced inference on person ROI crops for small object detection.
-
-        For each detected person, crops with 20% margin and runs SAHI sliced
-        prediction to detect small objects (cell_phone, book, cup/bottle) that
-        standard YOLO misses at stride-32.
-
-        Args:
-            frame: Full BGR frame
-            person_boxes: List of person bounding boxes [x1, y1, x2, y2]
-
-        Returns:
-            Dictionary with small object detections:
-                - 'cell_phone': List of bounding boxes
-                - 'book': List of bounding boxes
-                - 'cup_bottle': List of bounding boxes
-        """
-        sahi_detections = {
-            'cell_phone': [],
-            'book': [],
-            'cup_bottle': []
-        }
-
-        if not self._sahi_available or not person_boxes:
-            return sahi_detections
-
-        get_sliced_prediction = self._sahi_get_sliced_prediction
-        if get_sliced_prediction is None:
-            return sahi_detections
-
-        try:
-            # Lazily create and cache SAHI detection model on first use
-            if self._sahi_detection_model is None:
-                from sahi import AutoDetectionModel
-                self._sahi_detection_model = AutoDetectionModel.from_pretrained(
-                    model_type='ultralytics',
-                    model=self.object_model,
-                    confidence_threshold=min(self.cell_phone_confidence, self.book_confidence, 0.20),
-                    device=self.device
-                )
-                self.logger.info("[SAHI] Detection model wrapper created and cached")
-            detection_model = self._sahi_detection_model
-
-            h, w = frame.shape[:2]
-            sahi_target_classes = {'cell phone', 'book', 'cup', 'bottle'}
-
-            for person_box in person_boxes:
-                px1, py1, px2, py2 = person_box
-                # Add 20% margin around person bbox
-                pw, ph = px2 - px1, py2 - py1
-                margin_x, margin_y = int(pw * 0.2), int(ph * 0.2)
-                crop_x1 = max(0, int(px1) - margin_x)
-                crop_y1 = max(0, int(py1) - margin_y)
-                crop_x2 = min(w, int(px2) + margin_x)
-                crop_y2 = min(h, int(py2) + margin_y)
-
-                crop = frame[crop_y1:crop_y2, crop_x1:crop_x2]
-                if crop.size == 0:
-                    continue
-
-                result = get_sliced_prediction(
-                    crop,
-                    detection_model,
-                    slice_height=self.sahi_slice_height,
-                    slice_width=self.sahi_slice_width,
-                    overlap_height_ratio=self.sahi_overlap_ratio,
-                    overlap_width_ratio=self.sahi_overlap_ratio,
-                    postprocess_type=self.sahi_postprocess_type,
-                    postprocess_match_threshold=self.sahi_postprocess_match_threshold,
-                    verbose=0
-                )
-
-                for pred in result.object_prediction_list:
-                    class_name = pred.category.name
-                    conf = pred.score.value
-
-                    if class_name not in sahi_target_classes:
-                        continue
-
-                    # Translate crop coordinates back to full frame
-                    bbox = pred.bbox
-                    gx1 = bbox.minx + crop_x1
-                    gy1 = bbox.miny + crop_y1
-                    gx2 = bbox.maxx + crop_x1
-                    gy2 = bbox.maxy + crop_y1
-                    global_xyxy = np.array([gx1, gy1, gx2, gy2])
-
-                    if class_name == 'cell phone' and conf > self.cell_phone_confidence:
-                        if self.validate_object_aspect_ratio(global_xyxy, 'cell phone'):
-                            sahi_detections['cell_phone'].append(global_xyxy)
-                            self.logger.debug(
-                                f"[SAHI] cell_phone detected conf={conf:.2f} bbox={global_xyxy}"
-                            )
-                    elif class_name == 'book' and conf > self.book_confidence:
-                        if self.validate_object_aspect_ratio(global_xyxy, 'book'):
-                            sahi_detections['book'].append(global_xyxy)
-                            self.logger.debug(
-                                f"[SAHI] book detected conf={conf:.2f} bbox={global_xyxy}"
-                            )
-                    elif class_name in ('cup', 'bottle'):
-                        floor_conf = getattr(self.settings, 'eating_drinking_cup_floor_confidence', 0.20) if self.settings else 0.20
-                        if conf > floor_conf:
-                            sahi_detections['cup_bottle'].append(global_xyxy)
-                            self.logger.debug(
-                                f"[SAHI] {class_name} detected conf={conf:.2f} bbox={global_xyxy}"
-                            )
-
-        except Exception as e:
-            self.logger.warning(f"[SAHI] Sliced inference failed: {e}")
-
-        total = sum(len(v) for v in sahi_detections.values())
-        if total > 0:
-            self.logger.info(
-                f"[SAHI] Found {total} small objects: "
-                f"cell_phone={len(sahi_detections['cell_phone'])}, "
-                f"book={len(sahi_detections['book'])}, "
-                f"cup_bottle={len(sahi_detections['cup_bottle'])}"
-            )
-
-        return sahi_detections
 
     def process_batch(
         self,
@@ -1404,8 +1224,8 @@ class YOLOHandler:
 
         # Build summary parts
         parts = []
-        for cls in ['person', 'backpack', 'handbag', 'suitcase', 'cell phone',
-                     'book', 'cup', 'bottle', 'chair']:
+        for cls in ['person', 'backpack', 'suitcase', 'cell phone',
+                     'book', 'bottle']:
             confs = conf_by_class.get(cls, [])
             if confs:
                 conf_str = ','.join(f'{c:.2f}' for c in sorted(confs, reverse=True))

@@ -84,7 +84,7 @@ class Settings(BaseSettings):
     
     # Model settings - YOLO26 (NMS-free, 43% faster CPU inference)
     # Detection: nano for fast bulk frame processing (~57K frames)
-    yolo_weights: str = os.getenv("YOLO_WEIGHTS_PRELOAD", "yolo26n.pt")  # YOLO26 nano for object detection
+    yolo_weights: str = os.getenv("YOLO_WEIGHTS_PRELOAD", "yolo26s_locopilot_v2.pt")  # Custom-trained YOLO26s on locomotive cabin dataset
     yolo_pose_weights: str = os.getenv("YOLO_POSE_WEIGHTS", "yolo26n-pose.pt")  # YOLO26 nano-pose for multi-person pose
     yolo_pose_confidence: float = float(os.getenv("YOLO_POSE_CONFIDENCE", "0.45"))  # Pose detection confidence
 
@@ -366,10 +366,10 @@ class Settings(BaseSettings):
 
     # Eating/Drinking Detection (mind diversion sub-type)
     eating_drinking_detection_enabled: bool = bool(int(os.getenv("EATING_DRINKING_ENABLED", "1")))
-    eating_drinking_cup_confidence: float = float(os.getenv("EATING_DRINKING_CUP_CONF", "0.25"))  # Lower threshold for cups in IR
+    eating_drinking_cup_confidence: float = float(os.getenv("EATING_DRINKING_CUP_CONF", "0.9"))  # Now applies to bottle only (cup removed)
     eating_drinking_hand_face_margin: int = int(os.getenv("EATING_DRINKING_HAND_FACE_MARGIN", "80"))  # Wrist within 80px of nose height
     eating_drinking_hand_object_margin: int = int(os.getenv("EATING_DRINKING_HAND_OBJ_MARGIN", "150"))  # Hand-to-cup proximity
-    eating_drinking_cup_floor_confidence: float = float(os.getenv("EATING_DRINKING_CUP_FLOOR_CONF", "0.20"))  # Pre-filter floor for cup/bottle in full-frame detection
+    eating_drinking_cup_floor_confidence: float = float(os.getenv("EATING_DRINKING_CUP_FLOOR_CONF", "0.9"))
 
     # Mind Diversion Suppression Settings
     # Suppress false positives when LP is doing legitimate document work
@@ -385,33 +385,23 @@ class Settings(BaseSettings):
     gpu_memory_warning_threshold: float = float(os.getenv("GPU_MEMORY_WARNING_THRESHOLD", "80.0"))  # Percentage
 
     # ==========================================
-    # YOLO Confidence Thresholds
+    # YOLO Confidence Thresholds (tuned for custom-trained yolo26s_locopilot_v2)
     # ==========================================
-    yolo_person_confidence: float = float(os.getenv("YOLO_PERSON_CONFIDENCE", "0.5"))
-    yolo_bag_confidence: float = float(os.getenv("YOLO_BAG_CONFIDENCE", "0.35"))
-    yolo_bag_log_confidence: float = float(os.getenv("YOLO_BAG_LOG_CONFIDENCE", "0.25"))
-    yolo_book_confidence: float = float(os.getenv("YOLO_BOOK_CONFIDENCE", "0.4"))
-    yolo_cell_phone_confidence: float = float(os.getenv("YOLO_CELL_PHONE_CONFIDENCE", "0.3"))
+    yolo_person_confidence: float = float(os.getenv("YOLO_PERSON_CONFIDENCE", "0.9"))
+    yolo_bag_confidence: float = float(os.getenv("YOLO_BAG_CONFIDENCE", "0.9"))
+    yolo_bag_log_confidence: float = float(os.getenv("YOLO_BAG_LOG_CONFIDENCE", "0.9"))
+    yolo_book_confidence: float = float(os.getenv("YOLO_BOOK_CONFIDENCE", "0.9"))
+    yolo_cell_phone_confidence: float = float(os.getenv("YOLO_CELL_PHONE_CONFIDENCE", "0.9"))
 
     # Cell phone detection confidence threshold (activity-level, distinct from YOLO detection threshold)
-    cell_phone_confidence: float = float(os.getenv("CELL_PHONE_CONFIDENCE", "0.40"))
+    cell_phone_confidence: float = float(os.getenv("CELL_PHONE_CONFIDENCE", "0.9"))
 
     # ==========================================
     # Static Zone Suppression (fixed-camera FP filtering)
     # ==========================================
     zone_suppression_enabled: bool = bool(int(os.getenv("ZONE_SUPPRESSION_ENABLED", "1")))
-    zone_suppress_classes: str = os.getenv("ZONE_SUPPRESS_CLASSES", "chair")  # Comma-separated classes to always ignore
+    zone_suppress_classes: str = os.getenv("ZONE_SUPPRESS_CLASSES", "")  # Comma-separated classes to always ignore (chair removed - not in custom model)
     zone_suppress_suitcase_regions: str = os.getenv("ZONE_SUPPRESS_SUITCASE_REGIONS", "")  # JSON list of [x1,y1,x2,y2] normalized coords
-
-    # ==========================================
-    # SAHI (Sliced Aided Hyper Inference) for Small Object Detection
-    # ==========================================
-    sahi_enabled: bool = bool(int(os.getenv("SAHI_ENABLED", "0")))  # Opt-in, requires `pip install sahi`
-    sahi_slice_height: int = int(os.getenv("SAHI_SLICE_HEIGHT", "640"))
-    sahi_slice_width: int = int(os.getenv("SAHI_SLICE_WIDTH", "640"))
-    sahi_overlap_ratio: float = float(os.getenv("SAHI_OVERLAP_RATIO", "0.2"))
-    sahi_postprocess_type: str = os.getenv("SAHI_POSTPROCESS_TYPE", "NMM")
-    sahi_postprocess_match_threshold: float = float(os.getenv("SAHI_POSTPROCESS_MATCH_THRESHOLD", "0.5"))
 
     # ==========================================
     # Backpack Persistence Tracker

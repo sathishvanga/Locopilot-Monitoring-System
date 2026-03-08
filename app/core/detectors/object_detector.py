@@ -188,9 +188,6 @@ class ObjectDetector:
         # Zone suppression (Phase 1 SOTA: fixed-camera FP filtering)
         handler._configure_zone_suppression(settings)
 
-        # SAHI (Phase 1 SOTA: sliced inference for small objects)
-        handler._configure_sahi(settings)
-
         # Cache for frame results
         handler._cached_frame_objects = None
         handler._cached_frame_time = 0.0
@@ -418,7 +415,7 @@ class ObjectDetector:
             List of detections with global coordinates: [(class_name, conf, x1, y1, x2, y2), ...]
         """
         if target_classes is None:
-            target_classes = ['cell phone', 'book', 'pen', 'pencil']
+            target_classes = ['cell phone', 'book', 'bottle']
 
         if roi_bbox is None:
             return []

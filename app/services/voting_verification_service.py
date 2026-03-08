@@ -1051,7 +1051,7 @@ class VotingVerificationService:
                             detections['cell_phone'].append({'bbox': xyxy, 'confidence': conf})
                         elif class_name == 'book' and conf > 0.4:
                             detections['book'].append({'bbox': xyxy, 'confidence': conf})
-                        elif class_name in ['backpack', 'handbag', 'suitcase'] and conf > 0.35:
+                        elif class_name in ['backpack', 'suitcase'] and conf > 0.35:
                             detections['backpack'].append({'bbox': xyxy, 'confidence': conf})
                         elif class_name == 'bottle' and conf > 0.4:
                             detections['bottle'].append({'bbox': xyxy, 'confidence': conf})
