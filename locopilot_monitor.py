@@ -3311,27 +3311,9 @@ class LocopilotActivityMonitor:
                                 if right_hand_near_book or left_hand_near_book:
                                     writing_detected_by_book = True
                                     break
-                    else:
-                        # FALLBACK: Wrists not visible, use book + posture detection
-                        self.logger.debug(f"Person {person_idx}: Wrists not visible, trying book+posture fallback")
-                        writing_detected_by_book_posture = self.detect_writing_by_book_and_posture(
-                            translated_landmarks,
-                            bbox,
-                            person_books,
-                            person_idx,
-                            timestamp_sec
-                        )
+                    # Method 3 (book+posture fallback) disabled — too many FPs from head-down heuristic
 
-                # Method 2: Wrist/Elbow proximity heuristic (temporal - requires sustained duration)
-                # DEBUG: Log that we're checking writing detection
-                self.logger.debug(f"Person {person_idx}: Calling writing detection (frame {frame_number})")
-                writing_detected_by_wrist = self.detect_writing_by_wrist_proximity(
-                    translated_landmarks,
-                    frame.shape,
-                    person_idx,
-                    timestamp_sec
-                )
-                self.logger.debug(f"Person {person_idx}: Writing detection result = {writing_detected_by_wrist}")
+                # Method 2 (wrist proximity + head down) disabled — too many FPs from pose heuristic
 
                 # Combine all detection methods (book+hand, wrist/elbow proximity, book+posture fallback)
                 writing_detected_raw = (
