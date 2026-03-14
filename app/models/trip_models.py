@@ -1,21 +1,10 @@
 """
-Trip models - Data models for train motion state and schedule tracking
-
-These models support the train movement-based rule engine that dynamically
-changes violation detection based on whether the train is running or stopped.
+Trip models - Data models for train schedule tracking
 """
 
-from enum import Enum
 from typing import Optional, List
-from datetime import datetime, time
+from datetime import datetime
 from pydantic import BaseModel, Field
-
-
-class TrainMotionState(str, Enum):
-    """Train motion state enumeration"""
-    RUNNING = "running"
-    STOPPED = "stopped"
-    UNKNOWN = "unknown"
 
 
 class StationHalt(BaseModel):
@@ -133,46 +122,6 @@ class TripSchedule(BaseModel):
         }
 
 
-class TrainMotionContext(BaseModel):
-    """
-    Model for current train motion context at a specific timestamp
-
-    Combines motion state with relevant station information for rule evaluation.
-    """
-    motion_state: TrainMotionState = Field(default=TrainMotionState.UNKNOWN, description="Current motion state")
-    timestamp: str = Field(..., description="Timestamp in HH:MM:SS format")
-
-    # Station context (populated when stopped or approaching)
-    current_station: Optional[StationHalt] = Field(None, description="Current station if stopped")
-    next_station: Optional[StationHalt] = Field(None, description="Next upcoming station")
-
-    # Pre-arrival context
-    is_pre_arrival_window: bool = Field(default=False, description="True if within 30-60s of arrival")
-    seconds_to_arrival: Optional[int] = Field(None, description="Seconds until next station arrival")
-
-    # Grace period tracking
-    seconds_since_departure: Optional[int] = Field(None, description="Seconds since last departure")
-    in_grace_period: bool = Field(default=False, description="True if within grace period after departure")
-
-    # Debug info
-    resolution_source: str = Field(default="unknown", description="How state was determined")
-
-    class Config:
-        json_schema_extra = {
-            "example": {
-                "motion_state": "stopped",
-                "timestamp": "14:30:45",
-                "current_station": None,
-                "next_station": None,
-                "is_pre_arrival_window": False,
-                "seconds_to_arrival": None,
-                "seconds_since_departure": None,
-                "in_grace_period": False,
-                "resolution_source": "schedule_lookup"
-            }
-        }
-
-
 class OCRTimestampResult(BaseModel):
     """
     Model for OCR timestamp extraction result
@@ -207,36 +156,3 @@ class OCRTimestampResult(BaseModel):
         }
 
 
-class ViolationRuleResult(BaseModel):
-    """
-    Model for rule evaluation result
-
-    Contains the decision about whether an activity is a violation
-    based on train motion state.
-    """
-    activity_type: int = Field(..., description="Activity type code")
-    activity_name: str = Field(..., description="Activity name")
-    is_violation: bool = Field(..., description="Whether this is a violation")
-    is_exempted: bool = Field(default=False, description="Whether activity is exempted due to motion state")
-
-    # Rule context
-    motion_state: TrainMotionState = Field(..., description="Train motion state when evaluated")
-    rule_applied: str = Field(..., description="Name of rule applied")
-    reason: str = Field(..., description="Human-readable reason for decision")
-
-    # Original detection
-    was_detected: bool = Field(default=False, description="Whether activity was detected")
-
-    class Config:
-        json_schema_extra = {
-            "example": {
-                "activity_type": 5,
-                "activity_name": "writing",
-                "is_violation": False,
-                "is_exempted": True,
-                "motion_state": "stopped",
-                "rule_applied": "STOPPED_WRITING_EXEMPTION",
-                "reason": "Writing is allowed when train is stopped at station",
-                "was_detected": True
-            }
-        }

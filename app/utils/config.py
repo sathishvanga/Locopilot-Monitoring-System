@@ -483,30 +483,6 @@ class Settings(BaseSettings):
     halt_grace_period: int = int(os.getenv("HALT_GRACE_PERIOD", "120"))  # 120s after departure
 
     # ==========================================
-    # Optical Flow Motion Detection Settings
-    # ==========================================
-    # Enable/disable optical flow motion verification
-    optical_flow_enabled: bool = bool(int(os.getenv("OPTICAL_FLOW_ENABLED", "0")))
-
-    # Side window ROI configuration (ratios of frame dimensions)
-    # Captures the narrow left side window/door opening for motion detection
-    # IPCamera 02 cabin view: outside scenery visible through left side bars/window
-    # Calibrated from "Writing 13 25.mp4" (1280x720, 25fps)
-    motion_roi_x_ratio: float = float(os.getenv("MOTION_ROI_X", "0.0"))
-    motion_roi_width_ratio: float = float(os.getenv("MOTION_ROI_WIDTH", "0.08"))
-    motion_roi_y_ratio: float = float(os.getenv("MOTION_ROI_Y", "0.15"))
-    motion_roi_height_ratio: float = float(os.getenv("MOTION_ROI_HEIGHT", "0.50"))
-
-    # Motion classification thresholds (optical flow magnitude - 90th percentile)
-    # Calibrated from video analysis (consecutive frames at 25fps):
-    #   - STOPPED: p90 magnitude typically 0.13-0.14
-    #   - RUNNING: p90 magnitude typically 1.0-2.4
-    #   - TRANSITION: p90 magnitude 0.5-0.7
-    motion_stopped_threshold: float = float(os.getenv("MOTION_STOPPED_THRESHOLD", "0.3"))
-    motion_running_threshold: float = float(os.getenv("MOTION_RUNNING_THRESHOLD", "0.8"))
-    motion_confidence_threshold: float = float(os.getenv("MOTION_CONFIDENCE_THRESHOLD", "0.7"))
-
-    # ==========================================
     # etrain.info Delay Integration Settings
     # ==========================================
     # Enable/disable etrain.info delay data fetching
