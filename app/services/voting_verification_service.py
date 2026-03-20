@@ -343,17 +343,19 @@ class VotingVerificationService:
     a configurable percentage of frames detect the activity.
     """
 
-    def __init__(self, yolo_model=None, yolo_pose_model=None):
+    def __init__(self, yolo_model=None, yolo_pose_model=None, yolo_roi_model=None):
         """
         Initialize the voting verification service.
 
         Args:
             yolo_model: Pre-loaded YOLO model for object detection
             yolo_pose_model: Pre-loaded YOLO-Pose model for pose estimation
+            yolo_roi_model: Pre-loaded YOLO model for ROI crop detection (stronger model for small objects)
         """
         self.settings = get_settings()
         self.yolo_model = yolo_model
         self.yolo_pose_model = yolo_pose_model
+        self.yolo_roi_model = yolo_roi_model
 
         # Activity thresholds (from config, matching locopilot_monitor.py)
         self.cell_phone_margin = self.settings.voting_cell_phone_margin
@@ -485,6 +487,9 @@ class VotingVerificationService:
             logger.info(f"[VOTING] {activity_type}: Running batch detection on {len(frames)} frames...")
             batch_detections = self._batch_detect_objects(frames, activity_type)
             batch_poses = self._batch_detect_poses(frames, activity_type)
+
+            # Supplement with ROI crop detections (workspace ROI for books, cups, phones)
+            self._supplement_with_roi_detections(frames, batch_detections, batch_poses)
 
             # Cache the results for subsequent activity verifications at same timestamp
             self._inference_cache.put(video_path, timestamp_sec, num_frames, {
@@ -683,6 +688,9 @@ class VotingVerificationService:
             logger.info(f"[VOTING BATCH] Running batch YOLO inference on {len(frames)} frames...")
             batch_detections = self._batch_detect_objects(frames, "batch")
             batch_poses = self._batch_detect_poses(frames, "batch")
+
+            # Supplement with ROI crop detections (workspace ROI for books, cups, phones)
+            self._supplement_with_roi_detections(frames, batch_detections, batch_poses)
 
             # Cache for potential future use
             self._inference_cache.put(video_path, timestamp_sec, num_frames, {
@@ -925,6 +933,103 @@ class VotingVerificationService:
 
         return all_detections
 
+    def _supplement_with_roi_detections(
+        self,
+        frames: List[np.ndarray],
+        batch_detections: List[Dict],
+        batch_poses: List[Dict]
+    ) -> None:
+        """Supplement batch detections with workspace ROI crop detection.
+
+        Runs the ROI model (stronger, e.g. yolo26s) on workspace crops derived
+        from pose keypoints.  This catches books, cups, and phones that the
+        full-frame voting model misses due to overhead angle / small size.
+
+        Modifies batch_detections in-place.
+        """
+        if self.yolo_roi_model is None:
+            return
+
+        roi_conf = getattr(self.settings, 'yolo_roi_confidence', 0.15)
+        target_classes = {'cell phone', 'book', 'bottle', 'cup', 'backpack', 'handbag', 'suitcase'}
+
+        for i, (frame, poses) in enumerate(zip(frames, batch_poses)):
+            keypoints_list = poses.get('keypoints', [])
+            if not keypoints_list:
+                continue
+
+            h, w = frame.shape[:2]
+
+            for kps in keypoints_list:
+                if kps is None or len(kps) < 13:
+                    continue
+
+                # Collect shoulder, wrist, hip coords for workspace ROI
+                kp_indices = [5, 6, 9, 10, 11, 12]  # shoulders, wrists, hips
+                xs, ys = [], []
+                for idx in kp_indices:
+                    if len(kps[idx]) >= 3 and kps[idx][2] > 0.3:
+                        xs.append(int(kps[idx][0]))
+                        ys.append(int(kps[idx][1]))
+
+                if len(xs) < 3:
+                    continue
+
+                margin = 80
+                x1 = max(0, min(xs) - margin)
+                y1 = max(0, min(ys) - margin)
+                x2 = min(w, max(xs) + margin)
+                y2 = min(h, max(ys) + margin)
+
+                if (x2 - x1) < 100 or (y2 - y1) < 100:
+                    continue
+
+                crop = frame[y1:y2, x1:x2]
+                if crop.size == 0:
+                    continue
+
+                try:
+                    results = self.yolo_roi_model(crop, verbose=False, conf=roi_conf)
+                    for box in results[0].boxes:
+                        cls = int(box.cls[0])
+                        conf = float(box.conf[0])
+                        class_name = self.yolo_roi_model.names[cls]
+
+                        if class_name not in target_classes:
+                            continue
+
+                        xyxy_local = box.xyxy[0].cpu().numpy().tolist()
+                        # Convert to global coordinates
+                        gx1 = xyxy_local[0] + x1
+                        gy1 = xyxy_local[1] + y1
+                        gx2 = xyxy_local[2] + x1
+                        gy2 = xyxy_local[3] + y1
+                        global_bbox = [gx1, gy1, gx2, gy2]
+
+                        if class_name == 'book':
+                            batch_detections[i].setdefault('book', []).append(
+                                {'bbox': global_bbox, 'confidence': conf}
+                            )
+                        elif class_name == 'cell phone':
+                            batch_detections[i].setdefault('cell_phone', []).append(
+                                {'bbox': global_bbox, 'confidence': conf}
+                            )
+                        elif class_name in ('cup', 'bottle'):
+                            batch_detections[i].setdefault('bottle', []).append(
+                                {'bbox': global_bbox, 'confidence': conf}
+                            )
+                        elif class_name in ('backpack', 'handbag', 'suitcase'):
+                            batch_detections[i].setdefault('backpack', []).append(
+                                {'bbox': global_bbox, 'confidence': conf}
+                            )
+
+                        logger.debug(
+                            f"[VOTING ROI] Frame {i}: {class_name} conf={conf:.2f} "
+                            f"via workspace crop"
+                        )
+                except Exception as e:
+                    logger.debug(f"[VOTING ROI] Frame {i}: ROI detection error: {e}")
+
     def _batch_detect_poses(self, frames: List[np.ndarray], activity_type: str) -> List[Dict]:
         """
         Run YOLO-Pose detection on multiple frames in batch.
@@ -1158,7 +1263,9 @@ class VotingVerificationService:
                     f"left_hand={left_hand_coords}, right_hand={right_hand_coords}, "
                     f"head_down={head_down}, wrist_dist={wrist_dist:.1f}px")
 
-        # Method 1: Book detection
+        # Method 1: Book detection — requires hand near book AND head-down posture
+        # Head-down guards against FPs where book is permanently on control panel
+        # and hand is merely near it while operating controls.
         for book_data in books:
             book_bbox = book_data['bbox']
 
@@ -1172,7 +1279,7 @@ class VotingVerificationService:
                             f"book_bbox={[int(x) for x in book_bbox]}, "
                             f"book_in_region={book_in_region}, hand_near_book={left_near or right_near}, head_down={head_down}")
 
-                if left_near or right_near:
+                if (left_near or right_near) and head_down:
                     detected_by_book = True
                     break
 

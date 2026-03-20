@@ -87,6 +87,13 @@ class Settings(BaseSettings):
     yolo_pose_weights: str = os.getenv("YOLO_POSE_WEIGHTS", "yolo26n-pose.pt")  # YOLO26 nano-pose for multi-person pose
     yolo_pose_confidence: float = float(os.getenv("YOLO_POSE_CONFIDENCE", "0.45"))  # Pose detection confidence
 
+    # ROI crop detection: small model for pose-guided crop detection around wrists/hips
+    # Uses a stronger model on small crops around keypoints for better recall on
+    # small objects (cell phones, cups, bottles, books) from overhead CCTV angles.
+    # When empty, ROI detection uses the same model as full-frame detection.
+    yolo_roi_weights: str = os.getenv("YOLO_ROI_WEIGHTS", "yolo26s.pt")  # YOLO26 small for ROI crop detection
+    yolo_roi_confidence: float = float(os.getenv("YOLO_ROI_CONFIDENCE", "0.15"))  # Lower threshold for small object recall
+
     # Voting: large model for accurate verification (~160 frames)
     # When empty, voting uses the same model as detection (backward compatible)
     yolo_voting_weights: str = os.getenv("YOLO_VOTING_WEIGHTS", "yolo26l.pt")  # YOLO26 large for voting verification
@@ -199,7 +206,7 @@ class Settings(BaseSettings):
     # Per-activity voting thresholds (percentage of frames required for confirmation)
     # Default 50% (5/10 frames must detect the activity)
     voting_threshold_cell_phone: float = float(os.getenv("VOTING_THRESHOLD_CELL_PHONE", "0.5"))
-    voting_threshold_writing: float = float(os.getenv("VOTING_THRESHOLD_WRITING", "0.5"))
+    voting_threshold_writing: float = float(os.getenv("VOTING_THRESHOLD_WRITING", "0.4"))
     voting_threshold_packing_bags: float = float(os.getenv("VOTING_THRESHOLD_PACKING_BAGS", "0.75"))  # 75% - stricter for false positive reduction (was 60%)
     voting_threshold_lp_hand_gesture: float = float(os.getenv("VOTING_THRESHOLD_LP_GESTURE", "0.6"))
     voting_threshold_alp_hand_gesture: float = float(os.getenv("VOTING_THRESHOLD_ALP_GESTURE", "0.6"))
@@ -457,6 +464,21 @@ class Settings(BaseSettings):
     # ==========================================
     # Enable/disable train motion-based rule engine
     train_motion_rules_enabled: bool = bool(int(os.getenv("TRAIN_MOTION_RULES_ENABLED", "0")))
+
+    # Train Motion Detection (vibration-based)
+    train_motion_detection_enabled: bool = bool(int(os.getenv("TRAIN_MOTION_DETECTION_ENABLED", "0")))
+    train_motion_vibration_threshold: float = float(os.getenv("TRAIN_MOTION_VIB_THRESHOLD", "1.0"))
+    train_motion_vibration_high: float = float(os.getenv("TRAIN_MOTION_VIB_HIGH", "3.0"))
+    train_motion_window_roi_lp: str = os.getenv("TRAIN_MOTION_WINDOW_ROI_LP", "0.0,0.05,0.12,0.85")
+    train_motion_window_roi_alp: str = os.getenv("TRAIN_MOTION_WINDOW_ROI_ALP", "0.88,0.05,1.0,0.85")
+    train_motion_running_threshold: float = float(os.getenv("TRAIN_MOTION_RUNNING_THRESHOLD", "0.45"))
+    train_motion_temporal_window: int = int(os.getenv("TRAIN_MOTION_TEMPORAL_WINDOW", "5"))
+    train_motion_stopped_group_threshold: int = int(os.getenv("TRAIN_MOTION_STOPPED_GROUP_THRESHOLD", "5"))
+    train_motion_window_flow_threshold: float = float(os.getenv("TRAIN_MOTION_WINDOW_FLOW_THRESHOLD", "2.0"))
+    train_motion_weight_vibration: float = float(os.getenv("TRAIN_MOTION_WEIGHT_VIBRATION", "0.5"))
+    train_motion_weight_window: float = float(os.getenv("TRAIN_MOTION_WEIGHT_WINDOW", "0.3"))
+    train_motion_weight_stability: float = float(os.getenv("TRAIN_MOTION_WEIGHT_STABILITY", "0.2"))
+    train_motion_person_mask_padding: float = float(os.getenv("TRAIN_MOTION_PERSON_MASK_PADDING", "0.10"))
 
     # Suppress no_person_detected when trip schedule is unavailable
     # (cannot distinguish station halts from running without schedule)

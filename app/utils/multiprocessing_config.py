@@ -72,6 +72,10 @@ class MultiprocessingConfig:
     yolo_pose_model_path: str = os.getenv("YOLO_POSE_WEIGHTS", "yolo26n-pose.pt")  # YOLO26 nano-pose for body pose
     yolo_device: str = os.getenv("YOLO_DEVICE", "cpu")  # Device for YOLO inference (cpu, cuda:0, 0)
 
+    # ROI crop detection: separate (stronger) YOLO model for pose-guided crops
+    # Uses a more accurate model on small crops around keypoints for better small object recall
+    yolo_roi_model_path: str = os.getenv("YOLO_ROI_WEIGHTS", "yolo26s.pt")
+
     # Dual-model: separate (heavier) YOLO weights for voting verification
     # When empty, voting uses the same model as detection (backward compatible)
     yolo_voting_model_path: str = os.getenv("YOLO_VOTING_WEIGHTS", "")

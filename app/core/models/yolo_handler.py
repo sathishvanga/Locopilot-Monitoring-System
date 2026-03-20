@@ -180,8 +180,11 @@ class YOLOHandler:
         self.bag_max_area = settings.bag_max_area if settings else 100000
         self.book_person_margin = settings.book_person_margin if settings else 150
 
-        # Cell phone confidence for ROI detection (sourced from Settings)
-        self.roi_confidence = settings.cell_phone_confidence if settings else 0.40
+        # ROI detection: use separate model if configured, otherwise fallback to object_model
+        self.roi_model = getattr(self, 'roi_model', None) or self.object_model
+        self.roi_confidence = (
+            getattr(settings, 'yolo_roi_confidence', 0.15) if settings else 0.15
+        )
 
         # Dark frame preprocessing threshold
         self.dark_frame_brightness_threshold = (
@@ -379,11 +382,20 @@ class YOLOHandler:
                 roi_names.append(display_name)
                 continue
 
+        # Workspace ROI: larger crop covering the person's torso+hands area
+        workspace_bbox = self._compute_workspace_roi(
+            pose_landmarks, get_keypoint_func, h, w
+        )
+        if workspace_bbox is not None:
+            roi_bboxes.append(workspace_bbox)
+            roi_names.append('WORKSPACE')
+            detections['roi_boxes'].append(('WORKSPACE', workspace_bbox))
+
         # Batch process all ROIs
         valid_roi_count = sum(1 for bbox in roi_bboxes if bbox is not None)
 
         if valid_roi_count > 0:
-            target_classes = ['cell phone', 'book', 'pen', 'pencil', 'paper', 'bottle', 'cup']
+            target_classes = ['cell phone', 'book', 'pen', 'pencil', 'paper', 'bottle', 'cup', 'backpack', 'handbag', 'suitcase']
             batch_detections = self.detect_objects_in_rois_batch(
                 frame, roi_bboxes, roi_names, target_classes
             )
@@ -407,7 +419,7 @@ class YOLOHandler:
         """
         hand_related_keypoints = [
             'RIGHT_WRIST', 'LEFT_WRIST', 'RIGHT_INDEX', 'LEFT_INDEX',
-            'RIGHT_EAR', 'LEFT_EAR'
+            'RIGHT_EAR', 'LEFT_EAR', 'WORKSPACE'
         ]
 
         for keypoint_name, roi_dets in zip(roi_names, batch_detections):
@@ -428,6 +440,11 @@ class YOLOHandler:
                         detections['cell_phone'].append([x1, y1, x2, y2])
                 elif class_name == 'book':
                     detections['book'].append([x1, y1, x2, y2])
+                elif class_name in ('cup', 'bottle'):
+                    if keypoint_name in hand_related_keypoints:
+                        detections.setdefault('cup_bottle', []).append([x1, y1, x2, y2])
+                elif class_name in ('backpack', 'handbag', 'suitcase'):
+                    detections.setdefault('backpack', []).append([x1, y1, x2, y2])
 
     def detect_objects_person_rois(
         self,
@@ -506,10 +523,23 @@ class YOLOHandler:
                 roi_names.append(display_name)
                 continue
 
+        # Workspace ROI: larger crop covering the person's torso+hands area
+        # This catches books/papers on the desk that are outside small keypoint ROIs
+        workspace_bbox = self._compute_workspace_roi(
+            pose_landmarks, get_keypoint_func, h, w
+        )
+        if workspace_bbox is not None:
+            roi_bboxes.append(workspace_bbox)
+            roi_names.append('WORKSPACE')
+            person_roi_detections['roi_boxes'].append(('WORKSPACE', workspace_bbox))
+            self.logger.debug(
+                f"[DEBUG ROI] Creating WORKSPACE ROI: bbox={workspace_bbox}"
+            )
+
         valid_roi_count = sum(1 for bbox in roi_bboxes if bbox is not None)
 
         if valid_roi_count > 0:
-            target_classes = ['cell phone', 'book', 'pen', 'pencil', 'paper', 'bottle', 'cup']
+            target_classes = ['cell phone', 'book', 'pen', 'pencil', 'paper', 'bottle', 'cup', 'backpack', 'handbag', 'suitcase']
             batch_detections = self.detect_objects_in_rois_batch(
                 frame, roi_bboxes, roi_names, target_classes
             )
@@ -519,6 +549,62 @@ class YOLOHandler:
             )
 
         return person_roi_detections
+
+    def _compute_workspace_roi(
+        self,
+        pose_landmarks: Any,
+        get_keypoint_func: callable,
+        frame_h: int,
+        frame_w: int,
+        margin: int = 80
+    ) -> Optional[Tuple[int, int, int, int]]:
+        """Compute a workspace ROI covering the person's torso + desk area.
+
+        Creates a large crop from shoulders to hips (+ margin) that covers
+        the control panel / desk area where books, papers, and cups sit.
+        This catches objects that are outside small keypoint-based ROIs.
+
+        Args:
+            pose_landmarks: Pose landmarks for this person
+            get_keypoint_func: Function to get keypoint from landmarks
+            frame_h: Frame height
+            frame_w: Frame width
+            margin: Extra pixels around the bounding region
+
+        Returns:
+            (x1, y1, x2, y2) workspace ROI, or None if insufficient keypoints
+        """
+        keypoints_to_collect = [
+            'left_shoulder', 'right_shoulder',
+            'left_wrist', 'right_wrist',
+            'left_hip', 'right_hip',
+        ]
+
+        xs, ys = [], []
+        for kp_name in keypoints_to_collect:
+            try:
+                lm = get_keypoint_func(pose_landmarks, kp_name)
+                if lm.visibility < 0.3:
+                    continue
+                xs.append(int(lm.x * frame_w))
+                ys.append(int(lm.y * frame_h))
+            except Exception:
+                continue
+
+        # Need at least 3 valid keypoints to form a meaningful workspace
+        if len(xs) < 3:
+            return None
+
+        x1 = max(0, min(xs) - margin)
+        y1 = max(0, min(ys) - margin)
+        x2 = min(frame_w, max(xs) + margin)
+        y2 = min(frame_h, max(ys) + margin)
+
+        # Ensure minimum size
+        if (x2 - x1) < 100 or (y2 - y1) < 100:
+            return None
+
+        return (x1, y1, x2, y2)
 
     def detect_objects_in_rois_batch(
         self,
@@ -571,8 +657,9 @@ class YOLOHandler:
         if len(roi_frames) == 0:
             return all_detections
 
-        # Batch YOLO inference on all ROI crops
-        batch_results = self.object_model(
+        # Batch YOLO inference on all ROI crops using ROI model (stronger model for small crops)
+        roi_model = self.roi_model or self.object_model
+        batch_results = roi_model(
             roi_frames,
             verbose=False,
             conf=self.roi_confidence,
@@ -596,7 +683,7 @@ class YOLOHandler:
                 conf = float(box.conf[0])
                 xyxy_local = box.xyxy[0].cpu().numpy()
 
-                class_name = self.object_model.names[cls]
+                class_name = roi_model.names[cls]
                 debug_all_detections.append((class_name, conf))
 
                 if class_name in target_classes:

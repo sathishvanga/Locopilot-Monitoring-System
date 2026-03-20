@@ -444,6 +444,7 @@ class LocopilotActivityMonitor:
         if preloaded_models is not None:
             # [OK] PERFORMANCE: Use pre-loaded models from worker pool (fast path)
             self.yolo_model = preloaded_models.get('yolo')
+            self.yolo_roi_model = preloaded_models.get('yolo_roi')
             self.yolo_pose = preloaded_models.get('yolo_pose')
             self.face_mesh = preloaded_models.get('face_mesh')
             self.mp_face_mesh = preloaded_models.get('mp_face_mesh')
@@ -472,6 +473,17 @@ class LocopilotActivityMonitor:
             if hasattr(self.yolo_model.model, 'fuse'):
                 self.yolo_model.fuse()
                 self.logger.info("YOLO model layers fused for optimized inference")
+
+            # ROI crop detection model (stronger model for small objects in pose-guided crops)
+            yolo_roi_weights = settings.yolo_roi_weights if settings else ''
+            if yolo_roi_weights and yolo_roi_weights != yolo_weights:
+                self.logger.info(f"Loading YOLO ROI model: {yolo_roi_weights}")
+                self.yolo_roi_model = YOLO(yolo_roi_weights)
+                if hasattr(self.yolo_roi_model.model, 'fuse'):
+                    self.yolo_roi_model.fuse()
+                    self.logger.info("YOLO ROI model layers fused for optimized inference")
+            else:
+                self.yolo_roi_model = None
 
             # YOLO-Pose for body pose estimation (replaces MediaPipe Pose)
             self.logger.info(f"Loading YOLO-Pose model: {yolo_pose_weights}")
@@ -555,7 +567,8 @@ class LocopilotActivityMonitor:
             logger=self.logger,
             yolo_imgsz=self.yolo_imgsz,
             yolo_device=self.yolo_device,
-            cell_phone_confidence=self.cell_phone_confidence
+            cell_phone_confidence=self.cell_phone_confidence,
+            yolo_roi_model=getattr(self, 'yolo_roi_model', None)
         )
 
         # Initialize FrameAnnotator (extracted module for frame visualization)
@@ -737,9 +750,11 @@ class LocopilotActivityMonitor:
                 # nano for detection, large for voting verification)
                 voting_yolo = (preloaded_models.get('yolo_voting') if preloaded_models else None) or self.yolo_model
                 voting_yolo_pose = (preloaded_models.get('yolo_pose_voting') if preloaded_models else None) or self.yolo_pose
+                voting_roi = getattr(self, 'yolo_roi_model', None)
                 self.voting_service = VotingVerificationService(
                     yolo_model=voting_yolo,
-                    yolo_pose_model=voting_yolo_pose
+                    yolo_pose_model=voting_yolo_pose,
+                    yolo_roi_model=voting_roi
                 )
                 if preloaded_models and preloaded_models.get('yolo_voting') is not None and preloaded_models.get('yolo_voting') is not self.yolo_model:
                     self.logger.info("VotingVerificationService initialized with separate voting model")
@@ -794,6 +809,20 @@ class LocopilotActivityMonitor:
             settings=self.settings,
             logger=self.logger
         )
+
+        # Train motion detector (vibration-based, feature-flagged OFF by default)
+        self.train_motion_detector = None
+        self.current_motion_state = "UNKNOWN"
+        if settings and getattr(settings, 'train_motion_detection_enabled', False):
+            from app.core.detectors.train_motion_detector import TrainMotionDetector
+            self.train_motion_detector = TrainMotionDetector(
+                settings=settings, logger=self.logger,
+                sample_fps=self.sample_fps, camera_angle=self.camera_angle
+            )
+            self.train_motion_stopped_group_threshold = getattr(
+                settings, 'train_motion_stopped_group_threshold', 5
+            )
+            self.logger.info("TrainMotionDetector initialized (vibration-based motion detection enabled)")
 
         # Evidence manager for clip/report generation (only if run_dir is set)
         if self.run_dir:
@@ -3079,15 +3108,31 @@ class LocopilotActivityMonitor:
                 writing_detected_by_wrist = False
                 writing_detected_by_book_posture = False  # NEW fallback method
 
-                # Method 1: Book detection (existing method - requires wrists visible)
+                # Method 1: Book detection — requires hand overlapping book AND head-down posture
+                # Head-down guards against FPs where book is permanently on control panel
+                # and hand is merely near it while operating controls.
                 if len(person_books) > 0:
                     right_hand = self.get_keypoint(translated_landmarks, 'right_wrist')
                     left_hand = self.get_keypoint(translated_landmarks, 'left_wrist')
 
+                    # Check head-down posture (nose below or near shoulder level)
+                    writing_head_down = False
+                    try:
+                        nose_kp = self.get_keypoint(translated_landmarks, 'nose')
+                        l_shoulder = self.get_keypoint(translated_landmarks, 'left_shoulder')
+                        r_shoulder = self.get_keypoint(translated_landmarks, 'right_shoulder')
+                        if (nose_kp.visibility > 0.3 and l_shoulder.visibility > 0.3
+                                and r_shoulder.visibility > 0.3):
+                            nose_y = nose_kp.y * h
+                            shoulder_y = (l_shoulder.y * h + r_shoulder.y * h) / 2
+                            writing_head_down = nose_y > shoulder_y - 30  # head level or below shoulders
+                    except Exception:
+                        pass
+
                     # Check if wrists are visible enough for hand-based detection
                     wrists_visible = (right_hand.visibility >= 0.5 or left_hand.visibility >= 0.5)
 
-                    if wrists_visible:
+                    if wrists_visible and writing_head_down:
                         right_hand_coords = (int(right_hand.x * w), int(right_hand.y * h))
                         left_hand_coords = (int(left_hand.x * w), int(left_hand.y * h))
 
@@ -3635,6 +3680,7 @@ class LocopilotActivityMonitor:
             # Track actual detection timestamps for precise clip duration
             self.activities[activity_name]['first_detection_time'] = timestamp
             self.activities[activity_name]['last_detection_time'] = timestamp
+            self.activities[activity_name]['motion_state'] = self.current_motion_state
 
             # Log with OCR timestamp if available
             if ocr_ts:
@@ -3925,9 +3971,10 @@ class LocopilotActivityMonitor:
                 "peopleCount": len(activity.get('person_roles', {})) if activity.get('person_roles') else people_count,
                 "evidence": {"rule": self.evidence_rules[activity_name]},
                 "activityImage": os.path.abspath(image_path) if self.evidence_clips_dir else image_filename,
-                "activityClip": os.path.abspath(clip_path) if self.evidence_clips_dir else clip_filename
+                "activityClip": os.path.abspath(clip_path) if self.evidence_clips_dir else clip_filename,
+                "motionState": activity.get('motion_state', 'UNKNOWN')
             }
-            
+
             # Add person role information if available
             if 'person_roles' in activity and activity['person_roles']:
                 person_roles_list = []
@@ -4179,6 +4226,23 @@ class LocopilotActivityMonitor:
                     raw_detections = len(detections['person'])
                     self.logger.debug(f"[{timestamp}] NO PERSON detected in frame (raw YOLO detections: {raw_detections})")
 
+            # STEP 3.5: Train motion detection (vibration-based)
+            if self.train_motion_detector is not None:
+                person_bboxes_for_motion = [
+                    p[:4].astype(int) if hasattr(p, 'astype') else [int(c) for c in p[:4]]
+                    for p in detections.get('person', [])
+                ]
+                motion_state, motion_conf, motion_diag = self.train_motion_detector.process_frame(
+                    frame, person_bboxes_for_motion
+                )
+                self.current_motion_state = motion_state
+                if self.logger:
+                    self.logger.debug(
+                        f"[{timestamp}] [Frame {frame_idx}] Train motion: {motion_state} "
+                        f"(conf={motion_conf:.2f}, vib={motion_diag['vib_mean']:.2f}, "
+                        f"combined={motion_diag['combined_score']:.3f})"
+                    )
+
             # STEP 4: *** MULTI-PERSON PROCESSING ***
             # Process ALL persons individually for ALL activities
             # GPU BATCH: Pass pre-computed pose results if available
@@ -4402,6 +4466,29 @@ class LocopilotActivityMonitor:
 
             # Extract OCR timestamp from frame (if enabled)
             ocr_timestamp = self._extract_ocr_timestamp(frame)
+
+            # GATE: Suppress activities when train is STOPPED (vibration-based motion detection)
+            # When stopped, only group_detected (>5 persons) and no_person_detected are valid
+            if self.train_motion_detector is not None and self.current_motion_state == "STOPPED":
+                microsleep_detected = False
+                sleep_detected = False
+                cell_phone_detected = False
+                writing_detected = False
+                packing_detected = False
+                lp_hand_gesture_detected = False
+                alp_hand_gesture_detected = False
+                mind_diversion_detected = False
+                eating_drinking_detected = False
+                # group_detected: raise threshold to >5 when stopped
+                if group_detected_flag:
+                    person_count = len(detections.get('deduplicated_person', []))
+                    if person_count <= self.train_motion_stopped_group_threshold:
+                        group_detected_flag = False
+                self.logger.debug(
+                    f"[{timestamp}] [Frame {frame_idx}] Train STOPPED — "
+                    f"all activities suppressed except group_detected (>{self.train_motion_stopped_group_threshold}) "
+                    f"and no_person_detected"
+                )
 
             # Update activity states with temporal filtering
             activities_map = {

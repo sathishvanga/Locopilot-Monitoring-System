@@ -9,6 +9,7 @@ from app.core.detectors.gesture_detector import GestureDetector
 from app.core.detectors.mind_diversion_detector import MindDiversionDetector
 from app.core.detectors.object_detector import ObjectDetector
 from app.core.detectors.sleep_detector import SleepDetector
+from app.core.detectors.train_motion_detector import TrainMotionDetector
 
 __all__ = [
     'ActivityDetector',
@@ -16,4 +17,5 @@ __all__ = [
     'MindDiversionDetector',
     'ObjectDetector',
     'SleepDetector',
+    'TrainMotionDetector',
 ]

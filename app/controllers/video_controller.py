@@ -754,9 +754,19 @@ async def process_and_upload_video(
                 logger.info(f"[API] Posting results to external API with S3 URLs for trip: {tripId}")
                 external_api_service = get_external_api_service()
                 
+                # Filter out STOPPED activities (only post RUNNING and UNCERTAIN)
+                postable_activities = [
+                    a for a in activities
+                    if a.get('motionState', 'UNKNOWN') != 'STOPPED'
+                ]
+                logger.info(
+                    f"[API] Motion filter: {len(postable_activities)}/{len(activities)} "
+                    f"activities to post (excluded {len(activities) - len(postable_activities)} STOPPED)"
+                )
+
                 external_api_result = external_api_service.post_cvvr_results(
                     trip_id=tripId,
-                    events=activities,  # Use updated activities with S3 URLs (evidence clips)
+                    events=postable_activities,  # Exclude STOPPED activities
                     job_id=run_id,
                     video_s3_url=None,  # No original video URL - we don't upload original video
                     division=division

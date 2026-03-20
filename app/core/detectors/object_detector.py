@@ -56,7 +56,8 @@ class ObjectDetector:
         yolo_imgsz: int = 640,
         yolo_device: Optional[str] = None,
         cell_phone_confidence: float = 0.45,
-        yolo_handler: Optional[Any] = None
+        yolo_handler: Optional[Any] = None,
+        yolo_roi_model: Optional[Any] = None
     ):
         """Initialize the ObjectDetector.
 
@@ -92,7 +93,8 @@ class ObjectDetector:
         else:
             self.yolo_handler = self._create_yolo_handler(
                 yolo_model, settings, preprocessing_service,
-                yolo_imgsz, yolo_device, cell_phone_confidence
+                yolo_imgsz, yolo_device, cell_phone_confidence,
+                yolo_roi_model=yolo_roi_model
             )
 
         # Cache for avoiding redundant inference
@@ -109,7 +111,8 @@ class ObjectDetector:
         preprocessing_service: Optional[Any],
         imgsz: int,
         device: Optional[str],
-        cell_phone_confidence: float
+        cell_phone_confidence: float,
+        yolo_roi_model: Optional[Any] = None
     ) -> Any:
         """Create a YOLOHandler instance for internal delegation.
 
@@ -161,8 +164,11 @@ class ObjectDetector:
         handler.bag_max_area = getattr(settings, 'bag_max_area', 100000) if settings else 100000
         handler.book_person_margin = getattr(settings, 'book_person_margin', 150) if settings else 150
 
-        # ROI confidence (sourced from settings, no os.getenv bypass)
-        handler.roi_confidence = cell_phone_confidence
+        # ROI model: use separate stronger model for crop detection if provided
+        handler.roi_model = yolo_roi_model or yolo_model
+        handler.roi_confidence = (
+            getattr(settings, 'yolo_roi_confidence', 0.15) if settings else 0.15
+        )
 
         # Dark frame preprocessing threshold
         handler.dark_frame_brightness_threshold = (

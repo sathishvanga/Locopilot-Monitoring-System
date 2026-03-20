@@ -54,6 +54,7 @@ class ModelLoader:
 
         # Model references (populated by load_all_models)
         self.yolo_model = None
+        self.yolo_roi_model = None
         self.yolo_pose = None
         self.face_mesh = None
         self.mp_face_mesh = None
@@ -90,6 +91,45 @@ class ModelLoader:
             self.logger.info("YOLO model layers fused for optimized inference")
 
         self.yolo_model = model
+        return model
+
+    def load_yolo_roi_model(self, weights_path: Optional[str] = None) -> Any:
+        """Load a separate YOLO model for pose-guided ROI crop detection.
+
+        Uses a stronger model (e.g. yolo26s) on small crops around keypoints
+        for better recall on small objects from overhead CCTV angles.
+
+        Args:
+            weights_path: Path to YOLO weights file. If None, uses settings or default.
+
+        Returns:
+            Loaded YOLO model instance, or None if same as primary detection model.
+        """
+        from ultralytics import YOLO
+
+        if weights_path is None:
+            weights_path = getattr(self.settings, 'yolo_roi_weights', '') if self.settings else ''
+
+        if not weights_path:
+            self.logger.info("No separate ROI model configured, using primary detection model")
+            self.yolo_roi_model = None
+            return None
+
+        # Skip loading if ROI weights are the same as the primary model
+        primary_weights = getattr(self.settings, 'yolo_weights', 'yolo26n.pt') if self.settings else 'yolo26n.pt'
+        if weights_path == primary_weights:
+            self.logger.info(f"ROI model same as primary ({weights_path}), skipping separate load")
+            self.yolo_roi_model = None
+            return None
+
+        self.logger.info(f"Loading YOLO ROI model: {weights_path}")
+        model = YOLO(weights_path)
+
+        if hasattr(model.model, 'fuse'):
+            model.fuse()
+            self.logger.info("YOLO ROI model layers fused for optimized inference")
+
+        self.yolo_roi_model = model
         return model
 
     def load_yolo_pose_model(
@@ -251,6 +291,7 @@ class ModelLoader:
             RuntimeError: If required models (YOLO or YOLO-Pose) fail to load
         """
         self.load_yolo_object_model()
+        self.load_yolo_roi_model()
         self.load_yolo_pose_model()
         self.load_face_mesh()
         self.load_preprocessing_service()
@@ -272,6 +313,7 @@ class ModelLoader:
         """
         return {
             'yolo': self.yolo_model,
+            'yolo_roi': self.yolo_roi_model,
             'yolo_pose': self.yolo_pose,
             'face_mesh': self.face_mesh,
             'mp_face_mesh': self.mp_face_mesh,

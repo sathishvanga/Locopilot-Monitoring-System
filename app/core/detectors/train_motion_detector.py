@@ -1,0 +1,345 @@
+"""
+Train Motion Detection — Vibration + Side-Window Hybrid Approach
+
+Detects train motion by analyzing frame-to-frame pixel jitter on person-masked
+cab interior surfaces (vibration signal), optical flow in the side window strip
+(scenery signal), and block-wise variance changes (stability signal).
+
+When integrated into the main pipeline, person bounding boxes are passed in
+from the existing YOLO detection stage — no separate YOLO model is loaded.
+"""
+
+from collections import deque
+from typing import List, Optional, Tuple
+
+import cv2
+import numpy as np
+
+
+class TrainMotionDetector:
+    """
+    Detects train motion using vibration analysis on cab interior
+    + side window scenery change.
+
+    Constructor follows the existing detector pattern:
+        __init__(self, settings=None, logger=None, sample_fps=0.5)
+    """
+
+    def __init__(self, settings=None, logger=None, sample_fps: float = 0.5, camera_angle: int = 1):
+        self.settings = settings
+        self.logger = logger
+        self.sample_fps = sample_fps
+        self.camera_angle = camera_angle  # 1=LP side, 2=ALP side
+
+        # Read thresholds from settings (with defaults matching tested values)
+        self.vibration_threshold = getattr(settings, 'train_motion_vibration_threshold', 1.0)
+        self.vibration_high = getattr(settings, 'train_motion_vibration_high', 3.0)
+        self.running_threshold = getattr(settings, 'train_motion_running_threshold', 0.45)
+        self.temporal_window = getattr(settings, 'train_motion_temporal_window', 5)
+        self.window_flow_threshold = getattr(settings, 'train_motion_window_flow_threshold', 2.0)
+        self.weight_vibration = getattr(settings, 'train_motion_weight_vibration', 0.5)
+        self.weight_window = getattr(settings, 'train_motion_weight_window', 0.3)
+        self.weight_stability = getattr(settings, 'train_motion_weight_stability', 0.2)
+        self.person_mask_padding = getattr(settings, 'train_motion_person_mask_padding', 0.10)
+        self.stability_block_size = 16
+        self.confidence_threshold = 0.6
+
+        # Select window ROI based on camera angle
+        # LP Side (camera_angle=1): window strip on LEFT edge
+        # ALP Side (camera_angle=2): window strip on RIGHT edge
+        if camera_angle == 2:
+            window_roi_str = getattr(settings, 'train_motion_window_roi_alp', '0.88,0.05,1.0,0.85')
+        else:
+            window_roi_str = getattr(settings, 'train_motion_window_roi_lp', '0.0,0.05,0.12,0.85')
+        parts = [float(x.strip()) for x in window_roi_str.split(',')]
+        self.window_roi_x1 = parts[0] if len(parts) > 0 else 0.0
+        self.window_roi_y1 = parts[1] if len(parts) > 1 else 0.05
+        self.window_roi_x2 = parts[2] if len(parts) > 2 else 0.12
+        self.window_roi_y2 = parts[3] if len(parts) > 3 else 0.85
+
+        # State
+        self.prev_gray: Optional[np.ndarray] = None
+        self.prev_gray_window: Optional[np.ndarray] = None
+        self.state_history: deque = deque(maxlen=self.temporal_window)
+        self._prev_block_vars: Optional[list] = None
+
+    def create_interior_mask(
+        self, frame_shape: Tuple[int, int], person_bboxes: List
+    ) -> np.ndarray:
+        """
+        Create mask for STATIC INTERIOR only:
+        255 = static interior (keep for vibration analysis)
+        0   = person or window (ignore)
+        """
+        h, w = frame_shape[:2]
+        mask = np.ones((h, w), dtype=np.uint8) * 255
+
+        # Mask out persons (with padding)
+        pad = self.person_mask_padding
+        for bbox in person_bboxes:
+            x1, y1, x2, y2 = int(bbox[0]), int(bbox[1]), int(bbox[2]), int(bbox[3])
+            bw, bh = x2 - x1, y2 - y1
+            px, py = int(bw * pad), int(bh * pad)
+            x1m = max(0, x1 - px)
+            y1m = max(0, y1 - py)
+            x2m = min(w, x2 + px)
+            y2m = min(h, y2 + py)
+            mask[y1m:y2m, x1m:x2m] = 0
+
+        # Mask out the side window strip (scenery area — analyzed separately)
+        wx1 = int(self.window_roi_x1 * w)
+        wy1 = int(self.window_roi_y1 * h)
+        wx2 = int(self.window_roi_x2 * w)
+        wy2 = int(self.window_roi_y2 * h)
+        mask[wy1:wy2, wx1:wx2] = 0
+
+        # Also mask top 5% (timestamp overlay) and bottom 8%
+        mask[:int(h * 0.05), :] = 0
+        mask[int(h * 0.92):, :] = 0
+
+        return mask
+
+    def _get_window_roi(self, gray: np.ndarray) -> np.ndarray:
+        """Extract the side window ROI from a grayscale frame."""
+        h, w = gray.shape[:2]
+        x1 = int(self.window_roi_x1 * w)
+        y1 = int(self.window_roi_y1 * h)
+        x2 = int(self.window_roi_x2 * w)
+        y2 = int(self.window_roi_y2 * h)
+        return gray[y1:y2, x1:x2]
+
+    def compute_vibration(
+        self, gray: np.ndarray, interior_mask: np.ndarray
+    ) -> dict:
+        """
+        Compute frame-to-frame vibration on static interior surfaces.
+        """
+        result = {
+            "vibration_mean": 0.0,
+            "vibration_std": 0.0,
+            "vibration_max": 0.0,
+            "vibration_p95": 0.0,
+            "interior_ratio": 0.0,
+            "vibration_score": 0.0,
+        }
+
+        if self.prev_gray is None:
+            self.prev_gray = gray.copy()
+            return result
+
+        # Absolute frame difference on interior only
+        diff = cv2.absdiff(gray, self.prev_gray).astype(np.float32)
+
+        # Get interior pixels only
+        interior_pixels = diff[interior_mask == 255]
+        total_pixels = gray.shape[0] * gray.shape[1]
+        interior_count = len(interior_pixels)
+        result["interior_ratio"] = interior_count / total_pixels if total_pixels > 0 else 0
+
+        if interior_count < 100:
+            self.prev_gray = gray.copy()
+            return result
+
+        result["vibration_mean"] = float(np.mean(interior_pixels))
+        result["vibration_std"] = float(np.std(interior_pixels))
+        result["vibration_max"] = float(np.max(interior_pixels))
+        result["vibration_p95"] = float(np.percentile(interior_pixels, 95))
+
+        if result["vibration_mean"] >= self.vibration_high:
+            result["vibration_score"] = 1.0
+        elif result["vibration_mean"] >= self.vibration_threshold:
+            result["vibration_score"] = (
+                (result["vibration_mean"] - self.vibration_threshold)
+                / (self.vibration_high - self.vibration_threshold)
+            )
+        else:
+            result["vibration_score"] = 0.0
+
+        self.prev_gray = gray.copy()
+        return result
+
+    def compute_window_flow(self, gray: np.ndarray) -> dict:
+        """
+        Compute optical flow or frame diff in the side window ROI.
+        """
+        result = {
+            "window_mean_diff": 0.0,
+            "window_flow_mag": 0.0,
+            "window_score": 0.0,
+        }
+
+        window_gray = self._get_window_roi(gray)
+
+        if self.prev_gray_window is None:
+            self.prev_gray_window = window_gray.copy()
+            return result
+
+        # Frame difference in window
+        diff = cv2.absdiff(window_gray, self.prev_gray_window).astype(np.float32)
+        result["window_mean_diff"] = float(np.mean(diff))
+
+        # Optical flow in window ROI
+        if window_gray.shape[0] > 10 and window_gray.shape[1] > 10:
+            flow = cv2.calcOpticalFlowFarneback(
+                self.prev_gray_window, window_gray, None,
+                pyr_scale=0.5, levels=3, winsize=15,
+                iterations=3, poly_n=5, poly_sigma=1.2, flags=0
+            )
+            mag, _ = cv2.cartToPolar(flow[..., 0], flow[..., 1])
+            result["window_flow_mag"] = float(np.mean(mag))
+
+        # Score
+        threshold = self.window_flow_threshold
+        if result["window_flow_mag"] >= threshold * 2:
+            result["window_score"] = 1.0
+        elif result["window_flow_mag"] >= threshold:
+            result["window_score"] = (result["window_flow_mag"] - threshold) / threshold
+        else:
+            result["window_score"] = 0.0
+
+        self.prev_gray_window = window_gray.copy()
+        return result
+
+    def compute_stability(
+        self, gray: np.ndarray, interior_mask: np.ndarray
+    ) -> dict:
+        """
+        Compute local variance / block-wise stability of the interior.
+        High local variance change -> vibration -> moving.
+        """
+        result = {
+            "block_variance_mean": 0.0,
+            "stability_score": 0.0,
+        }
+
+        bs = self.stability_block_size
+        h, w = gray.shape
+
+        if self._prev_block_vars is None:
+            # Compute block variances for current frame
+            block_vars = []
+            for y in range(0, h - bs, bs):
+                for x in range(0, w - bs, bs):
+                    block_mask = interior_mask[y:y+bs, x:x+bs]
+                    if np.mean(block_mask) > 128:  # mostly interior
+                        block = gray[y:y+bs, x:x+bs].astype(np.float32)
+                        block_vars.append(np.var(block))
+            self._prev_block_vars = block_vars
+            return result
+
+        # Current block variances
+        curr_vars = []
+        for y in range(0, h - bs, bs):
+            for x in range(0, w - bs, bs):
+                block_mask = interior_mask[y:y+bs, x:x+bs]
+                if np.mean(block_mask) > 128:
+                    block = gray[y:y+bs, x:x+bs].astype(np.float32)
+                    curr_vars.append(np.var(block))
+
+        if len(curr_vars) > 0 and len(self._prev_block_vars) > 0:
+            min_len = min(len(curr_vars), len(self._prev_block_vars))
+            diffs = [abs(curr_vars[i] - self._prev_block_vars[i]) for i in range(min_len)]
+            result["block_variance_mean"] = float(np.mean(diffs))
+
+            if result["block_variance_mean"] > 1200:
+                result["stability_score"] = 1.0
+            elif result["block_variance_mean"] > 800:
+                result["stability_score"] = (result["block_variance_mean"] - 800) / 400
+            else:
+                result["stability_score"] = 0.0
+
+        self._prev_block_vars = curr_vars
+        return result
+
+    def get_smoothed_state(self, raw_state: str, raw_confidence: float) -> Tuple[str, float]:
+        """Temporal smoothing over recent frames."""
+        self.state_history.append((raw_state, raw_confidence))
+        if len(self.state_history) < 2:
+            return raw_state, raw_confidence
+
+        running_count = sum(1 for s, _ in self.state_history if s == "RUNNING")
+        stopped_count = sum(1 for s, _ in self.state_history if s == "STOPPED")
+        total = len(self.state_history)
+
+        if running_count / total >= self.confidence_threshold:
+            avg_conf = float(np.mean([c for s, c in self.state_history if s == "RUNNING"]))
+            return "RUNNING", avg_conf
+        elif stopped_count / total >= self.confidence_threshold:
+            avg_conf = float(np.mean([c for s, c in self.state_history if s == "STOPPED"]))
+            return "STOPPED", avg_conf
+        else:
+            return "UNCERTAIN", 0.5
+
+    def process_frame(
+        self, frame: np.ndarray, person_bboxes: List
+    ) -> Tuple[str, float, dict]:
+        """
+        Full pipeline for one frame.
+
+        Args:
+            frame: BGR frame from video
+            person_bboxes: list of [x1, y1, x2, y2] bounding boxes
+                           (from pipeline's YOLO detection, already available)
+
+        Returns:
+            (smoothed_state, smoothed_confidence, diagnostics)
+        """
+        # Grayscale + light blur to reduce compression noise
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        gray = cv2.GaussianBlur(gray, (3, 3), 0)
+
+        # Create interior mask (excludes persons + window + overlays)
+        interior_mask = self.create_interior_mask(frame.shape, person_bboxes)
+
+        # Vibration analysis on static interior
+        vib = self.compute_vibration(gray, interior_mask)
+
+        # Side window flow analysis
+        win = self.compute_window_flow(gray)
+
+        # Block stability analysis
+        stab = self.compute_stability(gray, interior_mask)
+
+        # Combined score
+        combined_score = (
+            self.weight_vibration * vib["vibration_score"]
+            + self.weight_window * win["window_score"]
+            + self.weight_stability * stab["stability_score"]
+        )
+
+        # Decision
+        if combined_score >= self.running_threshold:
+            raw_state = "RUNNING"
+            confidence = min(1.0, combined_score / self.running_threshold)
+        else:
+            raw_state = "STOPPED"
+            confidence = min(1.0, (self.running_threshold - combined_score) / self.running_threshold)
+
+        # First frame has no previous -> unknown
+        if self.prev_gray is None and vib["vibration_mean"] == 0:
+            raw_state = "UNKNOWN"
+            confidence = 0.0
+
+        # Temporal smoothing
+        smoothed_state, smoothed_conf = self.get_smoothed_state(raw_state, confidence)
+
+        diagnostics = {
+            "num_persons": len(person_bboxes),
+            "interior_ratio": vib["interior_ratio"],
+            "vib_mean": vib["vibration_mean"],
+            "vib_std": vib["vibration_std"],
+            "vib_p95": vib["vibration_p95"],
+            "vib_score": vib["vibration_score"],
+            "win_diff": win["window_mean_diff"],
+            "win_flow": win["window_flow_mag"],
+            "win_score": win["window_score"],
+            "blk_var": stab["block_variance_mean"],
+            "stab_score": stab["stability_score"],
+            "combined_score": combined_score,
+            "raw_state": raw_state,
+            "raw_confidence": confidence,
+            "smoothed_state": smoothed_state,
+            "smoothed_confidence": smoothed_conf,
+        }
+
+        return smoothed_state, smoothed_conf, diagnostics

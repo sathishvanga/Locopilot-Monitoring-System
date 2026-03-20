@@ -345,10 +345,20 @@ class VideoProcessingService:
                     # Extract run_id from run_dir for constructing job_id
                     run_id = os.path.basename(run_dir)
                     
+                    # Filter out STOPPED activities (only post RUNNING and UNCERTAIN)
+                    postable_activities = [
+                        a for a in activities
+                        if a.get('motionState', 'UNKNOWN') != 'STOPPED'
+                    ]
+                    logger.info(
+                        f"[API] Motion filter: {len(postable_activities)}/{len(activities)} "
+                        f"activities to post (excluded {len(activities) - len(postable_activities)} STOPPED)"
+                    )
+
                     # Post to external API
                     api_result = external_api_service.post_cvvr_results(
                         trip_id=trip_id,
-                        events=activities,
+                        events=postable_activities,
                         job_id=run_id,
                         host_url=settings.host_url,
                         division=division

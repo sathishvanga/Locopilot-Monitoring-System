@@ -1,0 +1,881 @@
+[
+  {
+    "tripId": "44babad0-65dc-4a5f-9e74-d5a8c11d2795",
+    "activityType": 9,
+    "des": "ALP not exchanging hand gesture",
+    "objectType": "alp hand gesture",
+    "fileUrl": "/tmp/locopilot_uploads/44babad0-65dc-4a5f-9e74-d5a8c11d2795_20260318_145614_minio.mp4",
+    "fileDuration": "0:38:08",
+    "activityStartTime": "24.96",
+    "activityEndTime": "26.96",
+    "videoStartTime": "24.96",
+    "videoEndTime": "26.96",
+    "crewName": "Unknown",
+    "crewId": "N/A",
+    "crewRole": 1,
+    "performingRole": "LP",
+    "date": "2026-03-18",
+    "time": "14:56:34",
+    "filename": "44babad0-65dc-4a5f-9e74-d5a8c11d2795_20260318_145614_minio.mp4",
+    "peopleCount": 2,
+    "evidence": [
+      {
+        "rule": "alp_hand_raised_gesture_detected"
+      }
+    ],
+    "activityImage": "/opt/poc2/locopilot_evidence/run_20260318_145615/clips/44babad0-65dc-4a5f-9e74-d5a8c11d2795_20260318_145614_minio_alp_hand_gesture_frame00000156_000_activity.jpg",
+    "activityClip": "/opt/poc2/locopilot_evidence/run_20260318_145615/clips/44babad0-65dc-4a5f-9e74-d5a8c11d2795_20260318_145614_minio_alp_hand_gesture_frame00000156_000_clip.mp4",
+    "motionState": "STOPPED",
+    "personRoles": [
+      {
+        "personIndex": 0,
+        "role": "ALP",
+        "roleName": "Assistant Loco Pilot",
+        "bboxArea": 283313.03125
+      },
+      {
+        "personIndex": 1,
+        "role": "LP",
+        "roleName": "Loco Pilot",
+        "bboxArea": 115039.9765625
+      }
+    ],
+    "activityTypes": [
+      9
+    ],
+    "descriptions": [
+      "ALP not exchanging hand gesture"
+    ],
+    "objectTypes": [
+      "alp hand gesture"
+    ]
+  },
+  {
+    "tripId": "44babad0-65dc-4a5f-9e74-d5a8c11d2795",
+    "activityType": 2,
+    "des": "Using mobile phone",
+    "objectType": "cell phone",
+    "fileUrl": "/tmp/locopilot_uploads/44babad0-65dc-4a5f-9e74-d5a8c11d2795_20260318_145614_minio.mp4",
+    "fileDuration": "0:38:08",
+    "activityStartTime": "274.58",
+    "activityEndTime": "282.57",
+    "videoStartTime": "274.58",
+    "videoEndTime": "282.57",
+    "crewName": "Unknown",
+    "crewId": "N/A",
+    "crewRole": 1,
+    "performingRole": "LP",
+    "date": "2026-03-18",
+    "time": "14:57:07",
+    "filename": "44babad0-65dc-4a5f-9e74-d5a8c11d2795_20260318_145614_minio.mp4",
+    "peopleCount": 2,
+    "evidence": [
+      {
+        "rule": "phone_in_hand"
+      }
+    ],
+    "activityImage": "/opt/poc2/locopilot_evidence/run_20260318_145615/clips/44babad0-65dc-4a5f-9e74-d5a8c11d2795_20260318_145614_minio_cell_phone_frame00001656_000_activity.jpg",
+    "activityClip": "/opt/poc2/locopilot_evidence/run_20260318_145615/clips/44babad0-65dc-4a5f-9e74-d5a8c11d2795_20260318_145614_minio_cell_phone_frame00001656_000_clip.mp4",
+    "motionState": "UNCERTAIN",
+    "personRoles": [
+      {
+        "personIndex": 0,
+        "role": "ALP",
+        "roleName": "Assistant Loco Pilot",
+        "bboxArea": 199677.109375
+      },
+      {
+        "personIndex": 1,
+        "role": "LP",
+        "roleName": "Loco Pilot",
+        "bboxArea": 52979.51171875
+      }
+    ],
+    "activityTypes": [
+      2
+    ],
+    "descriptions": [
+      "Using mobile phone"
+    ],
+    "objectTypes": [
+      "cell phone"
+    ]
+  },
+  {
+    "tripId": "44babad0-65dc-4a5f-9e74-d5a8c11d2795",
+    "activityType": 8,
+    "des": "LP not exchanging hand gesture",
+    "objectType": "lp hand gesture",
+    "fileUrl": "/tmp/locopilot_uploads/44babad0-65dc-4a5f-9e74-d5a8c11d2795_20260318_145614_minio.mp4",
+    "fileDuration": "0:38:08",
+    "activityStartTime": "961.54",
+    "activityEndTime": "963.54",
+    "videoStartTime": "961.54",
+    "videoEndTime": "963.54",
+    "crewName": "Unknown",
+    "crewId": "N/A",
+    "crewRole": 1,
+    "performingRole": "LP",
+    "date": "2026-03-18",
+    "time": "14:58:07",
+    "filename": "44babad0-65dc-4a5f-9e74-d5a8c11d2795_20260318_145614_minio.mp4",
+    "peopleCount": 1,
+    "evidence": [
+      {
+        "rule": "lp_hand_raised_gesture_detected"
+      }
+    ],
+    "activityImage": "/opt/poc2/locopilot_evidence/run_20260318_145615/clips/44babad0-65dc-4a5f-9e74-d5a8c11d2795_20260318_145614_minio_lp_hand_gesture_frame00005784_000_activity.jpg",
+    "activityClip": "/opt/poc2/locopilot_evidence/run_20260318_145615/clips/44babad0-65dc-4a5f-9e74-d5a8c11d2795_20260318_145614_minio_lp_hand_gesture_frame00005784_000_clip.mp4",
+    "motionState": "STOPPED",
+    "personRoles": [
+      {
+        "personIndex": 0,
+        "role": "ALP",
+        "roleName": "Assistant Loco Pilot",
+        "bboxArea": 281734.90625
+      }
+    ],
+    "activityTypes": [
+      8
+    ],
+    "descriptions": [
+      "LP not exchanging hand gesture"
+    ],
+    "objectTypes": [
+      "lp hand gesture"
+    ]
+  },
+  {
+    "tripId": "44babad0-65dc-4a5f-9e74-d5a8c11d2795",
+    "activityType": 9,
+    "des": "ALP not exchanging hand gesture",
+    "objectType": "alp hand gesture",
+    "fileUrl": "/tmp/locopilot_uploads/44babad0-65dc-4a5f-9e74-d5a8c11d2795_20260318_145614_minio.mp4",
+    "fileDuration": "0:38:08",
+    "activityStartTime": "1644.51",
+    "activityEndTime": "1646.51",
+    "videoStartTime": "1644.51",
+    "videoEndTime": "1646.51",
+    "crewName": "Unknown",
+    "crewId": "N/A",
+    "crewRole": 1,
+    "performingRole": "LP",
+    "date": "2026-03-18",
+    "time": "14:59:36",
+    "filename": "44babad0-65dc-4a5f-9e74-d5a8c11d2795_20260318_145614_minio.mp4",
+    "peopleCount": 2,
+    "evidence": [
+      {
+        "rule": "alp_hand_raised_gesture_detected"
+      }
+    ],
+    "activityImage": "/opt/poc2/locopilot_evidence/run_20260318_145615/clips/44babad0-65dc-4a5f-9e74-d5a8c11d2795_20260318_145614_minio_alp_hand_gesture_frame00009888_000_activity.jpg",
+    "activityClip": "/opt/poc2/locopilot_evidence/run_20260318_145615/clips/44babad0-65dc-4a5f-9e74-d5a8c11d2795_20260318_145614_minio_alp_hand_gesture_frame00009888_000_clip.mp4",
+    "motionState": "RUNNING",
+    "personRoles": [
+      {
+        "personIndex": 0,
+        "role": "ALP",
+        "roleName": "Assistant Loco Pilot",
+        "bboxArea": 288351.84375
+      },
+      {
+        "personIndex": 1,
+        "role": "LP",
+        "roleName": "Loco Pilot",
+        "bboxArea": 149505.0625
+      }
+    ],
+    "activityTypes": [
+      9
+    ],
+    "descriptions": [
+      "ALP not exchanging hand gesture"
+    ],
+    "objectTypes": [
+      "alp hand gesture"
+    ]
+  },
+  {
+    "tripId": "44babad0-65dc-4a5f-9e74-d5a8c11d2795",
+    "activityType": 6,
+    "des": "Packing bags activity detected",
+    "objectType": "packing bags",
+    "fileUrl": "/tmp/locopilot_uploads/44babad0-65dc-4a5f-9e74-d5a8c11d2795_20260318_145614_minio.mp4",
+    "fileDuration": "0:38:08",
+    "activityStartTime": "2025.93",
+    "activityEndTime": "2027.93",
+    "videoStartTime": "2025.93",
+    "videoEndTime": "2027.93",
+    "crewName": "Unknown",
+    "crewId": "N/A",
+    "crewRole": 1,
+    "performingRole": "LP",
+    "date": "2026-03-18",
+    "time": "15:00:27",
+    "filename": "44babad0-65dc-4a5f-9e74-d5a8c11d2795_20260318_145614_minio.mp4",
+    "peopleCount": 2,
+    "evidence": [
+      {
+        "rule": "wrist_inside_backpack_bbox_or_hand_near_backpack"
+      }
+    ],
+    "activityImage": "/opt/poc2/locopilot_evidence/run_20260318_145615/clips/44babad0-65dc-4a5f-9e74-d5a8c11d2795_20260318_145614_minio_packing_bags_frame00012180_000_activity.jpg",
+    "activityClip": "/opt/poc2/locopilot_evidence/run_20260318_145615/clips/44babad0-65dc-4a5f-9e74-d5a8c11d2795_20260318_145614_minio_packing_bags_frame00012180_000_clip.mp4",
+    "motionState": "RUNNING",
+    "personRoles": [
+      {
+        "personIndex": 0,
+        "role": "ALP",
+        "roleName": "Assistant Loco Pilot",
+        "bboxArea": 347279.53125
+      },
+      {
+        "personIndex": 1,
+        "role": "LP",
+        "roleName": "Loco Pilot",
+        "bboxArea": 76983.984375
+      }
+    ],
+    "activityTypes": [
+      6
+    ],
+    "descriptions": [
+      "Packing bags activity detected"
+    ],
+    "objectTypes": [
+      "packing bags"
+    ]
+  },
+  {
+    "tripId": "44babad0-65dc-4a5f-9e74-d5a8c11d2795",
+    "activityType": 9,
+    "des": "ALP not exchanging hand gesture",
+    "objectType": "alp hand gesture",
+    "fileUrl": "/tmp/locopilot_uploads/44babad0-65dc-4a5f-9e74-d5a8c11d2795_20260318_145614_minio.mp4",
+    "fileDuration": "0:38:08",
+    "activityStartTime": "2109.80",
+    "activityEndTime": "2111.80",
+    "videoStartTime": "2109.80",
+    "videoEndTime": "2111.80",
+    "crewName": "Unknown",
+    "crewId": "N/A",
+    "crewRole": 1,
+    "performingRole": "LP",
+    "date": "2026-03-18",
+    "time": "15:00:34",
+    "filename": "44babad0-65dc-4a5f-9e74-d5a8c11d2795_20260318_145614_minio.mp4",
+    "peopleCount": 2,
+    "evidence": [
+      {
+        "rule": "alp_hand_raised_gesture_detected"
+      }
+    ],
+    "activityImage": "/opt/poc2/locopilot_evidence/run_20260318_145615/clips/44babad0-65dc-4a5f-9e74-d5a8c11d2795_20260318_145614_minio_alp_hand_gesture_frame00012684_000_activity.jpg",
+    "activityClip": "/opt/poc2/locopilot_evidence/run_20260318_145615/clips/44babad0-65dc-4a5f-9e74-d5a8c11d2795_20260318_145614_minio_alp_hand_gesture_frame00012684_000_clip.mp4",
+    "motionState": "STOPPED",
+    "personRoles": [
+      {
+        "personIndex": 0,
+        "role": "ALP",
+        "roleName": "Assistant Loco Pilot",
+        "bboxArea": 410298.875
+      },
+      {
+        "personIndex": 1,
+        "role": "LP",
+        "roleName": "Loco Pilot",
+        "bboxArea": 154365.90625
+      }
+    ],
+    "activityTypes": [
+      9
+    ],
+    "descriptions": [
+      "ALP not exchanging hand gesture"
+    ],
+    "objectTypes": [
+      "alp hand gesture"
+    ]
+  },
+  {
+    "tripId": "44babad0-65dc-4a5f-9e74-d5a8c11d2795",
+    "activityType": 9,
+    "des": "ALP not exchanging hand gesture",
+    "objectType": "alp hand gesture",
+    "fileUrl": "/tmp/locopilot_uploads/44babad0-65dc-4a5f-9e74-d5a8c11d2795_20260318_145614_minio.mp4",
+    "fileDuration": "0:38:08",
+    "activityStartTime": "38588.00",
+    "activityEndTime": "38638.00",
+    "videoStartTime": "64.90",
+    "videoEndTime": "74.89",
+    "crewName": "Unknown",
+    "crewId": "N/A",
+    "crewRole": 1,
+    "performingRole": "LP",
+    "date": "2026-03-18",
+    "time": "14:56:36",
+    "filename": "44babad0-65dc-4a5f-9e74-d5a8c11d2795_20260318_145614_minio.mp4",
+    "peopleCount": 2,
+    "evidence": [
+      {
+        "rule": "alp_hand_raised_gesture_detected"
+      },
+      {
+        "rule": "alp_hand_raised_gesture_detected"
+      }
+    ],
+    "activityImage": "/opt/poc2/locopilot_evidence/run_20260318_145615/clips/44babad0-65dc-4a5f-9e74-d5a8c11d2795_20260318_145614_minio_alp_hand_gesture_frame00000396_000_activity.jpg",
+    "activityClip": "/opt/poc2/locopilot_evidence/run_20260318_145615/clips/44babad0-65dc-4a5f-9e74-d5a8c11d2795_20260318_145614_minio_alp_hand_gesture_frame00000396_000_minute643_merged.mp4",
+    "motionState": "STOPPED",
+    "personRoles": [
+      {
+        "personIndex": 0,
+        "role": "ALP",
+        "roleName": "Assistant Loco Pilot",
+        "bboxArea": 219267.234375
+      },
+      {
+        "personIndex": 1,
+        "role": "LP",
+        "roleName": "Loco Pilot",
+        "bboxArea": 114944.5
+      }
+    ],
+    "activityTypes": [
+      9
+    ],
+    "descriptions": [
+      "ALP not exchanging hand gesture"
+    ],
+    "objectTypes": [
+      "alp hand gesture"
+    ],
+    "_sourceClips": [
+      "/opt/poc2/locopilot_evidence/run_20260318_145615/clips/44babad0-65dc-4a5f-9e74-d5a8c11d2795_20260318_145614_minio_alp_hand_gesture_frame00000396_000_clip.mp4",
+      "/opt/poc2/locopilot_evidence/run_20260318_145615/clips/44babad0-65dc-4a5f-9e74-d5a8c11d2795_20260318_145614_minio_alp_hand_gesture_frame00000600_000_clip.mp4"
+    ],
+    "_isCombined": true,
+    "_mergedCount": 2,
+    "_groupingMethod": "minute",
+    "_minuteBucket": 643,
+    "_sourceActivities": [
+      {
+        "activityType": 9,
+        "startTime": "10:43:08",
+        "endTime": "10:43:24",
+        "des": "ALP not exchanging hand gesture",
+        "clip": "/opt/poc2/locopilot_evidence/run_20260318_145615/clips/44babad0-65dc-4a5f-9e74-d5a8c11d2795_20260318_145614_minio_alp_hand_gesture_frame00000396_000_clip.mp4"
+      },
+      {
+        "activityType": 9,
+        "startTime": "10:43:42",
+        "endTime": "10:43:58",
+        "des": "ALP not exchanging hand gesture",
+        "clip": "/opt/poc2/locopilot_evidence/run_20260318_145615/clips/44babad0-65dc-4a5f-9e74-d5a8c11d2795_20260318_145614_minio_alp_hand_gesture_frame00000600_000_clip.mp4"
+      }
+    ]
+  },
+  {
+    "tripId": "44babad0-65dc-4a5f-9e74-d5a8c11d2795",
+    "activityType": 9,
+    "des": "ALP not exchanging hand gesture",
+    "objectType": "alp hand gesture",
+    "fileUrl": "/tmp/locopilot_uploads/44babad0-65dc-4a5f-9e74-d5a8c11d2795_20260318_145614_minio.mp4",
+    "fileDuration": "0:38:08",
+    "activityStartTime": "10:44:08",
+    "activityEndTime": "10:44:18",
+    "videoStartTime": "124.81",
+    "videoEndTime": "126.81",
+    "crewName": "Unknown",
+    "crewId": "N/A",
+    "crewRole": 1,
+    "performingRole": "LP",
+    "date": "2026-03-18",
+    "time": "14:56:43",
+    "filename": "44babad0-65dc-4a5f-9e74-d5a8c11d2795_20260318_145614_minio.mp4",
+    "peopleCount": 2,
+    "evidence": [
+      {
+        "rule": "alp_hand_raised_gesture_detected"
+      }
+    ],
+    "activityImage": "/opt/poc2/locopilot_evidence/run_20260318_145615/clips/44babad0-65dc-4a5f-9e74-d5a8c11d2795_20260318_145614_minio_alp_hand_gesture_frame00000756_000_activity.jpg",
+    "activityClip": "/opt/poc2/locopilot_evidence/run_20260318_145615/clips/44babad0-65dc-4a5f-9e74-d5a8c11d2795_20260318_145614_minio_alp_hand_gesture_frame00000756_000_clip.mp4",
+    "motionState": "STOPPED",
+    "personRoles": [
+      {
+        "personIndex": 0,
+        "role": "ALP",
+        "roleName": "Assistant Loco Pilot",
+        "bboxArea": 279065.5
+      },
+      {
+        "personIndex": 1,
+        "role": "LP",
+        "roleName": "Loco Pilot",
+        "bboxArea": 106942.7109375
+      }
+    ],
+    "activityTypes": [
+      9
+    ],
+    "descriptions": [
+      "ALP not exchanging hand gesture"
+    ],
+    "objectTypes": [
+      "alp hand gesture"
+    ]
+  },
+  {
+    "tripId": "44babad0-65dc-4a5f-9e74-d5a8c11d2795",
+    "activityType": 8,
+    "des": "LP not exchanging hand gesture",
+    "objectType": "lp hand gesture",
+    "fileUrl": "/tmp/locopilot_uploads/44babad0-65dc-4a5f-9e74-d5a8c11d2795_20260318_145614_minio.mp4",
+    "fileDuration": "0:38:08",
+    "activityStartTime": "10:49:31",
+    "activityEndTime": "10:49:43",
+    "videoStartTime": "448.32",
+    "videoEndTime": "450.32",
+    "crewName": "Unknown",
+    "crewId": "N/A",
+    "crewRole": 1,
+    "performingRole": "LP",
+    "date": "2026-03-18",
+    "time": "14:57:16",
+    "filename": "44babad0-65dc-4a5f-9e74-d5a8c11d2795_20260318_145614_minio.mp4",
+    "peopleCount": 1,
+    "evidence": [
+      {
+        "rule": "lp_hand_raised_gesture_detected"
+      }
+    ],
+    "activityImage": "/opt/poc2/locopilot_evidence/run_20260318_145615/clips/44babad0-65dc-4a5f-9e74-d5a8c11d2795_20260318_145614_minio_lp_hand_gesture_frame00002700_000_activity.jpg",
+    "activityClip": "/opt/poc2/locopilot_evidence/run_20260318_145615/clips/44babad0-65dc-4a5f-9e74-d5a8c11d2795_20260318_145614_minio_lp_hand_gesture_frame00002700_000_clip.mp4",
+    "motionState": "RUNNING",
+    "personRoles": [
+      {
+        "personIndex": 0,
+        "role": "ALP",
+        "roleName": "Assistant Loco Pilot",
+        "bboxArea": 155393.96875
+      }
+    ],
+    "activityTypes": [
+      8
+    ],
+    "descriptions": [
+      "LP not exchanging hand gesture"
+    ],
+    "objectTypes": [
+      "lp hand gesture"
+    ]
+  },
+  {
+    "tripId": "44babad0-65dc-4a5f-9e74-d5a8c11d2795",
+    "activityType": 9,
+    "des": "ALP not exchanging hand gesture",
+    "objectType": "alp hand gesture",
+    "fileUrl": "/tmp/locopilot_uploads/44babad0-65dc-4a5f-9e74-d5a8c11d2795_20260318_145614_minio.mp4",
+    "fileDuration": "0:38:08",
+    "activityStartTime": "10:50:51",
+    "activityEndTime": "10:51:03",
+    "videoStartTime": "530.20",
+    "videoEndTime": "532.20",
+    "crewName": "Unknown",
+    "crewId": "N/A",
+    "crewRole": 1,
+    "performingRole": "LP",
+    "date": "2026-03-18",
+    "time": "14:57:24",
+    "filename": "44babad0-65dc-4a5f-9e74-d5a8c11d2795_20260318_145614_minio.mp4",
+    "peopleCount": 2,
+    "evidence": [
+      {
+        "rule": "alp_hand_raised_gesture_detected"
+      }
+    ],
+    "activityImage": "/opt/poc2/locopilot_evidence/run_20260318_145615/clips/44babad0-65dc-4a5f-9e74-d5a8c11d2795_20260318_145614_minio_alp_hand_gesture_frame00003192_000_activity.jpg",
+    "activityClip": "/opt/poc2/locopilot_evidence/run_20260318_145615/clips/44babad0-65dc-4a5f-9e74-d5a8c11d2795_20260318_145614_minio_alp_hand_gesture_frame00003192_000_clip.mp4",
+    "motionState": "RUNNING",
+    "personRoles": [
+      {
+        "personIndex": 0,
+        "role": "ALP",
+        "roleName": "Assistant Loco Pilot",
+        "bboxArea": 272451.0625
+      },
+      {
+        "personIndex": 1,
+        "role": "LP",
+        "roleName": "Loco Pilot",
+        "bboxArea": 141997.765625
+      }
+    ],
+    "activityTypes": [
+      9
+    ],
+    "descriptions": [
+      "ALP not exchanging hand gesture"
+    ],
+    "objectTypes": [
+      "alp hand gesture"
+    ]
+  },
+  {
+    "tripId": "44babad0-65dc-4a5f-9e74-d5a8c11d2795",
+    "activityType": 9,
+    "des": "ALP not exchanging hand gesture; LP not exchanging hand gesture",
+    "objectType": "alp hand gesture",
+    "fileUrl": "/tmp/locopilot_uploads/44babad0-65dc-4a5f-9e74-d5a8c11d2795_20260318_145614_minio.mp4",
+    "fileDuration": "0:38:08",
+    "activityStartTime": "39149.00",
+    "activityEndTime": "39185.00",
+    "videoStartTime": "626.05",
+    "videoEndTime": "628.05",
+    "crewName": "Unknown",
+    "crewId": "N/A",
+    "crewRole": 1,
+    "performingRole": "LP",
+    "date": "2026-03-18",
+    "time": "14:57:31",
+    "filename": "44babad0-65dc-4a5f-9e74-d5a8c11d2795_20260318_145614_minio.mp4",
+    "peopleCount": 2,
+    "evidence": [
+      {
+        "rule": "alp_hand_raised_gesture_detected"
+      },
+      {
+        "rule": "lp_hand_raised_gesture_detected"
+      }
+    ],
+    "activityImage": "/opt/poc2/locopilot_evidence/run_20260318_145615/clips/44babad0-65dc-4a5f-9e74-d5a8c11d2795_20260318_145614_minio_alp_hand_gesture_frame00003768_000_activity.jpg",
+    "activityClip": "/opt/poc2/locopilot_evidence/run_20260318_145615/clips/44babad0-65dc-4a5f-9e74-d5a8c11d2795_20260318_145614_minio_alp_hand_gesture_frame00003768_000_minute652_merged.mp4",
+    "motionState": "RUNNING",
+    "personRoles": [
+      {
+        "personIndex": 0,
+        "role": "ALP",
+        "roleName": "Assistant Loco Pilot",
+        "bboxArea": 314057.375
+      },
+      {
+        "personIndex": 1,
+        "role": "LP",
+        "roleName": "Loco Pilot",
+        "bboxArea": 94113.9375
+      }
+    ],
+    "activityTypes": [
+      9,
+      8
+    ],
+    "descriptions": [
+      "ALP not exchanging hand gesture",
+      "LP not exchanging hand gesture"
+    ],
+    "objectTypes": [
+      "alp hand gesture",
+      "lp hand gesture"
+    ],
+    "_sourceClips": [
+      "/opt/poc2/locopilot_evidence/run_20260318_145615/clips/44babad0-65dc-4a5f-9e74-d5a8c11d2795_20260318_145614_minio_alp_hand_gesture_frame00003768_000_clip.mp4",
+      "/opt/poc2/locopilot_evidence/run_20260318_145615/clips/44babad0-65dc-4a5f-9e74-d5a8c11d2795_20260318_145614_minio_lp_hand_gesture_frame00003912_000_clip.mp4"
+    ],
+    "_isCombined": true,
+    "_mergedCount": 2,
+    "_groupingMethod": "minute",
+    "_minuteBucket": 652,
+    "_sourceActivities": [
+      {
+        "activityType": 9,
+        "startTime": "10:52:29",
+        "endTime": "10:52:41",
+        "des": "ALP not exchanging hand gesture",
+        "clip": "/opt/poc2/locopilot_evidence/run_20260318_145615/clips/44babad0-65dc-4a5f-9e74-d5a8c11d2795_20260318_145614_minio_alp_hand_gesture_frame00003768_000_clip.mp4"
+      },
+      {
+        "activityType": 8,
+        "startTime": "10:52:53",
+        "endTime": "10:53:05",
+        "des": "LP not exchanging hand gesture",
+        "clip": "/opt/poc2/locopilot_evidence/run_20260318_145615/clips/44babad0-65dc-4a5f-9e74-d5a8c11d2795_20260318_145614_minio_lp_hand_gesture_frame00003912_000_clip.mp4"
+      }
+    ]
+  },
+  {
+    "tripId": "44babad0-65dc-4a5f-9e74-d5a8c11d2795",
+    "activityType": 8,
+    "des": "LP not exchanging hand gesture",
+    "objectType": "lp hand gesture",
+    "fileUrl": "/tmp/locopilot_uploads/44babad0-65dc-4a5f-9e74-d5a8c11d2795_20260318_145614_minio.mp4",
+    "fileDuration": "0:38:08",
+    "activityStartTime": "10:54:19",
+    "activityEndTime": "10:54:27",
+    "videoStartTime": "735.88",
+    "videoEndTime": "737.88",
+    "crewName": "Unknown",
+    "crewId": "N/A",
+    "crewRole": 1,
+    "performingRole": "LP",
+    "date": "2026-03-18",
+    "time": "14:57:41",
+    "filename": "44babad0-65dc-4a5f-9e74-d5a8c11d2795_20260318_145614_minio.mp4",
+    "peopleCount": 2,
+    "evidence": [
+      {
+        "rule": "lp_hand_raised_gesture_detected"
+      }
+    ],
+    "activityImage": "/opt/poc2/locopilot_evidence/run_20260318_145615/clips/44babad0-65dc-4a5f-9e74-d5a8c11d2795_20260318_145614_minio_lp_hand_gesture_frame00004428_000_activity.jpg",
+    "activityClip": "/opt/poc2/locopilot_evidence/run_20260318_145615/clips/44babad0-65dc-4a5f-9e74-d5a8c11d2795_20260318_145614_minio_lp_hand_gesture_frame00004428_000_clip.mp4",
+    "motionState": "STOPPED",
+    "personRoles": [
+      {
+        "personIndex": 0,
+        "role": "ALP",
+        "roleName": "Assistant Loco Pilot",
+        "bboxArea": 313907.71875
+      },
+      {
+        "personIndex": 1,
+        "role": "LP",
+        "roleName": "Loco Pilot",
+        "bboxArea": 128099.8359375
+      }
+    ],
+    "activityTypes": [
+      8
+    ],
+    "descriptions": [
+      "LP not exchanging hand gesture"
+    ],
+    "objectTypes": [
+      "lp hand gesture"
+    ]
+  },
+  {
+    "tripId": "44babad0-65dc-4a5f-9e74-d5a8c11d2795",
+    "activityType": 8,
+    "des": "LP not exchanging hand gesture",
+    "objectType": "lp hand gesture",
+    "fileUrl": "/tmp/locopilot_uploads/44babad0-65dc-4a5f-9e74-d5a8c11d2795_20260318_145614_minio.mp4",
+    "fileDuration": "0:38:08",
+    "activityStartTime": "10:56:57",
+    "activityEndTime": "10:57:09",
+    "videoStartTime": "895.64",
+    "videoEndTime": "897.64",
+    "crewName": "Unknown",
+    "crewId": "N/A",
+    "crewRole": 1,
+    "performingRole": "LP",
+    "date": "2026-03-18",
+    "time": "14:57:57",
+    "filename": "44babad0-65dc-4a5f-9e74-d5a8c11d2795_20260318_145614_minio.mp4",
+    "peopleCount": 1,
+    "evidence": [
+      {
+        "rule": "lp_hand_raised_gesture_detected"
+      }
+    ],
+    "activityImage": "/opt/poc2/locopilot_evidence/run_20260318_145615/clips/44babad0-65dc-4a5f-9e74-d5a8c11d2795_20260318_145614_minio_lp_hand_gesture_frame00005388_000_activity.jpg",
+    "activityClip": "/opt/poc2/locopilot_evidence/run_20260318_145615/clips/44babad0-65dc-4a5f-9e74-d5a8c11d2795_20260318_145614_minio_lp_hand_gesture_frame00005388_000_clip.mp4",
+    "motionState": "RUNNING",
+    "personRoles": [
+      {
+        "personIndex": 0,
+        "role": "ALP",
+        "roleName": "Assistant Loco Pilot",
+        "bboxArea": 484795.5625
+      }
+    ],
+    "activityTypes": [
+      8
+    ],
+    "descriptions": [
+      "LP not exchanging hand gesture"
+    ],
+    "objectTypes": [
+      "lp hand gesture"
+    ]
+  },
+  {
+    "tripId": "44babad0-65dc-4a5f-9e74-d5a8c11d2795",
+    "activityType": 8,
+    "des": "LP not exchanging hand gesture; ALP not exchanging hand gesture",
+    "objectType": "lp hand gesture",
+    "fileUrl": "/tmp/locopilot_uploads/44babad0-65dc-4a5f-9e74-d5a8c11d2795_20260318_145614_minio.mp4",
+    "fileDuration": "0:38:08",
+    "activityStartTime": "39550.00",
+    "activityEndTime": "39580.00",
+    "videoStartTime": "1027.44",
+    "videoEndTime": "1033.44",
+    "crewName": "Unknown",
+    "crewId": "N/A",
+    "crewRole": 1,
+    "performingRole": "LP",
+    "date": "2026-03-18",
+    "time": "14:58:14",
+    "filename": "44babad0-65dc-4a5f-9e74-d5a8c11d2795_20260318_145614_minio.mp4",
+    "peopleCount": 2,
+    "evidence": [
+      {
+        "rule": "lp_hand_raised_gesture_detected"
+      },
+      {
+        "rule": "alp_hand_raised_gesture_detected"
+      }
+    ],
+    "activityImage": "/opt/poc2/locopilot_evidence/run_20260318_145615/clips/44babad0-65dc-4a5f-9e74-d5a8c11d2795_20260318_145614_minio_lp_hand_gesture_frame00006180_000_activity.jpg",
+    "activityClip": "/opt/poc2/locopilot_evidence/run_20260318_145615/clips/44babad0-65dc-4a5f-9e74-d5a8c11d2795_20260318_145614_minio_lp_hand_gesture_frame00006180_000_minute659_merged.mp4",
+    "motionState": "RUNNING",
+    "personRoles": [
+      {
+        "personIndex": 0,
+        "role": "ALP",
+        "roleName": "Assistant Loco Pilot",
+        "bboxArea": 342642.59375
+      }
+    ],
+    "activityTypes": [
+      8,
+      9
+    ],
+    "descriptions": [
+      "LP not exchanging hand gesture",
+      "ALP not exchanging hand gesture"
+    ],
+    "objectTypes": [
+      "lp hand gesture",
+      "alp hand gesture"
+    ],
+    "_sourceClips": [
+      "/opt/poc2/locopilot_evidence/run_20260318_145615/clips/44babad0-65dc-4a5f-9e74-d5a8c11d2795_20260318_145614_minio_lp_hand_gesture_frame00006180_000_clip.mp4",
+      "/opt/poc2/locopilot_evidence/run_20260318_145615/clips/44babad0-65dc-4a5f-9e74-d5a8c11d2795_20260318_145614_minio_alp_hand_gesture_frame00006288_000_clip.mp4"
+    ],
+    "_isCombined": true,
+    "_mergedCount": 2,
+    "_groupingMethod": "minute",
+    "_minuteBucket": 659,
+    "_sourceActivities": [
+      {
+        "activityType": 8,
+        "startTime": "10:59:10",
+        "endTime": "10:59:24",
+        "des": "LP not exchanging hand gesture",
+        "clip": "/opt/poc2/locopilot_evidence/run_20260318_145615/clips/44babad0-65dc-4a5f-9e74-d5a8c11d2795_20260318_145614_minio_lp_hand_gesture_frame00006180_000_clip.mp4"
+      },
+      {
+        "activityType": 9,
+        "startTime": "10:59:28",
+        "endTime": "10:59:40",
+        "des": "ALP not exchanging hand gesture",
+        "clip": "/opt/poc2/locopilot_evidence/run_20260318_145615/clips/44babad0-65dc-4a5f-9e74-d5a8c11d2795_20260318_145614_minio_alp_hand_gesture_frame00006288_000_clip.mp4"
+      }
+    ]
+  },
+  {
+    "tripId": "44babad0-65dc-4a5f-9e74-d5a8c11d2795",
+    "activityType": 6,
+    "des": "Packing bags activity detected",
+    "objectType": "packing bags",
+    "fileUrl": "/tmp/locopilot_uploads/44babad0-65dc-4a5f-9e74-d5a8c11d2795_20260318_145614_minio.mp4",
+    "fileDuration": "0:38:08",
+    "activityStartTime": "11:15:21",
+    "activityEndTime": "11:15:31",
+    "videoStartTime": "1997.97",
+    "videoEndTime": "1999.97",
+    "crewName": "Unknown",
+    "crewId": "N/A",
+    "crewRole": 1,
+    "performingRole": "LP",
+    "date": "2026-03-18",
+    "time": "15:00:23",
+    "filename": "44babad0-65dc-4a5f-9e74-d5a8c11d2795_20260318_145614_minio.mp4",
+    "peopleCount": 2,
+    "evidence": [
+      {
+        "rule": "wrist_inside_backpack_bbox_or_hand_near_backpack"
+      }
+    ],
+    "activityImage": "/opt/poc2/locopilot_evidence/run_20260318_145615/clips/44babad0-65dc-4a5f-9e74-d5a8c11d2795_20260318_145614_minio_packing_bags_frame00012012_000_activity.jpg",
+    "activityClip": "/opt/poc2/locopilot_evidence/run_20260318_145615/clips/44babad0-65dc-4a5f-9e74-d5a8c11d2795_20260318_145614_minio_packing_bags_frame00012012_000_clip.mp4",
+    "motionState": "RUNNING",
+    "personRoles": [
+      {
+        "personIndex": 0,
+        "role": "ALP",
+        "roleName": "Assistant Loco Pilot",
+        "bboxArea": 306242.9375
+      },
+      {
+        "personIndex": 1,
+        "role": "LP",
+        "roleName": "Loco Pilot",
+        "bboxArea": 95330.109375
+      }
+    ],
+    "activityTypes": [
+      6
+    ],
+    "descriptions": [
+      "Packing bags activity detected"
+    ],
+    "objectTypes": [
+      "packing bags"
+    ]
+  },
+  {
+    "tripId": "44babad0-65dc-4a5f-9e74-d5a8c11d2795",
+    "activityType": 9,
+    "des": "ALP not exchanging hand gesture",
+    "objectType": "alp hand gesture",
+    "fileUrl": "/tmp/locopilot_uploads/44babad0-65dc-4a5f-9e74-d5a8c11d2795_20260318_145614_minio.mp4",
+    "fileDuration": "0:38:08",
+    "activityStartTime": "11:17:31",
+    "activityEndTime": "11:17:43",
+    "videoStartTime": "2127.78",
+    "videoEndTime": "2129.78",
+    "crewName": "Unknown",
+    "crewId": "N/A",
+    "crewRole": 1,
+    "performingRole": "LP",
+    "date": "2026-03-18",
+    "time": "15:00:34",
+    "filename": "44babad0-65dc-4a5f-9e74-d5a8c11d2795_20260318_145614_minio.mp4",
+    "peopleCount": 2,
+    "evidence": [
+      {
+        "rule": "alp_hand_raised_gesture_detected"
+      }
+    ],
+    "activityImage": "/opt/poc2/locopilot_evidence/run_20260318_145615/clips/44babad0-65dc-4a5f-9e74-d5a8c11d2795_20260318_145614_minio_alp_hand_gesture_frame00012792_000_activity.jpg",
+    "activityClip": "/opt/poc2/locopilot_evidence/run_20260318_145615/clips/44babad0-65dc-4a5f-9e74-d5a8c11d2795_20260318_145614_minio_alp_hand_gesture_frame00012792_000_clip.mp4",
+    "motionState": "STOPPED",
+    "personRoles": [
+      {
+        "personIndex": 0,
+        "role": "ALP",
+        "roleName": "Assistant Loco Pilot",
+        "bboxArea": 280339.53125
+      },
+      {
+        "personIndex": 1,
+        "role": "LP",
+        "roleName": "Loco Pilot",
+        "bboxArea": 155800.796875
+      }
+    ],
+    "activityTypes": [
+      9
+    ],
+    "descriptions": [
+      "ALP not exchanging hand gesture"
+    ],
+    "objectTypes": [
+      "alp hand gesture"
+    ]
+  }
+]
