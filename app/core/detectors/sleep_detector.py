@@ -107,6 +107,9 @@ class SleepDetector:
         self.SLEEP_BASELINE_TORSO_HEIGHT_DELTA = getattr(s, 'sleep_baseline_torso_height_delta', 40) if s else 40
         self.SLEEP_BASELINE_SHOULDER_WIDTH_DELTA = getattr(s, 'sleep_baseline_shoulder_width_delta', 20) if s else 20
 
+        # Head drop consecutive check — require N consecutive head_drop=True before confirming
+        self.SLEEP_HEAD_DROP_MIN_CONSECUTIVE = getattr(s, 'sleep_head_drop_min_consecutive', 2) if s else 2
+
         # Sustained signal thresholds
         self.SLEEP_SUSTAINED_STILLNESS_THRESHOLD = getattr(s, 'sleep_sustained_stillness_threshold', 0.02) if s else 0.02
         self.SLEEP_SUSTAINED_STILLNESS_FRAMES = getattr(s, 'sleep_sustained_stillness_frames', 3) if s else 3
@@ -202,6 +205,8 @@ class SleepDetector:
             # Head bob
             'head_tilt_deltas': deque(maxlen=int(10 * self.sample_fps)),
             'head_bob_count': 0,
+            # Consecutive head drop counter for noise filtering
+            'head_drop_consecutive_count': 0,
             # Wrist velocity
             'previous_wrist_positions': None,
             'wrist_velocity_history': deque(maxlen=int(10 * self.sample_fps)),
@@ -989,11 +994,22 @@ class SleepDetector:
                 head_drop_from_delta = True
                 head_drop_detected = True
 
+        # FP-FIX: Require consecutive head_drop=True frames to confirm
+        # Single-frame pose estimation noise should not trigger sleep detection
+        raw_head_drop = head_drop_detected
+        if head_drop_detected:
+            tracking['head_drop_consecutive_count'] = tracking.get('head_drop_consecutive_count', 0) + 1
+            if tracking['head_drop_consecutive_count'] < self.SLEEP_HEAD_DROP_MIN_CONSECUTIVE:
+                head_drop_detected = False  # Not yet confirmed — need more consecutive frames
+        else:
+            tracking['head_drop_consecutive_count'] = 0
+
         self.logger.debug(
             f"[HEAD DROP DEBUG] Person {person_idx}: "
             f"has_baseline={has_baseline}, nose_y={nose_y_normalized}, head_tilt={head_tilt}, "
             f"nose_y_drop={nose_y_drop:.4f}, head_tilt_drop={head_tilt_drop:.1f}, "
-            f"head_drop={head_drop_detected}, delta_drop={head_drop_from_delta}"
+            f"head_drop={head_drop_detected}, delta_drop={head_drop_from_delta}, "
+            f"raw_head_drop={raw_head_drop}, consecutive={tracking.get('head_drop_consecutive_count', 0)}"
         )
 
         # Score calculation

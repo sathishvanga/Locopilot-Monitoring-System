@@ -650,6 +650,14 @@ class LocopilotActivityMonitor:
         self.hand_position_history = {}
         self.hand_history_max_length = 10  # Track last 10 positions (~20s at 0.5 fps)
 
+        # Static backpack suppression — track backpack bboxes across frames
+        # Format: list of {'bbox': [x1,y1,x2,y2], 'frame_count': int}
+        # Backpacks in same location (IoU > threshold) for N+ frames are treated as static fixtures
+        self.static_backpack_candidates = []
+        self.static_backpack_iou_threshold = getattr(settings, 'packing_static_iou_threshold', 0.80)
+        self.static_backpack_min_frames = getattr(settings, 'packing_static_min_frames', 10)
+        self.static_backpack_suppression_enabled = getattr(settings, 'packing_static_suppression_enabled', True)
+
         # NOTE: packing_motion_history is now managed by ActivityDetector
 
         # Hand smoothing buffers for coordinate smoothing (CR-015: moved from lazy init)
@@ -2562,6 +2570,110 @@ class LocopilotActivityMonitor:
             person_idx, landmarks, frame_shape, timestamp_sec, backpack_bbox
         )
 
+    def _update_static_backpack_tracking(self, backpack_detections: List) -> List:
+        """Filter out static backpack detections (cabin fixtures misidentified as backpacks).
+
+        Tracks backpack bboxes across frames. If a backpack appears in the same
+        location (IoU > threshold) for min_frames consecutive frames, it is
+        classified as a static fixture and filtered out.
+
+        Returns:
+            Filtered list of backpack detections with static objects removed.
+        """
+        if not self.static_backpack_suppression_enabled or not backpack_detections:
+            return backpack_detections
+
+        current_bboxes = [det[:4] if len(det) >= 4 else det for det in backpack_detections]
+        new_candidates = []
+        matched_old = set()
+
+        for curr_bbox in current_bboxes:
+            best_iou = 0.0
+            best_idx = -1
+            for idx, cand in enumerate(self.static_backpack_candidates):
+                iou = calculate_iou(curr_bbox, cand['bbox'])
+                if iou > best_iou:
+                    best_iou = iou
+                    best_idx = idx
+
+            if best_iou >= self.static_backpack_iou_threshold and best_idx >= 0:
+                # Same object as previous frame — increment counter
+                old = self.static_backpack_candidates[best_idx]
+                new_candidates.append({
+                    'bbox': list(curr_bbox),
+                    'frame_count': old['frame_count'] + 1,
+                })
+                matched_old.add(best_idx)
+            else:
+                # New detection — start tracking
+                new_candidates.append({
+                    'bbox': list(curr_bbox),
+                    'frame_count': 1,
+                })
+
+        self.static_backpack_candidates = new_candidates
+
+        # Filter: keep only backpacks that have NOT been static for too long
+        filtered = []
+        for i, det in enumerate(backpack_detections):
+            bbox = det[:4] if len(det) >= 4 else det
+            is_static = False
+            for cand in self.static_backpack_candidates:
+                iou = calculate_iou(bbox, cand['bbox'])
+                if iou >= self.static_backpack_iou_threshold and cand['frame_count'] >= self.static_backpack_min_frames:
+                    is_static = True
+                    break
+            if not is_static:
+                filtered.append(det)
+            else:
+                self.logger.debug(
+                    f"[STATIC BACKPACK] Suppressed static backpack at {list(bbox[:4])} "
+                    f"(seen for {cand['frame_count']} frames)"
+                )
+
+        return filtered
+
+    def _check_wrist_motion_for_packing(self, person_idx: int, timestamp_sec: float) -> bool:
+        """Check if wrists show sufficient motion to indicate actual packing activity.
+
+        Returns True if wrist motion is above the threshold, False if hands are stationary.
+        """
+        if not getattr(self.settings, 'packing_wrist_motion_gate_enabled', True):
+            return True  # Gate disabled, always pass
+
+        min_velocity = getattr(self.settings, 'packing_wrist_motion_min_velocity', 0.008)
+
+        history = self.hand_position_history.get(person_idx)
+        if not history or len(history.get('timestamps', [])) < 2:
+            return True  # Not enough data, allow detection
+
+        timestamps = list(history['timestamps'])
+        right_positions = list(history.get('right_wrist', []))
+        left_positions = list(history.get('left_wrist', []))
+
+        # Calculate recent wrist velocities (last 3 frames)
+        max_velocity = 0.0
+        n = min(3, len(timestamps) - 1)
+        for i in range(-n, 0):
+            dt = timestamps[i] - timestamps[i - 1]
+            if dt <= 0:
+                continue
+
+            for positions in [right_positions, left_positions]:
+                if len(positions) >= abs(i - 1):
+                    try:
+                        p1 = positions[i - 1]
+                        p2 = positions[i]
+                        if p1 is not None and p2 is not None:
+                            disp = math.sqrt((p2[0] - p1[0]) ** 2 + (p2[1] - p1[1]) ** 2)
+                            # Normalize by frame diagonal (~1280 for 720p)
+                            vel = disp / (1280.0 * dt)
+                            max_velocity = max(max_velocity, vel)
+                    except (IndexError, TypeError):
+                        continue
+
+        return max_velocity >= min_velocity
+
     # NOTE: detect_multi_person_pose_and_gestures removed - replaced by YOLO26-Pose
 
     def _match_pose_to_roles(self, yolo_pose_results, person_roles):
@@ -3214,7 +3326,9 @@ class LocopilotActivityMonitor:
 
                 # 5. PACKING DETECTION (check if hand near backpack in THIS person's region)
                 # MOVED BEFORE HAND GESTURE: Need to detect this first for context-aware filtering
-                if len(detections['backpack']) > 0:
+                # FP-FIX: Filter out static backpacks (cabin fixtures) before detection
+                active_backpacks = self._update_static_backpack_tracking(detections['backpack'])
+                if len(active_backpacks) > 0:
                     right_hand = self.get_keypoint(translated_landmarks, 'right_wrist')
                     left_hand = self.get_keypoint(translated_landmarks, 'left_wrist')
 
@@ -3263,7 +3377,7 @@ class LocopilotActivityMonitor:
                     best_pack_motion = None
                     best_pack_debug = None
 
-                    for backpack_bbox in detections['backpack']:
+                    for backpack_bbox in active_backpacks:
                         # Check if backpack is in this person's region (wider margin)
                         backpack_in_person_region = bbox_overlap_with_margin(
                             backpack_bbox, bbox, region_margin
@@ -3330,6 +3444,17 @@ class LocopilotActivityMonitor:
                     # ===== APPLY BEST MATCH RESULT AFTER LOOP =====
                     if best_pack_debug is not None:
                         person_debug_info['packing_wrist_check'] = best_pack_debug
+
+                    # FP-FIX: Wrist motion gate — require actual hand movement for packing
+                    # Stationary hands near controls should not trigger packing detection
+                    if best_pack_type is not None:
+                        wrist_has_motion = self._check_wrist_motion_for_packing(person_idx, timestamp_sec)
+                        if not wrist_has_motion:
+                            self.logger.debug(
+                                f"[PACKING WRIST MOTION GATE] Person {person_idx}: "
+                                f"suppressed packing (wrists stationary)"
+                            )
+                            best_pack_type = None  # Suppress the detection
 
                     if best_pack_type == 'wrist_inside':
                         packing_detected_simple = True

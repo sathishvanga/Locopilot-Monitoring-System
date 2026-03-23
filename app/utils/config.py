@@ -239,6 +239,17 @@ class Settings(BaseSettings):
     packing_min_bag_area: int = int(os.getenv("PACKING_MIN_BAG_AREA", "15000"))  # Min bag area 15,000 sq pixels
     packing_require_wrist_truly_inside: bool = bool(int(os.getenv("PACKING_STRICT_INSIDE", "0")))  # Use margin-based check (not strict)
 
+    # Static backpack suppression — suppress backpacks detected in the same location across many frames
+    # A backpack with IoU > threshold appearing for min_frames consecutive frames is classified as a static fixture
+    packing_static_suppression_enabled: bool = bool(int(os.getenv("PACKING_STATIC_SUPPRESSION_ENABLED", "1")))
+    packing_static_iou_threshold: float = float(os.getenv("PACKING_STATIC_IOU_THRESHOLD", "0.80"))
+    packing_static_min_frames: int = int(os.getenv("PACKING_STATIC_MIN_FRAMES", "10"))  # ~20s at 0.5fps
+
+    # Wrist motion gate — require wrist movement when detecting packing bags
+    # If both wrists are stationary (velocity below threshold), suppress packing detection
+    packing_wrist_motion_gate_enabled: bool = bool(int(os.getenv("PACKING_WRIST_MOTION_GATE_ENABLED", "1")))
+    packing_wrist_motion_min_velocity: float = float(os.getenv("PACKING_WRIST_MOTION_MIN_VELOCITY", "0.008"))  # Normalized velocity threshold
+
     # Clip duration settings - Precise clip extraction matching actual activity duration
     clip_buffer_before: float = float(os.getenv("CLIP_BUFFER_BEFORE", "1.0"))  # Seconds before activity start
     clip_buffer_after: float = float(os.getenv("CLIP_BUFFER_AFTER", "1.0"))    # Seconds after activity end
@@ -273,8 +284,12 @@ class Settings(BaseSettings):
 
     # Baseline calibration for camera-angle adaptation
     sleep_baseline_enabled: bool = os.getenv("SLEEP_BASELINE_ENABLED", "true").lower() == "true"
-    sleep_baseline_calibration_window: float = float(os.getenv("SLEEP_BASELINE_WINDOW", "2.0"))
-    sleep_baseline_min_samples: int = int(os.getenv("SLEEP_BASELINE_MIN_SAMPLES", "1"))
+    sleep_baseline_calibration_window: float = float(os.getenv("SLEEP_BASELINE_WINDOW", "5.0"))  # Raised from 2.0s for more stable baselines
+    sleep_baseline_min_samples: int = int(os.getenv("SLEEP_BASELINE_MIN_SAMPLES", "3"))  # Raised from 1 for more reliable baselines
+
+    # Head drop consecutive check — require N consecutive head_drop=True frames to confirm
+    # Filters out single-frame pose estimation noise that causes false microsleep triggers
+    sleep_head_drop_min_consecutive: int = int(os.getenv("SLEEP_HEAD_DROP_MIN_CONSECUTIVE", "2"))
 
     # Delta-from-baseline thresholds
     sleep_baseline_nose_below_delta: float = float(os.getenv("SLEEP_BASELINE_NOSE_BELOW_DELTA", "40"))
@@ -379,7 +394,7 @@ class Settings(BaseSettings):
     # YOLO Confidence Thresholds
     # ==========================================
     yolo_person_confidence: float = float(os.getenv("YOLO_PERSON_CONFIDENCE", "0.5"))
-    yolo_bag_confidence: float = float(os.getenv("YOLO_BAG_CONFIDENCE", "0.45"))
+    yolo_bag_confidence: float = float(os.getenv("YOLO_BAG_CONFIDENCE", "0.60"))  # Raised from 0.45 to reduce FPs from cabin fixtures
     yolo_bag_log_confidence: float = float(os.getenv("YOLO_BAG_LOG_CONFIDENCE", "0.25"))
     yolo_book_confidence: float = float(os.getenv("YOLO_BOOK_CONFIDENCE", "0.4"))
     yolo_cell_phone_confidence: float = float(os.getenv("YOLO_CELL_PHONE_CONFIDENCE", "0.3"))
@@ -413,7 +428,7 @@ class Settings(BaseSettings):
     sleep_strong_score: int = int(os.getenv("SLEEP_STRONG_SCORE", "6"))
     sleep_strong_duration: int = int(os.getenv("SLEEP_STRONG_DURATION", "0"))
     sleep_moderate_duration: int = int(os.getenv("SLEEP_MODERATE_DURATION", "2"))
-    sleep_microsleep_duration: int = int(os.getenv("SLEEP_MICROSLEEP_DURATION", "0"))
+    sleep_microsleep_duration: int = int(os.getenv("SLEEP_MICROSLEEP_DURATION", "4"))  # Raised from 0 to filter momentary pose fluctuations
     minimal_movement_threshold: float = float(os.getenv("MINIMAL_MOVEMENT_THRESHOLD", "0.15"))
     stable_posture_variance: int = int(os.getenv("STABLE_POSTURE_VARIANCE", "100"))
     eyes_not_visible_threshold: float = float(os.getenv("EYES_NOT_VISIBLE_THRESHOLD", "0.4"))
