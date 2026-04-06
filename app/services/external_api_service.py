@@ -44,6 +44,20 @@ class ExternalAPIService:
             f"Timeout: {self.settings.cvvr_api_timeout}s"
         )
 
+    @staticmethod
+    def _normalize_division(division: str) -> str:
+        """Strip ai_ prefix and _api suffix if present to avoid double-wrapping.
+
+        The URL template already wraps as ai_{division}_api, so if the caller
+        passes 'ai_demo_api' it would become 'ai_ai_demo_api_api'.
+        This normalizes to just 'demo' in that case.
+        """
+        if division.startswith("ai_"):
+            division = division[3:]
+        if division.endswith("_api"):
+            division = division[:-4]
+        return division
+
     def _request_with_retry(
         self,
         url: str,
@@ -175,6 +189,9 @@ class ExternalAPIService:
         # Use default division if not provided
         if not division:
             division = self.settings.cvvr_api_default_division
+        # Strip ai_ prefix and _api suffix if present to avoid double-wrapping
+        # (URL template already adds ai_{division}_api)
+        division = self._normalize_division(division)
 
         logger.info(
             f"📤 [external_api] Preparing to post results for trip_id={trip_id}, "
@@ -211,7 +228,7 @@ class ExternalAPIService:
             Dict with posting result
         """
         # Build URL with division
-        division = division or self.settings.cvvr_api_default_division
+        division = self._normalize_division(division or self.settings.cvvr_api_default_division)
         url_no_events = self.settings.cvvr_api_url_no_events.format(division=division)
         timeout = self.settings.cvvr_api_timeout
         
@@ -300,7 +317,7 @@ class ExternalAPIService:
             Dict with posting result
         """
         # Build URL with division
-        division = division or self.settings.cvvr_api_default_division
+        division = self._normalize_division(division or self.settings.cvvr_api_default_division)
         url = self.settings.cvvr_api_url.format(division=division)
         timeout = self.settings.cvvr_api_timeout
         

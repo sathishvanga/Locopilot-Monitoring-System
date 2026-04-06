@@ -658,6 +658,13 @@ class LocopilotActivityMonitor:
         self.static_backpack_min_frames = getattr(settings, 'packing_static_min_frames', 10)
         self.static_backpack_suppression_enabled = getattr(settings, 'packing_static_suppression_enabled', True)
 
+        # Static cell phone suppression — filter panel instruments misidentified as phones
+        # Same pattern as backpacks: if bbox stays at same location for N frames, it's a fixture
+        self.static_phone_candidates = []
+        self.static_phone_iou_threshold = getattr(settings, 'phone_static_iou_threshold', 0.70)
+        self.static_phone_min_frames = getattr(settings, 'phone_static_min_frames', 5)
+        self.static_phone_suppression_enabled = getattr(settings, 'phone_static_suppression_enabled', True)
+
         # NOTE: packing_motion_history is now managed by ActivityDetector
 
         # Hand smoothing buffers for coordinate smoothing (CR-015: moved from lazy init)
@@ -2633,6 +2640,65 @@ class LocopilotActivityMonitor:
 
         return filtered
 
+    def _update_static_phone_tracking(self, phone_detections: List) -> List:
+        """Filter out static cell phone detections (panel instruments misidentified as phones).
+
+        Tracks phone bboxes across frames. If a phone appears in the same
+        location (IoU > threshold) for min_frames consecutive frames, it is
+        classified as a static fixture (e.g. speedometer display) and filtered out.
+
+        Returns:
+            Filtered list of phone detections with static objects removed.
+        """
+        if not self.static_phone_suppression_enabled or not phone_detections:
+            return phone_detections
+
+        current_bboxes = [det[:4] if len(det) >= 4 else det for det in phone_detections]
+        new_candidates = []
+
+        for curr_bbox in current_bboxes:
+            best_iou = 0.0
+            best_idx = -1
+            for idx, cand in enumerate(self.static_phone_candidates):
+                iou = calculate_iou(curr_bbox, cand['bbox'])
+                if iou > best_iou:
+                    best_iou = iou
+                    best_idx = idx
+
+            if best_iou >= self.static_phone_iou_threshold and best_idx >= 0:
+                old = self.static_phone_candidates[best_idx]
+                new_candidates.append({
+                    'bbox': list(curr_bbox),
+                    'frame_count': old['frame_count'] + 1,
+                })
+            else:
+                new_candidates.append({
+                    'bbox': list(curr_bbox),
+                    'frame_count': 1,
+                })
+
+        self.static_phone_candidates = new_candidates
+
+        # Filter: keep only phones that have NOT been static for too long
+        filtered = []
+        for i, det in enumerate(phone_detections):
+            bbox = det[:4] if len(det) >= 4 else det
+            is_static = False
+            for cand in self.static_phone_candidates:
+                iou = calculate_iou(bbox, cand['bbox'])
+                if iou >= self.static_phone_iou_threshold and cand['frame_count'] >= self.static_phone_min_frames:
+                    is_static = True
+                    break
+            if not is_static:
+                filtered.append(det)
+            else:
+                self.logger.info(
+                    f"[STATIC PHONE] Suppressed static phone at {[int(x) for x in bbox[:4]]} "
+                    f"(seen for {cand['frame_count']} frames — likely panel instrument)"
+                )
+
+        return filtered
+
     def _check_wrist_motion_for_packing(self, person_idx: int, timestamp_sec: float) -> bool:
         """Check if wrists show sufficient motion to indicate actual packing activity.
 
@@ -2787,6 +2853,9 @@ class LocopilotActivityMonitor:
                 is_dark_frame = frame_brightness < self.settings.yolo_dark_frame_brightness_threshold
             except Exception as e:
                 self.logger.debug(f"[DARK FRAME] Failed to check frame brightness: {e}")
+
+        # Filter out static cell phone detections (panel instruments) before per-person processing
+        detections['cell_phone'] = self._update_static_phone_tracking(detections['cell_phone'])
 
         # Process each person individually
         for person_idx, person_data in person_roles.items():

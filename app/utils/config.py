@@ -245,6 +245,12 @@ class Settings(BaseSettings):
     packing_static_iou_threshold: float = float(os.getenv("PACKING_STATIC_IOU_THRESHOLD", "0.80"))
     packing_static_min_frames: int = int(os.getenv("PACKING_STATIC_MIN_FRAMES", "10"))  # ~20s at 0.5fps
 
+    # Static cell phone suppression — filter out fixed panel instruments misidentified as phones
+    # If a "cell phone" bbox stays at the same location (IoU > threshold) for N+ frames, it's a fixture
+    phone_static_suppression_enabled: bool = bool(int(os.getenv("PHONE_STATIC_SUPPRESSION_ENABLED", "1")))
+    phone_static_iou_threshold: float = float(os.getenv("PHONE_STATIC_IOU_THRESHOLD", "0.70"))
+    phone_static_min_frames: int = int(os.getenv("PHONE_STATIC_MIN_FRAMES", "5"))  # ~10s at 0.5fps
+
     # Wrist motion gate — require wrist movement when detecting packing bags
     # If both wrists are stationary (velocity below threshold), suppress packing detection
     packing_wrist_motion_gate_enabled: bool = bool(int(os.getenv("PACKING_WRIST_MOTION_GATE_ENABLED", "1")))
