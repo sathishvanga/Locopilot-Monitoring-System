@@ -89,8 +89,10 @@ def _build_activity_registry() -> Dict[str, ActivityConfig]:
             grace_frames=8,
         ),
         'writing': ActivityConfig(
-            min_duration=0.1,
-            required_consecutive=1,
+            # F3 (2026-04-06): consecutive 1→2, min_duration 0.1→2.0 to suppress
+            # single-frame book+posture FPs when ALP holds logbook (run_20260402_130020 FPs)
+            min_duration=2.0,
+            required_consecutive=2,
             margin=writing_margin,
             grace_frames=10,
         ),
@@ -134,8 +136,10 @@ def _build_activity_registry() -> Dict[str, ActivityConfig]:
             grace_frames=5,
         ),
         'no_person_detected': ActivityConfig(
-            min_duration=5.0,
-            required_consecutive=3,
+            # F4 (2026-04-06): consecutive 3→5, min_duration 5→10 to suppress
+            # intermittent YOLO recall drops on non-canonical poses (runs 131756, 130935, 130020 FPs)
+            min_duration=10.0,
+            required_consecutive=5,
             margin=None,
             grace_frames=3,
         ),
@@ -3706,9 +3710,24 @@ class LocopilotActivityMonitor:
             'alp_hand_gesture_detected': False,
             'eating_drinking_detected': False,
             'performing_person': -1,
-            'performing_persons': []  # List of person indices who performed activities
+            'performing_persons': [],  # List of person indices who performed activities
+            # F1 (2026-04-06): per-activity triggering-person map so evidence
+            # attribution picks the actual person_idx that raised each flag
+            # (previously `min(person_roles.keys())` always attributed to LP).
+            'triggering_persons_by_activity': {
+                'mind_diversion': [],
+                'sleep': [],
+                'microsleep': [],
+                'cell_phone': [],
+                'writing': [],
+                'packing_bags': [],
+                'lp_hand_gesture': [],
+                'alp_hand_gesture': [],
+                'eating_drinking': [],
+            }
         }
-        
+        triggering_map = aggregated['triggering_persons_by_activity']
+
         # Aggregate: if ANY person has an activity, mark it as detected
         # Per-person state machine gate (H-02 fix): only aggregate sleep/microsleep
         # if THAT SPECIFIC person's state machine is in DROWSY or beyond.
@@ -3720,6 +3739,7 @@ class LocopilotActivityMonitor:
             if activities['mind_diversion']:
                 aggregated['mind_diversion_detected'] = True
                 aggregated['performing_persons'].append(person_idx)
+                triggering_map['mind_diversion'].append(person_idx)
 
             # Per-person state machine gate for sleep/microsleep
             person_sleep_info = person_data.get('debug_info', {}).get('sleep_info', {})
@@ -3729,27 +3749,35 @@ class LocopilotActivityMonitor:
             if activities['sleep']:
                 if person_state_machine_ready:
                     aggregated['sleep_detected'] = True
+                    triggering_map['sleep'].append(person_idx)
                 else:
                     # Suppress this person's sleep - state machine not ready
                     activities['sleep'] = False
             if activities['microsleep']:
                 if person_state_machine_ready:
                     aggregated['microsleep_detected'] = True
+                    triggering_map['microsleep'].append(person_idx)
                 else:
                     # Suppress this person's microsleep - state machine not ready
                     activities['microsleep'] = False
             if activities['cell_phone']:
                 aggregated['cell_phone_detected'] = True
+                triggering_map['cell_phone'].append(person_idx)
             if activities['writing']:
                 aggregated['writing_detected'] = True
+                triggering_map['writing'].append(person_idx)
             if activities['packing_bags']:
                 aggregated['packing_detected'] = True
+                triggering_map['packing_bags'].append(person_idx)
             if activities['lp_hand_gesture']:
                 aggregated['lp_hand_gesture_detected'] = True
+                triggering_map['lp_hand_gesture'].append(person_idx)
             if activities['alp_hand_gesture']:
                 aggregated['alp_hand_gesture_detected'] = True
+                triggering_map['alp_hand_gesture'].append(person_idx)
             if activities.get('eating_drinking'):
                 aggregated['eating_drinking_detected'] = True
+                triggering_map['eating_drinking'].append(person_idx)
 
         # Set performing_person to the first detected person (for backward compatibility)
         if aggregated['performing_persons']:
@@ -3846,7 +3874,7 @@ class LocopilotActivityMonitor:
         self.person_tracker.camera_angle = self.camera_angle
         return self.person_tracker.identify_person_roles(person_boxes, frame, detections)
     
-    def start_activity(self, activity_name: str, timestamp: float, fps: float, frame_count: int, person_roles: Optional[Dict[int, Dict[str, Any]]] = None, ocr_timestamp: Optional[str] = None) -> None:
+    def start_activity(self, activity_name: str, timestamp: float, fps: float, frame_count: int, person_roles: Optional[Dict[int, Dict[str, Any]]] = None, ocr_timestamp: Optional[str] = None, triggering_person_idx: Optional[int] = None) -> None:
         """Start tracking an activity
 
         Args:
@@ -3856,6 +3884,8 @@ class LocopilotActivityMonitor:
             frame_count: Frame count when activity started
             person_roles: Dictionary of person roles (optional)
             ocr_timestamp: OCR-extracted timestamp from frame (HH:MM:SS format, optional)
+            triggering_person_idx: Index of the person who actually raised the activity
+                flag (F1 fix). None for aggregate activities (group_detected, no_person_detected).
         """
         if not self.activities[activity_name]['active']:
             self.activities[activity_name]['active'] = True
@@ -3870,6 +3900,9 @@ class LocopilotActivityMonitor:
             self.activities[activity_name]['frames'] = list(self.frame_idx_buffer)
             self.activities[activity_name]['duration'] = 0
             self.activities[activity_name]['person_roles'] = person_roles if person_roles else {}
+            # F1 (2026-04-06): remember which person raised this flag so evidence
+            # attribution can pick the correct crew member (ALP vs LP).
+            self.activities[activity_name]['triggering_person_idx'] = triggering_person_idx
 
             # Track actual detection timestamps for precise clip duration
             self.activities[activity_name]['first_detection_time'] = timestamp
@@ -4108,18 +4141,28 @@ class LocopilotActivityMonitor:
             
             # If we have person_roles identified, determine who performed the activity
             if 'person_roles' in activity and activity['person_roles'] and self.crew_members:
-                # For now, assume the activity was performed by the first person detected
-                # In future, you could use more sophisticated logic (e.g., hand detection, object proximity)
-                first_person_idx = min(activity['person_roles'].keys())
-                first_person_role = activity['person_roles'][first_person_idx]['role']
-                performing_role = first_person_role
-                
+                # F1 (2026-04-06): prefer the triggering person_idx captured at flag time
+                # over the legacy `min(person_roles.keys())` heuristic which always
+                # resolved to LP (index 0) regardless of who actually triggered the
+                # detection (observed in run_20260402_130020 writing FPs where ALP
+                # held the logbook but evidence was attributed to LP).
+                trigger_idx = activity.get('triggering_person_idx')
+                if trigger_idx is not None and trigger_idx in activity['person_roles']:
+                    selected_person_idx = trigger_idx
+                else:
+                    # Fallback for aggregate activities (no per-person trigger) or when
+                    # the triggering person is no longer in the current role map.
+                    selected_person_idx = min(activity['person_roles'].keys())
+
+                selected_person_role = activity['person_roles'][selected_person_idx]['role']
+                performing_role = selected_person_role
+
                 # Get crew info from crew_members mapping
-                if first_person_role in self.crew_members:
-                    activity_crew_name = self.crew_members[first_person_role]['name']
-                    activity_crew_id = self.crew_members[first_person_role]['id']
+                if selected_person_role in self.crew_members:
+                    activity_crew_name = self.crew_members[selected_person_role]['name']
+                    activity_crew_id = self.crew_members[selected_person_role]['id']
                     # Map role string to numeric value: LP=1, ALP=2
-                    activity_crew_role = 1 if first_person_role == 'LP' else 2
+                    activity_crew_role = 1 if selected_person_role == 'LP' else 2
                 else:
                     # If role not in crew_members, default to LP
                     performing_role = 'LP'
@@ -4468,6 +4511,8 @@ class LocopilotActivityMonitor:
             alp_hand_gesture_detected = aggregated['alp_hand_gesture_detected']
             mind_diversion_detected = aggregated['mind_diversion_detected']
             eating_drinking_detected = aggregated.get('eating_drinking_detected', False)
+            # F1 (2026-04-06): per-activity triggering person map for correct crew attribution
+            triggering_persons_by_activity = aggregated.get('triggering_persons_by_activity', {})
 
             # Log detections for each person (only on first detection)
             if log_per_person_detections:
@@ -4719,9 +4764,21 @@ class LocopilotActivityMonitor:
                     required_consecutive = self.activity_thresholds[activity_name]['required_consecutive']
 
                     if self.consecutive_detections[activity_name] >= required_consecutive:
+                        # F1 (2026-04-06): look up the person_idx that actually raised this
+                        # flag so attribution doesn't default to min(person_roles.keys()) = LP.
+                        # For activities without a per-person trigger (e.g. group_detected,
+                        # no_person_detected, alp_not_standing), triggering_list is empty and
+                        # we fall through to the legacy behavior.
+                        triggering_list = triggering_persons_by_activity.get(activity_name, [])
+                        triggering_person_idx = triggering_list[0] if triggering_list else None
+
                         # Start activity if not already active
                         if not self.activities[activity_name]['active']:
-                            self.start_activity(activity_name, timestamp, fps, frame_idx, person_roles=person_roles, ocr_timestamp=ocr_timestamp)
+                            self.start_activity(
+                                activity_name, timestamp, fps, frame_idx,
+                                person_roles=person_roles, ocr_timestamp=ocr_timestamp,
+                                triggering_person_idx=triggering_person_idx,
+                            )
 
                         # Continue recording frames ONLY when activity is actively detected
                         if self.activities[activity_name]['active']:
@@ -4733,6 +4790,9 @@ class LocopilotActivityMonitor:
                             # Update person roles (in case they change during activity)
                             if person_roles:
                                 self.activities[activity_name]['person_roles'] = person_roles
+                            # F1: update triggering_person_idx if this frame has a fresh trigger
+                            if triggering_person_idx is not None:
+                                self.activities[activity_name]['triggering_person_idx'] = triggering_person_idx
                 else:
                     # Activity not detected - use grace period before resetting
                     if self.consecutive_detections[activity_name] > 0 or self.activities[activity_name]['active']:
