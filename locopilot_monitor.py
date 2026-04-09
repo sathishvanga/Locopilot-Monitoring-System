@@ -274,6 +274,34 @@ class LocopilotActivityMonitor:
     YOLO_BODY_INDICES = [5, 6, 7, 8, 11, 12]  # left/right shoulders, elbows, hips
     YOLO_MIN_KEYPOINTS = 13  # Minimum landmarks required (indices 0-12)
 
+    # ARCH-08a: Single source of truth for mapping voting-batch activity types
+    # to person_activities dict keys. Previously duplicated inline twice inside
+    # process_all_persons_activities() — any new activity had to be added in
+    # both places. Do not mutate at runtime.
+    VOTING_ACTIVITY_KEY_MAP = {
+        'mind_diversion': 'mind_diversion',
+        'cell_phone': 'cell_phone',
+        'writing': 'writing',
+        'packing_bags': 'packing_bags',
+        'lp_hand_gesture': 'lp_hand_gesture',
+        'alp_hand_gesture': 'alp_hand_gesture',
+        'eating_drinking': 'eating_drinking',
+    }
+
+    # ARCH-08b: Activities suppressed when the train is known to be stopped
+    # (e.g. at a station). microsleep and cell_phone are intentionally omitted
+    # because they remain safety-critical even at rest. Used by
+    # app.core.gates.apply_train_stopped_suppression().
+    SUPPRESSED_WHEN_STOPPED = frozenset({
+        'sleep',
+        'writing',
+        'packing_bags',
+        'lp_hand_gesture',
+        'alp_hand_gesture',
+        'mind_diversion',
+        'eating_drinking',
+    })
+
     def __init__(self, video_path: str, output_dir: str = "evidence", save_annotated_frames: bool = False, frame_save_interval: int = 1, sample_fps: float = 1.0, run_dir: Optional[str] = None, create_run_dir: bool = True, preloaded_models: Optional[Dict[str, Any]] = None) -> None:
         """Initialize Locopilot Activity Monitor.
         
@@ -3385,18 +3413,9 @@ class LocopilotActivityMonitor:
                             if len(parts) == 2:
                                 activity_type = parts[0]
 
-                                # Map activity type to person_activities key
-                                activity_key_map = {
-                                    'mind_diversion': 'mind_diversion',
-                                    'cell_phone': 'cell_phone',
-                                    'writing': 'writing',
-                                    'packing_bags': 'packing_bags',
-                                    'lp_hand_gesture': 'lp_hand_gesture',
-                                    'alp_hand_gesture': 'alp_hand_gesture',
-                                    'eating_drinking': 'eating_drinking'
-                                }
-
-                                person_key = activity_key_map.get(activity_type, activity_type)
+                                # ARCH-08a: Map activity type to person_activities key
+                                # using class-level VOTING_ACTIVITY_KEY_MAP (single source of truth).
+                                person_key = self.VOTING_ACTIVITY_KEY_MAP.get(activity_type, activity_type)
                                 person_activities[person_key] = is_confirmed
 
                                 if is_confirmed:
@@ -3408,16 +3427,8 @@ class LocopilotActivityMonitor:
                         # On error, set all collected activities to False (safe default)
                         for activity in voting_collector.get_activities():
                             activity_type = activity['type']
-                            activity_key_map = {
-                                'mind_diversion': 'mind_diversion',
-                                'cell_phone': 'cell_phone',
-                                'writing': 'writing',
-                                'packing_bags': 'packing_bags',
-                                'lp_hand_gesture': 'lp_hand_gesture',
-                                'alp_hand_gesture': 'alp_hand_gesture',
-                                'eating_drinking': 'eating_drinking'
-                            }
-                            person_key = activity_key_map.get(activity_type, activity_type)
+                            # ARCH-08a: Use class-level VOTING_ACTIVITY_KEY_MAP.
+                            person_key = self.VOTING_ACTIVITY_KEY_MAP.get(activity_type, activity_type)
                             person_activities[person_key] = False
 
                 # Track hand raise timestamps for temporal coordination window
