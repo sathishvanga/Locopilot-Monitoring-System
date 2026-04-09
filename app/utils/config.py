@@ -579,6 +579,110 @@ class Settings(BaseSettings):
             )
         return self
 
+    # ==========================================================================
+    # Cross-field / flag coherence validator
+    # ==========================================================================
+    # Runs after all fields are populated. Catches silent misconfigurations such
+    # as enabling the train-motion rule engine without the motion detector, or
+    # selecting a pose backend whose adapter/library is not installed.
+    #
+    # Escape hatch: set ``LOCOPILOT_SKIP_PATH_CHECKS=1`` in the environment to
+    # skip model-file existence checks. Useful for fresh clones where the .pt
+    # weights have not been downloaded yet, and for unit tests.
+    @model_validator(mode='after')
+    def _validate_flag_combinations(self) -> 'Settings':
+        """
+        Validate cross-field constraints and flag coherence.
+
+        Checks performed:
+          (a) Absolute paths in referenced YOLO model fields must exist on
+              disk (when set). Relative paths and missing fields are skipped
+              so fresh clones without downloaded weights still boot.
+          (b) ``train_motion_rules_enabled=True`` requires
+              ``train_motion_detection_enabled=True`` (or the env var set to a
+              truthy value). Enabling rules without motion state is a
+              silent misconfiguration — the rules engine has no input.
+          (c) ``pose_model == 'rtmpose'`` requires the ``rtmlib`` package to
+              be importable.
+
+        All checks are defensive: unknown/missing fields are skipped rather
+        than raising, so the validator stays compatible with future field
+        additions and partial branches.
+        """
+        # Escape hatch for CI, fresh clones, and unit tests that construct
+        # Settings with synthetic values.
+        skip_path_checks = os.getenv("LOCOPILOT_SKIP_PATH_CHECKS", "0").lower() in (
+            "1", "true", "yes", "on"
+        )
+
+        # (a) Referenced model files must exist when set to an absolute path.
+        # The task spec references canonical *_path field names; this branch
+        # uses *_weights names. Check both sets so the validator survives a
+        # future rename.
+        if not skip_path_checks:
+            path_fields = (
+                'yolo_model_path',
+                'yolo_pose_model_path',
+                'yolo_voting_model_path',
+                'yolo_voting_pose_model_path',
+                'yolo_roi_model_path',
+                'yolo_weights',
+                'yolo_pose_weights',
+                'yolo_voting_weights',
+                'yolo_voting_pose_weights',
+            )
+            for attr in path_fields:
+                path = getattr(self, attr, None)
+                if not path:
+                    continue
+                # Only fail on absolute paths that are missing. Relative
+                # paths may resolve lazily via ultralytics' model cache.
+                if os.path.isabs(path) and not os.path.exists(path):
+                    raise ValueError(
+                        f"{attr}={path!r} does not exist on disk. "
+                        f"Download the model or update the setting. "
+                        f"Set LOCOPILOT_SKIP_PATH_CHECKS=1 to bypass."
+                    )
+
+        # (b) Flag coherence: train_motion_rules_enabled requires
+        # train_motion_detection_enabled. The latter is not a typed Settings
+        # field in this branch, so fall back to reading the env var directly
+        # while staying defensive.
+        train_motion_rules = getattr(self, 'train_motion_rules_enabled', False)
+        if train_motion_rules:
+            train_motion_detection = getattr(
+                self, 'train_motion_detection_enabled', None
+            )
+            if train_motion_detection is None:
+                env_val = os.getenv('TRAIN_MOTION_DETECTION_ENABLED')
+                if env_val is not None:
+                    train_motion_detection = env_val.strip().lower() in (
+                        "1", "true", "yes", "on"
+                    )
+            # If detection flag is explicitly False, reject. If it's None
+            # (field/env var absent), skip gracefully — assume the caller
+            # knows what they're doing.
+            if train_motion_detection is False:
+                raise ValueError(
+                    "TRAIN_MOTION_RULES_ENABLED=1 requires "
+                    "TRAIN_MOTION_DETECTION_ENABLED=1. The rule engine has "
+                    "no motion state to act on when detection is disabled."
+                )
+
+        # (c) Pose backend adapter: rtmpose requires rtmlib installed.
+        pose_model = getattr(self, 'pose_model', None)
+        if pose_model == 'rtmpose':
+            try:
+                import rtmlib  # noqa: F401
+            except ImportError as e:
+                raise ValueError(
+                    "POSE_MODEL=rtmpose requires the 'rtmlib' package; "
+                    "install with `pip install rtmlib onnxruntime` "
+                    "(or onnxruntime-gpu for CUDA)."
+                ) from e
+
+        return self
+
 
 @lru_cache()
 def get_settings() -> Settings:
