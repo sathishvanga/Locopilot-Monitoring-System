@@ -28,6 +28,17 @@ def _get_settings_gpu_batch_enabled() -> bool:
     return get_settings().gpu_batch_enabled
 
 
+def _get_settings_mp_overlap_seconds() -> float:
+    """Get mp_overlap_seconds from Settings (single source of truth).
+
+    Settings enforces via a model_validator that this value is at least
+    max(sleep_baseline_calibration_window, hand_gesture_coordination_window)
+    so temporal state has time to warm up at chunk boundaries (ARCH-03).
+    """
+    from app.utils.config import get_settings
+    return get_settings().mp_overlap_seconds
+
+
 @dataclass
 class MultiprocessingConfig:
     """Configuration for multiprocessing video pipeline"""
@@ -53,7 +64,12 @@ class MultiprocessingConfig:
     # to warm up temporal state (consecutive_detections, sleep state, baseline calibration).
     # Activities detected during the overlap region are discarded; only the canonical
     # chunk's results are kept.  This prevents temporal state discontinuity at boundaries.
-    overlap_seconds: float = float(os.getenv("MP_OVERLAP_SECONDS", "2.0"))  # Overlap duration in seconds
+    #
+    # ARCH-03: default is sourced from Settings.mp_overlap_seconds (default 12.0s)
+    # so the overlap covers the sleep baseline calibration window (~10s) and the
+    # hand gesture coordination window (~10s).  Settings enforces the invariant via
+    # a model_validator.  None = use Settings.mp_overlap_seconds.
+    overlap_seconds: Optional[float] = None
 
     # Worker initialization settings
     # ✅ PRODUCTION OPTIMIZED: Thread counts from environment or defaults
@@ -114,6 +130,8 @@ class MultiprocessingConfig:
             self.gpu_batch_size = _get_settings_gpu_batch_size()
         if self.gpu_batch_enabled is None:
             self.gpu_batch_enabled = _get_settings_gpu_batch_enabled()
+        if self.overlap_seconds is None:
+            self.overlap_seconds = _get_settings_mp_overlap_seconds()
         # Resolve voting model paths: fall back to detection model paths when empty
         if not self.yolo_voting_model_path:
             self.yolo_voting_model_path = self.yolo_model_path

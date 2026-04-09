@@ -512,7 +512,7 @@ def calculate_frame_ranges(
     sample_fps: float,
     chunk_duration: float,
     min_chunk_duration: float = 2.0,
-    overlap_seconds: float = 2.0
+    overlap_seconds: float = 12.0,
 ) -> Tuple[List[FrameRange], int, float]:
     """
     Calculate frame ranges for parallel processing.
@@ -537,8 +537,11 @@ def calculate_frame_ranges(
         chunk_duration: Target duration per chunk in seconds
         min_chunk_duration: Minimum chunk duration in seconds
         overlap_seconds: Seconds of overlap from previous chunk to warm up
-            temporal state at chunk boundaries (default 2.0).  Set to 0 to
-            disable overlap.
+            temporal state at chunk boundaries (default 12.0).  The default
+            is sized to cover ``sleep_baseline_calibration_window`` and
+            ``hand_gesture_coordination_window`` (both ~10s) so pose-based
+            sleep and coordination detection are not suppressed at chunk
+            seams (ARCH-03).  Set to 0 to disable overlap.
 
     Returns:
         Tuple of (frame_ranges, total_frames, native_fps)
