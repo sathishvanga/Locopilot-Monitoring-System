@@ -89,7 +89,7 @@ class SleepDetector:
         self.SLEEP_STRONG_SCORE = getattr(s, 'sleep_strong_score', 4) if s else 4
         self.SLEEP_STRONG_DURATION = getattr(s, 'sleep_strong_duration', 2) if s else 2
         self.SLEEP_MODERATE_DURATION = getattr(s, 'sleep_moderate_duration', 4) if s else 4
-        self.SLEEP_MICROSLEEP_DURATION = getattr(s, 'sleep_microsleep_duration', 2) if s else 2
+        self.SLEEP_MICROSLEEP_DURATION = getattr(s, 'sleep_microsleep_duration', 5) if s else 5
 
         # Movement and posture thresholds
         self.MINIMAL_MOVEMENT_THRESHOLD = getattr(s, 'minimal_movement_threshold', 0.15) if s else 0.15

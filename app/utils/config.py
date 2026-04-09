@@ -349,7 +349,7 @@ class Settings(BaseSettings):
     haar_eye_roi_padding: float = float(os.getenv("HAAR_EYE_ROI_PADDING", "0.4"))
     haar_eye_scale_factor: float = float(os.getenv("HAAR_EYE_SCALE_FACTOR", "1.1"))
     haar_eye_min_neighbors: int = int(os.getenv("HAAR_EYE_MIN_NEIGHBORS", "3"))
-    haar_eye_microsleep_duration: float = float(os.getenv("HAAR_EYE_MICROSLEEP_DURATION", "1.5"))
+    haar_eye_microsleep_duration: float = float(os.getenv("HAAR_EYE_MICROSLEEP_DURATION", "5.0"))  # Spec: eyes closed > 5 sec
     haar_eye_sleep_duration: float = float(os.getenv("HAAR_EYE_SLEEP_DURATION", "4.0"))
     haar_eye_score_boost: int = int(os.getenv("HAAR_EYE_SCORE_BOOST", "5"))
 
@@ -439,7 +439,7 @@ class Settings(BaseSettings):
     sleep_strong_score: int = int(os.getenv("SLEEP_STRONG_SCORE", "6"))
     sleep_strong_duration: int = int(os.getenv("SLEEP_STRONG_DURATION", "0"))
     sleep_moderate_duration: int = int(os.getenv("SLEEP_MODERATE_DURATION", "2"))
-    sleep_microsleep_duration: int = int(os.getenv("SLEEP_MICROSLEEP_DURATION", "4"))  # Raised from 0 to filter momentary pose fluctuations
+    sleep_microsleep_duration: int = int(os.getenv("SLEEP_MICROSLEEP_DURATION", "5"))  # Spec: eyes closed > 5 sec
     minimal_movement_threshold: float = float(os.getenv("MINIMAL_MOVEMENT_THRESHOLD", "0.15"))
     stable_posture_variance: int = int(os.getenv("STABLE_POSTURE_VARIANCE", "100"))
     eyes_not_visible_threshold: float = float(os.getenv("EYES_NOT_VISIBLE_THRESHOLD", "0.4"))

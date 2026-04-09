@@ -71,8 +71,10 @@ def _build_activity_registry() -> Dict[str, ActivityConfig]:
 
     return {
         'microsleep': ActivityConfig(
-            min_duration=2.0,
-            required_consecutive=1,
+            # Spec: eyes closed > 5 sec; at 0.5 fps, 3 consecutive frames span ≥4 sec,
+            # and min_duration=5.0 enforces the full 5-second threshold after onset.
+            min_duration=5.0,
+            required_consecutive=3,
             margin=None,
             grace_frames=10,
         ),
@@ -4718,11 +4720,10 @@ class LocopilotActivityMonitor:
             ocr_timestamp = self._extract_ocr_timestamp(frame)
 
             # GATE: Suppress activities when train is STOPPED (vibration-based motion detection)
-            # When stopped, only group_detected (>5 persons) and no_person_detected are valid
+            # Per spec: microsleep and cell_phone MUST trigger in both stationary and moving states.
+            # Other motion-dependent activities remain suppressed at station stops.
             if self.train_motion_detector is not None and self.current_motion_state == "STOPPED":
-                microsleep_detected = False
                 sleep_detected = False
-                cell_phone_detected = False
                 writing_detected = False
                 packing_detected = False
                 lp_hand_gesture_detected = False
@@ -4736,8 +4737,9 @@ class LocopilotActivityMonitor:
                         group_detected_flag = False
                 self.logger.debug(
                     f"[{timestamp}] [Frame {frame_idx}] Train STOPPED — "
-                    f"all activities suppressed except group_detected (>{self.train_motion_stopped_group_threshold}) "
-                    f"and no_person_detected"
+                    f"sleep/writing/packing/gesture/mind_diversion/eating suppressed; "
+                    f"microsleep and cell_phone remain active (safety-critical), "
+                    f"group_detected requires >{self.train_motion_stopped_group_threshold}"
                 )
 
             # Update activity states with temporal filtering
