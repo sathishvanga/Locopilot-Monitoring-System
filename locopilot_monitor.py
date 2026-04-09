@@ -26,6 +26,23 @@ from app.core.tracking import PersonTracker
 from app.core.visualization import FrameAnnotator
 from app.core.activity_tracker import ActivityTracker, ActivityConfig as ExtractedActivityConfig
 from app.core.evidence_manager import EvidenceManager
+from app.core.frame_pipeline import FramePipeline, FrameState
+from app.core.pipeline.stages import (
+    FaceMeshStage,
+    ObjectDetectStage,
+    PersonDedupStage,
+    RoleIdentifyStage,
+    GroupVoteStage,
+    TrainMotionDetectStage,
+    PerPersonActivitiesStage,
+    StateMachineGateStage,
+    SleepWritingOverrideStage,
+    GestureCoordinationStage,
+    TrainMotionSuppressStage,
+    NoPersonScheduleSuppressStage,
+    TemporalFilterStage,
+    EvidenceStage,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -808,6 +825,27 @@ class LocopilotActivityMonitor:
             self.evidence_manager = None
 
         self.logger.info("Extracted detector modules initialized: SleepDetector, ActivityDetector, GestureDetector, MindDiversionDetector")
+
+        # Task 0002: Frame pipeline scaffolding. `_process_frames_core` now
+        # just constructs a FrameState and iterates these stages in order.
+        # Reordering / adding new stages should be a pure edit to this list
+        # -- no edits inside `_process_frames_core` itself.
+        self.frame_pipeline = FramePipeline([
+            FaceMeshStage(),
+            ObjectDetectStage(),
+            PersonDedupStage(),
+            RoleIdentifyStage(),
+            GroupVoteStage(),
+            TrainMotionDetectStage(),
+            PerPersonActivitiesStage(),
+            StateMachineGateStage(),
+            SleepWritingOverrideStage(),
+            GestureCoordinationStage(),
+            TrainMotionSuppressStage(),
+            NoPersonScheduleSuppressStage(),
+            TemporalFilterStage(),
+            EvidenceStage(),
+        ])
 
     def set_trip_schedule(self, trip_schedule: Any) -> None:
         """
@@ -4069,445 +4107,44 @@ class LocopilotActivityMonitor:
         log_per_person_detections: bool = True,
         enable_stale_cleanup: bool = True,
     ) -> None:
-        """Core frame processing logic shared by process_video and process_video_range.
+        """Core frame processing -- thin ``FramePipeline`` driver (task 0002).
 
-        CR-003: Extracted from duplicated code in process_video() and process_video_range().
-        This method processes a single sampled frame through the full detection pipeline:
-        face mesh, YOLO detection, person deduplication, multi-person activity processing,
-        activity lifecycle management, and motion rule engine integration.
-
-        Args:
-            frame: The video frame (BGR numpy array)
-            frame_idx: Frame index in the source video
-            timestamp_sec: Timestamp in seconds for this frame
-            sample_idx: Sequential sample index
-            total_frames: Total frames in the video (for progress logging)
-            fps: Video native FPS
-            batch_object_detections: Pre-computed YOLO object detections (batch mode)
-            batch_pose_results: Pre-computed YOLO pose results (batch mode)
-            batch_sleep_pose_results: Pre-computed low-conf pose results for sleep (batch mode)
-            batch_idx: Index into batch results arrays
-            save_clips: Whether to pass save_clips to end_activity (False for multiprocessing)
-            log_per_person_detections: Whether to log per-person detection details
-            enable_stale_cleanup: Whether to call _cleanup_stale_person_tracking
+        Constructs a ``FrameState`` from the call arguments and runs every
+        stage in ``self.frame_pipeline``. The actual per-frame logic lives
+        in ``app/core/pipeline/stages/``. To add, reorder, or remove a
+        stage, edit the list passed to ``FramePipeline`` in ``__init__`` --
+        this function should never need to change.
         """
-        # Initialize variables for memory cleanup in finally block
-        rgb_frame = None
-        annotated_frame_for_activity = None
-
+        state = FrameState(
+            frame=frame,
+            frame_idx=frame_idx,
+            timestamp_sec=timestamp_sec,
+            sample_idx=sample_idx,
+            total_frames=total_frames,
+            fps=fps,
+            batch_object_detections=batch_object_detections,
+            batch_pose_results=batch_pose_results,
+            batch_sleep_pose_results=batch_sleep_pose_results,
+            batch_idx=batch_idx,
+            save_clips=save_clips,
+            log_per_person_detections=log_per_person_detections,
+            enable_stale_cleanup=enable_stale_cleanup,
+        )
         try:
-            # Convert timestamp to HH:MM:SS format
-            timestamp = str(timedelta(seconds=timestamp_sec))
-
-            # Add frame to buffer
-            self.frame_buffer.append(frame.copy())
-            # CR-005: Track frame indices in parallel buffer for activity frame storage
-            self.frame_idx_buffer.append(frame_idx)
-
-            # STEP 1: Run MediaPipe Face Mesh on full frame (for head pose/mind diversion detection)
-            rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            face_results = self.face_mesh.process(rgb_frame)
-
-            # STEP 2: Detect objects with YOLO
-            # GPU BATCH: Use pre-computed detections from batch inference if available
-            if batch_object_detections is not None and batch_idx < len(batch_object_detections):
-                detections = batch_object_detections[batch_idx]
-            else:
-                # Per-frame detection (process_video path or fallback)
-                # Preprocess single frame for dark/IR conditions if batch mode fallback
-                if batch_object_detections is not None:
-                    detection_frame = self.object_detector._preprocess_frames_for_detection([frame])[0]
-                    detections = self.object_detector.detect_objects(detection_frame, None, use_pose_guided=False)
-                else:
-                    detections = self.object_detector.detect_objects(frame, None, use_pose_guided=False)
-
-            # STEP 3: Identify person roles and count people
-            people_count = len(detections['person'])
-            if people_count == 0:
-                people_count = 1  # Default to 1 if no person detected
-
-            # De-duplicate person boxes and identify roles
-            group_detected_flag = False
-            person_roles = {}
-
-            if len(detections['person']) > 0:
-                # De-duplicate person boxes to get accurate count
-                # Increased IOU threshold from 0.3 to 0.5 to better filter duplicate detections
-                deduplicated_persons = deduplicate_person_boxes(detections['person'], iou_threshold=0.5)
-
-                # Store deduplicated boxes in detections for visualization
-                # NOTE: Removed pose validation as it was filtering out legitimate people
-                # (MediaPipe struggles with back views, partial occlusions, overhead cameras)
-                detections['deduplicated_person'] = deduplicated_persons
-                deduplicated_count = len(deduplicated_persons)
-
-                # Identify person roles (LP, ALP, etc.)
-                person_roles = self.identify_person_roles(frame, deduplicated_persons, detections)
-
-                # Log role identification (only once per detection cycle)
-                if self.consecutive_detections['group_detected'] == 0 and person_roles:
-                    self.logger.debug(f"[{timestamp}] Person roles identified:")
-                    for person_idx in sorted(person_roles.keys()):
-                        role_info = person_roles[person_idx]
-                        self.logger.debug(f"  Person {person_idx+1}: {role_info['role_name']} (bbox_area: {role_info.get('bbox_area', 0):.0f})")
-
-                if deduplicated_count > 2:
-                    # Stage 2: Voting verification for group_detected (if enabled)
-                    if self.voting_service is not None:
-                        is_confirmed, vote_details = self.voting_service.verify_activity(
-                            video_path=self.current_video_path,
-                            timestamp_sec=timestamp_sec,
-                            activity_type='group_detected',
-                            person_bbox=[0, 0, frame.shape[1], frame.shape[0]]  # Full frame for group detection
-                        )
-                        if is_confirmed:
-                            group_detected_flag = True
-                            self.logger.info(f"[VOTING] group_detected CONFIRMED: {vote_details.get('vote_breakdown', [])}")
-                        else:
-                            group_detected_flag = False
-                            self.logger.info(f"[VOTING] group_detected REJECTED: {vote_details.get('vote_breakdown', [])}")
-                    else:
-                        group_detected_flag = True
-                    if group_detected_flag and self.consecutive_detections['group_detected'] == 0:
-                        self.logger.info(f"[{timestamp}] Group detected - {deduplicated_count} people (de-duplicated from {len(detections['person'])} raw detections)")
-            else:
-                # No person detected at all
-                detections['deduplicated_person'] = []
-                person_roles = {}
-                # DEBUG: Log when no person is detected (will be tracked as activity)
-                if self.consecutive_detections['no_person_detected'] == 0:
-                    raw_detections = len(detections['person'])
-                    self.logger.debug(f"[{timestamp}] NO PERSON detected in frame (raw YOLO detections: {raw_detections})")
-
-            # STEP 4: *** MULTI-PERSON PROCESSING ***
-            # Process ALL persons individually for ALL activities
-            # GPU BATCH: Pass pre-computed pose results if available
-            precomputed_poses = None
-            if batch_pose_results is not None and batch_idx < len(batch_pose_results):
-                precomputed_poses = batch_pose_results[batch_idx]
-
-            precomputed_sleep_poses = None
-            if batch_sleep_pose_results is not None and batch_idx < len(batch_sleep_pose_results):
-                precomputed_sleep_poses = batch_sleep_pose_results[batch_idx]
-
-            multi_person_results = self.process_all_persons_activities(
-                frame, detections, person_roles, timestamp_sec, face_results, frame_idx,
-                precomputed_pose_results=precomputed_poses,
-                precomputed_sleep_pose_results=precomputed_sleep_poses
-            )
-
-            # Extract aggregated detection flags
-            persons_data = multi_person_results['persons']
-            aggregated = multi_person_results['aggregated']
-
-            # Initialize detection flags from aggregated results
-            microsleep_detected = aggregated['microsleep_detected']
-            sleep_detected = aggregated['sleep_detected']
-            cell_phone_detected = aggregated['cell_phone_detected']
-            writing_detected = aggregated['writing_detected']
-            packing_detected = aggregated['packing_detected']
-            lp_hand_gesture_detected = aggregated['lp_hand_gesture_detected']
-            alp_hand_gesture_detected = aggregated['alp_hand_gesture_detected']
-            mind_diversion_detected = aggregated['mind_diversion_detected']
-            eating_drinking_detected = aggregated.get('eating_drinking_detected', False)
-
-            # Log detections for each person (only on first detection)
-            if log_per_person_detections:
-                for person_idx, person_data in persons_data.items():
-                    activities = person_data['activities']
-                    role_name = person_data['role_name']
-                    debug_info = person_data['debug_info']
-
-                    # Log mind diversion
-                    if activities.get('mind_diversion', False) and self.consecutive_detections.get('mind_diversion', 0) == 0:
-                        head_pose = debug_info.get('head_pose', {})
-                        yaw = head_pose.get('yaw', 0)
-                        pitch = head_pose.get('pitch', 0)
-                        method = head_pose.get('method', 'unknown')
-                        self.logger.info(f"[{timestamp}] MIND DIVERSION detected for {role_name} (Person {person_idx+1}) - Yaw={yaw:.1f}, Pitch={pitch:.1f} (method: {method})")
-
-                    # Log sleep detection
-                    if activities['sleep'] and self.consecutive_detections['sleep'] == 0:
-                        sleep_info = debug_info.get('sleep_info', {})
-                        self.logger.info(f"[{timestamp}] SLEEP detected for {role_name} (Person {person_idx+1}) - pose-based")
-
-                    # Log microsleep detection
-                    if activities['microsleep'] and self.consecutive_detections['microsleep'] == 0:
-                        self.logger.info(f"[{timestamp}] MICROSLEEP detected for {role_name} (Person {person_idx+1}) - pose-based")
-
-                    # Log hand gestures
-                    if activities['lp_hand_gesture'] and self.consecutive_detections['lp_hand_gesture'] == 0:
-                        gesture_debug = debug_info.get('gesture_debug', {})
-                        self.logger.info(f"[{timestamp}] LP hand gesture detected for {role_name} (Person {person_idx+1}) - {gesture_debug.get('hand_raised', 'unknown')} hand raised")
-
-                    if activities['alp_hand_gesture'] and self.consecutive_detections['alp_hand_gesture'] == 0:
-                        gesture_debug = debug_info.get('gesture_debug', {})
-                        self.logger.info(f"[{timestamp}] ALP hand gesture detected for {role_name} (Person {person_idx+1}) - {gesture_debug.get('hand_raised', 'unknown')} hand raised")
-
-                    # Log cell phone, writing, packing
-                    if activities['cell_phone'] and self.consecutive_detections['cell_phone'] == 0:
-                        self.logger.info(f"[{timestamp}] Cell phone ACTIVELY USED by {role_name} (Person {person_idx+1})")
-
-                    if activities['writing'] and self.consecutive_detections['writing'] == 0:
-                        self.logger.info(f"[{timestamp}] WRITING detected for {role_name} (Person {person_idx+1})")
-
-                    if activities.get('packing_bags', False) and self.consecutive_detections.get('packing_bags', 0) == 0:
-                        self.logger.info(f"[{timestamp}] PACKING detected for {role_name} (Person {person_idx+1})")
-
-            # GATE: Per-person state machine check (H-02 fix).
-            # The primary per-person gate is now applied inside process_all_persons_activities
-            # before aggregation. This secondary gate verifies that at least one person with
-            # active sleep/microsleep has their own state machine in DROWSY or beyond.
-            # Unlike the old code, we only check persons who actually have sleep/microsleep
-            # detected (not all persons), preventing cross-person state leakage.
-            if microsleep_detected or sleep_detected:
-                state_machine_ready = False
-                for _pidx, _pdata in persons_data.items():
-                    _activities = _pdata.get('activities', {})
-                    if not (_activities.get('sleep') or _activities.get('microsleep')):
-                        continue  # Skip persons without active sleep/microsleep
-                    _sleep_info = _pdata.get('debug_info', {}).get('sleep_info', {})
-                    _state = _sleep_info.get('sleep_state', 'ALERT')
-                    if _state in ('DROWSY', 'MICROSLEEP', 'SLEEPING'):
-                        state_machine_ready = True
-                        break
-                if not state_machine_ready:
-                    self.logger.debug(
-                        f"[{timestamp}] [Frame {frame_idx}] Sleep/microsleep SUPPRESSED - "
-                        f"no person with active sleep/microsleep has state machine in DROWSY/MICROSLEEP/SLEEPING"
-                    )
-                    microsleep_detected = False
-                    sleep_detected = False
-
-            # CRITICAL: Exclude sleep detection if person is holding objects or in active posture
-            # If someone has a phone, book, or backpack in hand, they're clearly NOT sleeping
-            # EXCEPTION: If the sleep state machine is in DROWSY/MICROSLEEP/SLEEPING, don't let
-            # writing suppress sleep — during microsleep, hands-in-lap + head-down can look like
-            # writing posture but the state machine has already determined the person is drowsy.
-            # FIX: Also check raw drowsiness indicators from pose_sleep_info directly, so that
-            # on the first frame of sleep onset (when state machine is still ALERT), strong
-            # drowsiness signals can override writing suppression and allow the state machine
-            # to advance. This prevents the chicken-and-egg problem where writing suppresses
-            # sleep before the state machine ever reaches DROWSY.
-            sleep_state_overrides_writing = False
-            if sleep_detected or microsleep_detected:
-                # H-02 fix: Only check persons who have active sleep/microsleep,
-                # not all persons. This prevents cross-person state leakage where
-                # person 0's SLEEPING state overrides writing suppression for person 1.
-                for _pidx, _pdata in persons_data.items():
-                    _activities = _pdata.get('activities', {})
-                    if not (_activities.get('sleep') or _activities.get('microsleep')):
-                        continue  # Skip persons without active sleep/microsleep
-                    _sleep_info = _pdata.get('debug_info', {}).get('sleep_info', {})
-                    _state = _sleep_info.get('sleep_state', 'ALERT')
-                    if _state in ('DROWSY', 'MICROSLEEP', 'SLEEPING'):
-                        sleep_state_overrides_writing = True
-                        break
-                    # Check raw drowsiness indicators even when state machine is still ALERT.
-                    # head_drop_detected or significant nose_y_drop indicate the person's head
-                    # is dropping -- a strong physical signal that should not be suppressed by
-                    # writing detection. haar_eye_closed similarly indicates closed eyes.
-                    _head_drop = _sleep_info.get('head_drop_detected', False)
-                    _nose_y_drop = _sleep_info.get('nose_y_drop', 0.0)
-                    _haar_eye_closed = _sleep_info.get('haar_eye_closed', False)
-                    if _head_drop or _nose_y_drop > 0.05 or _haar_eye_closed:
-                        sleep_state_overrides_writing = True
-                        self.logger.debug(
-                            f"[{timestamp}] Writing suppression overridden by raw drowsiness "
-                            f"indicators: head_drop={_head_drop}, nose_y_drop={_nose_y_drop:.4f}, "
-                            f"haar_eye_closed={_haar_eye_closed}"
-                        )
-                        break
-            suppress_activities = cell_phone_detected or packing_detected
-            if writing_detected and not sleep_state_overrides_writing:
-                suppress_activities = True
-            if suppress_activities:
-                if log_per_person_detections and (microsleep_detected or sleep_detected):
-                    reason = []
-                    if cell_phone_detected: reason.append("phone")
-                    if writing_detected and not sleep_state_overrides_writing: reason.append("book")
-                    if packing_detected: reason.append("backpack")
-                    self.logger.debug(f"[{timestamp}] Sleep detection OVERRIDDEN - person active ({', '.join(reason)})")
-                microsleep_detected = False
-                sleep_detected = False
-
-            # Debug: log sleep detection state after override check
-            if sleep_detected or microsleep_detected:
-                self.logger.info(
-                    f"[{timestamp}] [Frame {frame_idx}] SLEEP/MICROSLEEP PASSED override check: "
-                    f"sleep={sleep_detected}, microsleep={microsleep_detected}, "
-                    f"writing={writing_detected}, override={sleep_state_overrides_writing}"
-                )
-
-            # Create annotated frame with all detections (pose landmarks + YOLO boxes)
-            # This annotated frame will be used for BOTH activity clips AND periodic frame saving
-            annotated_frame_for_activity = self.frame_annotator.draw_bounding_boxes(
-                frame, detections, show_roi_boxes=True, person_roles=person_roles
-            )
-            # NEW: Draw MediaPipe outputs for ALL persons (not just one)
-            annotated_frame_for_activity = self.draw_multi_person_mediapipe_outputs(
-                annotated_frame_for_activity,
-                persons_data,  # All persons' pose landmarks and activities
-                face_results
-            )
-
-            # Draw sleep detection debug overlay for each person
-            for pidx, pdata in persons_data.items():
-                sleep_info = pdata.get('debug_info', {}).get('sleep_info')
-                if sleep_info:
-                    annotated_frame_for_activity = self.frame_annotator.draw_sleep_debug_overlay(
-                        annotated_frame_for_activity, sleep_info, pidx,
-                        pdata.get('activities', {}), timestamp_sec
-                    )
-
-            # Save annotated frames periodically if enabled (AFTER all detections)
-            if (
-                self.save_annotated_frames
-                and self.frames_dir is not None
-                and sample_idx % self.frame_save_interval == 0
-            ):
-                try:
-                    # Save frame with unique filename
-                    frame_filename = f"frame_{frame_idx:08d}.jpg"
-                    frame_path = os.path.join(self.frames_dir, frame_filename)
-
-                    # Ensure directory exists (for multiprocessing safety)
-                    os.makedirs(self.frames_dir, exist_ok=True)
-
-                    # Save with high quality
-                    cv2.imwrite(frame_path, annotated_frame_for_activity, [cv2.IMWRITE_JPEG_QUALITY, 95])
-
-                except Exception as e:
-                    self.logger.error(f"[{timestamp}] Error saving frame {frame_idx}: {e}")
-
-            # CRITICAL: Hand gesture coordination check
-            # Activity Type 8 (LP not exchanging): Triggers when ALP raises hand BUT LP does NOT
-            # Activity Type 9 (ALP not exchanging): Triggers when LP raises hand BUT ALP does NOT
-            # This ensures we detect COORDINATION FAILURES, not individual gestures
-            # Uses temporal window to prevent false positives when both people raise hands within window
-            lp_not_coordinating, alp_not_coordinating = self._check_hand_gesture_coordination(
-                lp_hand_gesture_detected,
-                alp_hand_gesture_detected,
-                timestamp_sec
-            )
-
-            # Debug logging for coordination check
-            if lp_not_coordinating and self.consecutive_detections['lp_hand_gesture'] == 0:
-                self.logger.info(f"[{timestamp}] [Frame {frame_idx}] COORDINATION FAILURE: ALP raised hand but LP did NOT respond")
-            if alp_not_coordinating and self.consecutive_detections['alp_hand_gesture'] == 0:
-                self.logger.info(f"[{timestamp}] [Frame {frame_idx}] COORDINATION FAILURE: LP raised hand but ALP did NOT respond")
-
-            # Detect when no person is in frame
-            no_person_detected_flag = (len(detections.get('deduplicated_person', [])) == 0)
-
-            # Extract OCR timestamp from frame (if enabled)
-            ocr_timestamp = self._extract_ocr_timestamp(frame)
-
-            # Update activity states with temporal filtering
-            activities_map = {
-                'microsleep': microsleep_detected and not sleep_detected,
-                'sleep': sleep_detected,
-                'cell_phone': cell_phone_detected,
-                'writing': writing_detected,
-                'packing_bags': packing_detected,
-                'group_detected': group_detected_flag,
-                'lp_hand_gesture': lp_not_coordinating,  # LP fails to respond when ALP raises hand
-                'alp_hand_gesture': alp_not_coordinating,  # ALP fails to respond when LP raises hand
-                'mind_diversion': mind_diversion_detected,
-                'eating_drinking': eating_drinking_detected,
-                'no_person_detected': no_person_detected_flag,
-                'alp_not_standing': False
-            }
-
-            # 3.5. Suppress no_person_detected when trip schedule is unavailable
-            if self.suppress_no_person_without_schedule and self.trip_schedule is None:
-                if activities_map.get('no_person_detected', False):
-                    activities_map['no_person_detected'] = False
-                    self.logger.debug(
-                        f"[{timestamp}] no_person_detected suppressed - "
-                        f"no trip schedule available to distinguish station halts"
-                    )
-
-            for activity_name, detected in activities_map.items():
-                if detected:
-                    # Activity detected - increment consecutive counter and reset grace period
-                    self.consecutive_detections[activity_name] += 1
-                    self.grace_counters[activity_name] = 0  # Reset grace period
-
-                    # Only start recording after required consecutive frames threshold is met
-                    required_consecutive = self.activity_thresholds[activity_name]['required_consecutive']
-
-                    if self.consecutive_detections[activity_name] >= required_consecutive:
-                        # Start activity if not already active
-                        if not self.activities[activity_name]['active']:
-                            self.start_activity(activity_name, timestamp, fps, frame_idx, person_roles=person_roles, ocr_timestamp=ocr_timestamp)
-
-                        # Continue recording frames ONLY when activity is actively detected
-                        if self.activities[activity_name]['active']:
-                            # CR-005: Store frame index instead of frame copy to reduce memory usage
-                            self.activities[activity_name]['frames'].append(frame_idx)
-                            self.activities[activity_name]['last_frame_count'] = frame_idx
-                            self.activities[activity_name]['last_detected_frame'] = frame_idx  # Track last actual detection
-                            self.activities[activity_name]['last_detection_time'] = timestamp  # Track for precise clip duration
-                            # Update person roles (in case they change during activity)
-                            if person_roles:
-                                self.activities[activity_name]['person_roles'] = person_roles
-                else:
-                    # Activity not detected - use grace period before resetting
-                    if self.consecutive_detections[activity_name] > 0 or self.activities[activity_name]['active']:
-                        # Increment grace counter
-                        self.grace_counters[activity_name] += 1
-                        grace_frames = self.activity_thresholds[activity_name]['grace_frames']
-
-                        # If still within grace period, keep activity alive but DON'T add frames
-                        if self.grace_counters[activity_name] <= grace_frames:
-                            # Still in grace period - keep activity active but don't record frames
-                            # This allows brief interruptions without ending the activity
-                            pass
-                        else:
-                            # Grace period exceeded - end activity and reset counters
-                            if self.activities[activity_name]['active']:
-                                # No ocr_timestamp: current frame is post-grace-period, not when activity ended.
-                                # end_activity computes ocr_end from ocr_start + duration instead (more accurate).
-                                if save_clips:
-                                    self.end_activity(activity_name, timestamp, fps, frame_idx, people_count)
-                                else:
-                                    self.end_activity(activity_name, timestamp, fps, frame_idx, people_count, save_clips=save_clips)
-                            self.consecutive_detections[activity_name] = 0
-                            self.grace_counters[activity_name] = 0
-                    else:
-                        # Reset grace counter if nothing is being tracked
-                        self.grace_counters[activity_name] = 0
-
-            # CR-012: Clean up stale per-person tracking dicts after each frame
-            if enable_stale_cleanup and persons_data:
-                self._cleanup_stale_person_tracking(set(persons_data.keys()))
-
-            # Display progress with detection status
-            if sample_idx % 50 == 0:  # Show progress every 50 sampled frames
-                progress = (frame_idx / total_frames) * 100
-                self.logger.info(f"Progress: {sample_idx} samples processed (frame {frame_idx}/{total_frames}, {progress:.1f}%)")
-
-                # Show current detection counts for debugging
-                active_detections = []
-                for act_name, count in self.consecutive_detections.items():
-                    if count > 0:
-                        threshold = self.activity_thresholds[act_name]['required_consecutive']
-                        status = "RECORDING" if self.activities[act_name]['active'] else f"building {count}/{threshold}"
-                        active_detections.append(f"{act_name}: {status}")
-
-                if active_detections:
-                    self.logger.debug(f"  Active detections: {', '.join(active_detections)}")
-
+            for stage in self.frame_pipeline.stages:
+                result = stage.run(state, monitor=self)
+                if result is not None:
+                    state = result
         except Exception as e:
-            self.logger.error(f"Error processing sample {sample_idx} (frame {frame_idx}): {e}")
+            self.logger.error(
+                f"Error processing sample {sample_idx} (frame {frame_idx}): {e}"
+            )
         finally:
-            # MEMORY FIX: Explicitly delete frame after processing to free memory
-            if annotated_frame_for_activity is not None:
-                del annotated_frame_for_activity
-            if rgb_frame is not None:
-                del rgb_frame
-
+            # MEMORY FIX: Explicitly release heavy buffers after processing
+            if state.annotated_frame_for_activity is not None:
+                state.annotated_frame_for_activity = None
+            if state.rgb_frame is not None:
+                state.rgb_frame = None
 
     def process_video(self) -> None:
         """Main video processing loop - SAMPLES FRAMES AT SPECIFIED RATE"""
