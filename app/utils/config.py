@@ -9,7 +9,7 @@ import json
 import tempfile
 from typing import Optional, List
 from functools import lru_cache
-from pydantic import field_validator
+from pydantic import field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # Thread configuration for CPU inference optimization
@@ -78,6 +78,11 @@ class Settings(BaseSettings):
     # Coordination window is 10s, so 15s chunks capture full coordination sequences
     # Tradeoff: fewer chunks (~118 for 30-min video) but reliable coordination detection
     mp_chunk_duration: float = 15.0  # Chunk duration in seconds (optimized for coordination detection)
+    # ARCH-03: overlap window between adjacent worker chunks.  Must be >=
+    # max(sleep_baseline_calibration_window, hand_gesture_coordination_window)
+    # so pose-based sleep and gesture coordination are not suppressed at seams.
+    # Enforced by the _validate_overlap_window model_validator below.
+    mp_overlap_seconds: float = float(os.getenv("MP_OVERLAP_SECONDS", "12.0"))
     mp_max_workers: Optional[int] = None  # None = auto-detect (uses min(CPU count, max_workers_cap))
     mp_max_workers_cap: int = 12  # Maximum number of workers (11 cores + slight oversubscription)
     
@@ -493,6 +498,35 @@ class Settings(BaseSettings):
 
     # Cache TTL for delay data (in seconds, default 30 minutes)
     etrain_cache_ttl: int = int(os.getenv("ETRAIN_CACHE_TTL", "1800"))
+
+    @model_validator(mode='after')
+    def _validate_overlap_window(self) -> "Settings":
+        """Ensure ``mp_overlap_seconds`` covers the longest temporal-state window.
+
+        ARCH-03: per-worker ``LocopilotActivityMonitor`` instances rebuild their
+        temporal state from scratch at every chunk boundary.  Unless the
+        overlap (warm-up) window covers both the sleep baseline calibration
+        window and the hand gesture coordination window, pose-based sleep and
+        gesture coordination detection are effectively suppressed at every
+        chunk seam.  This validator fails fast at startup if the operator
+        picks an overlap smaller than either window.
+        """
+        required = max(
+            float(self.sleep_baseline_calibration_window),
+            float(self.hand_gesture_coordination_window),
+        )
+        if float(self.mp_overlap_seconds) < required:
+            raise ValueError(
+                "mp_overlap_seconds must cover sleep baseline and gesture "
+                f"coordination windows: got {self.mp_overlap_seconds}s but "
+                f"need >= {required}s "
+                f"(sleep_baseline_calibration_window="
+                f"{self.sleep_baseline_calibration_window}s, "
+                f"hand_gesture_coordination_window="
+                f"{self.hand_gesture_coordination_window}s). "
+                "Raise MP_OVERLAP_SECONDS or shrink the temporal windows."
+            )
+        return self
 
 
 @lru_cache()
