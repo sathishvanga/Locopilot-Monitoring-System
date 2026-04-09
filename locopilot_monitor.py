@@ -24,132 +24,22 @@ from app.core.models.yolo_handler import YOLOHandler, YOLO_KEYPOINT_INDICES
 from app.core.detectors import SleepDetector, ActivityDetector, GestureDetector, MindDiversionDetector, ObjectDetector
 from app.core.tracking import PersonTracker
 from app.core.visualization import FrameAnnotator
-from app.core.activity_tracker import ActivityTracker, ActivityConfig as ExtractedActivityConfig
+from app.core.activity_tracker import ActivityTracker
+from app.core.activity_registry import ACTIVITY_REGISTRY, ActivityConfig
 from app.core.evidence_manager import EvidenceManager
 
 
 # ---------------------------------------------------------------------------
-# CR-004: ActivityConfig dataclass and ACTIVITY_REGISTRY
+# Task 0001 (2026-04): Activity metadata now lives in app/core/activity_registry.
 # ---------------------------------------------------------------------------
-# Consolidates the parallel per-activity dictionaries (activities,
-# consecutive_detections, grace_counters, activity_thresholds) into a
-# single source of truth.  At runtime the same dict values are produced
-# from this registry so behaviour is unchanged.
+# ``ActivityConfig`` and ``ACTIVITY_REGISTRY`` used to be defined here as the
+# runtime source of truth, while a parallel set of ``activity_type_map``,
+# ``activity_descriptions`` and ``evidence_rules`` dicts lived on the monitor
+# instance. Both have been consolidated into ``app/core/activity_registry.py``
+# so the mock detection service, Pydantic enum, and runtime monitor cannot
+# drift. The imports above re-expose the canonical objects for any code that
+# already imports them from ``locopilot_monitor``.
 # ---------------------------------------------------------------------------
-
-@dataclass
-class ActivityConfig:
-    """Per-activity configuration used to seed runtime tracking dicts."""
-
-    # activity_thresholds fields
-    min_duration: float = 0.0
-    required_consecutive: int = 1
-    margin: Optional[int] = None
-    grace_frames: int = 5
-
-    # Extra threshold fields used by specific activities
-    region_margin: Optional[int] = None
-    wrist_inside_margin: Optional[int] = None
-    sustained_proximity_seconds: Optional[float] = None
-
-
-# Single registry that replaces the 4 hand-written parallel dicts.
-# The keys are the canonical activity names.
-# Built via function so config-driven margins are resolved at first access.
-def _build_activity_registry() -> Dict[str, ActivityConfig]:
-    """Build activity registry with config-driven margins."""
-    try:
-        _settings = get_settings() if get_settings is not None else None
-    except Exception:
-        _settings = None
-
-    cell_phone_margin = _settings.activity_cell_phone_margin if _settings else 180
-    writing_margin = _settings.activity_writing_margin if _settings else 180
-    packing_margin = _settings.activity_packing_margin if _settings else 100
-    packing_region_margin = _settings.activity_packing_region_margin if _settings else 150
-    packing_wrist_inside_margin = _settings.activity_packing_wrist_inside_margin if _settings else 80
-
-    return {
-        'microsleep': ActivityConfig(
-            # Spec: eyes closed > 5 sec; at 0.5 fps, 3 consecutive frames span ≥4 sec,
-            # and min_duration=5.0 enforces the full 5-second threshold after onset.
-            min_duration=5.0,
-            required_consecutive=3,
-            margin=None,
-            grace_frames=10,
-        ),
-        'sleep': ActivityConfig(
-            min_duration=2.0,
-            required_consecutive=1,
-            margin=None,
-            grace_frames=10,
-        ),
-        'cell_phone': ActivityConfig(
-            min_duration=0.1,
-            required_consecutive=1,
-            margin=cell_phone_margin,
-            grace_frames=8,
-        ),
-        'writing': ActivityConfig(
-            # F3 (2026-04-06): consecutive 1→2, min_duration 0.1→2.0 to suppress
-            # single-frame book+posture FPs when ALP holds logbook (run_20260402_130020 FPs)
-            min_duration=2.0,
-            required_consecutive=2,
-            margin=writing_margin,
-            grace_frames=10,
-        ),
-        'packing_bags': ActivityConfig(
-            min_duration=0.0,
-            required_consecutive=1,
-            margin=packing_margin,
-            grace_frames=5,
-            region_margin=packing_region_margin,
-            wrist_inside_margin=packing_wrist_inside_margin,
-            sustained_proximity_seconds=4.0,
-        ),
-        'group_detected': ActivityConfig(
-            min_duration=0.0,
-            required_consecutive=3,
-            margin=None,
-            grace_frames=8,
-        ),
-        'lp_hand_gesture': ActivityConfig(
-            min_duration=0.0,
-            required_consecutive=1,
-            margin=None,
-            grace_frames=5,
-        ),
-        'alp_hand_gesture': ActivityConfig(
-            min_duration=0.0,
-            required_consecutive=1,
-            margin=None,
-            grace_frames=5,
-        ),
-        'mind_diversion': ActivityConfig(
-            min_duration=0.0,
-            required_consecutive=2,
-            margin=None,
-            grace_frames=5,
-        ),
-        'eating_drinking': ActivityConfig(
-            min_duration=0.0,
-            required_consecutive=2,
-            margin=None,
-            grace_frames=5,
-        ),
-        'no_person_detected': ActivityConfig(
-            # F4 (2026-04-06): consecutive 3→5, min_duration 5→10 to suppress
-            # intermittent YOLO recall drops on non-canonical poses (runs 131756, 130935, 130020 FPs)
-            min_duration=10.0,
-            required_consecutive=5,
-            margin=None,
-            grace_frames=3,
-        ),
-        'alp_not_standing': ActivityConfig(
-            required_consecutive=2,
-            grace_frames=3,
-        ),
-    }
 
 
 # Add app directory to path for importing preprocessing service
@@ -210,8 +100,10 @@ except ImportError:
     VotingVerificationService = None
     ActivityBatchCollector = None
 
-# Build activity registry now that get_settings is available
-ACTIVITY_REGISTRY: Dict[str, ActivityConfig] = _build_activity_registry()
+# Activity registry is built at import time inside ``app/core/activity_registry``.
+# It resolves config-driven margins eagerly via ``get_settings()``. Deployments
+# that need to reload config after a runtime edit can call
+# ``app.core.activity_registry.rebuild_activity_registry()``.
 
 
 # [OK] WINDOWS FIX: Prevent Qt/GUI initialization in worker processes
@@ -692,55 +584,13 @@ class LocopilotActivityMonitor:
 
         # Evidence counter
         self.evidence_counter = 0
-        
-        # Activity type mappings for JSON output
-        self.activity_type_map = {
-            'cell_phone': 2,
-            'microsleep': 3,
-            'sleep': 4,
-            'writing': 5,
-            'packing_bags': 6,
-            'group_detected': 7,
-            'lp_hand_gesture': 8,
-            'alp_hand_gesture': 9,
-            'mind_diversion': 10,
-            'no_person_detected': 11,
-            'alp_not_standing': 12,  # ALP not standing in pre-arrival window
-            'eating_drinking': 13  # Eating or drinking activity
-        }
-        
-        # Activity descriptions
-        self.activity_descriptions = {
-            'cell_phone': 'Using mobile phone',
-            'microsleep': 'Micro-sleep detected (5+ seconds)',
-            'sleep': 'Sleep detected (30+ seconds)',
-            'writing': 'WRITING LOG BOOK WHILE RUNNING',
-            'packing_bags': 'Packing bags activity detected',
-            'group_detected': 'More than 2 people (group) detected',
-            'lp_hand_gesture': 'LP not exchanging hand gesture',
-            'alp_hand_gesture': 'ALP not exchanging hand gesture',
-            'mind_diversion': 'Mind diversion - attention diverted from controls',
-            'no_person_detected': 'No person detected in frame',
-            'alp_not_standing': 'ALP not standing during pre-arrival window',
-            'eating_drinking': 'Eating or drinking detected'
-        }
-        
-        # Evidence rules
-        self.evidence_rules = {
-            'cell_phone': 'phone_in_hand',
-            'microsleep': 'pose_indicators',
-            'sleep': 'pose_indicators',
-            'writing': 'hand_near_book_or_wrist_proximity',
-            'packing_bags': 'wrist_inside_backpack_bbox_or_hand_near_backpack',
-            'group_detected': 'more_than_2_deduplicated_persons',
-            'lp_hand_gesture': 'lp_hand_raised_gesture_detected',
-            'alp_hand_gesture': 'alp_hand_raised_gesture_detected',
-            'mind_diversion': 'attention_diverted_from_controls',  # Sub-type stored in evidence details
-            'no_person_detected': 'zero_persons_in_frame',
-            'alp_not_standing': 'alp_seated_during_pre_arrival_window',
-            'eating_drinking': 'cup_or_bottle_near_face'
-        }
-        
+
+        # Task 0001 (2026-04): activity_type_map, activity_descriptions, and
+        # evidence_rules were previously three parallel dicts initialized here.
+        # They now live on each ``ActivityConfig`` in ``ACTIVITY_REGISTRY``,
+        # so downstream reads use ``ACTIVITY_REGISTRY[name].type_code`` etc.
+        # See ``app/core/activity_registry.py``.
+
         # Default crew/trip information (None until set by API input)
         self.trip_id = None
         self.crew_name = None
@@ -3627,24 +3477,17 @@ class LocopilotActivityMonitor:
                         )
 
                         # Apply results to person_activities
+                        # Task 0001: the previously duplicated `activity_key_map`
+                        # (two identical copies) is now sourced from the registry's
+                        # `voting_key` field, with the raw activity_type as fallback.
                         for activity_key, (is_confirmed, vote_details) in batch_results.items():
                             # Parse key: 'cell_phone_p0' -> ('cell_phone', 0)
                             parts = activity_key.rsplit('_p', 1)
                             if len(parts) == 2:
                                 activity_type = parts[0]
 
-                                # Map activity type to person_activities key
-                                activity_key_map = {
-                                    'mind_diversion': 'mind_diversion',
-                                    'cell_phone': 'cell_phone',
-                                    'writing': 'writing',
-                                    'packing_bags': 'packing_bags',
-                                    'lp_hand_gesture': 'lp_hand_gesture',
-                                    'alp_hand_gesture': 'alp_hand_gesture',
-                                    'eating_drinking': 'eating_drinking'
-                                }
-
-                                person_key = activity_key_map.get(activity_type, activity_type)
+                                _cfg = ACTIVITY_REGISTRY.get(activity_type)
+                                person_key = (_cfg.voting_key if _cfg and _cfg.voting_key else activity_type)
                                 person_activities[person_key] = is_confirmed
 
                                 if is_confirmed:
@@ -3656,16 +3499,8 @@ class LocopilotActivityMonitor:
                         # On error, set all collected activities to False (safe default)
                         for activity in voting_collector.get_activities():
                             activity_type = activity['type']
-                            activity_key_map = {
-                                'mind_diversion': 'mind_diversion',
-                                'cell_phone': 'cell_phone',
-                                'writing': 'writing',
-                                'packing_bags': 'packing_bags',
-                                'lp_hand_gesture': 'lp_hand_gesture',
-                                'alp_hand_gesture': 'alp_hand_gesture',
-                                'eating_drinking': 'eating_drinking'
-                            }
-                            person_key = activity_key_map.get(activity_type, activity_type)
+                            _cfg = ACTIVITY_REGISTRY.get(activity_type)
+                            person_key = (_cfg.voting_key if _cfg and _cfg.voting_key else activity_type)
                             person_activities[person_key] = False
 
                 # Track hand raise timestamps for temporal coordination window
@@ -4191,10 +4026,12 @@ class LocopilotActivityMonitor:
                 final_end_time = f"{activity_end_seconds:.2f}"
                 self.logger.info(f"  Using video timestamps (OCR failed): {final_start_time}s - {final_end_time}s (ocr_start={ocr_start}, ocr_end={ocr_end})")
 
+            # Task 0001: pull reporting metadata from the single-source registry.
+            activity_cfg = ACTIVITY_REGISTRY[activity_name]
             json_data = {
                 "tripId": self.trip_id,
-                "activityType": self.activity_type_map[activity_name],
-                "des": self.activity_descriptions[activity_name],
+                "activityType": activity_cfg.type_code,
+                "des": activity_cfg.description,
                 "objectType": activity_name.replace('_', ' '),
                 "fileUrl": os.path.abspath(self.video_path),
                 "fileDuration": video_duration_formatted,
@@ -4211,7 +4048,7 @@ class LocopilotActivityMonitor:
                 "time": current_time,
                 "filename": video_filename,
                 "peopleCount": len(activity.get('person_roles', {})) if activity.get('person_roles') else people_count,
-                "evidence": {"rule": self.evidence_rules[activity_name]},
+                "evidence": {"rule": activity_cfg.evidence_rule},
                 "activityImage": os.path.abspath(image_path) if self.evidence_clips_dir else image_filename,
                 "activityClip": os.path.abspath(clip_path) if self.evidence_clips_dir else clip_filename,
                 "motionState": activity.get('motion_state', 'UNKNOWN')

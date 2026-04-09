@@ -6,22 +6,87 @@ from enum import IntEnum
 from typing import Optional, Dict, List
 from pydantic import BaseModel, Field
 
+# Task 0001 (2026-04): the activity metadata source of truth is now
+# ``app.core.activity_registry``. We import it here so the IntEnum members
+# can be derived from the registry, eliminating the silent drift that
+# previously existed between this enum and the runtime monitor/mock-service
+# dicts.
+from app.core.activity_registry import ACTIVITY_REGISTRY
 
-class ActivityTypeEnum(IntEnum):
-    """Activity type enumeration matching existing system"""
-    UNKNOWN = 1
-    CELL_PHONE = 2
-    MICROSLEEP = 3
-    SLEEP = 4
-    WRITING = 5
-    PACKING_BAGS = 6
-    GROUP_DETECTED = 7
-    LP_NOT_EXCHANGING_HAND_GESTURE = 8
-    ALP_NOT_EXCHANGING_HAND_GESTURE = 9
-    MIND_DIVERSION = 10
-    NO_PERSON_DETECTED = 11
-    ALP_NOT_STANDING_PRE_ARRIVAL = 12  # ALP not standing in pre-arrival window (30-60s before station)
-    EATING_DRINKING = 13  # Eating or drinking activity detected
+
+# Map canonical registry key -> preferred enum member name. The name must be
+# a valid Python identifier and should preserve the legacy names so external
+# imports (e.g. ``ActivityTypeEnum.LP_NOT_EXCHANGING_HAND_GESTURE``) keep
+# working without a follow-up rename.
+_REGISTRY_TO_ENUM_NAME: Dict[str, str] = {
+    'cell_phone': 'CELL_PHONE',
+    'microsleep': 'MICROSLEEP',
+    'sleep': 'SLEEP',
+    'writing': 'WRITING',
+    'packing_bags': 'PACKING_BAGS',
+    'group_detected': 'GROUP_DETECTED',
+    'lp_hand_gesture': 'LP_NOT_EXCHANGING_HAND_GESTURE',
+    'alp_hand_gesture': 'ALP_NOT_EXCHANGING_HAND_GESTURE',
+    'mind_diversion': 'MIND_DIVERSION',
+    'no_person_detected': 'NO_PERSON_DETECTED',
+    'alp_not_standing': 'ALP_NOT_STANDING_PRE_ARRIVAL',
+    'eating_drinking': 'EATING_DRINKING',
+}
+
+
+def _build_activity_type_enum_members() -> Dict[str, int]:
+    """Derive enum members from ``ACTIVITY_REGISTRY``.
+
+    Guarantees every registry entry has a matching enum member and that
+    ``type_code`` values never drift. Includes a historical ``UNKNOWN=1``
+    slot (no registry equivalent) for backwards compatibility with consumers
+    that fall back to this code.
+    """
+
+    members: Dict[str, int] = {"UNKNOWN": 1}
+    missing = [
+        key for key in ACTIVITY_REGISTRY if key not in _REGISTRY_TO_ENUM_NAME
+    ]
+    if missing:
+        raise RuntimeError(
+            "ActivityTypeEnum mapping is missing registry keys: "
+            f"{missing}. Update _REGISTRY_TO_ENUM_NAME in activity_models.py."
+        )
+    for key, cfg in ACTIVITY_REGISTRY.items():
+        members[_REGISTRY_TO_ENUM_NAME[key]] = cfg.type_code
+    return members
+
+
+ActivityTypeEnum = IntEnum(  # type: ignore[misc]
+    "ActivityTypeEnum",
+    _build_activity_type_enum_members(),
+)
+ActivityTypeEnum.__doc__ = (
+    "Activity type enumeration derived from ``app.core.activity_registry``. "
+    "Changing this enum in isolation is not supported — add entries to the "
+    "registry instead."
+)
+
+
+def _assert_enum_matches_registry() -> None:
+    """Fail loudly at import time if the enum and registry disagree.
+
+    Defensive: because ``ActivityTypeEnum`` is now generated from
+    ``ACTIVITY_REGISTRY`` it should always match, but a reviewer could still
+    hand-edit ``_REGISTRY_TO_ENUM_NAME`` or the registry in isolation.
+    """
+
+    for key, cfg in ACTIVITY_REGISTRY.items():
+        enum_name = _REGISTRY_TO_ENUM_NAME[key]
+        member = ActivityTypeEnum[enum_name]
+        if int(member) != cfg.type_code:
+            raise RuntimeError(
+                f"ActivityTypeEnum.{enum_name}={int(member)} does not match "
+                f"ACTIVITY_REGISTRY['{key}'].type_code={cfg.type_code}."
+            )
+
+
+_assert_enum_matches_registry()
 
 
 class EvidenceModel(BaseModel):
