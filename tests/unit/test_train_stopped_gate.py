@@ -197,6 +197,45 @@ def test_custom_suppressed_set_override():
     assert persons_data[0]['activities']['writing'] is False
 
 
+def test_monitor_imports_and_calls_apply_train_stopped_suppression():
+    """ARCH-08b regression guard: the live train-STOPPED gate inside
+    ``locopilot_monitor._process_frames_core`` must delegate to the
+    ``apply_train_stopped_suppression`` helper so that both aggregated
+    booleans AND ``persons_data[pidx]['activities']`` are zeroed
+    consistently.
+
+    This is a structural check against the source file (no monitor
+    instantiation) so it stays cheap and runs in environments where the
+    heavy ML deps are not installed.
+    """
+    monitor_path = os.path.join(REPO_ROOT, 'locopilot_monitor.py')
+    if not os.path.exists(monitor_path):
+        pytest.skip("locopilot_monitor.py not present")
+
+    with open(monitor_path, 'r', encoding='utf-8') as fh:
+        src = fh.read()
+
+    # Import of the helper must be present at module level.
+    assert 'from app.core.gates import apply_train_stopped_suppression' in src, (
+        "locopilot_monitor.py must import apply_train_stopped_suppression "
+        "from app.core.gates (ARCH-08b wire-up)"
+    )
+    # The helper must actually be called somewhere in the monitor body.
+    assert 'apply_train_stopped_suppression(' in src, (
+        "locopilot_monitor.py must call apply_train_stopped_suppression() "
+        "in the live train-STOPPED gate (ARCH-08b)"
+    )
+    # The call must live inside the STOPPED branch — check that the call
+    # appears after the 'current_motion_state == \"STOPPED\"' check.
+    stopped_idx = src.find('self.current_motion_state == "STOPPED"')
+    helper_call_idx = src.find('apply_train_stopped_suppression(', stopped_idx)
+    assert stopped_idx >= 0, "STOPPED branch not found in locopilot_monitor.py"
+    assert helper_call_idx > stopped_idx, (
+        "apply_train_stopped_suppression() must be called INSIDE the "
+        "train-STOPPED branch, not before it"
+    )
+
+
 def test_monitor_class_constants_match_helper_default():
     """Guard against drift between locopilot_monitor.SUPPRESSED_WHEN_STOPPED
     and app.core.gates.DEFAULT_SUPPRESSED_WHEN_STOPPED.

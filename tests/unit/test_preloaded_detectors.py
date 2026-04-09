@@ -236,6 +236,11 @@ def test_monitor_reuses_preloaded_detectors_when_present():
     # on reuse — the per-chunk contract documented in the monitor docstring).
     sleep_stub.reset_tracking.assert_called_once()
     gesture_stub.reset.assert_called_once()
+    # clear_motion_history() on the activity detector must also fire — the
+    # monitor must zero ActivityDetector.packing_motion_history so stale
+    # deques from a prior chunk cannot trigger packing_bags FPs in the
+    # first frames of a new chunk.
+    activity_stub.clear_motion_history.assert_called_once()
 
 
 def test_real_sleep_detector_state_cleared_after_chunk_reset():
@@ -276,3 +281,59 @@ def test_real_sleep_detector_state_cleared_after_chunk_reset():
         'per_person_tracking must be cleared on chunk reset'
     assert monitor.sleep_detector.ir_forward_lean_tracking == {}, \
         'ir_forward_lean_tracking must be cleared on chunk reset'
+
+
+def test_real_activity_detector_motion_history_cleared_after_chunk_reset():
+    """Regression for the packing_bags FP at chunk boundaries.
+
+    ``ActivityDetector.packing_motion_history`` holds per-person deques of
+    (distance, timestamp, active_hand) used by
+    ``analyze_packing_hand_motion`` to compute
+    ``sustained_proximity_time = timestamps[-1] - timestamps[0] >= 4.0``.
+    If stale timestamps from a prior chunk survive into the new chunk,
+    the first close-proximity sample will flip ``sustained_proximity_time``
+    to ``True`` and trigger a packing_bags false positive. The monitor
+    must call ``clear_motion_history()`` on every preloaded reuse.
+    """
+    from collections import deque
+
+    from locopilot_monitor import LocopilotActivityMonitor
+    from app.core.detectors import ActivityDetector
+
+    real_activity = ActivityDetector(settings=None)
+    # Seed stale motion history so the reset is observable.
+    real_activity.packing_motion_history[0] = {
+        'distances': deque([120.0, 118.0, 115.0], maxlen=6),
+        'timestamps': deque([10.0, 12.0, 14.0], maxlen=6),
+        'active_hand': deque(['left', 'left', 'left'], maxlen=6),
+    }
+    real_activity.packing_motion_history[1] = {
+        'distances': deque([200.0], maxlen=6),
+        'timestamps': deque([18.0], maxlen=6),
+        'active_hand': deque(['right'], maxlen=6),
+    }
+    assert real_activity.packing_motion_history, \
+        'precondition: motion history should be seeded'
+
+    preloaded = _make_preloaded_models(
+        extra={
+            'activity_detector': real_activity,
+            # keep the others fresh
+        }
+    )
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        monitor = LocopilotActivityMonitor(
+            video_path='/tmp/nonexistent.mp4',
+            output_dir=tmpdir,
+            save_annotated_frames=False,
+            frame_save_interval=1,
+            sample_fps=0.5,
+            run_dir=None,
+            create_run_dir=False,
+            preloaded_models=preloaded,
+        )
+
+    assert monitor.activity_detector is real_activity
+    assert monitor.activity_detector.packing_motion_history == {}, \
+        'packing_motion_history must be cleared on chunk reset'

@@ -26,6 +26,7 @@ from app.core.tracking import PersonTracker
 from app.core.visualization import FrameAnnotator
 from app.core.activity_tracker import ActivityTracker
 from app.core.activity_registry import ACTIVITY_REGISTRY, ActivityConfig
+from app.core.gates import apply_train_stopped_suppression
 from app.core.evidence_manager import EvidenceManager
 
 
@@ -749,10 +750,21 @@ class LocopilotActivityMonitor:
         # chunk on this worker.  This mirrors the implicit reset that used
         # to happen via constructor allocation.  Fresh detectors (standalone
         # path) already start with empty state, so the calls are no-ops.
+        #
+        # ActivityDetector.packing_motion_history holds per-person deques of
+        # (distance, timestamp, active_hand) used by analyze_packing_hand_motion
+        # to compute sustained_proximity_time.  If the stale deques from the
+        # previous chunk survive into the new chunk, the first close-proximity
+        # sample will produce a falsely-large time_span >= 4.0s and trigger a
+        # packing_bags false positive.  Velocity calculations can also go
+        # negative when the new chunk's first timestamp is smaller than the
+        # stale one.  Clear all history when reusing the preloaded instance.
         if preloaded_sleep is not None and hasattr(self.sleep_detector, 'reset_tracking'):
             self.sleep_detector.reset_tracking()
         if preloaded_gesture is not None and hasattr(self.gesture_detector, 'reset'):
             self.gesture_detector.reset()
+        if preloaded_activity is not None and hasattr(self.activity_detector, 'clear_motion_history'):
+            self.activity_detector.clear_motion_history()
 
         if _any_preloaded_detector:
             self.logger.info(
@@ -4649,14 +4661,43 @@ class LocopilotActivityMonitor:
             # GATE: Suppress activities when train is STOPPED (vibration-based motion detection)
             # Per spec: microsleep and cell_phone MUST trigger in both stationary and moving states.
             # Other motion-dependent activities remain suppressed at station stops.
+            #
+            # ARCH-08b: delegate to app.core.gates.apply_train_stopped_suppression
+            # so the suppression rule is applied to BOTH the aggregated
+            # booleans AND each persons_data[pidx]['activities'] dict in one
+            # place. Previously only the flat locals were zeroed, leaving
+            # persons_data with stale positives that were still visible to
+            # annotation, voting re-verification, and debug overlays.
             if self.train_motion_detector is not None and self.current_motion_state == "STOPPED":
-                sleep_detected = False
-                writing_detected = False
-                packing_detected = False
-                lp_hand_gesture_detected = False
-                alp_hand_gesture_detected = False
-                mind_diversion_detected = False
-                eating_drinking_detected = False
+                # Build a flat aggregated dict keyed by the canonical activity
+                # names (matching ACTIVITY_REGISTRY and persons_data sub-dicts)
+                # so a single call to apply_train_stopped_suppression with its
+                # default suppressed set correctly handles both structures.
+                # Note the key rename: the monitor's local 'packing_detected'
+                # becomes 'packing_bags_detected' in the aggregated dict so
+                # it matches the registry-canonical 'packing_bags' name.
+                _train_stopped_aggregated = {
+                    'sleep_detected': sleep_detected,
+                    'writing_detected': writing_detected,
+                    'packing_bags_detected': packing_detected,
+                    'lp_hand_gesture_detected': lp_hand_gesture_detected,
+                    'alp_hand_gesture_detected': alp_hand_gesture_detected,
+                    'mind_diversion_detected': mind_diversion_detected,
+                    'eating_drinking_detected': eating_drinking_detected,
+                }
+                apply_train_stopped_suppression(
+                    aggregated=_train_stopped_aggregated,
+                    persons_data=persons_data,
+                )
+                # Propagate the helper's mutations back to the locals that
+                # downstream code reads for activities_map.
+                sleep_detected = _train_stopped_aggregated['sleep_detected']
+                writing_detected = _train_stopped_aggregated['writing_detected']
+                packing_detected = _train_stopped_aggregated['packing_bags_detected']
+                lp_hand_gesture_detected = _train_stopped_aggregated['lp_hand_gesture_detected']
+                alp_hand_gesture_detected = _train_stopped_aggregated['alp_hand_gesture_detected']
+                mind_diversion_detected = _train_stopped_aggregated['mind_diversion_detected']
+                eating_drinking_detected = _train_stopped_aggregated['eating_drinking_detected']
                 # group_detected: raise threshold to >5 when stopped
                 if group_detected_flag:
                     person_count = len(detections.get('deduplicated_person', []))
@@ -4664,7 +4705,8 @@ class LocopilotActivityMonitor:
                         group_detected_flag = False
                 self.logger.debug(
                     f"[{timestamp}] [Frame {frame_idx}] Train STOPPED — "
-                    f"sleep/writing/packing/gesture/mind_diversion/eating suppressed; "
+                    f"sleep/writing/packing/gesture/mind_diversion/eating suppressed "
+                    f"(aggregated + per-person, via gates.apply_train_stopped_suppression); "
                     f"microsleep and cell_phone remain active (safety-critical), "
                     f"group_detected requires >{self.train_motion_stopped_group_threshold}"
                 )
