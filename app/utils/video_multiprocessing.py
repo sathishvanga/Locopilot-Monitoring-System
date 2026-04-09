@@ -304,6 +304,78 @@ def worker_initializer(config: MultiprocessingConfig):
             # (ARCH-04 / task 0004).
             atexit.register(_close_worker_video_readers)
 
+            # ------------------------------------------------------------------
+            # Task 0007: pre-construct lightweight detector instances once per
+            # worker.  None of these hold heavy model weights, but constructors
+            # do some bookkeeping (Haar XML loads, dict allocations, threshold
+            # reads from settings), and at one monitor rebuild per 15s chunk
+            # that's ~120 rebuilds per worker on a 30-minute video.  Store the
+            # instances on _worker_models so LocopilotActivityMonitor.__init__
+            # can reuse them via preloaded_models.
+            #
+            # State-reset decision: the monitor explicitly resets detector
+            # state at the start of each chunk (see
+            # LocopilotActivityMonitor.__init__).  Overlap warm-up (task 0003)
+            # is responsible for re-priming the baseline window.  Keeping
+            # detectors persistent across chunks would bleed state from one
+            # worker invocation into the next, which is undesirable while
+            # other per-chunk state (activities dict, consecutive counters)
+            # is still reallocated inside the monitor.
+            # NOTE: VotingVerificationService is now wired through
+            # preloaded_models['video_readers'] (task 0004) but is still
+            # constructed per-monitor because its constructor takes
+            # video-path-derived state. Future work can move it here.
+            # ------------------------------------------------------------------
+            try:
+                from app.core.detectors import (
+                    SleepDetector,
+                    GestureDetector,
+                    MindDiversionDetector,
+                    ActivityDetector,
+                )
+                from app.services.yolo_pose_adapter import get_keypoint_by_name
+
+                worker_settings_for_detectors = get_settings()
+                sample_fps_cfg = worker_settings_for_detectors.sample_fps
+                coordination_window_cfg = (
+                    worker_settings_for_detectors.hand_gesture_coordination_window
+                )
+
+                _worker_models['sleep_detector'] = SleepDetector(
+                    settings=worker_settings_for_detectors,
+                    sample_fps=sample_fps_cfg,
+                    logger=logger,
+                )
+                _worker_models['gesture_detector'] = GestureDetector(
+                    settings=worker_settings_for_detectors,
+                    session_timeout=10.0,
+                    coordination_window=coordination_window_cfg,
+                    get_keypoint_func=get_keypoint_by_name,
+                )
+                _worker_models['mind_diversion_detector'] = MindDiversionDetector(
+                    settings=worker_settings_for_detectors,
+                    logger=logger,
+                )
+                _worker_models['activity_detector'] = ActivityDetector(
+                    settings=worker_settings_for_detectors,
+                    get_keypoint_func=get_keypoint_by_name,
+                )
+
+                logger.info(
+                    f"Worker {os.getpid()} pre-loaded detectors: "
+                    "SleepDetector, GestureDetector, MindDiversionDetector, "
+                    "ActivityDetector"
+                )
+            except Exception as detector_err:
+                # Detectors are an optimization: if they fail to construct,
+                # fall back to per-chunk construction rather than failing the
+                # whole worker.  Log prominently so regressions are visible.
+                logger.warning(
+                    f"Worker {os.getpid()} failed to preload detectors "
+                    f"(will fall back to per-chunk construction): {detector_err}",
+                    exc_info=True,
+                )
+
     except Exception as e:
         logger.error(f"Worker {os.getpid()} initialization failed: {e}", exc_info=True)
         raise
