@@ -343,17 +343,32 @@ class VotingVerificationService:
     a configurable percentage of frames detect the activity.
     """
 
-    def __init__(self, yolo_model=None, yolo_pose_model=None):
+    def __init__(
+        self,
+        yolo_model=None,
+        yolo_pose_model=None,
+        video_reader_getter=None,
+    ):
         """
         Initialize the voting verification service.
 
         Args:
             yolo_model: Pre-loaded YOLO model for object detection
             yolo_pose_model: Pre-loaded YOLO-Pose model for pose estimation
+            video_reader_getter: Optional callable ``(video_path) -> VideoReader``
+                used to obtain a long-lived ``VideoReader`` instead of opening
+                a fresh ``cv2.VideoCapture`` on every call.  When ``None``
+                (single-process fallback) the service keeps the original
+                open/seek/release path so the monitor continues to work outside
+                multiprocessing.  In multiprocessing mode this is wired to
+                ``_worker_models['video_readers']`` so a single capture is
+                reused across all voting calls on the same worker
+                (ARCH-04 / task 0004).
         """
         self.settings = get_settings()
         self.yolo_model = yolo_model
         self.yolo_pose_model = yolo_pose_model
+        self._video_reader_getter = video_reader_getter
 
         # Activity thresholds (from config, matching locopilot_monitor.py)
         self.cell_phone_margin = self.settings.voting_cell_phone_margin
@@ -806,6 +821,15 @@ class VotingVerificationService:
         """
         Extract consecutive native frames centered around a timestamp.
 
+        When a ``video_reader_getter`` was supplied at construction time
+        (multiprocessing mode) this delegates to a long-lived ``VideoReader``
+        so the underlying ``cv2.VideoCapture`` is opened once per worker per
+        video path instead of on every voting call (ARCH-04 / task 0004).
+
+        The single-process fallback path opens/seeks/releases a fresh capture
+        the same way the original helper did so callers outside the worker
+        pool continue to work.
+
         Args:
             video_path: Path to video file
             timestamp_sec: Center timestamp in seconds
@@ -815,10 +839,36 @@ class VotingVerificationService:
         Returns:
             List of BGR frames
         """
-        frames = []
+        logger.debug(
+            f"[VOTING] {activity_type} @ {timestamp_sec:.2f}s: "
+            f"Extracting {num_frames} native frames"
+        )
 
-        logger.debug(f"[VOTING] {activity_type} @ {timestamp_sec:.2f}s: Extracting {num_frames} native frames")
+        # ---- Fast path: cached long-lived VideoReader (worker pool) -----------
+        if self._video_reader_getter is not None:
+            try:
+                reader = self._video_reader_getter(video_path)
+                if reader is None or not reader.is_open():
+                    logger.error(
+                        f"[VOTING] {activity_type}: VideoReader unavailable for "
+                        f"{video_path}"
+                    )
+                    return []
+                frames = reader.read_frames_near(timestamp_sec, num_frames)
+                logger.debug(
+                    f"[VOTING] {activity_type}: Successfully extracted "
+                    f"{len(frames)}/{num_frames} frames (cached reader)"
+                )
+                return frames
+            except Exception as e:
+                logger.error(
+                    f"[VOTING] {activity_type}: Error extracting frames via "
+                    f"cached reader: {e}"
+                )
+                return []
 
+        # ---- Fallback: fresh cv2.VideoCapture (single-process mode) -----------
+        frames: List[np.ndarray] = []
         try:
             cap = cv2.VideoCapture(video_path)
 
