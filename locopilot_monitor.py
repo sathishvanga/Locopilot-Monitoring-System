@@ -288,6 +288,21 @@ class LocopilotActivityMonitor:
             preloaded_models: Optional dict of pre-loaded models from worker pool
                 Keys: 'yolo', 'yolo_pose', 'face_mesh', 'mp_face_mesh', 'preprocessing_service'
                 When provided, skips expensive model loading (significant performance gain)
+
+                Task 0007: may additionally contain pre-constructed detector
+                instances under the keys 'sleep_detector', 'gesture_detector',
+                'mind_diversion_detector', and 'activity_detector'.  When
+                present, the monitor REUSES those instances instead of
+                re-constructing them (saves Haar XML loads and repeated
+                settings reads on every 15s chunk).
+
+                State policy: detector state RESETS per chunk when pre-loaded
+                detectors are reused.  `SleepDetector.reset_tracking()` and
+                `GestureDetector.reset()` are invoked during __init__ so that
+                per-person sleep tracking, gesture sessions, and wrist
+                history never leak between chunks.  Task 0003 widens the
+                chunk overlap so the baseline calibration window has room
+                to warm up again inside each chunk.
         """
         self.video_path = video_path
         self.output_dir = output_dir
@@ -770,30 +785,66 @@ class LocopilotActivityMonitor:
         # ---------------------------------------------------------------------------
         # Initialize extracted detector modules
         # These provide modular detection logic extracted from this monitor class.
-        # TODO: Gradually migrate detection calls to use these instances.
+        #
+        # Task 0007: When preloaded_models contains pre-constructed detectors
+        # (created once per worker by worker_initializer), reuse those
+        # instances and reset their per-chunk state.  This removes ~120
+        # Haar cascade reloads and dict reallocations on a 30-minute video.
+        # When preloaded_models is None (standalone/single-process path),
+        # fall back to constructing fresh detectors.
         # ---------------------------------------------------------------------------
-        self.sleep_detector = SleepDetector(
+        preloaded_sleep = preloaded_models.get('sleep_detector') if preloaded_models else None
+        preloaded_activity = preloaded_models.get('activity_detector') if preloaded_models else None
+        preloaded_gesture = preloaded_models.get('gesture_detector') if preloaded_models else None
+        preloaded_mind = preloaded_models.get('mind_diversion_detector') if preloaded_models else None
+        _any_preloaded_detector = any(
+            d is not None
+            for d in (preloaded_sleep, preloaded_activity, preloaded_gesture, preloaded_mind)
+        )
+
+        self.sleep_detector = preloaded_sleep or SleepDetector(
             settings=self.settings,
             sample_fps=self.sample_fps,
             logger=self.logger
         )
 
-        self.activity_detector = ActivityDetector(
+        self.activity_detector = preloaded_activity or ActivityDetector(
             settings=self.settings,
             get_keypoint_func=self._get_keypoint_by_name
         )
 
-        self.gesture_detector = GestureDetector(
+        self.gesture_detector = preloaded_gesture or GestureDetector(
             settings=self.settings,
             session_timeout=10.0,
             coordination_window=self.hand_gesture_coordination_window,
             get_keypoint_func=self._get_keypoint_by_name
         )
 
-        self.mind_diversion_detector = MindDiversionDetector(
+        self.mind_diversion_detector = preloaded_mind or MindDiversionDetector(
             settings=self.settings,
             logger=self.logger
         )
+
+        # Task 0007 state reset: when we are reusing pre-loaded detectors,
+        # clear any state that was accumulated while processing a previous
+        # chunk on this worker.  This mirrors the implicit reset that used
+        # to happen via constructor allocation.  Fresh detectors (standalone
+        # path) already start with empty state, so the calls are no-ops.
+        if preloaded_sleep is not None and hasattr(self.sleep_detector, 'reset_tracking'):
+            self.sleep_detector.reset_tracking()
+        if preloaded_gesture is not None and hasattr(self.gesture_detector, 'reset'):
+            self.gesture_detector.reset()
+
+        if _any_preloaded_detector:
+            self.logger.info(
+                "Using pre-loaded detectors from worker pool "
+                "(sleep=%s, gesture=%s, mind_diversion=%s, activity=%s); "
+                "per-chunk state reset applied",
+                preloaded_sleep is not None,
+                preloaded_gesture is not None,
+                preloaded_mind is not None,
+                preloaded_activity is not None,
+            )
 
         # Evidence manager for clip/report generation (only if run_dir is set)
         if self.run_dir:
