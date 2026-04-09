@@ -841,6 +841,9 @@ class LocopilotActivityMonitor:
             self.train_motion_stopped_group_threshold = getattr(
                 settings, 'train_motion_stopped_group_threshold', 5
             )
+            self.train_motion_running_group_threshold = getattr(
+                settings, 'train_motion_running_group_threshold', 2
+            )
             self.logger.info("TrainMotionDetector initialized (vibration-based motion detection enabled)")
 
         # Evidence manager for clip/report generation (only if run_dir is set)
@@ -4417,7 +4420,14 @@ class LocopilotActivityMonitor:
             if len(detections['person']) > 0:
                 # De-duplicate person boxes to get accurate count
                 # Increased IOU threshold from 0.3 to 0.5 to better filter duplicate detections
-                deduplicated_persons = deduplicate_person_boxes(detections['person'], iou_threshold=0.5)
+                # min_area filter rejects phantom person bboxes (chair backs, shadows) that
+                # pass YOLO confidence but are far smaller than any real adult in cabin CCTV.
+                person_min_area = getattr(self.settings, 'yolo_person_min_area', 0) if self.settings else 0
+                deduplicated_persons = deduplicate_person_boxes(
+                    detections['person'],
+                    iou_threshold=0.5,
+                    min_area=person_min_area,
+                )
 
                 # Store deduplicated boxes in detections for visualization
                 # NOTE: Removed pose validation as it was filtering out legitimate people
@@ -4435,7 +4445,8 @@ class LocopilotActivityMonitor:
                         role_info = person_roles[person_idx]
                         self.logger.debug(f"  Person {person_idx+1}: {role_info['role_name']} (bbox_area: {role_info.get('bbox_area', 0):.0f})")
 
-                if deduplicated_count > 2:
+                running_threshold = getattr(self, 'train_motion_running_group_threshold', 2)
+                if deduplicated_count > running_threshold:
                     # Stage 2: Voting verification for group_detected (if enabled)
                     if self.voting_service is not None:
                         is_confirmed, vote_details = self.voting_service.verify_activity(

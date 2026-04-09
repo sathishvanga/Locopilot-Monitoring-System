@@ -400,6 +400,11 @@ class Settings(BaseSettings):
     # YOLO Confidence Thresholds
     # ==========================================
     yolo_person_confidence: float = float(os.getenv("YOLO_PERSON_CONFIDENCE", "0.5"))
+    # Minimum bbox area (pixels) for a detection to count as a real person.
+    # Filters phantom person FPs (chair backs, shadows, equipment) that pass
+    # confidence but are far smaller than any real adult in overhead cabin CCTV.
+    # Set to 0 to disable. Recommended ~65000 for 1080p locopilot cabin footage.
+    yolo_person_min_area: int = int(os.getenv("YOLO_PERSON_MIN_AREA", "0"))
     yolo_bag_confidence: float = float(os.getenv("YOLO_BAG_CONFIDENCE", "0.60"))  # Raised from 0.45 to reduce FPs from cabin fixtures
     yolo_bag_log_confidence: float = float(os.getenv("YOLO_BAG_LOG_CONFIDENCE", "0.25"))
     yolo_book_confidence: float = float(os.getenv("YOLO_BOOK_CONFIDENCE", "0.4"))
@@ -495,6 +500,9 @@ class Settings(BaseSettings):
     train_motion_running_threshold: float = float(os.getenv("TRAIN_MOTION_RUNNING_THRESHOLD", "0.45"))
     train_motion_temporal_window: int = int(os.getenv("TRAIN_MOTION_TEMPORAL_WINDOW", "5"))
     train_motion_stopped_group_threshold: int = int(os.getenv("TRAIN_MOTION_STOPPED_GROUP_THRESHOLD", "5"))
+    # Threshold for group_detected when train is RUNNING. Default 2 (i.e. >2 → 3+ persons).
+    # Raise to 5 to require >5 (6+ persons) regardless of motion state.
+    train_motion_running_group_threshold: int = int(os.getenv("TRAIN_MOTION_RUNNING_GROUP_THRESHOLD", "2"))
     train_motion_window_flow_threshold: float = float(os.getenv("TRAIN_MOTION_WINDOW_FLOW_THRESHOLD", "2.0"))
     train_motion_weight_vibration: float = float(os.getenv("TRAIN_MOTION_WEIGHT_VIBRATION", "0.5"))
     train_motion_weight_window: float = float(os.getenv("TRAIN_MOTION_WEIGHT_WINDOW", "0.3"))

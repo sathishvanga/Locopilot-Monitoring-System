@@ -120,7 +120,8 @@ def bbox_overlap_with_margin(
 
 def deduplicate_person_boxes(
     person_boxes: List[List[int]],
-    iou_threshold: float = 0.3
+    iou_threshold: float = 0.3,
+    min_area: int = 0
 ) -> List[List[int]]:
     """De-duplicate overlapping person bounding boxes using Non-Maximum Suppression.
 
@@ -136,6 +137,10 @@ def deduplicate_person_boxes(
         iou_threshold: IoU threshold for considering boxes as duplicates.
                        Boxes with IoU >= threshold are considered duplicates.
                        Default is 0.3 (30% overlap).
+        min_area: Minimum bbox area in pixels. Boxes smaller than this are
+                  rejected as phantom detections (chair backs, shadows, equipment
+                  misclassified as person by sensitive YOLO models). Default 0
+                  (disabled). Recommended ~65000 for overhead cabin CCTV at 1080p.
 
     Returns:
         List of de-duplicated person boxes in the same format as input.
@@ -159,6 +164,14 @@ def deduplicate_person_boxes(
 
     # Calculate areas for each box
     areas = [(box[2] - box[0]) * (box[3] - box[1]) for box in boxes]
+
+    # Filter out boxes below the minimum area threshold (phantom person detections)
+    if min_area > 0:
+        filtered = [(box, area) for box, area in zip(boxes, areas) if area >= min_area]
+        if not filtered:
+            return []
+        boxes = [b for b, _ in filtered]
+        areas = [a for _, a in filtered]
 
     # Sort by area (larger boxes first - usually more confident detections)
     sorted_indices = sorted(range(len(boxes)), key=lambda i: areas[i], reverse=True)
