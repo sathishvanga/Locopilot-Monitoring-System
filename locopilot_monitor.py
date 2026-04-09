@@ -622,20 +622,39 @@ class LocopilotActivityMonitor:
                 voting_yolo = (preloaded_models.get('yolo_voting') if preloaded_models else None) or self.yolo_model
                 voting_yolo_pose = (preloaded_models.get('yolo_pose_voting') if preloaded_models else None) or self.yolo_pose
                 voting_roi = getattr(self, 'yolo_roi_model', None)
+
+                # ARCH-04 / task 0004: wire a long-lived VideoReader cache so
+                # the voting verification hot loop reuses a single
+                # cv2.VideoCapture per worker instead of re-opening the
+                # container on every call.  The cache lives in the worker's
+                # _worker_models dict (`video_readers`) and is passed here as
+                # a small LRU; we expose it to VotingVerificationService as a
+                # getter callable so the service does not need to know about
+                # multiprocessing internals.  Single-process callers pass
+                # None and fall back to the original open/seek/release path.
+                video_reader_lru = preloaded_models.get('video_readers') if preloaded_models else None
+                video_reader_getter = video_reader_lru.get_or_create if video_reader_lru is not None else None
+
                 self.voting_service = VotingVerificationService(
                     yolo_model=voting_yolo,
                     yolo_pose_model=voting_yolo_pose,
-                    yolo_roi_model=voting_roi
+                    yolo_roi_model=voting_roi,
+                    video_reader_getter=video_reader_getter,
                 )
+                self._video_reader_lru = video_reader_lru
                 if preloaded_models and preloaded_models.get('yolo_voting') is not None and preloaded_models.get('yolo_voting') is not self.yolo_model:
                     self.logger.info("VotingVerificationService initialized with separate voting model")
                 else:
                     self.logger.info("VotingVerificationService initialized (same model as detection)")
+                if video_reader_lru is not None:
+                    self.logger.info("VotingVerificationService using cached VideoReader LRU (ARCH-04)")
             except Exception as e:
                 self.logger.warning(f"Failed to initialize VotingVerificationService: {e}")
                 self.voting_service = None
+                self._video_reader_lru = None
         else:
             self.voting_service = None
+            self._video_reader_lru = None
             self.logger.info("VotingVerificationService not available - voting disabled")
 
         # Trip schedule and suppression settings
@@ -4949,7 +4968,7 @@ class LocopilotActivityMonitor:
 
         This method mirrors POC_2's MediaPipeService.close() pattern.
         Call this after processing to free GPU/CPU resources.
-        
+
         NOTE: If models were pre-loaded (worker pool), they are NOT closed
         since they are shared across tasks in the same worker.
         """
@@ -4964,11 +4983,27 @@ class LocopilotActivityMonitor:
                 if hasattr(self, 'face_mesh') and self.face_mesh is not None:
                     self.face_mesh.close()
                     self.face_mesh = None
+
+                # ARCH-04 / task 0004: release any cached VideoReader instances
+                # owned by this monitor (single-process mode only; in the
+                # worker pool the LRU is shared across chunks and lives on
+                # _worker_models, so closing it here would break the next
+                # task on the same worker).
+                lru = getattr(self, '_video_reader_lru', None)
+                if lru is not None:
+                    try:
+                        lru.close_all()
+                    except Exception as exc:
+                        self.logger.debug(f"Error releasing VideoReader LRU: {exc}")
+                    self._video_reader_lru = None
             else:
                 # Pre-loaded models: just clear references (don't close shared models)
                 self.yolo_pose = None
                 self.yolo_model = None
                 self.face_mesh = None
+                # VideoReader LRU is shared across chunks; leave it to the
+                # worker atexit hook in video_multiprocessing._close_worker_video_readers.
+                self._video_reader_lru = None
             
             # Clear frame buffers (always)
             if hasattr(self, 'frame_buffer'):
