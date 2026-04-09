@@ -12,6 +12,7 @@ from datetime import datetime, timedelta
 
 from ..utils.logger import get_logger
 from ..models.activity_models import ActivityTypeEnum
+from ..core.activity_registry import ACTIVITY_REGISTRY
 from ..utils.config import get_settings
 
 
@@ -21,59 +22,37 @@ logger = get_logger(__name__)
 class ActivityDetectionService:
     """
     Service for detecting activities in video frames
-    
+
     This is a mock/placeholder implementation that can be replaced
     with actual ML-based detection logic (YOLO, MediaPipe, etc.)
     """
-    
+
     def __init__(self):
         """Initialize the activity detection service"""
-        self.activity_type_map = {
-            'cell_phone': ActivityTypeEnum.CELL_PHONE,
-            'microsleep': ActivityTypeEnum.MICROSLEEP,
-            'sleep': ActivityTypeEnum.SLEEP,
-            'writing': ActivityTypeEnum.WRITING,
-            'packing_bags': ActivityTypeEnum.PACKING_BAGS,
-            'group_detected': ActivityTypeEnum.GROUP_DETECTED,
-            'lp_hand_gesture': ActivityTypeEnum.LP_NOT_EXCHANGING_HAND_GESTURE,
-            'alp_hand_gesture': ActivityTypeEnum.ALP_NOT_EXCHANGING_HAND_GESTURE,
-            'mind_diversion': ActivityTypeEnum.MIND_DIVERSION,
-            'no_person_detected': ActivityTypeEnum.NO_PERSON_DETECTED
+        # Task 0001 (2026-04): the per-activity metadata dicts used to be
+        # redefined here, were incomplete (missing ``eating_drinking`` and
+        # ``alp_not_standing``) and silently drifted from the real monitor.
+        # They are now derived from the single registry in
+        # ``app.core.activity_registry`` so this mock automatically covers
+        # every activity the real pipeline emits.
+        self.activity_type_map: Dict[str, ActivityTypeEnum] = {
+            name: ActivityTypeEnum(cfg.type_code)
+            for name, cfg in ACTIVITY_REGISTRY.items()
         }
-        
-        self.activity_descriptions = {
-            'cell_phone': 'Using mobile phone',
-            'microsleep': 'Micro-sleep detected (5+ seconds)',
-            'sleep': 'Sleep detected (30+ seconds)',
-            'writing': 'WRITING LOG BOOK WHILE RUNNING',
-            'packing_bags': 'Packing bags activity detected',
-            'group_detected': 'More than 2 people (group) detected',
-            'lp_hand_gesture': 'LP not exchanging hand gesture',
-            'alp_hand_gesture': 'ALP not exchanging hand gesture',
-            'mind_diversion': 'Mind diversion - attention diverted from controls',
-            'no_person_detected': 'No person detected in frame'
+        self.activity_descriptions: Dict[str, str] = {
+            name: cfg.description for name, cfg in ACTIVITY_REGISTRY.items()
         }
-        
-        self.evidence_rules = {
-            'cell_phone': 'phone_in_hand',
-            'microsleep': 'pose_indicators',
-            'sleep': 'pose_indicators',
-            'writing': 'hand_near_book',
-            'packing_bags': 'wrist_inside_backpack_bbox_or_hand_near_backpack',
-            'group_detected': 'more_than_2_deduplicated_persons',
-            'lp_hand_gesture': 'lp_hand_raised_gesture_detected',
-            'alp_hand_gesture': 'alp_hand_raised_gesture_detected',
-            'mind_diversion': 'attention_diverted_from_controls',  # Sub-type (looking_sideways, looking_down_distracted, looking_away_combined) in evidence
-            'no_person_detected': 'zero_persons_in_frame'
+        self.evidence_rules: Dict[str, str] = {
+            name: cfg.evidence_rule for name, cfg in ACTIVITY_REGISTRY.items()
         }
 
-        # Mind diversion sub-type evidence descriptions
+        # Mind diversion sub-type evidence descriptions (mock-only detail).
         self.mind_diversion_sub_types = {
             'looking_sideways': 'head_turned_sideways_sustained',
             'looking_down_distracted': 'head_looking_down_sustained',
             'looking_away_combined': 'head_turned_and_looking_down'
         }
-        
+
         self.settings = get_settings()
         logger.info("Activity detection service initialized (mock mode)")
     
