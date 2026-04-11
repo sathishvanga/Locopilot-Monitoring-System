@@ -414,7 +414,15 @@ class Settings(BaseSettings):
     # ==========================================
     # YOLO Confidence Thresholds
     # ==========================================
-    yolo_person_confidence: float = float(os.getenv("YOLO_PERSON_CONFIDENCE", "0.5"))
+    # Lowered 2026-04-11 from 0.5 → 0.40. v5_probe across 4 videos showed wide variation:
+    #   all_activities  p10=0.792  (bright cabin, close view)    → 0.5 threshold fine
+    #   ch01            p10=0.880  (bright cabin, close view)    → 0.5 threshold fine
+    #   n_5             p10=0.376  (distant/occluded persons)    → 0.5 cut 10-20% of reals
+    #   TR_1            p10=0.140  (very distant/dim cabin)      → 0.5 cut 30-40% of reals
+    # 0.40 preserves the high-conf videos unchanged while recovering distant persons in
+    # wide/dim cabins. If phantom detections appear, set yolo_person_min_area > 0 to filter
+    # by bbox size as a second-line guard.
+    yolo_person_confidence: float = float(os.getenv("YOLO_PERSON_CONFIDENCE", "0.40"))
     # Minimum bbox area (pixels) for a detection to count as a real person.
     # Filters phantom person FPs (chair backs, shadows, equipment) that pass
     # confidence but are far smaller than any real adult in overhead cabin CCTV.
