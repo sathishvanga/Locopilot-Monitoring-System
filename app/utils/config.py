@@ -249,8 +249,12 @@ class Settings(BaseSettings):
 
     # Static backpack suppression — suppress backpacks detected in the same location across many frames
     # A backpack with IoU > threshold appearing for min_frames consecutive frames is classified as a static fixture
+    # IoU threshold lowered 2026-04-11 0.80→0.60: train vibration causes small bbox jitter that
+    # previously reset the static counter. Observed in run_090144: a bag visible for 6+ min in
+    # the same seat position was never marked static because IoU between consecutive frames
+    # kept dipping below 0.80.
     packing_static_suppression_enabled: bool = bool(int(os.getenv("PACKING_STATIC_SUPPRESSION_ENABLED", "1")))
-    packing_static_iou_threshold: float = float(os.getenv("PACKING_STATIC_IOU_THRESHOLD", "0.80"))
+    packing_static_iou_threshold: float = float(os.getenv("PACKING_STATIC_IOU_THRESHOLD", "0.60"))
     packing_static_min_frames: int = int(os.getenv("PACKING_STATIC_MIN_FRAMES", "10"))  # ~20s at 0.5fps
 
     # Static cell phone suppression — filter out fixed panel instruments misidentified as phones

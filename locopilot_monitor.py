@@ -3434,11 +3434,28 @@ class LocopilotActivityMonitor:
                         }
 
                         # ===== PRIMARY: Wrist inside backpack bbox =====
+                        # FP-FIX 2026-04-11: even a strict wrist-inside match now requires a
+                        # packing-specific motion pattern (direction changes or sustained proximity).
+                        # Raw wrist velocity alone (_check_wrist_motion_for_packing below) is
+                        # too permissive — fidgeting near a stationary bag fired 6× in run_090144
+                        # on the same bag that sat in the same seat for 6+ minutes untouched.
                         if wrist_inside_backpack:
+                            primary_motion = self.analyze_packing_hand_motion(
+                                person_idx, translated_landmarks, frame.shape, timestamp_sec, backpack_bbox
+                            )
+                            primary_motion_confirmed = primary_motion['packing_motion_detected']
+                            primary_sustained = (
+                                primary_motion.get('sustained_proximity', False)
+                                and primary_motion.get('sustained_proximity_time', False)
+                            )
+                            if not (primary_motion_confirmed or primary_sustained):
+                                continue  # wrist inside but no packing-like hand pattern — reject
+
                             if best_pack_type != 'wrist_inside' or closest_distance < best_pack_distance:
                                 best_pack_type = 'wrist_inside'
                                 best_pack_distance = closest_distance
                                 best_pack_bbox = backpack_bbox
+                                best_pack_motion = primary_motion
                                 best_pack_debug = cur_debug
                             continue  # Check remaining backpacks for a closer match
 
