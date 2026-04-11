@@ -428,11 +428,17 @@ class Settings(BaseSettings):
     # confidence but are far smaller than any real adult in overhead cabin CCTV.
     # Set to 0 to disable. Recommended ~65000 for 1080p locopilot cabin footage.
     yolo_person_min_area: int = int(os.getenv("YOLO_PERSON_MIN_AREA", "0"))
-    # Raised 2026-04-11 from 0.60 → 0.70. v5_probe on n_5.mp4 (FP video) measured the
-    # stationary-bag FP cluster at mean_conf=0.301, max=0.639, producing 186 detections
-    # at the same 130×120px location across 7 minutes. Real-bag cluster had max=0.896.
-    # Threshold 0.70 cleanly eliminates the FP cluster while preserving real bag detections.
-    yolo_bag_confidence: float = float(os.getenv("YOLO_BAG_CONFIDENCE", "0.70"))
+    # Lowered 2026-04-11 to 0.25 after visual review across 4 videos.
+    # Earlier 0.70 change (made from stats only) was WRONG: visual review of annotated
+    # frames showed real backpacks in TR_1 at conf 0.11-0.15 and in ch01 at conf 0.59
+    # that 0.70 would reject. There is no confidence threshold that separates real bags
+    # from static fixtures cleanly across videos — the signal is *context* (stationary
+    # vs. being actively packed), not confidence. Rule-layer fixes (static suppression
+    # in locopilot_monitor.py:_update_static_backpack_tracking + strict AND-gate motion
+    # check on primary wrist-inside path) handle FP discrimination instead. 0.25 is a
+    # pragmatic noise floor — below probe-observed FP cluster mean (0.301) while above
+    # the lowest-value noise.
+    yolo_bag_confidence: float = float(os.getenv("YOLO_BAG_CONFIDENCE", "0.25"))
     yolo_bag_log_confidence: float = float(os.getenv("YOLO_BAG_LOG_CONFIDENCE", "0.25"))
     yolo_book_confidence: float = float(os.getenv("YOLO_BOOK_CONFIDENCE", "0.4"))
     yolo_cell_phone_confidence: float = float(os.getenv("YOLO_CELL_PHONE_CONFIDENCE", "0.3"))
