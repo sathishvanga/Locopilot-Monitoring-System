@@ -3434,22 +3434,29 @@ class LocopilotActivityMonitor:
                         }
 
                         # ===== PRIMARY: Wrist inside backpack bbox =====
-                        # FP-FIX 2026-04-11: even a strict wrist-inside match now requires a
-                        # packing-specific motion pattern (direction changes or sustained proximity).
-                        # Raw wrist velocity alone (_check_wrist_motion_for_packing below) is
-                        # too permissive — fidgeting near a stationary bag fired 6× in run_090144
-                        # on the same bag that sat in the same seat for 6+ minutes untouched.
+                        # FP-FIX 2026-04-11 (v2): earlier patch delegated to analyze_packing_hand_motion
+                        # which accepts direction_changes>=1 OR sustained_proximity. Fidgeting trivially
+                        # produces direction_changes=1, and a seated LP next to a stationary bag is always
+                        # in sustained_proximity — so both branches leaked (6 FPs in run_094731).
+                        # The primary path now requires the AND of:
+                        #   - direction_changes >= 2  (not a single back-and-forth twitch)
+                        #   - sustained_proximity      (hand genuinely inside the bag region)
+                        #   - time_span >= 6s          (not a momentary pass-through)
+                        #   - velocity in 15–200 px/s  (real hand motion, not noise)
+                        # Real packing (reach in → manipulate → pull out) passes all four.
+                        # Fidgeting, sitting near a bag, or reaching past a bag for something else fails.
                         if wrist_inside_backpack:
                             primary_motion = self.analyze_packing_hand_motion(
                                 person_idx, translated_landmarks, frame.shape, timestamp_sec, backpack_bbox
                             )
-                            primary_motion_confirmed = primary_motion['packing_motion_detected']
-                            primary_sustained = (
-                                primary_motion.get('sustained_proximity', False)
-                                and primary_motion.get('sustained_proximity_time', False)
+                            strict_packing = (
+                                primary_motion.get('direction_changes', 0) >= 2
+                                and primary_motion.get('sustained_proximity', False)
+                                and primary_motion.get('time_span', 0) >= 6.0
+                                and 15 <= primary_motion.get('avg_velocity', 0) <= 200
                             )
-                            if not (primary_motion_confirmed or primary_sustained):
-                                continue  # wrist inside but no packing-like hand pattern — reject
+                            if not strict_packing:
+                                continue  # wrist inside but no sustained packing motion — reject
 
                             if best_pack_type != 'wrist_inside' or closest_distance < best_pack_distance:
                                 best_pack_type = 'wrist_inside'

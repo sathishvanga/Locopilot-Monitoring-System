@@ -255,7 +255,10 @@ class Settings(BaseSettings):
     # kept dipping below 0.80.
     packing_static_suppression_enabled: bool = bool(int(os.getenv("PACKING_STATIC_SUPPRESSION_ENABLED", "1")))
     packing_static_iou_threshold: float = float(os.getenv("PACKING_STATIC_IOU_THRESHOLD", "0.60"))
-    packing_static_min_frames: int = int(os.getenv("PACKING_STATIC_MIN_FRAMES", "10"))  # ~20s at 0.5fps
+    # min_frames lowered 2026-04-11 from 10→5: multiprocessing chunks are 15s + 12s overlap
+    # (~13-14 sampled frames at 0.5fps), so 10 consecutive IoU matches were borderline. 5 frames
+    # (~10s) is enough proof of a fixture and fits comfortably within a chunk's tracking window.
+    packing_static_min_frames: int = int(os.getenv("PACKING_STATIC_MIN_FRAMES", "5"))
 
     # Static cell phone suppression — filter out fixed panel instruments misidentified as phones
     # If a "cell phone" bbox stays at the same location (IoU > threshold) for N+ frames, it's a fixture
