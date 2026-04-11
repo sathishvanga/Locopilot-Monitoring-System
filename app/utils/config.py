@@ -204,7 +204,10 @@ class Settings(BaseSettings):
 
     # Voting verification settings
     # Two-stage detection: when activity detected, verify with multiple native frames
-    voting_enabled: bool = bool(int(os.getenv("VOTING_ENABLED", "1")))
+    # Default OFF as of 2026-04-11 — trained domain model (yolo26s_locopilot_v5, 9 classes
+    # incl. radio_handset) replaces most compensations voting was built to filter for.
+    # Set VOTING_ENABLED=1 to re-enable as a safety net during benchmark or rollback.
+    voting_enabled: bool = bool(int(os.getenv("VOTING_ENABLED", "0")))
     voting_num_frames: int = int(os.getenv("VOTING_NUM_FRAMES", "10"))
     voting_frame_spread_ms: int = int(os.getenv("VOTING_FRAME_SPREAD_MS", "400"))  # 400ms window at 25fps
 
@@ -486,9 +489,12 @@ class Settings(BaseSettings):
     # ==========================================
     # Voting Service Margins
     # ==========================================
-    voting_cell_phone_margin: int = int(os.getenv("VOTING_CELL_PHONE_MARGIN", "100"))
-    voting_book_hand_margin: int = int(os.getenv("VOTING_BOOK_HAND_MARGIN", "180"))
-    voting_person_book_margin: int = int(os.getenv("VOTING_PERSON_BOOK_MARGIN", "250"))
+    # Tightened 2026-04-11: trained model (yolo26s_locopilot_v5) produces tight bboxes,
+    # so the generous margins originally added to compensate for noisy COCO detections
+    # are no longer needed. Old defaults: cell_phone=100, book_hand=180, person_book=250.
+    voting_cell_phone_margin: int = int(os.getenv("VOTING_CELL_PHONE_MARGIN", "60"))
+    voting_book_hand_margin: int = int(os.getenv("VOTING_BOOK_HAND_MARGIN", "80"))
+    voting_person_book_margin: int = int(os.getenv("VOTING_PERSON_BOOK_MARGIN", "120"))
 
     # ==========================================
     # Train Motion Rules Settings

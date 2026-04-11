@@ -3273,9 +3273,12 @@ class LocopilotActivityMonitor:
                         left_hand_coords = (int(left_hand.x * w), int(left_hand.y * h))
 
                         hand_margin = self.activity_thresholds['writing']['margin']
-                        # Use larger margin for book-to-person association since book is typically in lap area
-                        # (below the person's detected bounding box which mainly covers upper body)
-                        person_book_margin = 250  # INCREASED from 150 to 250 - books in lap area extend beyond person bbox
+                        # Book-to-person association margin. Tightened 2026-04-11 from 250→120
+                        # because the trained model (yolo26s_locopilot_v5) produces tight book
+                        # bboxes — oversized margin was firing on stationary papers on desks
+                        # that happened to be near a wrist. Trained class-2 `book` is precise
+                        # enough that a tighter margin still catches real log-book writing.
+                        person_book_margin = 120
                         for book_bbox in person_books:
                             # Check if book is in this person's region (use large margin for lap area)
                             book_in_person_region = bbox_overlap_with_margin(book_bbox, bbox, person_book_margin)
