@@ -70,6 +70,7 @@ from ..services.job_manager import job_manager
 from ..services.s3_upload_service import get_s3_upload_service
 from ..services.external_api_service import get_external_api_service
 from ..services.minio_service import get_minio_service
+from ..services.gpu_resource_manager import get_gpu_resource_manager
 from ..utils.logger import get_logger
 from ..utils.config import get_settings
 
@@ -202,6 +203,38 @@ async def process_video(
                 detail="Either 'video' file or 'videoUrl' must be provided"
             )
 
+        # --- Concurrency admission gate -----------------------------------
+        # GPU is saturated at 1 concurrent video on this hardware; additional
+        # jobs must queue, not run in parallel (else they fight for VRAM/CUDA
+        # and total throughput stays flat while risking OOM). Admit up to
+        # ``max_concurrent_videos + job_queue_max_size`` requests — active
+        # plus waiting. Reject past that point with 503 so clients retry
+        # later instead of piling up unbounded work.
+        gpu_resource_manager = get_gpu_resource_manager()
+        admitted, queue_position = gpu_resource_manager.try_enqueue()
+        if not admitted:
+            logger.warning(
+                f"[QUEUE FULL] Rejecting trip {tripId}: "
+                f"system full (max {settings.max_concurrent_videos} active + "
+                f"{settings.job_queue_max_size} queued)"
+            )
+            raise HTTPException(
+                status_code=503,
+                detail=(
+                    "Server busy: maximum concurrent + queued jobs reached. "
+                    "Retry after the current jobs finish."
+                ),
+            )
+        if queue_position > 0:
+            logger.info(
+                f"[QUEUE] Trip {tripId} admitted; waiting at position {queue_position}"
+            )
+        # Track whether the slot was acquired so the finally block knows
+        # whether the pending counter still needs rollback (admitted but
+        # never entered acquire_gpu_slot due to an earlier error).
+        slot_acquired = False
+        # -----------------------------------------------------------------
+
         # Build crew members dictionary
         crew_members = {}
 
@@ -287,26 +320,32 @@ async def process_video(
         camera_angle = cameraAngle if cameraAngle in (1, 2) else 1
 
         loop = asyncio.get_running_loop()
-        result = await loop.run_in_executor(
-            None,
-            functools.partial(
-                video_processing_service.process_video,
-                video_path=video_path,
-                trip_id=tripId,
-                crew_members=crew_members,  # Pass crew members dict
-                crew_name=lpCrewName if lpCrewName else "Unknown",  # Default if not provided
-                crew_id=lpCrewId if lpCrewId else "N/A",  # Default if not provided
-                crew_role=1,  # LP role
-                use_mock_detection=useMockDetection,
-                use_multiprocessing=use_mp,
-                save_clips=saveClips,
-                division=division,
-                train_number=trainNumber,
-                trip_date=tripDate,
-                video_start_time=videoStartTime,
-                camera_angle=camera_angle,
+        # Hold a GPU slot for the duration of heavy processing. Waiters block
+        # here (respecting the semaphore) until a slot frees. ``_pending_count``
+        # flips to ``_active_count`` inside the context manager.
+        async with gpu_resource_manager.acquire_gpu_slot():
+            gpu_resource_manager.mark_enqueued_started()
+            slot_acquired = True
+            result = await loop.run_in_executor(
+                None,
+                functools.partial(
+                    video_processing_service.process_video,
+                    video_path=video_path,
+                    trip_id=tripId,
+                    crew_members=crew_members,  # Pass crew members dict
+                    crew_name=lpCrewName if lpCrewName else "Unknown",  # Default if not provided
+                    crew_id=lpCrewId if lpCrewId else "N/A",  # Default if not provided
+                    crew_role=1,  # LP role
+                    use_mock_detection=useMockDetection,
+                    use_multiprocessing=use_mp,
+                    save_clips=saveClips,
+                    division=division,
+                    train_number=trainNumber,
+                    trip_date=tripDate,
+                    video_start_time=videoStartTime,
+                    camera_angle=camera_angle,
+                )
             )
-        )
 
         # Schedule cleanup of uploaded video after processing (production mode)
         background_tasks.add_task(
@@ -363,6 +402,16 @@ async def process_video(
             status_code=500,
             detail=f"Failed to process video: {str(e)}"
         )
+    finally:
+        # Release the pending counter if we admitted the request but never
+        # made it inside ``acquire_gpu_slot()`` (e.g. MinIO download failed
+        # or the upload save raised). If the slot was acquired, the semaphore
+        # context manager already accounted for the active count.
+        if 'admitted' in locals() and admitted and not locals().get('slot_acquired', False):
+            try:
+                gpu_resource_manager.release_enqueue_on_error()
+            except Exception as _release_err:
+                logger.warning(f"Failed to release pending slot on error: {_release_err}")
 
 
 @router.get(

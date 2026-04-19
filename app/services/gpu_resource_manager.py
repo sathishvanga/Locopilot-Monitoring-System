@@ -104,6 +104,13 @@ class GPUResourceManager:
         self._semaphore: Optional[asyncio.Semaphore] = None
         self._active_count: int = 0
         self._active_count_lock = threading.Lock()
+        # ``_pending_count`` tracks requests that have been admitted by the
+        # controller but are still waiting on the semaphore (i.e. active slots
+        # are full). Combined with ``_active_count`` this lets the controller
+        # enforce a bounded queue — when active+pending >= (max + queue_max),
+        # we return 503 instead of admitting unbounded work.
+        self._pending_count: int = 0
+        self._pending_count_lock = threading.Lock()
 
         # GPU memory tracking
         self._peak_memory_mb: float = 0.0
@@ -503,6 +510,47 @@ class GPUResourceManager:
             bool: True if under max concurrent limit
         """
         return self._active_count < self._settings.max_concurrent_videos
+
+    def try_enqueue(self) -> tuple[bool, int]:
+        """Admission check for a new video job.
+
+        Returns ``(admitted, position)``:
+        - ``admitted=True``  → caller may proceed to ``acquire_gpu_slot()``.
+          The pending counter is incremented; caller MUST call
+          ``mark_enqueued_started()`` right after the slot is acquired so
+          pending decrements and active increments stay consistent.
+        - ``admitted=False`` → queue is full. Caller returns HTTP 503.
+
+        The admissions cap is ``max_concurrent_videos + job_queue_max_size``.
+        At steady state this allows one active job plus up to
+        ``job_queue_max_size`` waiters. Beyond that we shed load rather than
+        grow the queue unbounded.
+        """
+        max_active = int(self._settings.max_concurrent_videos)
+        max_queue = int(getattr(self._settings, 'job_queue_max_size', 10))
+        with self._pending_count_lock:
+            with self._active_count_lock:
+                in_system = self._active_count + self._pending_count
+            if in_system >= max_active + max_queue:
+                return False, in_system
+            self._pending_count += 1
+            position = max(0, (self._active_count + self._pending_count) - max_active)
+        return True, position
+
+    def mark_enqueued_started(self) -> None:
+        """Called after ``acquire_gpu_slot()`` yields control — the job is
+        no longer pending; ``acquire_gpu_slot()`` itself bumps ``_active_count``.
+        Pairs with ``try_enqueue()``."""
+        with self._pending_count_lock:
+            self._pending_count = max(0, self._pending_count - 1)
+
+    def release_enqueue_on_error(self) -> None:
+        """Roll back a pending admission if the caller bailed before the slot
+        was acquired (e.g. request body validation failed after admission).
+        Safe to call even if ``mark_enqueued_started()`` already ran — the
+        counter is clamped at zero."""
+        with self._pending_count_lock:
+            self._pending_count = max(0, self._pending_count - 1)
 
     def _log_gpu_memory_stats(self) -> None:
         """Log current GPU memory statistics"""
