@@ -40,23 +40,51 @@ cd "$SCRIPT_DIR"
 
 echo -e "${YELLOW}[1/6] Syncing files to GPU server...${NC}"
 sshpass -p "$SERVER_PASS" rsync -avz --progress \
+    `# Python / venv / build artifacts` \
     --exclude 'venv' \
     --exclude '.venv' \
     --exclude '__pycache__' \
     --exclude '*.pyc' \
+    --exclude '.pytest_cache' \
+    --exclude 'build' \
+    --exclude 'dist' \
+    `# Git / editor / CI` \
     --exclude '.git' \
+    --exclude '.github' \
+    --exclude '.claude' \
+    --exclude '.DS_Store' \
+    `# Local runtime artifacts (server has its own)` \
     --exclude 'locopilot_evidence' \
     --exclude 'locopilot_evidence_1' \
-    --exclude 'voting_debug_frames' \
     --exclude 'logs' \
-    --exclude '.DS_Store' \
     --exclude '*.log' \
     --exclude 'uploads' \
     --exclude 'output' \
+    --exclude 'evidence' \
+    --exclude 'activities.json' \
+    --exclude 'n_5_violations_frames' \
     --exclude 'example_data' \
-    --exclude '.claude' \
-    --exclude 'build' \
-    --exclude 'dist' \
+    `# Training pipeline (2.4GB, not needed at runtime)` \
+    --exclude 'auto_label' \
+    --exclude 'auto_labeling' \
+    `# Tests / docs / specs (not needed at runtime)` \
+    --exclude 'tests' \
+    --exclude 'docs' \
+    --exclude 'doc' \
+    --exclude 'tasks' \
+    --exclude 'BUSINESS_REQUIREMENTS.md' \
+    --exclude 'CLAUDE.md' \
+    `# Experimental / one-off scripts` \
+    --exclude 'test_train_motion.py' \
+    --exclude 'compare_pose.py' \
+    --exclude 'simple_violations.py' \
+    --exclude 'pose_comparison' \
+    --exclude 'pose_landmarker_*.task' \
+    `# Local-only env + secrets (server uses .env.production → .env copy below)` \
+    --exclude '.env' \
+    --exclude '.env.example' \
+    --exclude 'server details.txt' \
+    `# Model weights (already on server, avoid re-uploading ~200MB)` \
     --exclude 'yolo*.pt' \
     --delete \
     -e "ssh -p $SERVER_PORT -o StrictHostKeyChecking=no" \

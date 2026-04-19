@@ -208,33 +208,6 @@ def test_triggering_role_is_set_for_role_specific_activities():
         assert ACTIVITY_REGISTRY[name].triggering_role is None, name
 
 
-def test_voting_keys_resolve_without_the_copypasted_map():
-    """The two copy-pasted ``activity_key_map`` blocks in the monitor used
-    to hard-code a 7-entry identity map. After task 0001 that dispatch is
-    done via ``ACTIVITY_REGISTRY[name].voting_key`` — make sure the seven
-    voting-verification activities resolve to non-empty keys.
-    """
-
-    from app.core.activity_registry import ACTIVITY_REGISTRY
-
-    voting_activities = {
-        "mind_diversion",
-        "cell_phone",
-        "writing",
-        "packing_bags",
-        "lp_hand_gesture",
-        "alp_hand_gesture",
-        "eating_drinking",
-    }
-    for name in voting_activities:
-        cfg = ACTIVITY_REGISTRY[name]
-        assert cfg.voting_key, f"{name} missing voting_key"
-        # In the current pipeline these are identity; the registry allows the
-        # field to diverge, but if it ever does, the monitor's dispatch code
-        # also needs to change.
-        assert cfg.voting_key == name, f"{name} voting_key drifted: {cfg.voting_key}"
-
-
 # ---------------------------------------------------------------------------
 # rebuild_activity_registry invariant
 # ---------------------------------------------------------------------------

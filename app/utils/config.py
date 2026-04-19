@@ -99,11 +99,6 @@ class Settings(BaseSettings):
     yolo_roi_weights: str = os.getenv("YOLO_ROI_WEIGHTS", "yolo26s.pt")  # YOLO26 small for ROI crop detection
     yolo_roi_confidence: float = float(os.getenv("YOLO_ROI_CONFIDENCE", "0.15"))  # Lower threshold for small object recall
 
-    # Voting: large model for accurate verification (~160 frames)
-    # When empty, voting uses the same model as detection (backward compatible)
-    yolo_voting_weights: str = os.getenv("YOLO_VOTING_WEIGHTS", "yolo26l.pt")  # YOLO26 large for voting verification
-    yolo_voting_pose_weights: str = os.getenv("YOLO_VOTING_POSE_WEIGHTS", "yolo26l-pose.pt")  # YOLO26 large-pose for voting
-
     # Phase 2: Inference optimization settings
     # CHANGED from 416 to 640 for better accuracy on small objects (cell phones)
     yolo_imgsz: int = int(os.getenv("YOLO_IMGSZ", "640"))  # Model input size (640 for better small object detection)
@@ -202,26 +197,6 @@ class Settings(BaseSettings):
     # Group overlapping activities of different types into combined records with arrays
     concurrent_grouping_enabled: bool = bool(int(os.getenv("CONCURRENT_GROUPING_ENABLED", "1")))
 
-    # Voting verification settings
-    # Two-stage detection: when activity detected, verify with multiple native frames
-    # Default OFF as of 2026-04-11 — trained domain model (yolo26s_locopilot_v5, 9 classes
-    # incl. radio_handset) replaces most compensations voting was built to filter for.
-    # Set VOTING_ENABLED=1 to re-enable as a safety net during benchmark or rollback.
-    voting_enabled: bool = bool(int(os.getenv("VOTING_ENABLED", "0")))
-    voting_num_frames: int = int(os.getenv("VOTING_NUM_FRAMES", "10"))
-    voting_frame_spread_ms: int = int(os.getenv("VOTING_FRAME_SPREAD_MS", "400"))  # 400ms window at 25fps
-
-    # Per-activity voting thresholds (percentage of frames required for confirmation)
-    # Default 50% (5/10 frames must detect the activity)
-    voting_threshold_cell_phone: float = float(os.getenv("VOTING_THRESHOLD_CELL_PHONE", "0.5"))
-    voting_threshold_writing: float = float(os.getenv("VOTING_THRESHOLD_WRITING", "0.4"))
-    voting_threshold_packing_bags: float = float(os.getenv("VOTING_THRESHOLD_PACKING_BAGS", "0.75"))  # 75% - stricter for false positive reduction (was 60%)
-    voting_threshold_lp_hand_gesture: float = float(os.getenv("VOTING_THRESHOLD_LP_GESTURE", "0.6"))
-    voting_threshold_alp_hand_gesture: float = float(os.getenv("VOTING_THRESHOLD_ALP_GESTURE", "0.6"))
-    voting_threshold_mind_diversion: float = float(os.getenv("VOTING_THRESHOLD_MIND_DIVERSION", "0.5"))
-    voting_threshold_eating_drinking: float = float(os.getenv("VOTING_THRESHOLD_EATING_DRINKING", "0.4"))  # Lower threshold - cups harder to detect in IR
-    voting_threshold_group_detected: float = float(os.getenv("VOTING_THRESHOLD_GROUP", "0.5"))
-
     # Hand Gesture Coordination Session Settings
     # Session-based tracking: session starts on first raise, ends after timeout with no activity
     # Violation only if one person NEVER raised during the entire session
@@ -235,14 +210,9 @@ class Settings(BaseSettings):
     # Suppress hand gestures for this duration after detecting a work activity (writing, packing, cell phone)
     temporal_suppression_window: float = float(os.getenv("TEMPORAL_SUPPRESSION_WINDOW", "10.0"))
 
-    # Voting debug settings - save annotated frames for troubleshooting
-    voting_save_debug_frames: bool = bool(int(os.getenv("VOTING_SAVE_DEBUG_FRAMES", "0")))  # Disabled by default (enable locally for debugging)
-    voting_debug_frames_dir: str = os.getenv("VOTING_DEBUG_FRAMES_DIR", "voting_debug_frames")
-
     # Packing bags verification thresholds (stricter than initial detection)
     # TUNED 2026-01-21: Stricter thresholds to reduce false positives from bags on floor near seated crew
     packing_wrist_visibility_threshold: float = float(os.getenv("PACKING_WRIST_VIS", "0.3"))  # Min wrist visibility 30%
-    packing_voting_margin: int = int(os.getenv("PACKING_VOTING_MARGIN", "30"))  # 30px margin for wrist-in-bag check
     packing_max_distance_ratio: float = float(os.getenv("PACKING_MAX_DIST_RATIO", "0.45"))  # Wrist within 45% of bag diagonal from center
     packing_min_bag_area: int = int(os.getenv("PACKING_MIN_BAG_AREA", "15000"))  # Min bag area 15,000 sq pixels
     packing_require_wrist_truly_inside: bool = bool(int(os.getenv("PACKING_STRICT_INSIDE", "0")))  # Use margin-based check (not strict)
@@ -512,16 +482,6 @@ class Settings(BaseSettings):
     activity_packing_wrist_inside_margin: int = int(os.getenv("ACTIVITY_PACKING_WRIST_INSIDE_MARGIN", "80"))
 
     # ==========================================
-    # Voting Service Margins
-    # ==========================================
-    # Tightened 2026-04-11: trained model (yolo26s_locopilot_v5) produces tight bboxes,
-    # so the generous margins originally added to compensate for noisy COCO detections
-    # are no longer needed. Old defaults: cell_phone=100, book_hand=180, person_book=250.
-    voting_cell_phone_margin: int = int(os.getenv("VOTING_CELL_PHONE_MARGIN", "60"))
-    voting_book_hand_margin: int = int(os.getenv("VOTING_BOOK_HAND_MARGIN", "80"))
-    voting_person_book_margin: int = int(os.getenv("VOTING_PERSON_BOOK_MARGIN", "120"))
-
-    # ==========================================
     # Train Motion Rules Settings
     # ==========================================
     # Enable/disable train motion-based rule engine
@@ -654,13 +614,9 @@ class Settings(BaseSettings):
             path_fields = (
                 'yolo_model_path',
                 'yolo_pose_model_path',
-                'yolo_voting_model_path',
-                'yolo_voting_pose_model_path',
                 'yolo_roi_model_path',
                 'yolo_weights',
                 'yolo_pose_weights',
-                'yolo_voting_weights',
-                'yolo_voting_pose_weights',
             )
             for attr in path_fields:
                 path = getattr(self, attr, None)

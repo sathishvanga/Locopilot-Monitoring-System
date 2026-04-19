@@ -233,22 +233,12 @@ def worker_initializer(config: MultiprocessingConfig):
             except Exception as e:
                 logger.warning(f"Worker {os.getpid()} failed to init preprocessing: {e}")
 
-            # Long-lived VideoReader LRU (ARCH-04 / task 0004)
-            # Keeps a single cv2.VideoCapture open per video path per worker so
-            # the voting verification hot loop does not re-open the container
-            # on every call.  Max size 2 is plenty: typical production usage
-            # is a single video per chunk; 2 gives a little headroom for a
-            # transition between videos without thrashing.
-            from app.services.video_reader import VideoReaderLRU
-            video_readers = VideoReaderLRU(max_size=2)
-
             _worker_models = {
                 'yolo': yolo_model,
                 'yolo_pose': yolo_pose,
                 'face_mesh': face_mesh,
                 'mp_face_mesh': mp_face_mesh,
                 'preprocessing_service': preprocessing_service,
-                'video_readers': video_readers,
             }
 
             # 5a. Load separate ROI model if configured (stronger model for pose-guided crops)
@@ -264,45 +254,8 @@ def worker_initializer(config: MultiprocessingConfig):
             else:
                 _worker_models['yolo_roi'] = None
 
-            # 5b. Load separate voting models if configured (dual-model optimization)
-            # When voting model paths differ from detection, load heavier models for voting
-            if config.yolo_voting_model_path != config.yolo_model_path:
-                logger.info(f"Worker {os.getpid()} loading voting YOLO model: {config.yolo_voting_model_path}")
-                yolo_voting_model = YOLO(config.yolo_voting_model_path)
-                if config.yolo_device and config.yolo_device != 'cpu':
-                    device = int(config.yolo_device) if config.yolo_device.isdigit() else config.yolo_device
-                    yolo_voting_model.to(device)
-                if hasattr(yolo_voting_model.model, 'fuse'):
-                    yolo_voting_model.fuse()
-                _worker_models['yolo_voting'] = yolo_voting_model
-            else:
-                _worker_models['yolo_voting'] = yolo_model
-
-            if config.yolo_voting_pose_model_path != config.yolo_pose_model_path:
-                logger.info(f"Worker {os.getpid()} loading voting YOLO-Pose model: {config.yolo_voting_pose_model_path}")
-                yolo_voting_pose_raw = YOLO(config.yolo_voting_pose_model_path)
-                if config.yolo_device and config.yolo_device != 'cpu':
-                    device = int(config.yolo_device) if config.yolo_device.isdigit() else config.yolo_device
-                    yolo_voting_pose_raw.to(device)
-                if hasattr(yolo_voting_pose_raw.model, 'fuse'):
-                    yolo_voting_pose_raw.fuse()
-                yolo_voting_pose = YoloPoseAdapter(
-                    model_path=config.yolo_voting_pose_model_path,
-                    conf_threshold=0.45,
-                    preloaded_model=yolo_voting_pose_raw
-                )
-                _worker_models['yolo_pose_voting'] = yolo_voting_pose
-            else:
-                _worker_models['yolo_pose_voting'] = yolo_pose
-
             logger.info(f"Worker {os.getpid()} all models loaded successfully "
-                       f"(detection: {config.yolo_model_path}, "
-                       f"voting: {config.yolo_voting_model_path})")
-
-            # Register worker-side atexit hook so cached VideoReaders are
-            # released deterministically when the worker process exits
-            # (ARCH-04 / task 0004).
-            atexit.register(_close_worker_video_readers)
+                       f"(detection: {config.yolo_model_path})")
 
             # ------------------------------------------------------------------
             # Task 0007: pre-construct lightweight detector instances once per
@@ -321,10 +274,6 @@ def worker_initializer(config: MultiprocessingConfig):
             # worker invocation into the next, which is undesirable while
             # other per-chunk state (activities dict, consecutive counters)
             # is still reallocated inside the monitor.
-            # NOTE: VotingVerificationService is now wired through
-            # preloaded_models['video_readers'] (task 0004) but is still
-            # constructed per-monitor because its constructor takes
-            # video-path-derived state. Future work can move it here.
             # ------------------------------------------------------------------
             try:
                 from app.core.detectors import (
@@ -381,57 +330,6 @@ def worker_initializer(config: MultiprocessingConfig):
         raise
 
 
-def get_or_create_video_reader(video_path: str):
-    """
-    Return the worker-local cached ``VideoReader`` for ``video_path``.
-
-    Creates the LRU entry lazily if it does not yet exist and opens a new
-    ``cv2.VideoCapture`` the first time a given path is seen.  Used as the
-    ``video_reader_getter`` callable passed into
-    ``VotingVerificationService`` so the service can reuse a single capture
-    across every voting call on the same worker (ARCH-04 / task 0004).
-
-    Raises:
-        RuntimeError: when the worker's ``_worker_models`` dict has not been
-            initialised -- callers in the worker pool should never see this
-            because ``worker_initializer`` always populates the cache.
-    """
-    global _worker_models
-    if _worker_models is None:
-        raise RuntimeError(
-            f"Worker {os.getpid()} has no _worker_models; "
-            "get_or_create_video_reader called before worker_initializer"
-        )
-
-    readers = _worker_models.get('video_readers')
-    if readers is None:
-        # Backfill in case an older worker_initializer path skipped this key.
-        from app.services.video_reader import VideoReaderLRU
-        readers = VideoReaderLRU(max_size=2)
-        _worker_models['video_readers'] = readers
-
-    return readers.get_or_create(video_path)
-
-
-def _close_worker_video_readers() -> None:
-    """
-    Release every cached ``VideoReader`` on the current worker.
-
-    Called from the atexit hook registered next to ``shutdown_shared_pool``
-    so that a clean interpreter shutdown closes video captures deterministically.
-    """
-    global _worker_models
-    try:
-        if _worker_models is None:
-            return
-        readers = _worker_models.get('video_readers')
-        if readers is not None:
-            readers.close_all()
-            logger.info(f"Worker {os.getpid()} released all cached VideoReaders")
-    except Exception as exc:
-        logger.warning(f"Error releasing cached VideoReaders: {exc}", exc_info=True)
-
-
 def get_shared_pool(config: MultiprocessingConfig) -> ProcessPoolExecutor:
     """
     Lazily create and return a shared ProcessPoolExecutor.
@@ -482,9 +380,7 @@ def shutdown_shared_pool(wait: bool = True) -> None:
     """
     Shutdown the shared process pool (called on application shutdown).
 
-    Mirrors the atexit-based shutdown in POC_2's app.boot.  Also releases any
-    ``VideoReader`` instances cached in the main-process ``_worker_models``
-    dict so ``cv2.VideoCapture`` handles are closed deterministically.
+    Mirrors the atexit-based shutdown in POC_2's app.boot.
     """
     global _shared_pool
     try:
@@ -494,17 +390,6 @@ def shutdown_shared_pool(wait: bool = True) -> None:
             _shared_pool = None
     except Exception as e:
         logger.warning(f"Error while shutting down shared pool: {e}", exc_info=True)
-
-    # Release any cached VideoReaders in the current process (ARCH-04).
-    # Worker processes run this too via their own atexit path when the pool
-    # is torn down; in single-process mode this is a no-op.
-    try:
-        _close_worker_video_readers()
-    except Exception as exc:
-        logger.warning(
-            f"Error while releasing cached VideoReaders during shutdown: {exc}",
-            exc_info=True,
-        )
 
 
 def calculate_frame_ranges(

@@ -92,11 +92,6 @@ class MultiprocessingConfig:
     # Uses a more accurate model on small crops around keypoints for better small object recall
     yolo_roi_model_path: str = os.getenv("YOLO_ROI_WEIGHTS", "yolo26s.pt")
 
-    # Dual-model: separate (heavier) YOLO weights for voting verification
-    # When empty, voting uses the same model as detection (backward compatible)
-    yolo_voting_model_path: str = os.getenv("YOLO_VOTING_WEIGHTS", "")
-    yolo_voting_pose_model_path: str = os.getenv("YOLO_VOTING_POSE_WEIGHTS", "")
-
     # GPU Batch Processing Settings
     # These settings optimize GPU utilization by processing multiple frames at once
     # instead of one frame at a time, keeping the GPU busy and reducing overhead.
@@ -132,11 +127,6 @@ class MultiprocessingConfig:
             self.gpu_batch_enabled = _get_settings_gpu_batch_enabled()
         if self.overlap_seconds is None:
             self.overlap_seconds = _get_settings_mp_overlap_seconds()
-        # Resolve voting model paths: fall back to detection model paths when empty
-        if not self.yolo_voting_model_path:
-            self.yolo_voting_model_path = self.yolo_model_path
-        if not self.yolo_voting_pose_model_path:
-            self.yolo_voting_pose_model_path = self.yolo_pose_model_path
 
     def get_num_workers(self) -> int:
         """

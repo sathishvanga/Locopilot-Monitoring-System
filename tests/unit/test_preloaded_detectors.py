@@ -78,8 +78,6 @@ def _make_preloaded_models(*, extra: dict | None = None) -> dict:
         'face_mesh': MagicMock(name='face_mesh'),
         'mp_face_mesh': MagicMock(name='mp_face_mesh'),
         'preprocessing_service': None,
-        'yolo_voting': yolo,
-        'yolo_pose_voting': yolo_pose,
     }
     if extra:
         preloaded.update(extra)
@@ -106,8 +104,6 @@ def test_worker_initializer_stores_detectors_on_worker_models():
         max_workers=1,
         yolo_model_path='yolo26n.pt',
         yolo_pose_model_path='yolo26n-pose.pt',
-        yolo_voting_model_path='yolo26n.pt',
-        yolo_voting_pose_model_path='yolo26n-pose.pt',
         yolo_device='cpu',
         preload_models=True,
     )

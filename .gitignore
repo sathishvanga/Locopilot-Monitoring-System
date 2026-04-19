@@ -15,7 +15,6 @@ desktop_app/build_config/dist/
 *.pyc
 logs/
 logs/LocopilotMonitoring.log
-voting_debug_frames/
 cell_phone_frames
 __pycache__/
 diagnostic_output*
@@ -31,3 +30,4 @@ deploy-gpu.sh
 debug_frames
 activity_frames
 n_5_violations_frames
+auto_label

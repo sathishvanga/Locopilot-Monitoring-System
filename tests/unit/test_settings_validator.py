@@ -49,8 +49,6 @@ def clean_env(monkeypatch):
         "POSE_MODEL",
         "YOLO_WEIGHTS_PRELOAD",
         "YOLO_POSE_WEIGHTS",
-        "YOLO_VOTING_WEIGHTS",
-        "YOLO_VOTING_POSE_WEIGHTS",
     ):
         monkeypatch.delenv(var, raising=False)
     monkeypatch.setenv("LOCOPILOT_SKIP_PATH_CHECKS", "1")

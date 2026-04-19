@@ -267,40 +267,6 @@ class ActivityDetectionService:
                 sample_fps=sample_fps
             )
 
-        # Dual-model optimization: replace voting service models with heavier variants
-        # In single-process mode, detection models are loaded fresh by the monitor.
-        # We load separate voting models here and swap them into the voting service.
-        if monitor.voting_service is not None:
-            voting_weights = self.settings.yolo_voting_weights
-            voting_pose_weights = self.settings.yolo_voting_pose_weights
-            if voting_weights and voting_weights != self.settings.yolo_weights:
-                try:
-                    from ultralytics import YOLO as _YOLO
-                    logger.info(f"Loading voting YOLO model for single-process: {voting_weights}")
-                    voting_yolo = _YOLO(voting_weights)
-                    if hasattr(voting_yolo.model, 'fuse'):
-                        voting_yolo.fuse()
-                    monitor.voting_service.yolo_model = voting_yolo
-                    logger.info(f"Voting service now uses separate model: {voting_weights}")
-                except Exception as e:
-                    logger.warning(f"Failed to load voting YOLO model: {e}")
-            if voting_pose_weights and voting_pose_weights != self.settings.yolo_pose_weights:
-                try:
-                    from ultralytics import YOLO as _YOLO
-                    from app.services.yolo_pose_adapter import YoloPoseAdapter
-                    logger.info(f"Loading voting YOLO-Pose model for single-process: {voting_pose_weights}")
-                    voting_pose_raw = _YOLO(voting_pose_weights)
-                    if hasattr(voting_pose_raw.model, 'fuse'):
-                        voting_pose_raw.fuse()
-                    monitor.voting_service.yolo_pose_model = YoloPoseAdapter(
-                        model_path=voting_pose_weights,
-                        conf_threshold=self.settings.yolo_pose_confidence,
-                        preloaded_model=voting_pose_raw
-                    )
-                    logger.info(f"Voting service now uses separate pose model: {voting_pose_weights}")
-                except Exception as e:
-                    logger.warning(f"Failed to load voting YOLO-Pose model: {e}")
-
         # Set trip and crew information
         monitor.trip_id = trip_id
         monitor.crew_name = crew_name

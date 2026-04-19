@@ -7,9 +7,9 @@ free of monitor/state dependencies so they can be unit-tested in isolation.
 ARCH-08b: ``apply_train_stopped_suppression`` fixes a latent bug where the
 train-STOPPED gate previously only zeroed the aggregated boolean flags
 and left each ``persons_data[pidx]['activities']`` dict positive. Any
-downstream consumer reading ``persons_data`` (annotation, voting
-re-verification, debug overlays) would see stale positives. This helper
-enforces a single consistent suppression rule across both structures.
+downstream consumer reading ``persons_data`` (annotation, debug overlays)
+would see stale positives. This helper enforces a single consistent
+suppression rule across both structures.
 
 ``microsleep`` and ``cell_phone`` are intentionally preserved — they
 remain safety-critical even when the train is at rest at a station.
@@ -43,7 +43,7 @@ def apply_train_stopped_suppression(
     This is the *single* place that applies the train-STOPPED gate. Call it
     whenever the train is known to be stopped (e.g. at a station) so that
     both the aggregated booleans used for downstream logging AND the
-    per-person activity dicts used for annotation/voting stay consistent.
+    per-person activity dicts used for annotation stay consistent.
 
     Args:
         aggregated: Flat dict of aggregated boolean flags (e.g.

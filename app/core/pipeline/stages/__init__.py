@@ -11,7 +11,7 @@ from .face_mesh_stage import FaceMeshStage
 from .object_detect_stage import ObjectDetectStage
 from .person_dedup_stage import PersonDedupStage
 from .role_identify_stage import RoleIdentifyStage
-from .group_vote_stage import GroupVoteStage
+from .group_detect_stage import GroupDetectStage
 from .train_motion_detect_stage import TrainMotionDetectStage
 from .per_person_activities_stage import PerPersonActivitiesStage
 from .state_machine_gate_stage import StateMachineGateStage
@@ -27,7 +27,7 @@ __all__ = [
     "ObjectDetectStage",
     "PersonDedupStage",
     "RoleIdentifyStage",
-    "GroupVoteStage",
+    "GroupDetectStage",
     "TrainMotionDetectStage",
     "PerPersonActivitiesStage",
     "StateMachineGateStage",

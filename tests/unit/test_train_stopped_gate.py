@@ -269,10 +269,6 @@ def test_monitor_class_constants_match_helper_default():
     assert hasattr(monitor_cls, 'SUPPRESSED_WHEN_STOPPED'), (
         "ARCH-08b: LocopilotActivityMonitor.SUPPRESSED_WHEN_STOPPED missing"
     )
-    # NOTE: ARCH-08a's VOTING_ACTIVITY_KEY_MAP class constant was superseded
-    # by ARCH-01's ACTIVITY_REGISTRY.voting_key field during the merge —
-    # voting key lookups now flow through the registry directly. The drift
-    # guard for that mapping lives in test_activity_registry.py instead.
 
     assert (
         frozenset(monitor_cls.SUPPRESSED_WHEN_STOPPED)

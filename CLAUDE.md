@@ -6,7 +6,7 @@ CCTV-based activity monitoring for Indian railway locomotive pilots (LP) and ass
 ## Architecture
 - **Main monitor**: `locopilot_monitor.py` (~5200 lines) — core frame processing
 - **Detectors**: `app/core/detectors/` — sleep, writing, gesture, head pose, posture entropy, confounder, trajectory
-- **Services**: `app/services/` — voting, OCR, S3 upload, multiprocessing, temporal filtering, trip data
+- **Services**: `app/services/` — OCR, S3 upload, multiprocessing, temporal filtering, trip data
 - **Config**: `app/utils/config.py` (pydantic-settings) loads from `.env` file
 - **API**: `app/main.py` (FastAPI + Gunicorn)
 

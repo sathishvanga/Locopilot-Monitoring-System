@@ -72,7 +72,7 @@ class FrameState:
         detections: Dict of YOLO detections keyed by class.
         people_count: Deduplicated person count (at least 1).
         person_roles: Per-person role dict (LP / ALP / etc.).
-        group_detected_flag: Whether a multi-person group was voted through.
+        group_detected_flag: Whether a multi-person group was detected (>2 deduplicated persons).
         persons_data: Per-person detection + activity dict.
         aggregated: Aggregated cross-person activity flags.
         motion_state: Current train motion state string (``"UNKNOWN"`` when
