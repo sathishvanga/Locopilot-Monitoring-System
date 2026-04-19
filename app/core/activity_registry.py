@@ -1,9 +1,9 @@
 """Single source of truth for activity metadata.
 
 This module consolidates all per-activity configuration (tracking thresholds,
-type codes, descriptions, evidence rules, voting keys, triggering roles) into
-one registry so downstream consumers (monitor, mock detection service, Pydantic
-enum, multiprocessing workers) cannot silently drift.
+type codes, descriptions, evidence rules, triggering roles) into one registry
+so downstream consumers (monitor, mock detection service, Pydantic enum,
+multiprocessing workers) cannot silently drift.
 
 Extracted from ``locopilot_monitor.py`` during the 2026-04 architecture review
 (task 0001). Previously this metadata lived in four hand-written parallel
@@ -20,9 +20,9 @@ Design notes:
   ``region_margin``, ``wrist_inside_margin``, ``sustained_proximity_seconds``)
   are preserved verbatim so ``ActivityTracker`` continues to accept the same
   objects via duck typing.
-* New fields (``type_code``, ``description``, ``evidence_rule``,
-  ``voting_key``, ``triggering_role``) are the metadata the monitor used to
-  keep in parallel dicts.
+* Reporting metadata fields (``type_code``, ``description``, ``evidence_rule``,
+  ``triggering_role``) are the metadata the monitor used to keep in parallel
+  dicts.
 * ``ACTIVITY_REGISTRY`` is built by a function (not a module-level literal) so
   the config-driven margins resolve lazily via ``get_settings()``. The
   resulting dict is cached on first access.
@@ -51,7 +51,7 @@ class ActivityConfig:
     2. Proximity margins (``margin``, ``region_margin``, ``wrist_inside_margin``,
        ``sustained_proximity_seconds``).
     3. Reporting metadata (``type_code``, ``description``, ``evidence_rule``,
-       ``voting_key``, ``triggering_role``) previously in the monitor's
+       ``triggering_role``) previously in the monitor's
        ``activity_type_map``/``activity_descriptions``/``evidence_rules`` dicts.
     """
 
@@ -61,7 +61,6 @@ class ActivityConfig:
     type_code: int = 0
     description: str = ""
     evidence_rule: str = ""
-    voting_key: Optional[str] = None
     triggering_role: Optional[str] = None  # "LP" | "ALP" | None
 
     # --- Temporal filtering thresholds ----------------------------------
@@ -106,7 +105,6 @@ def _build_activity_registry() -> Dict[str, ActivityConfig]:
             type_code=3,
             description='Micro-sleep detected (5+ seconds)',
             evidence_rule='pose_indicators',
-            voting_key='microsleep',
             triggering_role=None,
             # F2 (2026-04): eyes closed > 5 sec; at 0.5 fps, 3 consecutive
             # frames span >=4 sec, and min_duration=5.0 enforces the full
@@ -120,7 +118,6 @@ def _build_activity_registry() -> Dict[str, ActivityConfig]:
             type_code=4,
             description='Sleep detected (30+ seconds)',
             evidence_rule='pose_indicators',
-            voting_key='sleep',
             triggering_role=None,
             min_duration=2.0,
             required_consecutive=1,
@@ -131,7 +128,6 @@ def _build_activity_registry() -> Dict[str, ActivityConfig]:
             type_code=2,
             description='Using mobile phone',
             evidence_rule='phone_in_hand',
-            voting_key='cell_phone',
             triggering_role=None,
             min_duration=0.1,
             required_consecutive=1,
@@ -142,7 +138,6 @@ def _build_activity_registry() -> Dict[str, ActivityConfig]:
             type_code=5,
             description='WRITING LOG BOOK WHILE RUNNING',
             evidence_rule='hand_near_book_or_wrist_proximity',
-            voting_key='writing',
             triggering_role=None,
             # F3 (2026-04-06): consecutive 1->2, min_duration 0.1->2.0 to
             # suppress single-frame book+posture FPs when ALP holds logbook.
@@ -155,7 +150,6 @@ def _build_activity_registry() -> Dict[str, ActivityConfig]:
             type_code=6,
             description='Packing bags activity detected',
             evidence_rule='wrist_inside_backpack_bbox_or_hand_near_backpack',
-            voting_key='packing_bags',
             triggering_role=None,
             min_duration=0.0,
             required_consecutive=1,
@@ -169,7 +163,6 @@ def _build_activity_registry() -> Dict[str, ActivityConfig]:
             type_code=7,
             description='More than 2 people (group) detected',
             evidence_rule='more_than_2_deduplicated_persons',
-            voting_key=None,
             triggering_role=None,
             min_duration=0.0,
             required_consecutive=3,
@@ -180,10 +173,9 @@ def _build_activity_registry() -> Dict[str, ActivityConfig]:
             type_code=8,
             description='LP not exchanging hand gesture',
             evidence_rule='lp_hand_raised_gesture_detected',
-            voting_key='lp_hand_gesture',
             triggering_role='LP',
             min_duration=0.0,
-            required_consecutive=1,
+            required_consecutive=2,
             margin=None,
             grace_frames=5,
         ),
@@ -191,10 +183,9 @@ def _build_activity_registry() -> Dict[str, ActivityConfig]:
             type_code=9,
             description='ALP not exchanging hand gesture',
             evidence_rule='alp_hand_raised_gesture_detected',
-            voting_key='alp_hand_gesture',
             triggering_role='ALP',
             min_duration=0.0,
-            required_consecutive=1,
+            required_consecutive=2,
             margin=None,
             grace_frames=5,
         ),
@@ -204,7 +195,6 @@ def _build_activity_registry() -> Dict[str, ActivityConfig]:
             # looking_away_combined) is stored in evidence details.
             description='Mind diversion - attention diverted from controls',
             evidence_rule='attention_diverted_from_controls',
-            voting_key='mind_diversion',
             triggering_role=None,
             min_duration=0.0,
             required_consecutive=2,
@@ -215,7 +205,6 @@ def _build_activity_registry() -> Dict[str, ActivityConfig]:
             type_code=11,
             description='No person detected in frame',
             evidence_rule='zero_persons_in_frame',
-            voting_key=None,
             triggering_role=None,
             # F4 (2026-04-06): consecutive 3->5, min_duration 5->10 to
             # suppress intermittent YOLO recall drops on non-canonical poses.
@@ -228,7 +217,6 @@ def _build_activity_registry() -> Dict[str, ActivityConfig]:
             type_code=12,
             description='ALP not standing during pre-arrival window',
             evidence_rule='alp_seated_during_pre_arrival_window',
-            voting_key=None,
             triggering_role='ALP',
             required_consecutive=2,
             grace_frames=3,
@@ -237,7 +225,6 @@ def _build_activity_registry() -> Dict[str, ActivityConfig]:
             type_code=13,
             description='Eating or drinking detected',
             evidence_rule='cup_or_bottle_near_face',
-            voting_key='eating_drinking',
             triggering_role=None,
             min_duration=0.0,
             required_consecutive=2,

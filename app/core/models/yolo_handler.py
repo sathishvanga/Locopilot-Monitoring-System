@@ -446,26 +446,40 @@ class YOLOHandler:
                 elif class_name in ('backpack', 'handbag', 'suitcase'):
                     detections.setdefault('backpack', []).append([x1, y1, x2, y2])
 
-    def detect_objects_person_rois(
+    # Classes targeted by pose-guided ROI inference. Module-level so the
+    # single-person and multi-person entry points share one definition.
+    _ROI_TARGET_CLASSES = ['cell phone', 'book', 'pen', 'pencil', 'paper',
+                           'bottle', 'cup', 'backpack', 'handbag', 'suitcase']
+
+    _ROI_KEYPOINTS_OF_INTEREST = [
+        ('RIGHT_WRIST', 'right_wrist', 180),
+        ('LEFT_WRIST', 'left_wrist', 180),
+        ('RIGHT_INDEX', 'right_wrist', 180),
+        ('LEFT_INDEX', 'left_wrist', 180),
+        ('RIGHT_HIP', 'right_hip', 180),
+        ('LEFT_HIP', 'left_hip', 180),
+        ('RIGHT_EAR', 'right_ear', 180),
+        ('LEFT_EAR', 'left_ear', 180),
+    ]
+
+    def _collect_person_rois(
         self,
         frame: np.ndarray,
         pose_landmarks: Any,
         get_keypoint_func: callable,
-        get_roi_func: callable
-    ) -> Dict[str, List]:
-        """Run pose-guided ROI detection for a single person (Stage 2 only).
+        get_roi_func: callable,
+    ) -> Tuple[List[Optional[Tuple[int, int, int, int]]], List[str], Dict[str, List]]:
+        """Build ROI bboxes/names for one person and return the seeded result dict.
 
-        This method performs only ROI-based detection around a person's keypoints,
-        without re-running full-frame YOLO inference.
-
-        Args:
-            frame: Input BGR frame
-            pose_landmarks: Pose landmarks for this person
-            get_keypoint_func: Function to get keypoint from landmarks by name
-            get_roi_func: Function to create ROI around keypoint coordinates
+        Extracted so single-person (``detect_objects_person_rois``) and
+        multi-person (``detect_objects_multi_persons_rois``) paths share one
+        ROI collection implementation.
 
         Returns:
-            Dictionary with 'cell_phone', 'book', 'roi_detections', 'roi_boxes' keys
+            (roi_bboxes, roi_names, person_roi_detections) — the third is the
+            result dict seeded with ``roi_boxes``; caller runs YOLO on the
+            roi_bboxes, then calls ``_process_batch_roi_detections`` to
+            populate ``cell_phone`` / ``book`` / ``roi_detections``.
         """
         person_roi_detections = {
             'cell_phone': [],
@@ -474,26 +488,15 @@ class YOLOHandler:
             'roi_boxes': []
         }
 
+        roi_bboxes: List[Optional[Tuple[int, int, int, int]]] = []
+        roi_names: List[str] = []
+
         if pose_landmarks is None:
-            return person_roi_detections
+            return roi_bboxes, roi_names, person_roi_detections
 
         h, w = frame.shape[:2]
 
-        keypoints_of_interest = [
-            ('RIGHT_WRIST', 'right_wrist', 180),
-            ('LEFT_WRIST', 'left_wrist', 180),
-            ('RIGHT_INDEX', 'right_wrist', 180),
-            ('LEFT_INDEX', 'left_wrist', 180),
-            ('RIGHT_HIP', 'right_hip', 180),
-            ('LEFT_HIP', 'left_hip', 180),
-            ('RIGHT_EAR', 'right_ear', 180),
-            ('LEFT_EAR', 'left_ear', 180),
-        ]
-
-        roi_bboxes = []
-        roi_names = []
-
-        for display_name, keypoint_name, roi_size in keypoints_of_interest:
+        for display_name, keypoint_name, roi_size in self._ROI_KEYPOINTS_OF_INTEREST:
             try:
                 landmark = get_keypoint_func(pose_landmarks, keypoint_name)
 
@@ -510,45 +513,102 @@ class YOLOHandler:
 
                 if roi_bbox is not None:
                     person_roi_detections['roi_boxes'].append((display_name, roi_bbox))
-
-                    if display_name in ['RIGHT_WRIST', 'LEFT_WRIST', 'RIGHT_HIP', 'LEFT_HIP', 'NOSE']:
-                        self.logger.debug(
-                            f"[DEBUG ROI] Creating {display_name} ROI: "
-                            f"size={roi_size}px, coords={keypoint_coords}"
-                        )
-
             except Exception as e:
-                self.logger.debug(f"Exception in detect_objects_person_rois: {e}")
+                self.logger.debug(f"Exception in _collect_person_rois: {e}")
                 roi_bboxes.append(None)
                 roi_names.append(display_name)
                 continue
 
-        # Workspace ROI: larger crop covering the person's torso+hands area
-        # This catches books/papers on the desk that are outside small keypoint ROIs
-        workspace_bbox = self._compute_workspace_roi(
-            pose_landmarks, get_keypoint_func, h, w
-        )
+        workspace_bbox = self._compute_workspace_roi(pose_landmarks, get_keypoint_func, h, w)
         if workspace_bbox is not None:
             roi_bboxes.append(workspace_bbox)
             roi_names.append('WORKSPACE')
             person_roi_detections['roi_boxes'].append(('WORKSPACE', workspace_bbox))
-            self.logger.debug(
-                f"[DEBUG ROI] Creating WORKSPACE ROI: bbox={workspace_bbox}"
-            )
+
+        return roi_bboxes, roi_names, person_roi_detections
+
+    def detect_objects_person_rois(
+        self,
+        frame: np.ndarray,
+        pose_landmarks: Any,
+        get_keypoint_func: callable,
+        get_roi_func: callable
+    ) -> Dict[str, List]:
+        """Run pose-guided ROI detection for a single person (Stage 2 only)."""
+        roi_bboxes, roi_names, person_roi_detections = self._collect_person_rois(
+            frame, pose_landmarks, get_keypoint_func, get_roi_func
+        )
 
         valid_roi_count = sum(1 for bbox in roi_bboxes if bbox is not None)
-
         if valid_roi_count > 0:
-            target_classes = ['cell phone', 'book', 'pen', 'pencil', 'paper', 'bottle', 'cup', 'backpack', 'handbag', 'suitcase']
             batch_detections = self.detect_objects_in_rois_batch(
-                frame, roi_bboxes, roi_names, target_classes
+                frame, roi_bboxes, roi_names, self._ROI_TARGET_CLASSES
             )
-
             self._process_batch_roi_detections(
                 batch_detections, roi_names, person_roi_detections
             )
-
         return person_roi_detections
+
+    def detect_objects_multi_persons_rois(
+        self,
+        frame: np.ndarray,
+        persons_landmarks: Dict[int, Any],
+        get_keypoint_func: callable,
+        get_roi_func: callable,
+    ) -> Dict[int, Dict[str, List]]:
+        """Batch pose-guided ROI detection across MULTIPLE persons in a single YOLO call.
+
+        Accumulates every person's keypoint ROIs + workspace ROI into one flat
+        list, runs ``detect_objects_in_rois_batch`` once, then scatters the
+        per-ROI detections back into per-person result dicts. For N persons
+        this replaces N separate YOLO inferences with one, eliminating
+        per-person kernel-launch overhead.
+
+        Args:
+            frame: Input BGR frame
+            persons_landmarks: {person_idx: pose_landmarks}. Persons with
+                ``None`` landmarks are returned with empty ROI dicts.
+
+        Returns:
+            {person_idx: person_roi_detections} — one dict per input person
+            in the same format as ``detect_objects_person_rois``.
+        """
+        results: Dict[int, Dict[str, List]] = {}
+        per_person_slices: List[Tuple[int, int, int]] = []  # (person_idx, start, end)
+        all_roi_bboxes: List[Optional[Tuple[int, int, int, int]]] = []
+        all_roi_names: List[str] = []
+
+        for person_idx, pose_landmarks in persons_landmarks.items():
+            roi_bboxes, roi_names, person_roi_detections = self._collect_person_rois(
+                frame, pose_landmarks, get_keypoint_func, get_roi_func
+            )
+            results[person_idx] = person_roi_detections
+
+            if not roi_bboxes:
+                continue
+
+            start = len(all_roi_bboxes)
+            all_roi_bboxes.extend(roi_bboxes)
+            all_roi_names.extend(roi_names)
+            end = len(all_roi_bboxes)
+            per_person_slices.append((person_idx, start, end))
+
+        valid_roi_count = sum(1 for bbox in all_roi_bboxes if bbox is not None)
+        if valid_roi_count == 0:
+            return results
+
+        batch_detections = self.detect_objects_in_rois_batch(
+            frame, all_roi_bboxes, all_roi_names, self._ROI_TARGET_CLASSES
+        )
+
+        for person_idx, start, end in per_person_slices:
+            self._process_batch_roi_detections(
+                batch_detections[start:end],
+                all_roi_names[start:end],
+                results[person_idx],
+            )
+
+        return results
 
     def _compute_workspace_roi(
         self,

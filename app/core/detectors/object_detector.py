@@ -467,3 +467,26 @@ class ObjectDetector:
             frame, pose_landmarks,
             self._get_keypoint, self.yolo_handler.get_roi_around_keypoint
         )
+
+    def detect_objects_multi_persons_rois(
+        self,
+        frame: Any,
+        persons_landmarks: Dict[int, Any],
+    ) -> Dict[int, Dict[str, List[Any]]]:
+        """Batch pose-guided ROI detection across multiple persons in one YOLO call.
+
+        Wraps ``YOLOHandler.detect_objects_multi_persons_rois``. Returns a
+        ``{person_idx: roi_detections}`` map matching the format of
+        ``detect_objects_person_rois``. Persons with ``None`` landmarks get an
+        empty ROI result so callers can unconditionally look up by index.
+        """
+        if self._get_keypoint is None or not persons_landmarks:
+            return {
+                pidx: {'cell_phone': [], 'book': [], 'roi_detections': [], 'roi_boxes': []}
+                for pidx in persons_landmarks
+            }
+
+        return self.yolo_handler.detect_objects_multi_persons_rois(
+            frame, persons_landmarks,
+            self._get_keypoint, self.yolo_handler.get_roi_around_keypoint,
+        )
