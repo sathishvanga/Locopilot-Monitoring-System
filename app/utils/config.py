@@ -435,6 +435,17 @@ class Settings(BaseSettings):
     book_posture_min_duration: float = float(os.getenv("BOOK_POSTURE_MIN_DURATION", "2.0"))
     book_posture_required_consecutive: int = int(os.getenv("BOOK_POSTURE_REQUIRED_CONSECUTIVE", "2"))
 
+    # Wrist-motion variance gate: discriminates ACTIVE writing (rhythmic pen
+    # strokes → moving wrist) from stationary paperwork handling (hands near
+    # paper but not moving). When the gate is enabled and we have at least
+    # WRITING_WRIST_VARIANCE_WINDOW samples, we require
+    # std(wrist_x) + std(wrist_y) >= threshold (pixels) to commit writing.
+    # Default window: 5 samples ~= 10s at 0.5 fps. Default threshold chosen
+    # conservatively; tune down if real writing scenes register below.
+    writing_wrist_variance_gate_enabled: bool = bool(int(os.getenv("WRITING_WRIST_VARIANCE_GATE_ENABLED", "1")))
+    writing_wrist_variance_window: int = int(os.getenv("WRITING_WRIST_VARIANCE_WINDOW", "3"))
+    writing_wrist_variance_threshold: float = float(os.getenv("WRITING_WRIST_VARIANCE_THRESHOLD", "15.0"))
+
     # ==========================================
     # Head Tilt / Sleep Detection Thresholds
     # ==========================================

@@ -557,6 +557,14 @@ class LocopilotActivityMonitor:
         # Format: {person_idx: {'start_time': timestamp, 'duration': seconds, 'consecutive_frames': int}}
         self.wrist_proximity_tracking = {}
 
+        # Wrist-motion variance history for the writing gate (per person).
+        # Each entry is a deque of the most recently observed (wrist_x, wrist_y)
+        # pixel coords on frames where book+hand+head-down all fired. Variance
+        # over this window discriminates active writing (rhythmic pen motion)
+        # from stationary paperwork handling (near-zero variance). See
+        # ``writing_wrist_variance_*`` in config.py.
+        self.writing_wrist_history = defaultdict(lambda: deque(maxlen=32))
+
         # Per-person consecutive detection tracking for temporal filtering
         # Format: {person_idx: {activity_type: count}} - uses defaultdict to support all activity types
         self.per_person_consecutive_detections = defaultdict(lambda: defaultdict(int))
@@ -3263,6 +3271,55 @@ class LocopilotActivityMonitor:
                                     break
                     # Method 3 (book+posture fallback) disabled — too many FPs from head-down heuristic
 
+                    # --- Wrist-motion variance gate ---------------------------
+                    # Guard against the FP where the LP is bent over with paper
+                    # present but NOT actually writing (reading/organizing).
+                    # Real writing produces rhythmic wrist micro-motion; static
+                    # paperwork handling produces a near-stationary wrist.
+                    # Record the wrist for this candidate frame, and once we
+                    # have at least ``window`` samples, require the combined
+                    # std(x)+std(y) across the window to exceed a threshold.
+                    if writing_detected_by_book and wrists_visible:
+                        _gate_enabled = getattr(self.settings, 'writing_wrist_variance_gate_enabled', True) if self.settings else True
+                        if _gate_enabled:
+                            # Prefer the hand that is visibly near the book.
+                            _use_right = right_hand.visibility >= 0.5
+                            _wrist_xy = right_hand_coords if _use_right else left_hand_coords
+                            _hist = self.writing_wrist_history[person_idx]
+                            _hist.append(_wrist_xy)
+
+                            _window = int(getattr(self.settings, 'writing_wrist_variance_window', 5)) if self.settings else 5
+                            _thresh = float(getattr(self.settings, 'writing_wrist_variance_threshold', 15.0)) if self.settings else 15.0
+
+                            if len(_hist) >= _window:
+                                _recent = list(_hist)[-_window:]
+                                _xs = [p[0] for p in _recent]
+                                _ys = [p[1] for p in _recent]
+                                _std_x = float(np.std(_xs))
+                                _std_y = float(np.std(_ys))
+                                _variance_score = _std_x + _std_y
+
+                                if _variance_score < _thresh:
+                                    self.logger.info(
+                                        f"[WRITING VARIANCE GATE] Person {person_idx}: "
+                                        f"std_x={_std_x:.1f} std_y={_std_y:.1f} sum={_variance_score:.1f}"
+                                        f" < threshold {_thresh:.1f} — suppressing (static paperwork, not writing)"
+                                    )
+                                    writing_detected_by_book = False
+                                else:
+                                    self.logger.info(
+                                        f"[WRITING VARIANCE GATE] Person {person_idx}: "
+                                        f"sum={_variance_score:.1f} >= {_thresh:.1f} — writing confirmed"
+                                    )
+                    # NOTE: do NOT clear history when book/hand/head-down
+                    # momentarily fail. A brief detection flicker would
+                    # otherwise give the gate a "fresh 3 samples" free pass
+                    # (history < window → gate can't evaluate → writing
+                    # fires). The deque's maxlen=32 naturally ages out stale
+                    # positions (~64s at 0.5 fps), which is long enough to
+                    # bridge transient drops but short enough that a truly
+                    # different activity session starts with its own data.
+
                 # Method 2 (wrist proximity + head down) disabled — too many FPs from pose heuristic
 
                 # Combine all detection methods (book+hand, wrist/elbow proximity, book+posture fallback)
@@ -3809,6 +3866,7 @@ class LocopilotActivityMonitor:
             ('hand_position_history', self.hand_position_history),
             ('landmark_stability_history', self.landmark_stability_history),
             ('wrist_proximity_tracking', self.wrist_proximity_tracking),
+            ('writing_wrist_history', self.writing_wrist_history),
             ('no_pose_sleep_tracking', self.no_pose_sleep_tracking),
             ('recent_person_activities', self.recent_person_activities),
         ]
