@@ -3121,6 +3121,7 @@ class LocopilotActivityMonitor:
 
                 # 3. CELL PHONE DETECTION (check if hand near phone in THIS person's region)
                 # MOVED BEFORE HAND GESTURE: Need to detect this first for context-aware filtering
+                _cell_phone_fired = False
                 if len(person_cell_phones) > 0:
                     # DEBUG: Log when cell phones are detected
                     if self.consecutive_detections.get('cell_phone', 0) == 0:
@@ -3130,14 +3131,14 @@ class LocopilotActivityMonitor:
 
                     right_hand_coords = (int(right_hand.x * w), int(right_hand.y * h))
                     left_hand_coords = (int(left_hand.x * w), int(left_hand.y * h))
-                    
+
                     # STRICTER MARGIN: Reduced from default to ensure phone is really near hand
                     margin = 100  # Reduced from activity_thresholds margin to be more strict
-                    
+
                     for phone_bbox in person_cell_phones:
                         # Check if phone bbox overlaps with person bbox (with margin)
                         phone_in_person_region = bbox_overlap_with_margin(phone_bbox, bbox, margin)
-                        
+
                         if phone_in_person_region:
                             # Check if hand is near the phone (stricter check)
                             right_hand_near = self.check_hand_object_interaction(right_hand_coords, phone_bbox, margin)
@@ -3149,7 +3150,77 @@ class LocopilotActivityMonitor:
                                     person_idx, 'cell_phone', True, timestamp_sec
                                 )
                                 person_activities['cell_phone'] = should_trigger
+                                _cell_phone_fired = True
                                 break
+
+                # 3a. CELL PHONE POSE FALLBACK (added 2026-04-20)
+                # YOLO v8 often misses phones when the hand occludes them at the
+                # ear — seen in all_activities.mp4 where 3 distinct phone-to-ear
+                # events went unflagged and v8 produced only a single 0.49-conf
+                # detection in 38 min of footage.
+                # This fallback fires cell_phone when a wrist is sustainedly
+                # close to an ear keypoint (signature pose: phone-to-ear).
+                # Gated by per-person temporal filter (``cell_phone`` requires
+                # ≥2 consecutive frames) so single-frame scratches/face-touches
+                # don't leak through. The wrist-near-ear distance must be
+                # < 20% of bbox height — tight enough that hand-on-forehead
+                # or hand-on-chin won't match.
+                _pose_fallback_enabled = getattr(self.settings, 'cell_phone_pose_fallback_enabled', True) if self.settings else True
+                if _pose_fallback_enabled and not _cell_phone_fired:
+                    try:
+                        _bbox_h = max(1, bbox[3] - bbox[1])
+                        # Distance ratio tightened 2026-04-20 from 0.20 → 0.15
+                        # after all_activities.mp4 produced 26 phone detections
+                        # (ground-truth: 4). 0.15 * bbox_h keeps phone-to-ear
+                        # detectable (wrist actually at ear, ~70-100px typical)
+                        # but rejects generic hand-to-face gestures (wrist
+                        # near forehead / chin / nose = 120+ px).
+                        _near_ear_thresh_px = max(30, int(0.15 * _bbox_h))
+                        _r_wrist = self.get_keypoint(translated_landmarks, 'right_wrist')
+                        _l_wrist = self.get_keypoint(translated_landmarks, 'left_wrist')
+                        _r_ear = self.get_keypoint(translated_landmarks, 'right_ear')
+                        _l_ear = self.get_keypoint(translated_landmarks, 'left_ear')
+
+                        def _dist_px(a, b):
+                            dx = (a.x - b.x) * w
+                            dy = (a.y - b.y) * h
+                            return (dx * dx + dy * dy) ** 0.5
+
+                        _any_near_ear = False
+                        _debug_pair = None
+                        # Pair each visible wrist with each visible ear on the
+                        # same side (natural phone-to-ear pose). Crossed pairs
+                        # (right wrist to left ear) are also accepted since LP
+                        # often holds phone to opposite ear.
+                        _pairs = [
+                            ('right_wrist', _r_wrist, 'right_ear', _r_ear),
+                            ('left_wrist',  _l_wrist, 'left_ear',  _l_ear),
+                            ('right_wrist', _r_wrist, 'left_ear',  _l_ear),
+                            ('left_wrist',  _l_wrist, 'right_ear', _r_ear),
+                        ]
+                        for _wn, _w, _en, _e in _pairs:
+                            if _w.visibility < 0.3 or _e.visibility < 0.3:
+                                continue
+                            _d = _dist_px(_w, _e)
+                            if _d < _near_ear_thresh_px:
+                                _any_near_ear = True
+                                _debug_pair = (_wn, _en, _d)
+                                break
+
+                        if _any_near_ear:
+                            _should_trigger = self.update_per_person_detection(
+                                person_idx, 'cell_phone', True, timestamp_sec
+                            )
+                            person_activities['cell_phone'] = _should_trigger
+                            if _should_trigger and self.consecutive_detections.get('cell_phone', 0) in (0, 1):
+                                self.logger.info(
+                                    f"[CELL PHONE POSE FALLBACK] Person {person_idx}: "
+                                    f"wrist-near-ear ({_debug_pair[0]} <-> {_debug_pair[1]}, "
+                                    f"dist={_debug_pair[2]:.0f}px < {_near_ear_thresh_px}px) "
+                                    f"— no YOLO phone detection this frame, firing on pose"
+                                )
+                    except Exception as _e:
+                        self.logger.debug(f"[CELL PHONE POSE FALLBACK] skip: {_e}")
 
                 # 3b. EATING/DRINKING DETECTION (cup/bottle near face = mind diversion)
                 eating_drinking_detected = False

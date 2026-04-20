@@ -143,7 +143,13 @@ class FrameAnnotator:
 
         # Draw regular detections
         for obj_type, bboxes in detections.items():
-            if obj_type in ['roi_detections', 'roi_boxes', 'deduplicated_person']:
+            # Skip non-bbox entries: ROI metadata, dedup cache, and diagnostic
+            # fields. ``_raw_v8_detections`` holds (class_name, conf) tuples
+            # used by the [V8 DETECTIONS] INFO log — iterating it as bboxes
+            # crashes with int('person').
+            if obj_type in ('roi_detections', 'roi_boxes', 'deduplicated_person'):
+                continue
+            if obj_type.startswith('_'):
                 continue
 
             color = self.colors.get(obj_type, (255, 255, 255))

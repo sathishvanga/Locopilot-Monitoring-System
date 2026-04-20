@@ -416,6 +416,13 @@ class Settings(BaseSettings):
     # Cell phone detection confidence threshold (activity-level, distinct from YOLO detection threshold)
     cell_phone_confidence: float = float(os.getenv("CELL_PHONE_CONFIDENCE", "0.40"))
 
+    # Pose-based phone-to-ear fallback: fires cell_phone when a wrist is
+    # sustained close to an ear keypoint, even if YOLO didn't detect the phone
+    # (common when hand occludes the phone at the ear). Tight distance gate
+    # (< 20% of bbox height) keeps it off face-touching / head-scratching.
+    # Still routes through the per-person temporal filter (≥2 consecutive samples).
+    cell_phone_pose_fallback_enabled: bool = bool(int(os.getenv("CELL_PHONE_POSE_FALLBACK_ENABLED", "1")))
+
     # ==========================================
     # Wrist/Elbow Detection Thresholds
     # ==========================================

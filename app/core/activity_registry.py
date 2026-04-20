@@ -130,7 +130,12 @@ def _build_activity_registry() -> Dict[str, ActivityConfig]:
             evidence_rule='phone_in_hand',
             triggering_role=None,
             min_duration=0.1,
-            required_consecutive=1,
+            # Raised 2026-04-20 from 1 → 3 after pose-fallback addition:
+            # at 1, momentary hand-to-face (eye rubs, scratches) fired the
+            # fallback as cell_phone (26 detections vs ~4 real events in
+            # all_activities.mp4). At 3 (6s at 0.5fps), real phone calls
+            # (15-48s in ground-truth) easily pass; brief gestures don't.
+            required_consecutive=3,
             margin=cell_phone_margin,
             grace_frames=8,
         ),
