@@ -1,0 +1,56 @@
+{
+  "video_filename": "ch04_20260402034641_.mp4",
+  "video_url": "https://gpu.mindcoinapps.com:9000/cvss/ch04_20260402034641_.mp4",
+  "duration_sec": 1669.22,
+  "resolution": "1280x720",
+  "reviewed_date": "2026-04-20",
+  "reviewer": "manual + subagent dense 0.5fps sampling (827 frames across 13 contact sheets + 21 drill-downs)",
+  "notes": [
+    "Night-time operation, cabin lit by instrument-panel glow (purple/magenta LCD). Camera 4 over LP's right shoulder looking forward-left; LP face not clearly visible (back-of-head view).",
+    "Two crew changes during the clip: ~11:56 (OCR 03:58:36) and another before end at 27:44.",
+    "OCR clock advances linearly (03:46:41 → 04:14:30), consistent with an active run. Automated detector returned 0 activities — judgement largely correct based on manual review.",
+    "LP is attentive at controls throughout most of the trip."
+  ],
+  "violations": [
+    {
+      "id": 1,
+      "type": "eating_drinking",
+      "ocr_start": "04:13:14",
+      "ocr_end":   "04:13:20",
+      "video_start_sec": 1594.0,
+      "video_end_sec":   1600.0,
+      "duration_sec":      6.0,
+      "motion_state":    "RUNNING",
+      "person_role":     "LP",
+      "confidence":      "low",
+      "evidence":        "LP's right hand raised to mouth/chin: fingers together, hand pivoting near lips, then lowered. Could be a small bite, yawn-cover, or nose/chin rub. No cup/bottle clearly visible. Ambiguous.",
+      "detected_by_automated": false,
+      "expected_to_fire": false,
+      "notes": "Below typical trajectory-classifier duration threshold for eating/drinking."
+    },
+    {
+      "id": 2,
+      "type": "group_presence",
+      "ocr_start": "03:58:36",
+      "ocr_end":   "03:59:00",
+      "video_start_sec": 714.0,
+      "video_end_sec":   738.0,
+      "duration_sec":     24.0,
+      "motion_state":    "STOPPED",
+      "person_role":     "unknown",
+      "confidence":      "medium",
+      "evidence":        "Cabin interior light on, flashlight beam, 3rd person appearing mid-cabin, new driver taking seat. Classic crew-handover.",
+      "detected_by_automated": false,
+      "expected_to_fire": false,
+      "notes": "Operational crew-handover at station stop; not a safety violation per spec."
+    }
+  ],
+  "detection_summary_baseline": {
+    "commit": "24197e2",
+    "date": "2026-04-20",
+    "total_violations_ground_truth": 2,
+    "total_violations_expected_to_fire": 0,
+    "total_detected_automated": 0,
+    "notes": "Both candidates are ambiguous/operational — correctly not flagged. The 0-activity output is accurate for this video."
+  }
+}

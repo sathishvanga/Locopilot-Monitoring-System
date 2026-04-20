@@ -1,0 +1,88 @@
+{
+  "video_filename": "ch04_20260402025737_.mp4",
+  "video_url": "https://gpu.mindcoinapps.com:9000/cvss/ch04_20260402025737_.mp4",
+  "duration_sec": 1326.73,
+  "resolution": "1280x720",
+  "reviewed_date": "2026-04-20",
+  "reviewer": "manual + subagent dense 0.5fps sampling (656 frames across 11 contact sheets)",
+  "notes": [
+    "Night trip (OCR 02:59:13 → 03:19:23 IST). First ~17 min clean, single LP operating controls normally. Last ~3-4 min is a crew changeover at a station stop.",
+    "No window view of moving scenery; motion state inferred from crew posture — assumed mostly RUNNING for first 17 min, STOPPED for the changeover cluster.",
+    "Camera: IPCamera 04 (LP side, camera_angle=1)."
+  ],
+  "violations": [
+    {
+      "id": 1,
+      "type": "group_presence",
+      "ocr_start": "03:16:14",
+      "ocr_end":   "03:18:46",
+      "video_start_sec": 1118.0,
+      "video_end_sec":   1246.0,
+      "duration_sec":    120.0,
+      "motion_state":    "STOPPED",
+      "person_role":     "unknown",
+      "confidence":      "medium",
+      "evidence":        "2nd person (white uniform) standing at console beside LP; 3rd figure briefly in background. At least 3 people during changeover.",
+      "detected_by_automated": false,
+      "expected_suppressed": true,
+      "expected_suppression_reason": "train-stopped gate correctly exempts station-halt crew activity"
+    },
+    {
+      "id": 2,
+      "type": "writing",
+      "ocr_start": "03:16:50",
+      "ocr_end":   "03:17:10",
+      "video_start_sec": 1154.0,
+      "video_end_sec":   1174.0,
+      "duration_sec":     20.0,
+      "motion_state":    "STOPPED",
+      "person_role":     "LP",
+      "confidence":      "medium",
+      "evidence":        "LP actively holds & reads a white paper document raised in hand while seated at console. Ambiguous: reading-and-handing-off vs actually writing.",
+      "detected_by_automated": false,
+      "expected_suppressed": true,
+      "expected_suppression_reason": "train-stopped gate correctly exempts station paperwork handover"
+    },
+    {
+      "id": 3,
+      "type": "packing_bags",
+      "ocr_start": "03:18:14",
+      "ocr_end":   "03:19:14",
+      "video_start_sec": 1238.0,
+      "video_end_sec":   1298.0,
+      "duration_sec":     60.0,
+      "motion_state":    "STOPPED",
+      "person_role":     "both",
+      "confidence":      "high",
+      "evidence":        "Red suitcase placed on seat, person standing over it; gray/purple backpack on lap being handled. Classic handover/packing signature.",
+      "detected_by_automated": false,
+      "expected_suppressed": true,
+      "expected_suppression_reason": "train-stopped gate correctly exempts station-halt bag handling"
+    },
+    {
+      "id": 4,
+      "type": "mind_diversion",
+      "ocr_start": "03:18:33",
+      "ocr_end":   "03:18:43",
+      "video_start_sec": 1258.0,
+      "video_end_sec":   1268.0,
+      "duration_sec":     10.0,
+      "motion_state":    "STOPPED",
+      "person_role":     "LP",
+      "confidence":      "low",
+      "evidence":        "LP head bent sharply down while hands manipulate an object at chest/lap; plausibly phone or document. Ambiguous.",
+      "detected_by_automated": false,
+      "expected_suppressed": true
+    }
+  ],
+  "detection_summary_baseline": {
+    "commit": "24197e2",
+    "date": "2026-04-20",
+    "total_violations_ground_truth": 4,
+    "total_violations_expected_to_fire": 0,
+    "total_detected_automated": 0,
+    "recall_overall_strict": 0.0,
+    "recall_overall_accounting_for_station_stop_exemption": 1.0,
+    "notes": "All 4 candidate violations occur during a likely station stop — correctly exempted by the motion gate per spec (writing/packing/gesture/mind_diversion/eating do not fire at stops)."
+  }
+}
