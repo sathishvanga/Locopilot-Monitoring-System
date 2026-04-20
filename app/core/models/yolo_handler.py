@@ -255,7 +255,10 @@ class YOLOHandler:
             'backpack': [],
             'cup_bottle': [],
             'roi_detections': [],
-            'roi_boxes': []
+            'roi_boxes': [],
+            # See note in detect_objects_batch: per-frame raw (class, conf) list
+            # for [V8 DETECTIONS] diagnostic logging. Retains conf >= 0.20.
+            '_raw_v8_detections': [],
         }
 
         person_boxes = []
@@ -268,6 +271,12 @@ class YOLOHandler:
                 xyxy = box.xyxy[0].cpu().numpy()
 
                 class_name = self.object_model.names[cls]
+
+                # Capture raw detection for diagnostic log (see batch method comment).
+                if conf >= 0.20:
+                    detections['_raw_v8_detections'].append(
+                        (class_name, round(conf, 3))
+                    )
 
                 # Person detection
                 if class_name == 'person' and conf > self.person_confidence:
@@ -857,7 +866,13 @@ class YOLOHandler:
                     'book': [],
                     'backpack': [],
                     'roi_detections': [],
-                    'roi_boxes': []
+                    'roi_boxes': [],
+                    # Per-frame raw (class, conf) list for diagnostic logging.
+                    # Populated below; consumed in locopilot_monitor._process_frames_core
+                    # to emit a single "[V8 DETECTIONS]" INFO line per sampled frame.
+                    # Only detections with conf >= 0.20 are retained so the log is useful
+                    # for "why did/didn't X fire?" investigations without drowning in noise.
+                    '_raw_v8_detections': [],
                 }
 
                 person_boxes = []
@@ -870,6 +885,14 @@ class YOLOHandler:
                         xyxy = box.xyxy[0].cpu().numpy()
 
                         class_name = self.object_model.names[cls]
+
+                        # Capture every above-noise detection BEFORE any
+                        # pipeline-level confidence threshold so the logged
+                        # view matches exactly what v8 sees.
+                        if conf >= 0.20:
+                            detections['_raw_v8_detections'].append(
+                                (class_name, round(conf, 3))
+                            )
 
                         if class_name == 'person' and conf > self.person_confidence:
                             detections['person'].append(xyxy)

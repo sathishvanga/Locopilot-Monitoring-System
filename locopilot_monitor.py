@@ -3258,6 +3258,16 @@ class LocopilotActivityMonitor:
                         # that happened to be near a wrist. Trained class-2 `book` is precise
                         # enough that a tighter margin still catches real log-book writing.
                         person_book_margin = 120
+                        # Control-zone rejection: require the wrist-near-book to
+                        # be clearly BELOW its elbow (writing posture = arm bent
+                        # down to paper). Hand-on-control-lever / steering wheel
+                        # keeps the wrist roughly level with the elbow (arm
+                        # extended forward). That shape must NOT trigger writing.
+                        # Observed FPs in Bag_Packing.mp4, Signal_Exchange.mp4
+                        # had the LP's hand on the horn / steering wheel while
+                        # paperwork happened to be within the book-bbox margin.
+                        _bbox_h_local = max(1, bbox[3] - bbox[1])
+                        _min_wrist_drop_px = max(20, int(0.10 * _bbox_h_local))
                         for book_bbox in person_books:
                             # Check if book is in this person's region (use large margin for lap area)
                             book_in_person_region = bbox_overlap_with_margin(book_bbox, bbox, person_book_margin)
@@ -3266,9 +3276,41 @@ class LocopilotActivityMonitor:
                                 # Check visible hands for interaction with book (use tighter margin)
                                 right_hand_near_book = right_hand.visibility >= 0.5 and self.check_hand_object_interaction(right_hand_coords, book_bbox, hand_margin)
                                 left_hand_near_book = left_hand.visibility >= 0.5 and self.check_hand_object_interaction(left_hand_coords, book_bbox, hand_margin)
-                                if right_hand_near_book or left_hand_near_book:
+
+                                # Per-wrist "below elbow" check (default True if
+                                # elbow missing — be permissive on low-visibility
+                                # frames rather than reject real writing).
+                                _r_below = True
+                                if right_hand_near_book:
+                                    try:
+                                        _r_elbow = self.get_keypoint(translated_landmarks, 'right_elbow')
+                                        if _r_elbow.visibility >= 0.3:
+                                            _r_below = (right_hand.y * h) > (_r_elbow.y * h) + _min_wrist_drop_px
+                                    except Exception:
+                                        pass
+                                _l_below = True
+                                if left_hand_near_book:
+                                    try:
+                                        _l_elbow = self.get_keypoint(translated_landmarks, 'left_elbow')
+                                        if _l_elbow.visibility >= 0.3:
+                                            _l_below = (left_hand.y * h) > (_l_elbow.y * h) + _min_wrist_drop_px
+                                    except Exception:
+                                        pass
+
+                                _passed = (
+                                    (right_hand_near_book and _r_below)
+                                    or (left_hand_near_book and _l_below)
+                                )
+                                if _passed:
                                     writing_detected_by_book = True
                                     break
+                                elif right_hand_near_book or left_hand_near_book:
+                                    self.logger.info(
+                                        f"[WRITING CONTROL-ZONE GATE] Person {person_idx}: "
+                                        f"wrist near book but NOT sufficiently below elbow "
+                                        f"(drop<{_min_wrist_drop_px}px) — suppressing "
+                                        f"(likely hand-on-control, not writing)"
+                                    )
                     # Method 3 (book+posture fallback) disabled — too many FPs from head-down heuristic
 
                     # --- Wrist-motion variance gate ---------------------------
@@ -4338,6 +4380,20 @@ class LocopilotActivityMonitor:
                     detections = self.object_detector.detect_objects(detection_frame, None, use_pose_guided=False)
                 else:
                     detections = self.object_detector.detect_objects(frame, None, use_pose_guided=False)
+
+            # Diagnostic: emit one INFO line per sampled frame summarising the
+            # RAW v8 detections (before any pipeline-level confidence / validation
+            # gating). This lets operators distinguish "v8 missed the phone" from
+            # "v8 saw it but the pipeline filtered it out" directly from
+            # production logs, without needing a separate probe script.
+            _raw_dets = detections.get('_raw_v8_detections', []) if isinstance(detections, dict) else []
+            if _raw_dets:
+                _summary = ", ".join(f"{cls}@{conf:.2f}" for cls, conf in _raw_dets)
+            else:
+                _summary = "(none)"
+            self.logger.info(
+                f"[V8 DETECTIONS] [{timestamp}] [Frame {frame_idx}] {_summary}"
+            )
 
             # STEP 3: Identify person roles and count people
             people_count = len(detections['person'])
