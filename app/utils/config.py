@@ -522,6 +522,14 @@ class Settings(BaseSettings):
     train_motion_weight_window: float = float(os.getenv("TRAIN_MOTION_WEIGHT_WINDOW", "0.3"))
     train_motion_weight_stability: float = float(os.getenv("TRAIN_MOTION_WEIGHT_STABILITY", "0.2"))
     train_motion_person_mask_padding: float = float(os.getenv("TRAIN_MOTION_PERSON_MASK_PADDING", "0.10"))
+    # Extra normalized ROIs to mask from interior (semicolon-separated list of
+    # "x1,y1,x2,y2"). Used for secondary scenery regions like a cab doorway that
+    # are visible from the same camera but aren't the primary window strip.
+    train_motion_extra_mask_rois: str = os.getenv("TRAIN_MOTION_EXTRA_MASK_ROIS", "")
+    # Percentile cut for trimmed-mean vibration. Pixels with diff above this
+    # percentile are dropped before averaging (hotspot suppression). Default 90
+    # drops the top 10%. Lower values → more aggressive trimming.
+    train_motion_vibration_trim_percentile: float = float(os.getenv("TRAIN_MOTION_VIB_TRIM_PERCENTILE", "90.0"))
 
     # Suppress no_person_detected when trip schedule is unavailable
     # (cannot distinguish station halts from running without schedule)

@@ -41,6 +41,12 @@ class TrainMotionDetector:
         self.weight_window = getattr(settings, 'train_motion_weight_window', 0.3)
         self.weight_stability = getattr(settings, 'train_motion_weight_stability', 0.2)
         self.person_mask_padding = getattr(settings, 'train_motion_person_mask_padding', 0.10)
+        # Percentile at which to clip the vibration diff distribution before
+        # averaging. Default 90 → drop the top 10% of pixel diffs (hotspots
+        # from shadow sweeps / moved objects) so they don't dominate the mean.
+        self.vibration_trim_percentile = float(
+            getattr(settings, 'train_motion_vibration_trim_percentile', 90.0)
+        )
         self.stability_block_size = 16
         self.confidence_threshold = 0.6
 
@@ -57,11 +63,30 @@ class TrainMotionDetector:
         self.window_roi_x2 = parts[2] if len(parts) > 2 else 0.12
         self.window_roi_y2 = parts[3] if len(parts) > 3 else 0.85
 
+        # Extra scenery ROIs: semicolon-separated list of "x1,y1,x2,y2" (normalized).
+        # Masked out of interior so bright doorways / secondary windows don't
+        # contribute to vibration, but NOT used for the window-flow analysis.
+        extra_str = getattr(settings, 'train_motion_extra_mask_rois', '') or ''
+        self.extra_mask_rois: List[Tuple[float, float, float, float]] = []
+        for roi in extra_str.split(';'):
+            roi = roi.strip()
+            if not roi:
+                continue
+            try:
+                x1, y1, x2, y2 = [float(v.strip()) for v in roi.split(',')]
+                self.extra_mask_rois.append((x1, y1, x2, y2))
+            except Exception:
+                if logger:
+                    logger.warning(f"[TrainMotion] ignoring malformed extra ROI: {roi!r}")
+
         # State
         self.prev_gray: Optional[np.ndarray] = None
         self.prev_gray_window: Optional[np.ndarray] = None
         self.state_history: deque = deque(maxlen=self.temporal_window)
         self._prev_block_vars: Optional[list] = None
+        # Prev-frame person bboxes — unioned into the interior mask so that
+        # "where the person used to be" doesn't leak motion into the diff.
+        self.prev_person_bboxes: List = []
 
     def create_interior_mask(
         self, frame_shape: Tuple[int, int], person_bboxes: List
@@ -92,6 +117,16 @@ class TrainMotionDetector:
         wx2 = int(self.window_roi_x2 * w)
         wy2 = int(self.window_roi_y2 * h)
         mask[wy1:wy2, wx1:wx2] = 0
+
+        # Mask out any additional scenery regions (e.g. right-side doorway on
+        # LP-camera). These contribute pixel motion but aren't tracked for flow.
+        for (ex1, ey1, ex2, ey2) in self.extra_mask_rois:
+            ax1 = int(max(0.0, min(1.0, ex1)) * w)
+            ay1 = int(max(0.0, min(1.0, ey1)) * h)
+            ax2 = int(max(0.0, min(1.0, ex2)) * w)
+            ay2 = int(max(0.0, min(1.0, ey2)) * h)
+            if ax2 > ax1 and ay2 > ay1:
+                mask[ay1:ay2, ax1:ax2] = 0
 
         # Also mask top 5% (timestamp overlay) and bottom 8%
         mask[:int(h * 0.05), :] = 0
@@ -140,7 +175,17 @@ class TrainMotionDetector:
             self.prev_gray = gray.copy()
             return result
 
-        result["vibration_mean"] = float(np.mean(interior_pixels))
+        # Trim the top (100 - trim_percentile)% of diffs before averaging.
+        # Real camera vibration spreads small diffs over most interior pixels,
+        # so trimming the tail barely changes the mean. Hotspots (shadow sweeps,
+        # papers moved by the person, objects placed on the console) concentrate
+        # large diffs in a few hundred pixels — those dominate a raw mean but
+        # get clipped here.
+        trim_cut = float(np.percentile(interior_pixels, self.vibration_trim_percentile))
+        trimmed = interior_pixels[interior_pixels <= trim_cut]
+        trimmed_mean = float(np.mean(trimmed)) if trimmed.size > 0 else float(np.mean(interior_pixels))
+
+        result["vibration_mean"] = trimmed_mean
         result["vibration_std"] = float(np.std(interior_pixels))
         result["vibration_max"] = float(np.max(interior_pixels))
         result["vibration_p95"] = float(np.percentile(interior_pixels, 95))
@@ -296,8 +341,11 @@ class TrainMotionDetector:
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         gray = cv2.GaussianBlur(gray, (3, 3), 0)
 
-        # Create interior mask (excludes persons + window + overlays)
-        interior_mask = self.create_interior_mask(frame.shape, person_bboxes)
+        # Create interior mask (excludes persons + window + overlays).
+        # Union current + previous person bboxes so motion trails from the
+        # person moving between frames don't leak into the vibration diff.
+        mask_bboxes = list(person_bboxes) + list(self.prev_person_bboxes)
+        interior_mask = self.create_interior_mask(frame.shape, mask_bboxes)
 
         # Vibration analysis on static interior
         vib = self.compute_vibration(gray, interior_mask)
@@ -349,5 +397,7 @@ class TrainMotionDetector:
             "smoothed_state": smoothed_state,
             "smoothed_confidence": smoothed_conf,
         }
+
+        self.prev_person_bboxes = list(person_bboxes)
 
         return smoothed_state, smoothed_conf, diagnostics
