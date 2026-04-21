@@ -17,6 +17,7 @@ CCTV-based activity monitoring for Indian railway locomotive pilots (LP) and ass
 - **Logs**: `tail -f /opt/poc2/logs/LocopilotMonitoring.log`
 - **Service**: `sudo systemctl status|restart|stop locopilot`
 - **Evidence**: `/opt/poc2/locopilot_evidence/run_*/`
+- **Gunicorn workers**: pinned to **1** in `gunicorn_config.py` — `GPUResourceManager` is a per-process singleton, so N workers would N-multiply the `MAX_CONCURRENT_VIDEOS` cap and risk GPU OOM on the 20 GB RTX 4000 Ada. See `tasks/code-review-critical-fixes.md` (C-1).
 
 ## Deployment Flow
 1. `deploy-gpu.sh` rsyncs code to server

@@ -1080,15 +1080,49 @@ class GPUResourceManager:
         logger.info("Exiting shutdown() - GPU resources released")
 
 
-# Module-level singleton instance export
-gpu_resource_manager = GPUResourceManager()
+# ---------------------------------------------------------------------------
+# Lazy singleton access
+# ---------------------------------------------------------------------------
+# C-1 (task 2.2): the previous eager ``gpu_resource_manager = GPUResourceManager()``
+# at module scope created a singleton — and, depending on configuration, could
+# touch CUDA — at *import* time. Under gunicorn's ``preload_app = True`` this
+# runs in the master process before fork, which is hostile to CUDA: any CUDA
+# context initialised pre-fork becomes unusable in the forked worker.
+#
+# To fix this we instantiate lazily on first call to :func:`get_gpu_resource_manager`
+# (``GPUResourceManager.__new__`` itself already implements thread-safe
+# double-checked locking via ``_lock``). A module-level ``__getattr__`` shim
+# preserves backward compatibility for any caller that still writes
+# ``from app.services.gpu_resource_manager import gpu_resource_manager`` — they
+# will trigger the same lazy init on first attribute access rather than at
+# import time.
 
 
 def get_gpu_resource_manager() -> GPUResourceManager:
     """
     Get the singleton GPU Resource Manager instance.
 
+    Performs lazy initialisation on first call — importing this module does
+    not create a ``GPUResourceManager`` (or any CUDA context).
+
     Returns:
         GPUResourceManager: The singleton instance
     """
-    return gpu_resource_manager
+    # ``GPUResourceManager.__new__`` uses a class-level lock for thread-safe
+    # singleton creation; simply calling the constructor is sufficient and
+    # idempotent.
+    return GPUResourceManager()
+
+
+def __getattr__(name: str) -> Any:
+    """Backward-compat shim for the module-level ``gpu_resource_manager`` name.
+
+    Any ``from app.services.gpu_resource_manager import gpu_resource_manager``
+    or ``app.services.gpu_resource_manager.gpu_resource_manager`` access routes
+    through here and triggers the lazy constructor. Every other attribute
+    lookup falls through to the normal ``AttributeError`` so typos still fail
+    loudly.
+    """
+    if name == "gpu_resource_manager":
+        return get_gpu_resource_manager()
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

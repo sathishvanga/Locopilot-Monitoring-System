@@ -50,24 +50,37 @@ logger = _setup_gunicorn_logger()
 
 
 # Worker configuration
-# ✅ PRODUCTION OPTIMIZED: Environment-aware worker configuration
-# Development (11 cores): 2 workers for stability
-# Production (12 cores): 3 workers for higher throughput
+# ---------------------------------------------------------------------------
+# C-1 (task 2.1): pin to a SINGLE gunicorn worker.
+#
+# GPUResourceManager is a per-process singleton — admission counters
+# (``active_count``, ``max_concurrent_videos``) live in module-level state
+# that is NOT shared across forked workers. Running N gunicorn workers
+# therefore multiplies the effective concurrency cap by N: with
+# ``MAX_CONCURRENT_VIDEOS=3`` and ``workers=3`` we would admit up to 9
+# simultaneous video jobs on a single 20 GB RTX 4000 Ada GPU (~2-3 GB per
+# active slot), reliably triggering CUDA OOM under real load.
+#
+# Health, status, and admin endpoints are async and handle concurrency via
+# the event loop, not additional workers — one uvicorn worker is sufficient
+# for the request rates this service sees. For heavier bursts, scale by
+# increasing ``max_concurrent_videos`` (up to the GPU memory budget), not by
+# adding gunicorn workers.
+#
+# The ``GUNICORN_WORKERS`` env var is retained as an emergency override in
+# case we need to fall back to multi-worker mode (e.g. to isolate a memory
+# leak). In production it should remain unset, leaving ``workers = 1``.
+#
+# See ``tasks/code-review-critical-fixes.md`` (C-1 / 2.1) for the full
+# rationale and rollback procedure.
 cpu_count = multiprocessing.cpu_count()
-gunicorn_workers = int(os.getenv("GUNICORN_WORKERS", "2"))
-
-# Auto-detect optimal workers for production
-if cpu_count >= 12:
-    # Production server (12+ cores): 3 workers
-    workers = gunicorn_workers if gunicorn_workers > 0 else 3
-else:
-    # Development machine (<12 cores): 2 workers
-    workers = gunicorn_workers if gunicorn_workers > 0 else max(1, min(2, cpu_count // 4))
+gunicorn_workers = int(os.getenv("GUNICORN_WORKERS", "1"))
+workers = gunicorn_workers if gunicorn_workers > 0 else 1
 
 threads = 1
 worker_class = "uvicorn.workers.UvicornWorker"
 logger.info(f"[gunicorn_config.py] CPU count: {cpu_count}")
-logger.info(f"[gunicorn_config.py] Workers: {workers} (optimized for {'production' if cpu_count >= 12 else 'development'})")
+logger.info(f"[gunicorn_config.py] Workers: {workers} (single-GPU admission model — see C-1)")
 
 # Application preloading
 preload_app = True
