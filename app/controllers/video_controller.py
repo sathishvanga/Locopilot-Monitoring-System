@@ -7,11 +7,12 @@ Includes both synchronous and async job-based endpoints.
 
 import asyncio
 import functools
+import hmac
 import re
 from typing import Optional, Dict, Any
 import os
 
-from fastapi import APIRouter, UploadFile, File, Form, HTTPException, BackgroundTasks, Request, Response
+from fastapi import APIRouter, Depends, UploadFile, File, Form, Header, HTTPException, BackgroundTasks, Request, Response
 
 
 def sanitize_identifier(value: Optional[str], field_name: str, required: bool = True, max_length: int = 128) -> Optional[str]:
@@ -83,6 +84,50 @@ router = APIRouter(prefix="/api", tags=["video"])
 video_processing_service = VideoProcessingService()
 s3_upload_service = get_s3_upload_service()
 # Note: minio_service is initialized lazily via get_minio_service() when needed
+
+
+# C-9: run_id format must be exactly ``run_YYYYMMDD_HHMMSS``. Anything else
+# (``..``, absolute paths, shell metacharacters) is rejected at the handler
+# boundary before any filesystem access. Gives defense-in-depth on the
+# media route and closes the raw-join traversal gap on the status route.
+_RUN_ID_RE = re.compile(r"^run_\d{8}_\d{6}$")
+
+
+# C-9: one-shot per-process warning when MEDIA_API_KEY is unset. The
+# dependency still allows the request through in that case (rollout mode);
+# we just don't want to spam the log on every request.
+_media_api_key_missing_warned = False
+
+
+async def require_api_key(
+    x_api_key: Optional[str] = Header(default=None, alias="X-API-Key"),
+) -> None:
+    """FastAPI dependency that enforces the ``X-API-Key`` header for PII routes.
+
+    Behavior:
+      * If ``settings.media_api_key`` is set, the request must present a
+        matching ``X-API-Key`` header (compared with ``hmac.compare_digest``
+        to avoid timing leaks). Missing or mismatched keys → 401.
+      * If ``settings.media_api_key`` is unset or empty, the dependency logs
+        a one-shot warning per process and allows the request through. This
+        is the backward-compatible rollout mode — flip to required by
+        setting ``MEDIA_API_KEY`` in ``.env.production``.
+    """
+    global _media_api_key_missing_warned
+
+    expected = settings.media_api_key
+    if not expected:
+        if not _media_api_key_missing_warned:
+            logger.warning(
+                "media_api_key not set — /api/status and /api/jobs/{run_id}/media "
+                "are unauthenticated (rollout mode). Set MEDIA_API_KEY in the "
+                "environment to enforce auth."
+            )
+            _media_api_key_missing_warned = True
+        return
+
+    if x_api_key is None or not hmac.compare_digest(str(x_api_key), str(expected)):
+        raise HTTPException(status_code=401, detail="invalid_or_missing_api_key")
 
 
 @router.post(
@@ -417,18 +462,24 @@ async def process_video(
 @router.get(
     "/status/{run_id}",
     summary="Get processing status",
-    description="Get the processing status for a specific run ID"
+    description="Get the processing status for a specific run ID",
+    dependencies=[Depends(require_api_key)],
 )
 async def get_processing_status(run_id: str):
     """
     Get processing status for a run
-    
+
     Args:
         run_id: Run directory name (e.g., run_20251110_143045)
     """
+    # C-9: reject malformed / traversal-style run_id before touching the
+    # filesystem. Must be exactly ``run_YYYYMMDD_HHMMSS``.
+    if not _RUN_ID_RE.match(run_id):
+        raise HTTPException(status_code=400, detail="invalid_run_id")
+
     try:
         import os
-        
+
         run_dir = os.path.join(settings.output_dir, run_id)
         
         if not os.path.exists(run_dir):
@@ -489,7 +540,8 @@ async def health_check():
     "/jobs/{run_id}/media/{filename:path}",
     summary="Serve generated media (clips/images) for a run",
     description="Serve video clips and images generated for a specific run ID, "
-                "matching the media URL pattern used in the first project."
+                "matching the media URL pattern used in the first project.",
+    dependencies=[Depends(require_api_key)],
 )
 async def get_run_media(run_id: str, filename: str, request: Request) -> Response:
     """
@@ -501,6 +553,12 @@ async def get_run_media(run_id: str, filename: str, request: Request) -> Respons
     We map that to:
         {settings.output_dir}/{run_id}/clips/{filename}
     """
+    # C-9: reject malformed / traversal-style run_id before touching the
+    # filesystem. Must be exactly ``run_YYYYMMDD_HHMMSS``. The ``commonpath``
+    # check below still runs as defense-in-depth for the filename segment.
+    if not _RUN_ID_RE.match(run_id):
+        raise HTTPException(status_code=400, detail="invalid_run_id")
+
     # Resolve run directory and clips root
     run_dir = os.path.join(settings.output_dir, run_id)
     clips_root = os.path.join(run_dir, "clips")

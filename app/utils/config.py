@@ -54,6 +54,15 @@ class Settings(BaseSettings):
         os.getenv("CORS_ALLOWED_ORIGINS", '["*"]')
     )
 
+    # Media / status API auth key (C-9). When set, the media and status
+    # endpoints require an ``X-API-Key`` header whose value matches this
+    # setting via ``hmac.compare_digest``. When unset (None / empty), the
+    # auth dependency logs a one-shot warning per process and allows the
+    # request through — backward-compatible rollout mode. Flip to required
+    # by setting MEDIA_API_KEY in ``.env.production`` once clients have
+    # been updated.
+    media_api_key: Optional[str] = os.getenv("MEDIA_API_KEY", None)
+
     # File upload settings
     max_upload_size: int = 5 * 1024 * 1024 * 1024  # 5 GB
     allowed_video_extensions: List[str] = [".mp4", ".avi", ".mov", ".mkv"]
