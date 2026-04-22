@@ -47,6 +47,18 @@ class TrainMotionDetector:
         self.vibration_trim_percentile = float(
             getattr(settings, 'train_motion_vibration_trim_percentile', 90.0)
         )
+        # Rolling-median smoothing on vibration_mean: rejects 1–2 frame spikes
+        # (person walking, bag handling) so they don't saturate the vib score
+        # and anchor the state machine in RUNNING.
+        self.vibration_median_window = max(1, int(
+            getattr(settings, 'train_motion_vibration_median_window', 5)
+        ))
+        # How many prior frames of person bboxes to union into the interior
+        # mask (0 = current only). At low sample FPS a walking person covers
+        # many pixels per sample; one-frame history isn't enough.
+        self.person_bbox_history = max(0, int(
+            getattr(settings, 'train_motion_person_bbox_history', 2)
+        ))
         self.stability_block_size = 16
         self.confidence_threshold = 0.6
 
@@ -84,9 +96,13 @@ class TrainMotionDetector:
         self.prev_gray_window: Optional[np.ndarray] = None
         self.state_history: deque = deque(maxlen=self.temporal_window)
         self._prev_block_vars: Optional[list] = None
-        # Prev-frame person bboxes — unioned into the interior mask so that
-        # "where the person used to be" doesn't leak motion into the diff.
-        self.prev_person_bboxes: List = []
+        # Rolling history of prior-frame person bboxes. Each entry is a list of
+        # bboxes for one frame. All entries are unioned into the interior mask
+        # so the person's full multi-frame trail gets excluded from vibration.
+        self.person_bbox_history_buf: deque = deque(maxlen=self.person_bbox_history)
+        # Rolling buffer of recent trimmed vibration_mean values, used to compute
+        # a median-smoothed vibration_mean before scoring.
+        self._vib_history: deque = deque(maxlen=self.vibration_median_window)
 
     def create_interior_mask(
         self, frame_shape: Tuple[int, int], person_bboxes: List
@@ -151,6 +167,7 @@ class TrainMotionDetector:
         """
         result = {
             "vibration_mean": 0.0,
+            "vibration_mean_raw": 0.0,
             "vibration_std": 0.0,
             "vibration_max": 0.0,
             "vibration_p95": 0.0,
@@ -185,7 +202,15 @@ class TrainMotionDetector:
         trimmed = interior_pixels[interior_pixels <= trim_cut]
         trimmed_mean = float(np.mean(trimmed)) if trimmed.size > 0 else float(np.mean(interior_pixels))
 
-        result["vibration_mean"] = trimmed_mean
+        # Temporal median smoothing: push the spatial-trimmed mean into a
+        # rolling buffer and take the median. A 1–2 frame spike (person walks
+        # across the cabin, bag lifted) surrounded by quieter frames gets
+        # suppressed; sustained vibration (real train running) still rises.
+        self._vib_history.append(trimmed_mean)
+        smoothed_mean = float(np.median(self._vib_history))
+
+        result["vibration_mean"] = smoothed_mean
+        result["vibration_mean_raw"] = trimmed_mean
         result["vibration_std"] = float(np.std(interior_pixels))
         result["vibration_max"] = float(np.max(interior_pixels))
         result["vibration_p95"] = float(np.percentile(interior_pixels, 95))
@@ -342,9 +367,11 @@ class TrainMotionDetector:
         gray = cv2.GaussianBlur(gray, (3, 3), 0)
 
         # Create interior mask (excludes persons + window + overlays).
-        # Union current + previous person bboxes so motion trails from the
-        # person moving between frames don't leak into the vibration diff.
-        mask_bboxes = list(person_bboxes) + list(self.prev_person_bboxes)
+        # Union current + last N frames' person bboxes so motion trails from
+        # the person moving across the cabin don't leak into the vibration diff.
+        mask_bboxes = list(person_bboxes)
+        for prev_bboxes in self.person_bbox_history_buf:
+            mask_bboxes.extend(prev_bboxes)
         interior_mask = self.create_interior_mask(frame.shape, mask_bboxes)
 
         # Vibration analysis on static interior
@@ -383,6 +410,7 @@ class TrainMotionDetector:
             "num_persons": len(person_bboxes),
             "interior_ratio": vib["interior_ratio"],
             "vib_mean": vib["vibration_mean"],
+            "vib_mean_raw": vib["vibration_mean_raw"],
             "vib_std": vib["vibration_std"],
             "vib_p95": vib["vibration_p95"],
             "vib_score": vib["vibration_score"],
@@ -398,6 +426,7 @@ class TrainMotionDetector:
             "smoothed_confidence": smoothed_conf,
         }
 
-        self.prev_person_bboxes = list(person_bboxes)
+        if self.person_bbox_history > 0:
+            self.person_bbox_history_buf.append(list(person_bboxes))
 
         return smoothed_state, smoothed_conf, diagnostics

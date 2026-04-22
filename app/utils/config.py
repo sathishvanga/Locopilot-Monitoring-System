@@ -539,6 +539,17 @@ class Settings(BaseSettings):
     # percentile are dropped before averaging (hotspot suppression). Default 90
     # drops the top 10%. Lower values → more aggressive trimming.
     train_motion_vibration_trim_percentile: float = float(os.getenv("TRAIN_MOTION_VIB_TRIM_PERCENTILE", "90.0"))
+    # Rolling window (# of frames) for temporal median smoothing of vibration_mean
+    # before scoring. Only useful for isolated 1-frame spikes; defaults to 1
+    # (no-op) because sustained (3+ frame) person-motion bursts aren't filtered
+    # by a small median and a large median lags real stop transitions. Tune if
+    # you observe isolated single-frame FP spikes.
+    train_motion_vibration_median_window: int = int(os.getenv("TRAIN_MOTION_VIB_MEDIAN_WINDOW", "1"))
+    # Number of prior frames whose person bboxes get unioned into the interior
+    # mask (in addition to the current frame). At low sample FPS a walking
+    # person crosses many pixels per sample, so 1-frame prev-mask isn't enough.
+    # Default 2 (union last 2 frames + current). Set to 0 to use current only.
+    train_motion_person_bbox_history: int = int(os.getenv("TRAIN_MOTION_PERSON_BBOX_HISTORY", "2"))
 
     # Suppress no_person_detected when trip schedule is unavailable
     # (cannot distinguish station halts from running without schedule)
