@@ -166,8 +166,8 @@ def _build_activity_registry() -> Dict[str, ActivityConfig]:
         ),
         'group_detected': ActivityConfig(
             type_code=7,
-            description='More than 2 people (group) detected',
-            evidence_rule='more_than_2_deduplicated_persons',
+            description='More than 5 people (group) detected',
+            evidence_rule='more_than_5_deduplicated_persons',
             triggering_role=None,
             min_duration=0.0,
             required_consecutive=3,

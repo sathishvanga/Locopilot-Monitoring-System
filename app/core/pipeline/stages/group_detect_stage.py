@@ -1,8 +1,9 @@
 """Stage 5: Group detection (count-based).
 
 Flags ``state.group_detected_flag = True`` when the deduplicated person
-count exceeds 2. Extracted from ``LocopilotActivityMonitor._process_frames_core``
-lines ~4154-4172 (task 0002).
+count exceeds the configured threshold (``TRAIN_MOTION_RUNNING_GROUP_THRESHOLD``,
+default 5 → fires at 6+). Extracted from
+``LocopilotActivityMonitor._process_frames_core`` lines ~4154-4172 (task 0002).
 
 History: this stage previously ran a voting-verification pass to confirm
 the group-count trigger before raising the flag. The voting layer was
@@ -27,7 +28,8 @@ class GroupDetectStage:
             return state
 
         deduplicated_count = len(deduplicated_persons)
-        if deduplicated_count <= 2:
+        threshold = getattr(monitor, 'train_motion_running_group_threshold', 5)
+        if deduplicated_count <= threshold:
             return state
 
         state.group_detected_flag = True

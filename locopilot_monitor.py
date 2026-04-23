@@ -557,14 +557,6 @@ class LocopilotActivityMonitor:
         # Format: {person_idx: {'start_time': timestamp, 'duration': seconds, 'consecutive_frames': int}}
         self.wrist_proximity_tracking = {}
 
-        # Wrist-motion variance history for the writing gate (per person).
-        # Each entry is a deque of the most recently observed (wrist_x, wrist_y)
-        # pixel coords on frames where book+hand+head-down all fired. Variance
-        # over this window discriminates active writing (rhythmic pen motion)
-        # from stationary paperwork handling (near-zero variance). See
-        # ``writing_wrist_variance_*`` in config.py.
-        self.writing_wrist_history = defaultdict(lambda: deque(maxlen=32))
-
         # Per-person consecutive detection tracking for temporal filtering
         # Format: {person_idx: {activity_type: count}} - uses defaultdict to support all activity types
         self.per_person_consecutive_detections = defaultdict(lambda: defaultdict(int))
@@ -746,7 +738,7 @@ class LocopilotActivityMonitor:
                 settings, 'train_motion_stopped_group_threshold', 5
             )
             self.train_motion_running_group_threshold = getattr(
-                settings, 'train_motion_running_group_threshold', 2
+                settings, 'train_motion_running_group_threshold', 5
             )
             self.logger.info("TrainMotionDetector initialized (vibration-based motion detection enabled)")
 
@@ -3288,174 +3280,55 @@ class LocopilotActivityMonitor:
                         person_debug_info['head_pose']['detected'] = True
                         person_debug_info['head_pose']['method'] = 'object_proximity'
 
-                # 4. WRITING DETECTION (check if hand near book OR wrist/elbow proximity heuristic)
-                # MOVED BEFORE HAND GESTURE: Need to detect this first for context-aware filtering
-                writing_detected_by_book = False
-                writing_detected_by_wrist = False
-                writing_detected_by_book_posture = False  # NEW fallback method
-
-                # Method 1: Book detection — requires hand overlapping book AND head-down posture
-                # Head-down guards against FPs where book is permanently on control panel
-                # and hand is merely near it while operating controls.
-                if len(person_books) > 0:
+                # 4. WRITING DETECTION — measured from TV22.4 GT frames (2026-04-22).
+                # Rule: role == ALP AND both wrists visible AND both wrists
+                # lie INSIDE the book bbox (+10 px pad for pose jitter).
+                #
+                # Earlier rule measured "wrist within 120 px of book center"
+                # which is proximity, not contact: on a 70×50 px book a 120 px
+                # radius covers the whole surrounding console, so any ALP hand
+                # gesture near the console was flagged. Switching to strict
+                # bbox-inside eliminates the "near but not on" FP class.
+                #
+                # Measured on TV22.4 GT window (ALP-writing frames):
+                #   book_bbox  wrist_R    wrist_L    both inside (+10)?
+                #   f21625     (504,317)  (494,352)  YES
+                #   f21850     (498,315)  (513,332)  YES
+                #   f22000     (513,327)  (499,318)  YES
+                #   f22150     (435,314)  (434,348)  YES
+                # ALP-only gate still applies: LP operates controls, ALP handles paperwork.
+                writing_detected_raw = False
+                _role_for_writing = person_data.get('role', 'UNKNOWN')
+                if _role_for_writing == 'ALP' and len(person_books) > 0:
                     right_hand = self.get_keypoint(translated_landmarks, 'right_wrist')
                     left_hand = self.get_keypoint(translated_landmarks, 'left_wrist')
-
-                    # Check head-down posture (nose below or near shoulder level)
-                    writing_head_down = False
-                    try:
-                        nose_kp = self.get_keypoint(translated_landmarks, 'nose')
-                        l_shoulder = self.get_keypoint(translated_landmarks, 'left_shoulder')
-                        r_shoulder = self.get_keypoint(translated_landmarks, 'right_shoulder')
-                        if (nose_kp.visibility > 0.3 and l_shoulder.visibility > 0.3
-                                and r_shoulder.visibility > 0.3):
-                            nose_y = nose_kp.y * h
-                            shoulder_y = (l_shoulder.y * h + r_shoulder.y * h) / 2
-                            writing_head_down = nose_y > shoulder_y - 30  # head level or below shoulders
-                    except Exception:
-                        pass
-
-                    # Check if wrists are visible enough for hand-based detection
-                    wrists_visible = (right_hand.visibility >= 0.5 or left_hand.visibility >= 0.5)
-
-                    if wrists_visible and writing_head_down:
-                        right_hand_coords = (int(right_hand.x * w), int(right_hand.y * h))
-                        left_hand_coords = (int(left_hand.x * w), int(left_hand.y * h))
-
-                        hand_margin = self.activity_thresholds['writing']['margin']
-                        # Book-to-person association margin. Tightened 2026-04-11 from 250→120
-                        # because the trained model (yolo26s_locopilot_v5) produces tight book
-                        # bboxes — oversized margin was firing on stationary papers on desks
-                        # that happened to be near a wrist. Trained class-2 `book` is precise
-                        # enough that a tighter margin still catches real log-book writing.
-                        person_book_margin = 120
-                        # Control-zone rejection: require the wrist-near-book to
-                        # be clearly BELOW its elbow (writing posture = arm bent
-                        # down to paper). Hand-on-control-lever / steering wheel
-                        # keeps the wrist roughly level with the elbow (arm
-                        # extended forward). That shape must NOT trigger writing.
-                        # Observed FPs in Bag_Packing.mp4, Signal_Exchange.mp4
-                        # had the LP's hand on the horn / steering wheel while
-                        # paperwork happened to be within the book-bbox margin.
-                        _bbox_h_local = max(1, bbox[3] - bbox[1])
-                        _min_wrist_drop_px = max(20, int(0.10 * _bbox_h_local))
+                    rv = right_hand.visibility
+                    lv = left_hand.visibility
+                    if rv >= 0.5 and lv >= 0.5:
+                        rwx, rwy = right_hand.x * w, right_hand.y * h
+                        lwx, lwy = left_hand.x * w, left_hand.y * h
+                        bbox_pad = 10
                         for book_bbox in person_books:
-                            # Check if book is in this person's region (use large margin for lap area)
-                            book_in_person_region = bbox_overlap_with_margin(book_bbox, bbox, person_book_margin)
-
-                            if book_in_person_region:
-                                # Check visible hands for interaction with book (use tighter margin)
-                                right_hand_near_book = right_hand.visibility >= 0.5 and self.check_hand_object_interaction(right_hand_coords, book_bbox, hand_margin)
-                                left_hand_near_book = left_hand.visibility >= 0.5 and self.check_hand_object_interaction(left_hand_coords, book_bbox, hand_margin)
-
-                                # Per-wrist "below elbow" check (default True if
-                                # elbow missing — be permissive on low-visibility
-                                # frames rather than reject real writing).
-                                _r_below = True
-                                if right_hand_near_book:
-                                    try:
-                                        _r_elbow = self.get_keypoint(translated_landmarks, 'right_elbow')
-                                        if _r_elbow.visibility >= 0.3:
-                                            _r_below = (right_hand.y * h) > (_r_elbow.y * h) + _min_wrist_drop_px
-                                    except Exception:
-                                        pass
-                                _l_below = True
-                                if left_hand_near_book:
-                                    try:
-                                        _l_elbow = self.get_keypoint(translated_landmarks, 'left_elbow')
-                                        if _l_elbow.visibility >= 0.3:
-                                            _l_below = (left_hand.y * h) > (_l_elbow.y * h) + _min_wrist_drop_px
-                                    except Exception:
-                                        pass
-
-                                _passed = (
-                                    (right_hand_near_book and _r_below)
-                                    or (left_hand_near_book and _l_below)
+                            bx1, by1, bx2, by2 = book_bbox[:4]
+                            r_in = (bx1 - bbox_pad <= rwx <= bx2 + bbox_pad) and \
+                                   (by1 - bbox_pad <= rwy <= by2 + bbox_pad)
+                            l_in = (bx1 - bbox_pad <= lwx <= bx2 + bbox_pad) and \
+                                   (by1 - bbox_pad <= lwy <= by2 + bbox_pad)
+                            if r_in and l_in:
+                                writing_detected_raw = True
+                                self.logger.info(
+                                    f"[WRITING] ALP P{person_idx} f{frame_number} "
+                                    f"t={timestamp_sec:.1f}s: both wrists INSIDE "
+                                    f"book_bbox={book_bbox} R=({rwx:.0f},{rwy:.0f}) "
+                                    f"L=({lwx:.0f},{lwy:.0f})"
                                 )
-                                if _passed:
-                                    writing_detected_by_book = True
-                                    break
-                                elif right_hand_near_book or left_hand_near_book:
-                                    self.logger.info(
-                                        f"[WRITING CONTROL-ZONE GATE] Person {person_idx}: "
-                                        f"wrist near book but NOT sufficiently below elbow "
-                                        f"(drop<{_min_wrist_drop_px}px) — suppressing "
-                                        f"(likely hand-on-control, not writing)"
-                                    )
-                    # Method 3 (book+posture fallback) disabled — too many FPs from head-down heuristic
+                                break
 
-                    # --- Wrist-motion variance gate ---------------------------
-                    # Guard against the FP where the LP is bent over with paper
-                    # present but NOT actually writing (reading/organizing).
-                    # Real writing produces rhythmic wrist micro-motion; static
-                    # paperwork handling produces a near-stationary wrist.
-                    # Record the wrist for this candidate frame, and once we
-                    # have at least ``window`` samples, require the combined
-                    # std(x)+std(y) across the window to exceed a threshold.
-                    if writing_detected_by_book and wrists_visible:
-                        _gate_enabled = getattr(self.settings, 'writing_wrist_variance_gate_enabled', True) if self.settings else True
-                        if _gate_enabled:
-                            # Prefer the hand that is visibly near the book.
-                            _use_right = right_hand.visibility >= 0.5
-                            _wrist_xy = right_hand_coords if _use_right else left_hand_coords
-                            _hist = self.writing_wrist_history[person_idx]
-                            _hist.append(_wrist_xy)
-
-                            _window = int(getattr(self.settings, 'writing_wrist_variance_window', 5)) if self.settings else 5
-                            _thresh = float(getattr(self.settings, 'writing_wrist_variance_threshold', 15.0)) if self.settings else 15.0
-
-                            if len(_hist) >= _window:
-                                _recent = list(_hist)[-_window:]
-                                _xs = [p[0] for p in _recent]
-                                _ys = [p[1] for p in _recent]
-                                _std_x = float(np.std(_xs))
-                                _std_y = float(np.std(_ys))
-                                _variance_score = _std_x + _std_y
-
-                                if _variance_score < _thresh:
-                                    self.logger.info(
-                                        f"[WRITING VARIANCE GATE] Person {person_idx}: "
-                                        f"std_x={_std_x:.1f} std_y={_std_y:.1f} sum={_variance_score:.1f}"
-                                        f" < threshold {_thresh:.1f} — suppressing (static paperwork, not writing)"
-                                    )
-                                    writing_detected_by_book = False
-                                else:
-                                    self.logger.info(
-                                        f"[WRITING VARIANCE GATE] Person {person_idx}: "
-                                        f"sum={_variance_score:.1f} >= {_thresh:.1f} — writing confirmed"
-                                    )
-                    # NOTE: do NOT clear history when book/hand/head-down
-                    # momentarily fail. A brief detection flicker would
-                    # otherwise give the gate a "fresh 3 samples" free pass
-                    # (history < window → gate can't evaluate → writing
-                    # fires). The deque's maxlen=32 naturally ages out stale
-                    # positions (~64s at 0.5 fps), which is long enough to
-                    # bridge transient drops but short enough that a truly
-                    # different activity session starts with its own data.
-
-                # Method 2 (wrist proximity + head down) disabled — too many FPs from pose heuristic
-
-                # Combine all detection methods (book+hand, wrist/elbow proximity, book+posture fallback)
-                writing_detected_raw = (
-                    writing_detected_by_book or
-                    writing_detected_by_wrist or
-                    writing_detected_by_book_posture  # NEW fallback
-                )
                 should_trigger = self.update_per_person_detection(
                     person_idx, 'writing', writing_detected_raw, timestamp_sec
                 )
-
                 person_activities['writing'] = should_trigger
-
-                # Store detection method in debug info for analysis
-                if writing_detected_by_book:
-                    person_debug_info['writing_method'] = 'book_hand'
-                elif writing_detected_by_book_posture:
-                    person_debug_info['writing_method'] = 'book_posture_fallback'
-                elif writing_detected_by_wrist:
-                    person_debug_info['writing_method'] = 'pose_based'  # Could be wrist or elbow
-                else:
-                    person_debug_info['writing_method'] = 'none'
+                person_debug_info['writing_method'] = 'book_hand' if writing_detected_raw else 'none'
                 
                 # SUPPRESS MIND DIVERSION IF LEGITIMATE WORK ACTIVITY DETECTED
                 # Uses comprehensive suppression logic that checks:
@@ -3917,7 +3790,106 @@ class LocopilotActivityMonitor:
         # Sync camera_angle in case it was changed
         self.person_tracker.camera_angle = self.camera_angle
         return self.person_tracker.identify_person_roles(person_boxes, frame, detections)
-    
+
+    def _annotate_evidence_frame(self, frame: Any, activity_name: str, frame_number: int) -> Any:
+        """Overlay object bboxes + pose skeleton on an evidence frame.
+
+        Re-runs object + pose inference on the extracted frame so the saved
+        *_activity.jpg visually explains why the activity fired — the reviewer
+        sees exactly which person bbox, book/cell-phone/cup bbox, and which
+        wrist/shoulder keypoints the detector was looking at.
+
+        Safe no-op if inference fails — returns the original frame unchanged.
+        """
+        try:
+            img = frame.copy()
+
+            # Object detections (full-frame, no pose-guided ROI — we just want
+            # a display, not re-triggering the activity logic)
+            det = self.object_detector.detect_objects(img, pose_landmarks=None, use_pose_guided=False)
+
+            color_by_class = {
+                'person': (0, 255, 0),        # green
+                'book': (0, 215, 255),        # amber
+                'cell_phone': (0, 0, 255),    # red
+                'cup': (255, 200, 0),         # cyan
+                'bottle': (255, 200, 0),
+                'backpack': (255, 0, 255),    # magenta
+                'handbag': (255, 0, 255),
+                'suitcase': (255, 0, 255),
+                'radio_handset': (128, 64, 255),
+            }
+            for cls_name, boxes in det.items():
+                if cls_name in ('rois', 'num_detections'):
+                    continue
+                color = color_by_class.get(cls_name, (200, 200, 200))
+                for b in boxes or []:
+                    try:
+                        x1, y1, x2, y2 = int(b[0]), int(b[1]), int(b[2]), int(b[3])
+                    except Exception:
+                        continue
+                    cv2.rectangle(img, (x1, y1), (x2, y2), color, 2)
+                    label = cls_name
+                    if len(b) > 4 and isinstance(b[4], (int, float)):
+                        label = f"{cls_name} {float(b[4]):.2f}"
+                    cv2.putText(img, label, (x1, max(15, y1 - 6)),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1, cv2.LINE_AA)
+
+            # Pose skeleton per person
+            try:
+                persons = self.yolo_pose.process(img) if hasattr(self, 'yolo_pose') and self.yolo_pose else {}
+            except Exception:
+                persons = {}
+            SKELETON = [
+                ('left_shoulder', 'right_shoulder'),
+                ('left_shoulder', 'left_elbow'), ('left_elbow', 'left_wrist'),
+                ('right_shoulder', 'right_elbow'), ('right_elbow', 'right_wrist'),
+                ('left_shoulder', 'left_hip'), ('right_shoulder', 'right_hip'),
+                ('left_hip', 'right_hip'),
+                ('left_hip', 'left_knee'), ('left_knee', 'left_ankle'),
+                ('right_hip', 'right_knee'), ('right_knee', 'right_ankle'),
+                ('nose', 'left_shoulder'), ('nose', 'right_shoulder'),
+            ]
+            h, w = img.shape[:2]
+            for pidx, pdata in (persons or {}).items():
+                kp = pdata.get('keypoints')
+                if kp is None:
+                    continue
+                def _pt(name):
+                    try:
+                        k = self._get_keypoint_by_name(kp, name)
+                        if k.visibility < 0.3:
+                            return None
+                        return (int(k.x * w), int(k.y * h))
+                    except Exception:
+                        return None
+                for a, b in SKELETON:
+                    pa, pb = _pt(a), _pt(b)
+                    if pa and pb:
+                        cv2.line(img, pa, pb, (255, 255, 255), 2, cv2.LINE_AA)
+                # highlight wrists + shoulders + nose
+                for kname, color, r in (
+                    ('left_wrist', (0, 0, 255), 7),
+                    ('right_wrist', (0, 0, 255), 7),
+                    ('left_shoulder', (0, 255, 255), 5),
+                    ('right_shoulder', (0, 255, 255), 5),
+                    ('nose', (255, 0, 255), 5),
+                ):
+                    pt = _pt(kname)
+                    if pt:
+                        cv2.circle(img, pt, r, color, -1, cv2.LINE_AA)
+
+            # Header banner so the viewer knows what this frame is
+            banner = f"{activity_name.upper()}  f{frame_number}"
+            cv2.rectangle(img, (0, 0), (max(420, 10 * len(banner) + 20), 28), (0, 0, 0), -1)
+            cv2.putText(img, banner, (8, 20),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2, cv2.LINE_AA)
+            return img
+        except Exception as e:
+            if self.logger:
+                self.logger.debug(f"[annotate_evidence_frame] failed, saving raw: {e}")
+            return frame
+
     def start_activity(self, activity_name: str, timestamp: float, fps: float, frame_count: int, person_roles: Optional[Dict[int, Dict[str, Any]]] = None, ocr_timestamp: Optional[str] = None, triggering_person_idx: Optional[int] = None) -> None:
         """Start tracking an activity
 
@@ -3979,7 +3951,6 @@ class LocopilotActivityMonitor:
             ('hand_position_history', self.hand_position_history),
             ('landmark_stability_history', self.landmark_stability_history),
             ('wrist_proximity_tracking', self.wrist_proximity_tracking),
-            ('writing_wrist_history', self.writing_wrist_history),
             ('no_pose_sleep_tracking', self.no_pose_sleep_tracking),
             ('recent_person_activities', self.recent_person_activities),
         ]
@@ -4153,7 +4124,10 @@ class LocopilotActivityMonitor:
                         cap.set(cv2.CAP_PROP_POS_FRAMES, middle_frame_number)
                         ret, activity_image = cap.read()
                         if ret and activity_image is not None:
-                            cv2.imwrite(image_path, activity_image)
+                            annotated = self._annotate_evidence_frame(
+                                activity_image, activity_name, middle_frame_number
+                            )
+                            cv2.imwrite(image_path, annotated)
                     finally:
                         cap.release()
             
@@ -4503,7 +4477,7 @@ class LocopilotActivityMonitor:
                         role_info = person_roles[person_idx]
                         self.logger.debug(f"  Person {person_idx+1}: {role_info['role_name']} (bbox_area: {role_info.get('bbox_area', 0):.0f})")
 
-                running_threshold = getattr(self, 'train_motion_running_group_threshold', 2)
+                running_threshold = getattr(self, 'train_motion_running_group_threshold', 5)
                 if deduplicated_count > running_threshold:
                     group_detected_flag = True
                     if self.consecutive_detections['group_detected'] == 0:

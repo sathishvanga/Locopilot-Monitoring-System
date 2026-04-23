@@ -451,17 +451,6 @@ class Settings(BaseSettings):
     book_posture_min_duration: float = float(os.getenv("BOOK_POSTURE_MIN_DURATION", "2.0"))
     book_posture_required_consecutive: int = int(os.getenv("BOOK_POSTURE_REQUIRED_CONSECUTIVE", "2"))
 
-    # Wrist-motion variance gate: discriminates ACTIVE writing (rhythmic pen
-    # strokes → moving wrist) from stationary paperwork handling (hands near
-    # paper but not moving). When the gate is enabled and we have at least
-    # WRITING_WRIST_VARIANCE_WINDOW samples, we require
-    # std(wrist_x) + std(wrist_y) >= threshold (pixels) to commit writing.
-    # Default window: 5 samples ~= 10s at 0.5 fps. Default threshold chosen
-    # conservatively; tune down if real writing scenes register below.
-    writing_wrist_variance_gate_enabled: bool = bool(int(os.getenv("WRITING_WRIST_VARIANCE_GATE_ENABLED", "1")))
-    writing_wrist_variance_window: int = int(os.getenv("WRITING_WRIST_VARIANCE_WINDOW", "3"))
-    writing_wrist_variance_threshold: float = float(os.getenv("WRITING_WRIST_VARIANCE_THRESHOLD", "15.0"))
-
     # ==========================================
     # Head Tilt / Sleep Detection Thresholds
     # ==========================================
@@ -523,9 +512,10 @@ class Settings(BaseSettings):
     train_motion_running_threshold: float = float(os.getenv("TRAIN_MOTION_RUNNING_THRESHOLD", "0.45"))
     train_motion_temporal_window: int = int(os.getenv("TRAIN_MOTION_TEMPORAL_WINDOW", "5"))
     train_motion_stopped_group_threshold: int = int(os.getenv("TRAIN_MOTION_STOPPED_GROUP_THRESHOLD", "5"))
-    # Threshold for group_detected when train is RUNNING. Default 2 (i.e. >2 → 3+ persons).
-    # Raise to 5 to require >5 (6+ persons) regardless of motion state.
-    train_motion_running_group_threshold: int = int(os.getenv("TRAIN_MOTION_RUNNING_GROUP_THRESHOLD", "2"))
+    # Threshold for group_detected. Default 5 (i.e. >5 → 6+ persons required).
+    # Revised 2026-04-22: spec changed from "more than 2" to "more than 5" —
+    # 3-person supervisor visits are expected and should no longer trigger.
+    train_motion_running_group_threshold: int = int(os.getenv("TRAIN_MOTION_RUNNING_GROUP_THRESHOLD", "5"))
     train_motion_window_flow_threshold: float = float(os.getenv("TRAIN_MOTION_WINDOW_FLOW_THRESHOLD", "2.0"))
     train_motion_weight_vibration: float = float(os.getenv("TRAIN_MOTION_WEIGHT_VIBRATION", "0.5"))
     train_motion_weight_window: float = float(os.getenv("TRAIN_MOTION_WEIGHT_WINDOW", "0.3"))
