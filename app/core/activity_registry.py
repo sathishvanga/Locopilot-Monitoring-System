@@ -144,10 +144,12 @@ def _build_activity_registry() -> Dict[str, ActivityConfig]:
             description='WRITING LOG BOOK WHILE RUNNING',
             evidence_rule='hand_near_book_or_wrist_proximity',
             triggering_role=None,
-            # F3 (2026-04-06): consecutive 1->2, min_duration 0.1->2.0 to
-            # suppress single-frame book+posture FPs when ALP holds logbook.
+            # 2026-04-23: consecutive 2->1. Writing v4 rule has two high-precision
+            # paths (book-bbox-inside AND pose-only wrists-together-in-lap).
+            # Each fire is trustworthy — requiring 2 consecutive samples drops
+            # the sparse short GT events (TV22.5_0447 5s, TV22.9 5s, TV22.8 3s).
             min_duration=2.0,
-            required_consecutive=2,
+            required_consecutive=1,
             margin=writing_margin,
             grace_frames=10,
         ),

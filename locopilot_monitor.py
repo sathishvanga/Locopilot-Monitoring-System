@@ -562,6 +562,11 @@ class LocopilotActivityMonitor:
         self.per_person_consecutive_detections = defaultdict(lambda: defaultdict(int))
         self.per_person_grace_counters = defaultdict(lambda: defaultdict(int))
 
+        # Last timestamp_sec at which a book bbox was associated with this
+        # person (used by the writing pose-only fallback to avoid firing on
+        # normal seated posture when no paperwork is anywhere in the scene).
+        self._writing_last_book_seen = defaultdict(lambda: -1e9)
+
         # Hand position history for velocity/trajectory analysis
         # Format: {person_idx: {'right_wrist': deque([coords]), 'left_wrist': deque([coords]), 'timestamps': deque([t])}}
         self.hand_position_history = {}
@@ -3280,26 +3285,72 @@ class LocopilotActivityMonitor:
                         person_debug_info['head_pose']['detected'] = True
                         person_debug_info['head_pose']['method'] = 'object_proximity'
 
-                # 4. WRITING DETECTION — measured from TV22.4 GT frames (2026-04-22).
-                # Rule: role == ALP AND both wrists visible AND both wrists
-                # lie INSIDE the book bbox (+10 px pad for pose jitter).
+                # 3c. EATING/DRINKING POSE-ONLY FALLBACK — fires when no cup/bottle
+                # detection but the pose shows a hand brought up near the face.
+                # Overhead-CCTV-aware (2026-04-23): in this view the mouth/hand
+                # region sits 30-80 px BELOW the nose (head tilted back when
+                # drinking moves the nose up in image coords), not AT nose level.
+                # Signals required:
+                #   at least one wrist vis >= 0.5 with its (x,y) inside a face
+                #   neighbourhood around the nose: wrist_x within 100 px of
+                #   nose_x AND wrist_y in [nose_y - 40, nose_y + 80].
+                # Measured on TV22.3 t=295 ALP:
+                #   nose ≈ (562, 213), rwr = (606, 212) → dx=44 dy=-1 → PASS
+                #   lwr = (612, 240) → dx=50 dy=27 → PASS
+                if not person_activities.get('eating_drinking', False):
+                    try:
+                        rw = self.get_keypoint(translated_landmarks, 'right_wrist')
+                        lw = self.get_keypoint(translated_landmarks, 'left_wrist')
+                        nose_kp2 = self.get_keypoint(translated_landmarks, 'nose')
+                        if nose_kp2.visibility >= 0.5:
+                            nose_y_px = nose_kp2.y * h
+                            nose_x_px = nose_kp2.x * w
+                            def _wrist_near_face(wr):
+                                if wr.visibility < 0.5: return False, None
+                                wx, wy = wr.x * w, wr.y * h
+                                dx, dy = wx - nose_x_px, wy - nose_y_px
+                                near = abs(dx) <= 100 and -40 <= dy <= 80
+                                return near, (wx, wy, dx, dy)
+                            r_near, r_info = _wrist_near_face(rw)
+                            l_near, l_info = _wrist_near_face(lw)
+                            if r_near or l_near:
+                                person_activities['eating_drinking'] = True
+                                person_debug_info['head_pose']['sub_type'] = 'eating_drinking'
+                                person_debug_info['head_pose']['detected'] = True
+                                person_debug_info['head_pose']['method'] = 'pose_fallback_hand_at_face'
+                                which = 'R' if r_near else 'L'
+                                info = r_info if r_near else l_info
+                                self.logger.info(
+                                    f"[DRINK POSE] P{person_idx} f{frame_number} "
+                                    f"t={timestamp_sec:.1f}s: {which}-wrist near face "
+                                    f"wxy=({info[0]:.0f},{info[1]:.0f}) "
+                                    f"nose=({nose_x_px:.0f},{nose_y_px:.0f}) "
+                                    f"dx={info[2]:.0f} dy={info[3]:.0f}"
+                                )
+                    except Exception as _e_drink:
+                        self.logger.debug(f"[DRINK POSE] skip: {_e_drink}")
+
+                # 4. WRITING DETECTION — calibrated across TV22.3–TV22.9 GT
+                # frames on 2026-04-23. Two detection paths are OR-combined.
+                # Role is no longer restricted: both LP and ALP can write
+                # (TV22.6 and TV22.8 GTs are LP writing events).
                 #
-                # Earlier rule measured "wrist within 120 px of book center"
-                # which is proximity, not contact: on a 70×50 px book a 120 px
-                # radius covers the whole surrounding console, so any ALP hand
-                # gesture near the console was flagged. Switching to strict
-                # bbox-inside eliminates the "near but not on" FP class.
+                # PRIMARY — both wrists INSIDE book bbox (+10 px pad):
+                #   High-precision, ~fires on ~25 % of writing-GT samples.
+                #   Measured hits on GT windows (both_in=True):
+                #     TV22.4 3/5, TV22.5_0447 1/5, TV22.7_0321 1/5,
+                #     TV22.7_0932 2/5, TV22.7_2611 1/5, TV22.9 1/5
                 #
-                # Measured on TV22.4 GT window (ALP-writing frames):
-                #   book_bbox  wrist_R    wrist_L    both inside (+10)?
-                #   f21625     (504,317)  (494,352)  YES
-                #   f21850     (498,315)  (513,332)  YES
-                #   f22000     (513,327)  (499,318)  YES
-                #   f22150     (435,314)  (434,348)  YES
-                # ALP-only gate still applies: LP operates controls, ALP handles paperwork.
+                # FALLBACK — pose-only "hands held together in the lap/chest zone"
+                # Fires when the book class is missed by YOLO (observed in
+                # 40-100 % of GT samples for TV22.6, TV22.7_1906, TV22.8).
+                # Criteria measured across all 10 writing GTs:
+                #   both wrists visible
+                #   wrist_dist < 80 px  (hands together holding paper)
+                #   both wrists BELOW shoulders (wrist_y > shoulder_y + 40 px)
+                #   both wrists in lower-2/3 of person bbox (avoid raised-hand FPs)
                 writing_detected_raw = False
-                _role_for_writing = person_data.get('role', 'UNKNOWN')
-                if _role_for_writing == 'ALP' and len(person_books) > 0:
+                if True:  # no role filter — LP can write too (TV22.6, TV22.8)
                     right_hand = self.get_keypoint(translated_landmarks, 'right_wrist')
                     left_hand = self.get_keypoint(translated_landmarks, 'left_wrist')
                     rv = right_hand.visibility
@@ -3307,22 +3358,56 @@ class LocopilotActivityMonitor:
                     if rv >= 0.5 and lv >= 0.5:
                         rwx, rwy = right_hand.x * w, right_hand.y * h
                         lwx, lwy = left_hand.x * w, left_hand.y * h
-                        bbox_pad = 10
-                        for book_bbox in person_books:
-                            bx1, by1, bx2, by2 = book_bbox[:4]
-                            r_in = (bx1 - bbox_pad <= rwx <= bx2 + bbox_pad) and \
-                                   (by1 - bbox_pad <= rwy <= by2 + bbox_pad)
-                            l_in = (bx1 - bbox_pad <= lwx <= bx2 + bbox_pad) and \
-                                   (by1 - bbox_pad <= lwy <= by2 + bbox_pad)
-                            if r_in and l_in:
-                                writing_detected_raw = True
-                                self.logger.info(
-                                    f"[WRITING] ALP P{person_idx} f{frame_number} "
-                                    f"t={timestamp_sec:.1f}s: both wrists INSIDE "
-                                    f"book_bbox={book_bbox} R=({rwx:.0f},{rwy:.0f}) "
-                                    f"L=({lwx:.0f},{lwy:.0f})"
-                                )
-                                break
+                        wr_dist = math.hypot(rwx - lwx, rwy - lwy)
+
+                        # PRIMARY PATH — wrists inside a book bbox
+                        if len(person_books) > 0:
+                            # Record that this person has a book visible at
+                            # this timestamp; the fallback uses a 30s recency
+                            # window.
+                            self._writing_last_book_seen[person_idx] = timestamp_sec
+                            bbox_pad = 10
+                            for book_bbox in person_books:
+                                bx1, by1, bx2, by2 = book_bbox[:4]
+                                r_in = (bx1 - bbox_pad <= rwx <= bx2 + bbox_pad) and \
+                                       (by1 - bbox_pad <= rwy <= by2 + bbox_pad)
+                                l_in = (bx1 - bbox_pad <= lwx <= bx2 + bbox_pad) and \
+                                       (by1 - bbox_pad <= lwy <= by2 + bbox_pad)
+                                if r_in and l_in:
+                                    writing_detected_raw = True
+                                    self.logger.info(
+                                        f"[WRITING:book] P{person_idx} f{frame_number} "
+                                        f"t={timestamp_sec:.1f}s: wrist_dist={wr_dist:.0f} "
+                                        f"both wrists inside book_bbox={book_bbox}"
+                                    )
+                                    break
+
+                        # FALLBACK PATH — wrists-together-in-lap, book missed.
+                        # Gated by book-recency (30s window): without a recent
+                        # book sighting, "hands together in lap" is just normal
+                        # seated posture and fires on everyone all day.
+                        if not writing_detected_raw and wr_dist < 80:
+                            book_seen_age = timestamp_sec - self._writing_last_book_seen[person_idx]
+                            if book_seen_age <= 30.0:
+                                try:
+                                    l_sh = self.get_keypoint(translated_landmarks, 'left_shoulder')
+                                    r_sh = self.get_keypoint(translated_landmarks, 'right_shoulder')
+                                    if l_sh.visibility >= 0.3 and r_sh.visibility >= 0.3:
+                                        sh_y = (l_sh.y + r_sh.y) / 2 * h
+                                        bx1p, by1p, bx2p, by2p = bbox[:4]
+                                        bbox_h = max(1, by2p - by1p)
+                                        lower_cutoff_y = by1p + 0.33 * bbox_h
+                                        wrists_below_shoulders = (rwy > sh_y + 40) and (lwy > sh_y + 40)
+                                        wrists_in_lower = (rwy > lower_cutoff_y) and (lwy > lower_cutoff_y)
+                                        if wrists_below_shoulders and wrists_in_lower:
+                                            writing_detected_raw = True
+                                            self.logger.info(
+                                                f"[WRITING:pose] P{person_idx} f{frame_number} "
+                                                f"t={timestamp_sec:.1f}s: wrist_dist={wr_dist:.0f} "
+                                                f"book_age={book_seen_age:.1f}s (book missed, pose-only)"
+                                            )
+                                except Exception as _e:
+                                    self.logger.debug(f"[WRITING:pose] skip: {_e}")
 
                 should_trigger = self.update_per_person_detection(
                     person_idx, 'writing', writing_detected_raw, timestamp_sec
