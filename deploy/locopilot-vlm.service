@@ -1,0 +1,52 @@
+[Unit]
+Description=Locopilot VLM Verifier (vLLM serving Qwen2.5-VL-7B-Instruct-AWQ)
+After=network.target
+# locopilot.service can run independently; the verifier is fail-open if this
+# unit is down, so there's no hard dependency between them.
+
+[Service]
+Type=simple
+User=admin1
+WorkingDirectory=/opt/poc2
+Environment=PATH=/opt/poc2/venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+Environment=HF_HOME=/home/admin1/.cache/huggingface
+# Pin GPU explicitly. The locopilot main service uses the same GPU; vLLM is
+# capped at gpu-memory-utilization=0.50 (~10 GB) leaving ~10 GB for YOLO+pose.
+Environment=CUDA_VISIBLE_DEVICES=0
+Environment=VLLM_LOGGING_LEVEL=INFO
+
+# Args validated in the Phase-0 spike (2026-04-26):
+#   --gpu-memory-utilization 0.50  → ~10 GB peak (model 6.5 GB + KV cache 3.5-4.5 GB)
+#   --max-model-len 3072           → fits the LP+ALP/multi-frame/motion-aware
+#                                    prompts (~1500-2000 prompt tokens) plus
+#                                    image tokens for ROI-cropped strip + 400-
+#                                    token output. Bumped 2048→3072 on
+#                                    2026-04-26 after the larger prompts
+#                                    started truncating completion tokens.
+#   --max-num-seqs 2               → verifier batches at most 2 concurrent calls
+#   --enforce-eager                → no CUDA graph compile (fast startup)
+#   --quantization awq_marlin      → match the AWQ-INT4 weights on disk
+#   --limit-mm-per-prompt          → one image per prompt (we send a stitched strip)
+ExecStart=/opt/poc2/venv/bin/vllm serve Qwen/Qwen2.5-VL-7B-Instruct-AWQ \
+    --port 8001 \
+    --gpu-memory-utilization 0.50 \
+    --max-model-len 3072 \
+    --max-num-seqs 2 \
+    --enforce-eager \
+    --quantization awq_marlin \
+    --limit-mm-per-prompt '{"image": 1}'
+
+Restart=on-failure
+RestartSec=30
+# Bound restart loops if the model fails to load (e.g. corrupted cache).
+StartLimitIntervalSec=600
+StartLimitBurst=5
+
+# Resource hints
+TimeoutStartSec=180
+TimeoutStopSec=30
+KillMode=mixed
+KillSignal=SIGTERM
+
+[Install]
+WantedBy=multi-user.target

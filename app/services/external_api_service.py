@@ -579,6 +579,12 @@ class ExternalAPIService:
                 "createdBy": "system",
                 "status": 1,  # Default status (1 = active/complete)
                 "roleType": event.get("crewRole", 1),  # 1 = LP, 2 = ALP
+                # motionState lets the customer distinguish station-context
+                # activities (RUNNING|STOPPED|UNCERTAIN|UNKNOWN) from violations
+                # that occurred while the train was moving. Only meaningful when
+                # TRAIN_MOTION_SUPPRESS_WHEN_STOPPED=0 is set; otherwise stopped
+                # events are filtered upstream and never reach this transform.
+                "motionState": event.get("motionState", "UNKNOWN"),
             }
 
             return payload

@@ -28,6 +28,14 @@ class TrainMotionSuppressStage:
         current_motion_state = getattr(monitor, "current_motion_state", None)
         if detector is None or current_motion_state != "STOPPED":
             return state
+        # When TRAIN_MOTION_SUPPRESS_WHEN_STOPPED=0 the operator wants
+        # stopped-state activities to flow through (tagged motionState=STOPPED
+        # in the posted record) instead of being zeroed here.
+        settings = getattr(monitor, "settings", None)
+        if settings is not None and not getattr(
+            settings, "train_motion_suppress_when_stopped", True
+        ):
+            return state
 
         flags = state.activity_flags
 

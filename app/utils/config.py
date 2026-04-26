@@ -503,6 +503,16 @@ class Settings(BaseSettings):
     # Enable/disable train motion-based rule engine
     train_motion_rules_enabled: bool = bool(int(os.getenv("TRAIN_MOTION_RULES_ENABLED", "0")))
 
+    # When True (default), activities listed in
+    # ``app/core/gates.py:DEFAULT_SUPPRESSED_WHEN_STOPPED`` are zeroed out
+    # while the train is STOPPED, so they never reach the VLM verifier or
+    # the external API. Set to False (env: TRAIN_MOTION_SUPPRESS_WHEN_STOPPED=0)
+    # to forward all detections through regardless of motion state — they
+    # then carry ``motionState=STOPPED`` in activities.json and the posted
+    # payload, so downstream consumers can distinguish station-context
+    # events from running-train violations.
+    train_motion_suppress_when_stopped: bool = bool(int(os.getenv("TRAIN_MOTION_SUPPRESS_WHEN_STOPPED", "1")))
+
     # Train Motion Detection (vibration-based)
     train_motion_detection_enabled: bool = bool(int(os.getenv("TRAIN_MOTION_DETECTION_ENABLED", "0")))
     train_motion_vibration_threshold: float = float(os.getenv("TRAIN_MOTION_VIB_THRESHOLD", "1.0"))
@@ -576,6 +586,31 @@ class Settings(BaseSettings):
 
     # Cache TTL for delay data (in seconds, default 30 minutes)
     etrain_cache_ttl: int = int(os.getenv("ETRAIN_CACHE_TTL", "1800"))
+
+    # ==========================================
+    # VLM Verification Layer (Pipeline-2 FP filter)
+    # ==========================================
+    # Post-Pipeline-1 verification using a vision-language model (Qwen2.5-VL).
+    # The verifier sees the activity keyframe + an activity-specific prompt and
+    # returns TRUE_POSITIVE / FALSE_POSITIVE / UNCERTAIN. In shadow mode the
+    # verdict is recorded on the activity but no activities are dropped; in
+    # enforcement mode FALSE_POSITIVE @ confidence>=threshold are filtered out.
+    # Designed to fail-open: if the vLLM endpoint is unreachable, the
+    # Pipeline-1 verdict passes through unchanged.
+    vlm_verification_enabled: bool = bool(int(os.getenv("VLM_VERIFICATION_ENABLED", "0")))
+    vlm_base_url: str = os.getenv("VLM_BASE_URL", "http://localhost:8001/v1")
+    vlm_model: str = os.getenv("VLM_MODEL", "Qwen/Qwen2.5-VL-7B-Instruct-AWQ")
+    # Comma-separated activity names (matches ACTIVITY_REGISTRY keys) to verify.
+    # Activities not listed are passed through unchanged.
+    vlm_verify_activities: str = os.getenv("VLM_VERIFY_ACTIVITIES", "writing,eating_drinking")
+    # Minimum VLM confidence required to drop a Pipeline-1 detection (enforcement mode only).
+    vlm_drop_threshold: float = float(os.getenv("VLM_DROP_THRESHOLD", "0.80"))
+    # 1 = log verdicts but never drop (safe default); 0 = drop FPs above threshold.
+    vlm_shadow_mode: bool = bool(int(os.getenv("VLM_SHADOW_MODE", "1")))
+    # HTTP timeout per VLM call. Verifier is fail-open on timeout.
+    vlm_timeout_seconds: float = float(os.getenv("VLM_TIMEOUT_SECONDS", "8.0"))
+    # Max activities verified per request. 0 = no cap.
+    vlm_max_activities_per_run: int = int(os.getenv("VLM_MAX_ACTIVITIES_PER_RUN", "0"))
 
     @model_validator(mode='after')
     def _validate_overlap_window(self) -> "Settings":

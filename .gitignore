@@ -27,6 +27,9 @@ microsleep_debug
 !.env.example
 server details.txt
 deploy-gpu.sh
+
+# Claude Code local artifacts (downloads, throwaway scripts, memory)
+.claude/
 debug_frames
 activity_frames
 n_5_violations_frames

@@ -14,6 +14,7 @@ from ..utils.config import get_settings
 from ..repositories.activity_repository import ActivityRepository
 from .activity_detection_service import ActivityDetectionService
 from .external_api_service import get_external_api_service
+from .vlm_verification_service import get_vlm_verification_service
 
 # Train motion rule engine imports
 try:
@@ -158,6 +159,7 @@ class VideoProcessingService:
         use_multiprocessing: bool = False,
         save_clips: bool = True,
         skip_external_api: bool = False,
+        skip_vlm_verification: bool = False,
         division: Optional[str] = None,
         train_number: Optional[str] = None,
         trip_date: Optional[str] = None,
@@ -333,7 +335,33 @@ class VideoProcessingService:
                 run_dir=run_dir
             )
             logger.info(f"[SAVE] Saved {len(activities)} activities to {activities_json_path}")
-            
+
+            # Pipeline-2: VLM verification before external API post.
+            # Skipped when skip_vlm_verification=True (the /v1/process-and-upload
+            # controller runs its own hook with extra clip_files filtering).
+            # Fail-open: a verifier exception leaves activities unchanged.
+            if not skip_vlm_verification:
+                vlm_service = get_vlm_verification_service()
+                if vlm_service.is_enabled():
+                    try:
+                        pre_count = len(activities)
+                        activities, vlm_stats = vlm_service.verify_activities(activities)
+                        import json as _json
+                        with open(activities_json_path, 'w', encoding='utf-8') as _f:
+                            _json.dump(activities, _f, indent=2, ensure_ascii=False, default=str)
+                        logger.info(
+                            f"[VLM] verified pre={pre_count} post={len(activities)} "
+                            f"dropped={vlm_stats['dropped']} uncertain={vlm_stats['uncertain']} "
+                            f"skipped_unavail={vlm_stats['skipped_unavailable']} "
+                            f"shadow={vlm_service.settings.vlm_shadow_mode}"
+                        )
+                    except Exception as vlm_exc:
+                        logger.warning(
+                            f"[VLM] verifier failed unexpectedly, passing through "
+                            f"Pipeline-1 results: {vlm_exc}",
+                            exc_info=True,
+                        )
+
             # Post results to external API (non-blocking, errors don't fail the job)
             # Skip if called from process-and-upload endpoint (will be called later with S3 URLs)
             api_result = None

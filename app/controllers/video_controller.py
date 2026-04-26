@@ -71,6 +71,7 @@ from ..services.job_manager import job_manager
 from ..services.s3_upload_service import get_s3_upload_service
 from ..services.external_api_service import get_external_api_service
 from ..services.minio_service import get_minio_service
+from ..services.vlm_verification_service import get_vlm_verification_service
 from ..services.gpu_resource_manager import get_gpu_resource_manager
 from ..utils.logger import get_logger
 from ..utils.config import get_settings
@@ -737,6 +738,7 @@ async def process_and_upload_video(
                 use_multiprocessing=use_mp,
                 save_clips=saveClips,
                 skip_external_api=True,  # Skip here - will call after S3 uploads with correct S3 URLs
+                skip_vlm_verification=True,  # Controller runs its own VLM hook below (also filters clip_files)
                 train_number=trainNumber,
                 trip_date=tripDate,
                 video_start_time=videoStartTime,
@@ -749,7 +751,84 @@ async def process_and_upload_video(
             f"Activities: {result.get('activitiesCount', result.get('activities_count', 0))}, "
             f"Clips: {len(result.get('clipFiles', result.get('clip_files', [])))}"
         )
-        
+
+        # Step 2b: VLM verification (Pipeline-2 false-positive filter).
+        # Runs while local clip/image paths in activities.json are still valid
+        # (before S3 swap below). In shadow mode (default) attaches vlm_review
+        # to each activity but never drops; in enforcement mode FALSE_POSITIVE
+        # @ confidence>=threshold are filtered out before S3 upload + API push.
+        # Fail-open: VLM endpoint down → activities pass through unchanged.
+        vlm_service = get_vlm_verification_service()
+        if vlm_service.is_enabled():
+            # process_video returns the key as `runDirectory` (camelCase) and
+            # also surfaces `activitiesJsonPath` directly. Support all common
+            # variants so a future rename of one key doesn't silently disable
+            # the verifier (and matches the existing lookup at the S3 step).
+            run_dir_for_vlm = (
+                result.get('runDirectory')
+                or result.get('run_dir')
+                or result.get('runDir')
+                or ''
+            )
+            activities_json_for_vlm = result.get('activitiesJsonPath') or (
+                os.path.join(run_dir_for_vlm, 'activities.json')
+                if run_dir_for_vlm else ''
+            )
+            if activities_json_for_vlm and os.path.exists(activities_json_for_vlm):
+                try:
+                    import json as _json
+                    with open(activities_json_for_vlm, 'r', encoding='utf-8') as f:
+                        pre_vlm_activities = _json.load(f)
+                    pre_count = len(pre_vlm_activities)
+                    post_vlm_activities, vlm_stats = vlm_service.verify_activities(
+                        pre_vlm_activities
+                    )
+                    # default=str defends against numpy scalars (float32 etc.)
+                    # that may have leaked into Pipeline-1 outputs — we never
+                    # want the verifier to be the thing that breaks JSON write.
+                    with open(activities_json_for_vlm, 'w', encoding='utf-8') as f:
+                        _json.dump(
+                            post_vlm_activities, f,
+                            indent=2, ensure_ascii=False, default=str,
+                        )
+                    # Keep result['activities'] in sync so downstream S3/API
+                    # blocks see the post-verifier list.
+                    if 'activities' in result:
+                        result['activities'] = post_vlm_activities
+                    if 'activities_count' in result:
+                        result['activities_count'] = len(post_vlm_activities)
+                    if 'activitiesCount' in result:
+                        result['activitiesCount'] = len(post_vlm_activities)
+                    # Filter clip_files to drop those tied to dropped activities,
+                    # avoiding wasted S3 uploads in enforcement mode.
+                    if vlm_stats['dropped'] > 0:
+                        kept_clip_paths = {
+                            a.get('activityClip') for a in post_vlm_activities
+                            if a.get('activityClip')
+                        }
+                        for clip_key in ('clip_files', 'clipFiles'):
+                            if clip_key in result and isinstance(result[clip_key], list):
+                                result[clip_key] = [
+                                    p for p in result[clip_key] if p in kept_clip_paths
+                                ]
+                    logger.info(
+                        f"[VLM] verified pre={pre_count} post={len(post_vlm_activities)} "
+                        f"dropped={vlm_stats['dropped']} uncertain={vlm_stats['uncertain']} "
+                        f"skipped_unavail={vlm_stats['skipped_unavailable']} "
+                        f"shadow={vlm_service.settings.vlm_shadow_mode}"
+                    )
+                except Exception as vlm_exc:  # pragma: no cover — fail-open at top level
+                    logger.error(
+                        f"[VLM] verifier failed unexpectedly, passing through "
+                        f"Pipeline-1 results: {vlm_exc}",
+                        exc_info=True,
+                    )
+            else:
+                logger.warning(
+                    f"[VLM] enabled but activities.json missing at "
+                    f"{activities_json_for_vlm!r}; skipping verifier"
+                )
+
         # Step 3: Upload evidence files (clips + images) to S3
         # Note: Original video is NOT uploaded - only evidence clips are uploaded
         video_s3_url = None  # No original video URL since we don't upload it

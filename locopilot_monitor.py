@@ -3285,50 +3285,16 @@ class LocopilotActivityMonitor:
                         person_debug_info['head_pose']['detected'] = True
                         person_debug_info['head_pose']['method'] = 'object_proximity'
 
-                # 3c. EATING/DRINKING POSE-ONLY FALLBACK — fires when no cup/bottle
-                # detection but the pose shows a hand brought up near the face.
-                # Overhead-CCTV-aware (2026-04-23): in this view the mouth/hand
-                # region sits 30-80 px BELOW the nose (head tilted back when
-                # drinking moves the nose up in image coords), not AT nose level.
-                # Signals required:
-                #   at least one wrist vis >= 0.5 with its (x,y) inside a face
-                #   neighbourhood around the nose: wrist_x within 100 px of
-                #   nose_x AND wrist_y in [nose_y - 40, nose_y + 80].
-                # Measured on TV22.3 t=295 ALP:
-                #   nose ≈ (562, 213), rwr = (606, 212) → dx=44 dy=-1 → PASS
-                #   lwr = (612, 240) → dx=50 dy=27 → PASS
-                if not person_activities.get('eating_drinking', False):
-                    try:
-                        rw = self.get_keypoint(translated_landmarks, 'right_wrist')
-                        lw = self.get_keypoint(translated_landmarks, 'left_wrist')
-                        nose_kp2 = self.get_keypoint(translated_landmarks, 'nose')
-                        if nose_kp2.visibility >= 0.5:
-                            nose_y_px = nose_kp2.y * h
-                            nose_x_px = nose_kp2.x * w
-                            def _wrist_near_face(wr):
-                                if wr.visibility < 0.5: return False, None
-                                wx, wy = wr.x * w, wr.y * h
-                                dx, dy = wx - nose_x_px, wy - nose_y_px
-                                near = abs(dx) <= 100 and -40 <= dy <= 80
-                                return near, (wx, wy, dx, dy)
-                            r_near, r_info = _wrist_near_face(rw)
-                            l_near, l_info = _wrist_near_face(lw)
-                            if r_near or l_near:
-                                person_activities['eating_drinking'] = True
-                                person_debug_info['head_pose']['sub_type'] = 'eating_drinking'
-                                person_debug_info['head_pose']['detected'] = True
-                                person_debug_info['head_pose']['method'] = 'pose_fallback_hand_at_face'
-                                which = 'R' if r_near else 'L'
-                                info = r_info if r_near else l_info
-                                self.logger.info(
-                                    f"[DRINK POSE] P{person_idx} f{frame_number} "
-                                    f"t={timestamp_sec:.1f}s: {which}-wrist near face "
-                                    f"wxy=({info[0]:.0f},{info[1]:.0f}) "
-                                    f"nose=({nose_x_px:.0f},{nose_y_px:.0f}) "
-                                    f"dx={info[2]:.0f} dy={info[3]:.0f}"
-                                )
-                    except Exception as _e_drink:
-                        self.logger.debug(f"[DRINK POSE] skip: {_e_drink}")
+                # 3c. EATING/DRINKING POSE-ONLY FALLBACK — REMOVED (2026-04-26)
+                # Was firing on every frame where a wrist landed in the
+                # (±100 px, -40 to +80 px) box around the nose, with no gate
+                # against an actual cup/bottle ever being detected. On the
+                # TV22 production batch this produced 99 eating/drinking
+                # activities across 10 videos (vs 4 from the cup/bottle
+                # paths), all with stationary wrists parked on control
+                # levers — almost certainly false positives. Eating/drinking
+                # now requires YOLO to actually see a cup or bottle (paths
+                # 3a / 3b above).
 
                 # 4. WRITING DETECTION — calibrated across TV22.3–TV22.9 GT
                 # frames on 2026-04-23. Two detection paths are OR-combined.
@@ -3382,32 +3348,21 @@ class LocopilotActivityMonitor:
                                     )
                                     break
 
-                        # FALLBACK PATH — wrists-together-in-lap, book missed.
-                        # Gated by book-recency (30s window): without a recent
-                        # book sighting, "hands together in lap" is just normal
-                        # seated posture and fires on everyone all day.
-                        if not writing_detected_raw and wr_dist < 80:
-                            book_seen_age = timestamp_sec - self._writing_last_book_seen[person_idx]
-                            if book_seen_age <= 30.0:
-                                try:
-                                    l_sh = self.get_keypoint(translated_landmarks, 'left_shoulder')
-                                    r_sh = self.get_keypoint(translated_landmarks, 'right_shoulder')
-                                    if l_sh.visibility >= 0.3 and r_sh.visibility >= 0.3:
-                                        sh_y = (l_sh.y + r_sh.y) / 2 * h
-                                        bx1p, by1p, bx2p, by2p = bbox[:4]
-                                        bbox_h = max(1, by2p - by1p)
-                                        lower_cutoff_y = by1p + 0.33 * bbox_h
-                                        wrists_below_shoulders = (rwy > sh_y + 40) and (lwy > sh_y + 40)
-                                        wrists_in_lower = (rwy > lower_cutoff_y) and (lwy > lower_cutoff_y)
-                                        if wrists_below_shoulders and wrists_in_lower:
-                                            writing_detected_raw = True
-                                            self.logger.info(
-                                                f"[WRITING:pose] P{person_idx} f{frame_number} "
-                                                f"t={timestamp_sec:.1f}s: wrist_dist={wr_dist:.0f} "
-                                                f"book_age={book_seen_age:.1f}s (book missed, pose-only)"
-                                            )
-                                except Exception as _e:
-                                    self.logger.debug(f"[WRITING:pose] skip: {_e}")
+                        # FALLBACK PATH — REMOVED (2026-04-26)
+                        # The pose-only "wrists-together-in-lap, book seen
+                        # within last 30 s" path was producing 61 of 62
+                        # writing flags on the most recent test video, vs
+                        # 1 from the primary "wrists inside book bbox"
+                        # path. The 30 s recency gate was too loose: any
+                        # transient book sighting (paper waved, control
+                        # panel sticker, side reading material) opened a
+                        # 30 s window in which any seated posture with
+                        # hands held together would trigger writing.
+                        # Writing now requires YOLO to actually detect a
+                        # book and BOTH wrists to fall inside its bbox
+                        # (primary path above). _writing_last_book_seen
+                        # tracking is left in place but no longer
+                        # consumed by any rule path; harmless to keep.
 
                 should_trigger = self.update_per_person_detection(
                     person_idx, 'writing', writing_detected_raw, timestamp_sec
@@ -4828,7 +4783,11 @@ class LocopilotActivityMonitor:
             # place. Previously only the flat locals were zeroed, leaving
             # persons_data with stale positives that were still visible to
             # annotation and debug overlays.
-            if self.train_motion_detector is not None and self.current_motion_state == "STOPPED":
+            if (
+                self.train_motion_detector is not None
+                and self.current_motion_state == "STOPPED"
+                and getattr(self.settings, 'train_motion_suppress_when_stopped', True)
+            ):
                 # Build a flat aggregated dict keyed by the canonical activity
                 # names (matching ACTIVITY_REGISTRY and persons_data sub-dicts)
                 # so a single call to apply_train_stopped_suppression with its
