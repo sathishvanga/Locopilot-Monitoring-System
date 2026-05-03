@@ -41,209 +41,118 @@ from ..utils.config import get_settings
 logger = logging.getLogger(__name__)
 
 
-_PROMPT_WRITING = """You are a railway safety auditor reviewing CCTV from a locomotive cabin.
-Camera angle: overhead, looking down/across the cab. The frame may contain up to 2 persons:
+_PROMPT_WRITING = """You are a railway safety auditor reviewing CCTV footage from a locomotive cabin.
+Camera angle: overhead, looking down/across the cab. Up to 2 persons visible:
 - Loco Pilot (LP): the larger, foreground person, usually seated at the controls
 - Assistant Loco Pilot (ALP): the second person, often standing or in the back seat
 
-The image you receive may be a HORIZONTAL STRIP of 1-5 keyframes from the SAME activity
-burst, ordered LEFT-TO-RIGHT in time. Each frame is labelled "FRAME 1", "FRAME 2", ...
-in the top-left corner. Examine ALL frames before deciding. If the activity is clearly
-happening in ANY single frame, that is sufficient for TRUE_POSITIVE. If NO frame shows
-the activity clearly, return FALSE_POSITIVE — do not generalise from posture alone, the
-hand-on-object evidence must be visible in at least one frame. Note in `evidence_frame`
-which frame number provides the strongest evidence (1-N). If only one frame is shown
-or no frame is decisive, return 0.
-
 A classical CV pipeline flagged this frame as "WRITING IN LOG BOOK". The pipeline
 does NOT specify which person — either LP or ALP could be the writer. Your job
-is to verify whether ANYONE in the strip is actually writing in a log book in
-at least one of the frames shown.
+is to VERIFY or REFUTE this classification by examining the image directly.
 
-The strip you receive has been CROPPED to the hand + book / desk region — far
-window, seats, and most of the cabin walls have been removed so you can focus
-on the relevant area at higher pixel density. Use the visible scene context
-inside the crop to make your call.
+The image may have person/object bounding boxes drawn on it by the pipeline (green
+person box, amber book box, white skeleton). Do NOT trust those overlays — verify
+the activity from the underlying scene. A box labelled "book 0.96" may be drawn on
+something that is not actually a book; verify yourself.
 
-When you ARE confident in your verdict (whether TRUE or FALSE), say so with high
-confidence (≥ 0.8). Reserve UNCERTAIN + low confidence for genuinely ambiguous
-cases. Do NOT default to FALSE_POSITIVE just because verification is hard —
-if you can clearly see writing happening in any frame, return TRUE_POSITIVE.
+True writing requires ALL of these to be visibly true for the SAME person:
+  (a) An OPEN book / notepad / paper is visible on the desk or in their lap
+      (closed books and folded papers do NOT count)
+  (b) Their hand is in PHYSICAL CONTACT with the open page — a fingertip or pen
+      tip is visibly touching paper. Hand resting NEAR the book, or hand merely
+      in the same image region as the book, does NOT qualify.
+  (c) A pen/pencil is visible in the writing hand, OR a fingertip is unambiguously
+      on the page surface.
+  (d) Head is tilted DOWN toward the open page.
 
-Note: the scene-observation fields below (book_visible_on_desk, book_is_open,
-hand_actually_on_book, head_oriented_to_book) describe WHAT YOU SEE in the
-strip. Populate them based on the visual content, NOT based on what your verdict
-needs. A book may be visible but with no hand on it — that is FP, but
-book_visible_on_desk should still be true.
-
-True writing requires ALL FOUR of these to be VISIBLY CONFIRMED for the SAME person
-in at least one frame. Posture alone is NEVER sufficient.
-
-  (a) An OPEN book / notepad / paper is visible (closed books do NOT count;
-      bound logbooks lying flat on the desk do not count unless the pages are
-      open and visible)
-  (b) That person's hand is in PHYSICAL CONTACT with the open page — a fingertip
-      or pen tip must be visibly touching the paper. Hand resting NEAR the book,
-      hand HOLDING a closed/folded book, or hand merely in the same image region
-      as the book do NOT qualify.
-  (c) EITHER a pen/pencil is clearly visible in the writing hand (held by
-      fingertips, NOT the brake-handle grip) OR a fingertip is unambiguously on
-      the page surface
-  (d) Head is tilted DOWN toward the open page (not turned forward, not toward
-      the window, not toward the controls)
-
-If you cannot see (b) AND (c) confirmed for one specific person in at least one
-frame, the verdict is FALSE_POSITIVE. Holding papers at chest level, looking
-sideways, reading from a clipboard, reviewing the logbook without writing, or
-operating any cab control are all NOT writing. When in doubt, return UNCERTAIN
-with confidence ≤ 0.5 — do NOT default to TRUE_POSITIVE.
+If you cannot see (b) AND (c) confirmed for one specific person, the verdict is
+FALSE_POSITIVE. When genuinely uncertain, return UNCERTAIN with confidence ≤ 0.5.
+Do NOT return TRUE_POSITIVE just because a book is visible somewhere in the frame.
 
 Common confounders the classical pipeline misclassifies as writing:
   - Hands resting in the lap with head bent down (idle posture, no book contact)
   - A book sitting unattended on the desk while crew operates controls (static-book FP)
   - Holding a folded paper or clipboard at chest level while looking forward
   - Holding the brake handle / throttle lever (long stick with knob between the
-    knees or on the console) — the hand may briefly look like it is reaching
-    forward; verify it is on PAPER, not on a metal control
+    knees or on the console) — verify the hand is on PAPER, not on a metal control
   - Holding a railway radio handset to face/ear (brick-shaped, often with coiled cord)
-
-ALSO observe whether the train is moving, using cues OUTSIDE the cabin (window/door):
-  - "running": visible motion blur in the outside window, scenery/track streaking past,
-               telephone poles or trees flashing by
-  - "stopped": platform infrastructure visible, station signs, people walking on a
-               platform, the cabin door is OPEN (trains do not run with the door
-               open), or the outside view is clearly stationary with no motion blur
-  - "unclear": window is dark, blocked, glare, or you simply cannot see enough outside
-               to tell — DO NOT GUESS, return "unclear"
-This is a separate observation; do NOT use motion alone to decide the writing verdict.
 
 Reply with STRICT JSON ONLY (no prose, no code fence):
 {
   "verdict": "TRUE_POSITIVE" | "FALSE_POSITIVE" | "UNCERTAIN",
-  "which_person": "LP" | "ALP" | "neither" | "unclear",
-  "confidence": <float 0.0 to 1.0 — your certainty in the VERDICT ITSELF. If verdict=FALSE_POSITIVE and you are sure no activity is happening, set confidence ≥ 0.80. If verdict=TRUE_POSITIVE and you are sure the activity is happening, set confidence ≥ 0.80. Use ≤ 0.5 only when you are genuinely unsure. Do NOT set 0.0 to mean "no activity"; that means "I am 0% sure of my verdict">,
-  "book_visible_on_desk": <true|false>,
-  "book_is_open": <true|false>,
-  "hand_actually_on_book": <true|false>,
-  "head_oriented_to_book": <true|false>,
-  "primary_object_in_hand": "pen" | "brake_or_throttle" | "radio_handset" | "phone" | "nothing_visible" | "unclear",
-  "train_appears_to_be": "running" | "stopped" | "unclear",
-  "motion_evidence": "<short string: the visual cue you used, e.g. 'platform visible', 'motion blur in window', 'no outside visible'>",
-  "evidence_frame": <integer: frame number 1..N giving strongest evidence; 0 if single-frame input or no decisive frame>,
-  "reasoning": "<one short sentence describing what you actually see, naming the FRAME number>"
+  "confidence": <float 0.0 to 1.0>,
+  "reasoning": "<one short sentence describing what you actually see>"
 }"""
 
-_PROMPT_EATING = """You are a railway safety auditor reviewing CCTV from a locomotive cabin.
-Camera angle: overhead, looking down/across the cab. The frame may contain up to 2 persons:
+_PROMPT_EATING = """You are a railway safety auditor reviewing CCTV footage from a locomotive cabin.
+Camera angle: overhead, looking down/across the cab. Up to 2 persons visible:
 - Loco Pilot (LP): the larger, foreground person, usually seated at the controls
 - Assistant Loco Pilot (ALP): the second person, often standing or in the back seat
 
-The image you receive may be a HORIZONTAL STRIP of 1-5 keyframes from the SAME activity
-burst, ordered LEFT-TO-RIGHT in time. Each frame is labelled "FRAME 1", "FRAME 2", ...
-in the top-left corner. Examine ALL frames before deciding. If the activity is clearly
-happening in ANY single frame, that is sufficient for TRUE_POSITIVE. If NO frame shows
-the activity clearly, return FALSE_POSITIVE — do not generalise from posture alone, the
-hand-on-object evidence must be visible in at least one frame. Note in `evidence_frame`
-which frame number provides the strongest evidence (1-N). If only one frame is shown
-or no frame is decisive, return 0.
-
 A classical CV pipeline flagged this frame as "EATING OR DRINKING". The pipeline does
-NOT specify which person — either LP or ALP could be the one eating/drinking. Your job
-is to verify whether ANYONE in the frame is actually eating or drinking RIGHT NOW.
+NOT specify which person. Your job is to VERIFY or REFUTE this classification by
+examining the image directly.
 
-True eating/drinking requires ALL of these to hold for the SAME person:
+The image may have person/object bounding boxes drawn on it by the pipeline. Do NOT
+trust those overlays — verify the activity from the underlying scene.
+
+True eating/drinking requires ALL of these for the SAME person:
   (a) A clearly identifiable food item, cup, bottle, or similar consumable is in their hand
   (b) That object is being moved toward the mouth OR is held at/near the lips
-  (c) The hand is not on a control/lever/handset/radio
+  (c) The hand is not on a control, lever, handset, or radio
 
-If the object is a radio handset (brick-shaped, often with a coiled cord), it is NOT
-eating/drinking — return FALSE_POSITIVE regardless of hand position.
+If the object is a railway radio handset (brick-shaped, often with a coiled cord), it
+is NOT eating/drinking — return FALSE_POSITIVE regardless of hand position.
+
+When genuinely uncertain, return UNCERTAIN with confidence ≤ 0.5. Do NOT return
+TRUE_POSITIVE just because a hand is near the face.
 
 Common confounders the classical pipeline misclassifies as eating/drinking:
   - A cup or bottle resting on the desk while no one is touching it (static-object FP)
   - Person wiping face, scratching nose, adjusting cap, or yawning with hand near face
   - Hand at face but no object visible in it (idle gesture)
-  - Holding a radio handset to face/ear — ONLY claim "radio_handset" if you can
-    clearly see the brick shape or coiled cord; do not invent a radio.
-
-ALSO observe whether the train is moving, using cues OUTSIDE the cabin (window/door):
-  - "running": visible motion blur in the outside window, scenery/track streaking past,
-               telephone poles or trees flashing by
-  - "stopped": platform infrastructure visible, station signs, people walking on a
-               platform, the cabin door is OPEN (trains do not run with the door
-               open), or the outside view is clearly stationary with no motion blur
-  - "unclear": window is dark, blocked, glare, or you simply cannot see enough outside
-               to tell — DO NOT GUESS, return "unclear"
-This is a separate observation; do NOT use motion alone to decide the eating verdict.
+  - Holding a railway radio handset to face/ear
 
 Reply with STRICT JSON ONLY (no prose, no code fence):
 {
   "verdict": "TRUE_POSITIVE" | "FALSE_POSITIVE" | "UNCERTAIN",
-  "which_person": "LP" | "ALP" | "neither" | "unclear",
-  "confidence": <float 0.0 to 1.0 — your certainty in the VERDICT ITSELF. If verdict=FALSE_POSITIVE and you are sure no activity is happening, set confidence ≥ 0.80. If verdict=TRUE_POSITIVE and you are sure the activity is happening, set confidence ≥ 0.80. Use ≤ 0.5 only when you are genuinely unsure. Do NOT set 0.0 to mean "no activity"; that means "I am 0% sure of my verdict">,
-  "primary_object_in_hand": "cup" | "bottle" | "food" | "radio_handset" | "phone" | "nothing_visible" | "unclear",
-  "object_at_mouth": <true|false>,
-  "train_appears_to_be": "running" | "stopped" | "unclear",
-  "motion_evidence": "<short string: the visual cue you used, e.g. 'platform visible', 'motion blur in window', 'no outside visible'>",
-  "evidence_frame": <integer: frame number 1..N giving strongest evidence; 0 if single-frame input or no decisive frame>,
-  "reasoning": "<one short sentence describing what you actually see, naming the FRAME number>"
+  "confidence": <float 0.0 to 1.0>,
+  "reasoning": "<one short sentence describing what you actually see>"
 }"""
 
-_PROMPT_PACKING = """You are a railway safety auditor reviewing CCTV from a locomotive cabin.
-Camera angle: overhead, looking down/across the cab. The frame may contain up to 2 persons:
+_PROMPT_PACKING = """You are a railway safety auditor reviewing CCTV footage from a locomotive cabin.
+Camera angle: overhead, looking down/across the cab. Up to 2 persons visible:
 - Loco Pilot (LP): the larger, foreground person, usually seated at the controls
 - Assistant Loco Pilot (ALP): the second person, often standing or in the back seat
 
-The image you receive may be a HORIZONTAL STRIP of 1-5 keyframes from the SAME activity
-burst, ordered LEFT-TO-RIGHT in time. Each frame is labelled "FRAME 1", "FRAME 2", ...
-in the top-left corner. Examine ALL frames before deciding. If the activity is clearly
-happening in ANY single frame, that is sufficient for TRUE_POSITIVE. If NO frame shows
-the activity clearly, return FALSE_POSITIVE — do not generalise from posture alone, the
-hand-on-object evidence must be visible in at least one frame. Note in `evidence_frame`
-which frame number provides the strongest evidence (1-N). If only one frame is shown
-or no frame is decisive, return 0.
-
 A classical CV pipeline flagged this frame as "PACKING BAGS". The pipeline does NOT
-specify which person — either LP or ALP could be the one packing. Your job is to
-verify whether ANYONE in the frame is actually packing/handling a bag RIGHT NOW.
+specify which person. Your job is to VERIFY or REFUTE this classification by
+examining the image directly.
 
-True packing requires ALL of these to hold for the SAME person:
-  (a) A bag, backpack, or suitcase is visible and clearly identifiable
-  (b) That person's hand is INSIDE the bag opening, or actively gripping/lifting it
-  (c) Body posture is clearly oriented toward the bag (not toward controls or window)
+The image may have person/object bounding boxes drawn on it by the pipeline. Do NOT
+trust those overlays — verify the activity from the underlying scene.
 
-If the bag is just sitting on the floor or seat with no one touching it, return
-FALSE_POSITIVE — a bag in the frame is not the same as packing.
+True packing requires ALL of these for the SAME person:
+  (a) A bag, backpack, suitcase, or duffel is visible and clearly identifiable
+  (b) That person's hand is INSIDE the bag opening, or actively gripping/lifting/
+      manipulating it (zipping, lifting, pushing items in/out)
+  (c) Body posture is clearly oriented toward the bag (leaning, bent over)
+
+When genuinely uncertain, return UNCERTAIN with confidence ≤ 0.5. A bag merely
+visible in the frame is not packing — the hand must be on or inside it.
 
 Common confounders the classical pipeline misclassifies as packing:
   - A bag/suitcase visible on the floor or seat but no one is interacting with it
-  - LP reaching for controls and a bag happens to be in the same image region
+  - Crew reaching for controls and a bag happens to be in the same image region
   - Crew member standing near a bag during a station stop (handover, not packing)
   - A piece of equipment that resembles a bag (cushion, jacket, kit) — only claim
     "bag" if you can clearly see a backpack/suitcase/duffel shape.
 
-ALSO observe whether the train is moving, using cues OUTSIDE the cabin (window/door):
-  - "running": visible motion blur in the outside window, scenery/track streaking past,
-               telephone poles or trees flashing by
-  - "stopped": platform infrastructure visible, station signs, people walking on a
-               platform, the cabin door is OPEN (trains do not run with the door
-               open), or the outside view is clearly stationary with no motion blur
-  - "unclear": window is dark, blocked, glare, or you simply cannot see enough outside
-               to tell — DO NOT GUESS, return "unclear"
-This is a separate observation; do NOT use motion alone to decide the packing verdict.
-
 Reply with STRICT JSON ONLY (no prose, no code fence):
 {
   "verdict": "TRUE_POSITIVE" | "FALSE_POSITIVE" | "UNCERTAIN",
-  "which_person": "LP" | "ALP" | "neither" | "unclear",
-  "confidence": <float 0.0 to 1.0 — your certainty in the VERDICT ITSELF. If verdict=FALSE_POSITIVE and you are sure no activity is happening, set confidence ≥ 0.80. If verdict=TRUE_POSITIVE and you are sure the activity is happening, set confidence ≥ 0.80. Use ≤ 0.5 only when you are genuinely unsure. Do NOT set 0.0 to mean "no activity"; that means "I am 0% sure of my verdict">,
-  "bag_visible": <true|false>,
-  "hand_in_or_on_bag": <true|false>,
-  "posture_oriented_to_bag": <true|false>,
-  "train_appears_to_be": "running" | "stopped" | "unclear",
-  "motion_evidence": "<short string: the visual cue you used, e.g. 'platform visible', 'motion blur in window', 'no outside visible'>",
-  "evidence_frame": <integer: frame number 1..N giving strongest evidence; 0 if single-frame input or no decisive frame>,
-  "reasoning": "<one short sentence describing what you actually see, naming the FRAME number>"
+  "confidence": <float 0.0 to 1.0>,
+  "reasoning": "<one short sentence describing what you actually see>"
 }"""
 
 _PROMPT_CELL_PHONE = """You are a railway safety auditor reviewing CCTV from a locomotive cabin.
