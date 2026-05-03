@@ -42,15 +42,16 @@ In `/opt/poc2/.env` (or `.env.production`):
 
 ```bash
 VLM_VERIFICATION_ENABLED=1
-VLM_SHADOW_MODE=1                         # safe rollout: log verdicts, never drop
 VLM_VERIFY_ACTIVITIES=writing,eating_drinking
+VLM_DROP_THRESHOLD=0.80                   # FP @ conf >= 0.80 are dropped
 ```
 
 Restart the main service: `sudo systemctl restart locopilot.service`.
 
-Activities written to `activities.json` will now carry a `vlm_review` field
-with the verdict, reasoning, and per-call latency. Compare verdicts against
-ground truth for ~1 week before flipping `VLM_SHADOW_MODE=0`.
+Activities written to `activities.json` will carry a `vlm_review` field with
+the verdict, reasoning, and per-call latency. To run in observe-only mode
+(record verdicts without dropping anything), raise `VLM_DROP_THRESHOLD`
+above 1.0.
 
 ## Logs
 

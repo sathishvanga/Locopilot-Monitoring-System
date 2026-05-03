@@ -6,15 +6,12 @@ JSON verdict. Designed to fail-open: if the endpoint is down or slow, the
 Pipeline-1 verdict passes through unchanged — VLM downtime must never silently
 swallow real violations.
 
-Two modes (controlled by ``VLM_SHADOW_MODE``):
-
-- **Shadow** (default): every verified activity gets a ``vlm_review`` field
-  attached to ``activities.json`` with verdict + reasoning + latency, but
-  nothing is dropped. Used to compare VLM judgement against ground truth
-  before enabling enforcement.
-- **Enforcement**: activities with ``verdict=FALSE_POSITIVE`` and
-  ``confidence >= VLM_DROP_THRESHOLD`` are filtered out of the activities list
-  passed downstream to S3 upload + external API.
+Every verified activity gets a ``vlm_review`` field attached to
+``activities.json`` with verdict + reasoning + latency. Activities with
+``verdict=FALSE_POSITIVE`` and ``confidence >= VLM_DROP_THRESHOLD`` are
+filtered out of the list passed downstream to S3 upload + external API.
+To disable dropping while still recording verdicts (e.g. during a tuning
+window), set ``VLM_DROP_THRESHOLD`` above 1.0.
 
 Prompt design follows the patterns validated in the Phase-0 spike (2026-04-26),
 which scored ~85-90% precision on FP detection across the writing/eating
@@ -25,6 +22,7 @@ from __future__ import annotations
 import base64
 import json
 import logging
+import re
 import threading
 import time
 import urllib.error
@@ -77,10 +75,23 @@ Common confounders the classical pipeline misclassifies as writing:
     knees or on the console) — verify the hand is on PAPER, not on a metal control
   - Holding a railway radio handset to face/ear (brick-shaped, often with coiled cord)
 
+ALSO observe whether the train is moving, using cues OUTSIDE the cabin (window/door):
+  - "running": visible motion blur in the outside window, scenery/track streaking past,
+               telephone poles or trees flashing by
+  - "stopped": platform infrastructure visible, station signs, people walking on a
+               platform, the cabin door is OPEN (trains do not run with the door
+               open), or the outside view is clearly stationary with no motion blur
+  - "unclear": window is dark, blocked, glare, or you simply cannot see enough outside
+               to tell — DO NOT GUESS, return "unclear"
+Writing in the logbook is only a violation while the train is RUNNING; this motion
+observation is independent of the activity verdict — report what you actually see.
+
 Reply with STRICT JSON ONLY (no prose, no code fence):
 {
   "verdict": "TRUE_POSITIVE" | "FALSE_POSITIVE" | "UNCERTAIN",
   "confidence": <float 0.0 to 1.0>,
+  "train_appears_to_be": "running" | "stopped" | "unclear",
+  "motion_evidence": "<short string: the visual cue you used, e.g. 'platform visible', 'motion blur in window', 'cabin door open', 'no outside visible'>",
   "reasoning": "<one short sentence describing what you actually see>"
 }"""
 
@@ -113,10 +124,23 @@ Common confounders the classical pipeline misclassifies as eating/drinking:
   - Hand at face but no object visible in it (idle gesture)
   - Holding a railway radio handset to face/ear
 
+ALSO observe whether the train is moving, using cues OUTSIDE the cabin (window/door):
+  - "running": visible motion blur in the outside window, scenery/track streaking past,
+               telephone poles or trees flashing by
+  - "stopped": platform infrastructure visible, station signs, people walking on a
+               platform, the cabin door is OPEN (trains do not run with the door
+               open), or the outside view is clearly stationary with no motion blur
+  - "unclear": window is dark, blocked, glare, or you simply cannot see enough outside
+               to tell — DO NOT GUESS, return "unclear"
+Eating/drinking is only a violation while the train is RUNNING; this motion
+observation is independent of the activity verdict — report what you actually see.
+
 Reply with STRICT JSON ONLY (no prose, no code fence):
 {
   "verdict": "TRUE_POSITIVE" | "FALSE_POSITIVE" | "UNCERTAIN",
   "confidence": <float 0.0 to 1.0>,
+  "train_appears_to_be": "running" | "stopped" | "unclear",
+  "motion_evidence": "<short string: the visual cue you used, e.g. 'platform visible', 'motion blur in window', 'cabin door open', 'no outside visible'>",
   "reasoning": "<one short sentence describing what you actually see>"
 }"""
 
@@ -148,10 +172,23 @@ Common confounders the classical pipeline misclassifies as packing:
   - A piece of equipment that resembles a bag (cushion, jacket, kit) — only claim
     "bag" if you can clearly see a backpack/suitcase/duffel shape.
 
+ALSO observe whether the train is moving, using cues OUTSIDE the cabin (window/door):
+  - "running": visible motion blur in the outside window, scenery/track streaking past,
+               telephone poles or trees flashing by
+  - "stopped": platform infrastructure visible, station signs, people walking on a
+               platform, the cabin door is OPEN (trains do not run with the door
+               open), or the outside view is clearly stationary with no motion blur
+  - "unclear": window is dark, blocked, glare, or you simply cannot see enough outside
+               to tell — DO NOT GUESS, return "unclear"
+Packing bags is only a violation while the train is RUNNING; this motion
+observation is independent of the activity verdict — report what you actually see.
+
 Reply with STRICT JSON ONLY (no prose, no code fence):
 {
   "verdict": "TRUE_POSITIVE" | "FALSE_POSITIVE" | "UNCERTAIN",
   "confidence": <float 0.0 to 1.0>,
+  "train_appears_to_be": "running" | "stopped" | "unclear",
+  "motion_evidence": "<short string: the visual cue you used, e.g. 'platform visible', 'motion blur in window', 'cabin door open', 'no outside visible'>",
   "reasoning": "<one short sentence describing what you actually see>"
 }"""
 
@@ -663,6 +700,48 @@ def _stitch_keyframes(
     return buf.tobytes()
 
 
+# Hard visual cues that deterministically imply the train is STOPPED. We only
+# trust the VLM to override Pipeline-1's motionState=RUNNING when it cites one
+# of these in `motion_evidence` — soft cues like "no motion blur visible" alone
+# are too easy to confuse with low-light / glare false negatives.
+#
+# Word-boundary regex (not substring) so "destination" does not match "station"
+# and "doorway" does not match "door". The door pattern accepts up to three
+# intermediate words ("door is open", "door appears open", "door slightly
+# open", "door appears to be open") so the regex doesn't reject the
+# descriptive phrasings the prompts actively encourage.
+_HARD_STOPPED_CUE_RE = re.compile(
+    r"\b(?:door\s+(?:\w+\s+){0,3}open|open\s+door|platforms?|stations?)\b",
+    re.IGNORECASE,
+)
+# Reject when the *same clause* contains a negation/uncertainty token. The
+# prompts ask the VLM to "report what you see" and it commonly returns a
+# compound observation like "platform visible, no motion blur in window" —
+# the cue and the negation are about different things, so we split on
+# sentence punctuation and apply the guard per-clause. Matching anywhere in
+# the full string would wrongly reject those genuine STOPPED observations.
+_NEGATION_RE = re.compile(
+    r"\b(?:no|not|none|without|absent|unclear|cannot|can't)\b",
+    re.IGNORECASE,
+)
+_CLAUSE_SPLIT_RE = re.compile(r"[,;.()\n]+")
+
+
+def _has_hard_stopped_cue(motion_evidence: str) -> bool:
+    """True when motion_evidence cites an unambiguous STOPPED visual cue.
+
+    A clause is accepted if it contains a hard cue AND no negation token.
+    Multiple clauses (split on ``,;.()`` plus newlines) are checked
+    independently — one clean affirmative is enough.
+    """
+    if not motion_evidence:
+        return False
+    for clause in _CLAUSE_SPLIT_RE.split(motion_evidence):
+        if _HARD_STOPPED_CUE_RE.search(clause) and not _NEGATION_RE.search(clause):
+            return True
+    return False
+
+
 def _parse_verdict(raw_text: str) -> Dict[str, Any]:
     """Best-effort JSON extraction. Tolerates ``code``-fenced output."""
     t = (raw_text or "").strip()
@@ -694,10 +773,9 @@ class VlmVerificationService:
             x.strip() for x in self.settings.vlm_verify_activities.split(",") if x.strip()
         )
         logger.info(
-            "[vlm] VlmVerificationService init enabled=%s shadow=%s endpoint=%s "
+            "[vlm] VlmVerificationService init enabled=%s endpoint=%s "
             "model=%s verify=%s drop_threshold=%.2f timeout=%.1fs",
             self.settings.vlm_verification_enabled,
-            self.settings.vlm_shadow_mode,
             self.settings.vlm_base_url,
             self.settings.vlm_model,
             sorted(self._verify_set),
@@ -717,14 +795,22 @@ class VlmVerificationService:
         """Verify a batch of activities and return the post-filter list.
 
         Each input activity dict is mutated in place to add a ``vlm_review``
-        sub-dict with the verdict, latency, and (in enforcement mode) a
-        ``dropped`` flag.
+        sub-dict with the verdict, latency, and (when enforcement drops the
+        activity) a ``dropped`` flag. When ``vlm_motion_override_enabled`` is
+        set and the verifier sees a hard STOPPED cue, the activity's
+        ``motionState`` is also rewritten to ``STOPPED`` and a
+        ``motion_override`` audit block is attached.
 
         Returns:
             Tuple of (kept_activities, stats_dict). ``stats_dict`` keys:
             verified, skipped_type, skipped_stopped, skipped_unavailable,
-            skipped_no_image, dropped, kept, uncertain, parse_errors.
+            skipped_no_image, dropped, kept, uncertain, parse_errors,
+            motion_overrides.
         """
+        # motion_overrides is orthogonal to verified / kept / dropped: an
+        # activity that gets motionState flipped to STOPPED still counts toward
+        # whichever verdict bucket its FALSE_POSITIVE/TRUE_POSITIVE/UNCERTAIN
+        # judgement landed in. Don't fold it into the kept-count math below.
         stats = {
             "verified": 0,
             "skipped_type": 0,
@@ -735,6 +821,7 @@ class VlmVerificationService:
             "kept": 0,
             "uncertain": 0,
             "parse_errors": 0,
+            "motion_overrides": 0,
         }
         if not self.is_enabled() or not activities:
             return activities, stats
@@ -795,8 +882,9 @@ class VlmVerificationService:
                 continue
 
             stats["verified"] += 1
-            verdict = (review.get("verdict") or {}).get("verdict")
-            confidence = (review.get("verdict") or {}).get("confidence", 0.0)
+            verdict_block = review.get("verdict") or {}
+            verdict = verdict_block.get("verdict")
+            confidence = verdict_block.get("confidence", 0.0)
             try:
                 confidence = float(confidence)
             except (TypeError, ValueError):
@@ -805,9 +893,42 @@ class VlmVerificationService:
             if verdict == "UNCERTAIN":
                 stats["uncertain"] += 1
 
+            # Direction A: VLM motion override (RUNNING -> STOPPED only).
+            # If Pipeline-1's vibration/window-flow detector missed a station
+            # stop but the VLM clearly sees a hard STOPPED cue (cabin door
+            # open, platform/station visible), overwrite motionState so the
+            # downstream STOPPED-filter in video_controller.py drops the
+            # activity from the external API post. The reverse direction
+            # (VLM-says-RUNNING, P1-says-STOPPED) is NOT handled here — that
+            # case requires deferring gates.apply_train_stopped_suppression
+            # because suppressed activities never reach this verifier.
+            if self.settings.vlm_motion_override_enabled:
+                train_obs = (verdict_block.get("train_appears_to_be") or "").strip().lower()
+                motion_evidence = str(verdict_block.get("motion_evidence") or "")
+                current_motion = (act.get("motionState") or "").strip().upper()
+                if (
+                    train_obs == "stopped"
+                    and _has_hard_stopped_cue(motion_evidence)
+                    and current_motion != "STOPPED"
+                ):
+                    act["motionState"] = "STOPPED"
+                    act["vlm_review"]["motion_override"] = {
+                        "from": current_motion or "UNKNOWN",
+                        "to": "STOPPED",
+                        "cue": motion_evidence[:200],
+                    }
+                    stats["motion_overrides"] += 1
+                    logger.info(
+                        "[vlm] MOTION OVERRIDE activity type=%s at t=%s: %s -> STOPPED "
+                        "(cue=%r)",
+                        act.get("activityType"),
+                        act.get("activityStartTime"),
+                        current_motion or "UNKNOWN",
+                        motion_evidence[:120],
+                    )
+
             should_drop = (
-                not self.settings.vlm_shadow_mode
-                and verdict == "FALSE_POSITIVE"
+                verdict == "FALSE_POSITIVE"
                 and confidence >= self.settings.vlm_drop_threshold
             )
             if should_drop:
@@ -820,7 +941,7 @@ class VlmVerificationService:
                     act.get("des", "")[:60],
                     act.get("activityStartTime"),
                     confidence,
-                    ((review.get("verdict") or {}).get("reasoning") or "")[:120],
+                    (verdict_block.get("reasoning") or "")[:120],
                 )
                 # Skip appending — activity is dropped
                 continue
@@ -830,19 +951,19 @@ class VlmVerificationService:
 
         logger.info(
             "[vlm] verification stats: verified=%d kept=%d dropped=%d uncertain=%d "
-            "skipped_type=%d skipped_stopped=%d skipped_unavailable=%d "
-            "parse_errors=%d shadow=%s",
+            "motion_overrides=%d skipped_type=%d skipped_stopped=%d "
+            "skipped_unavailable=%d parse_errors=%d",
             stats["verified"],
             stats["kept"] + stats["skipped_type"] + stats["skipped_stopped"]
             + stats["skipped_unavailable"] + stats["skipped_no_image"]
             + stats["parse_errors"],
             stats["dropped"],
             stats["uncertain"],
+            stats["motion_overrides"],
             stats["skipped_type"],
             stats["skipped_stopped"],
             stats["skipped_unavailable"],
             stats["parse_errors"],
-            self.settings.vlm_shadow_mode,
         )
         return kept, stats
 

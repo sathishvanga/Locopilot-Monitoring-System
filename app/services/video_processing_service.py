@@ -352,8 +352,7 @@ class VideoProcessingService:
                         logger.info(
                             f"[VLM] verified pre={pre_count} post={len(activities)} "
                             f"dropped={vlm_stats['dropped']} uncertain={vlm_stats['uncertain']} "
-                            f"skipped_unavail={vlm_stats['skipped_unavailable']} "
-                            f"shadow={vlm_service.settings.vlm_shadow_mode}"
+                            f"skipped_unavail={vlm_stats['skipped_unavailable']}"
                         )
                     except Exception as vlm_exc:
                         logger.warning(

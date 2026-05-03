@@ -21,7 +21,7 @@ Pipeline 1 — classical CV (the original detector)
         → Temporal filtering (consecutive frames + grace periods)
         → activities.json + evidence clips/frames
 
-Pipeline 2 — VLM verification layer (added 2026-04-26, shadow-mode default)
+Pipeline 2 — VLM verification layer (added 2026-04-26)
    For each confirmed activity in {writing, eating_drinking, packing_bags}
    send the keyframe + activity-specific prompt to Qwen2.5-VL-7B-AWQ
    served by vLLM on :8001. Verdict (TP/FP/UNCERTAIN) + reasoning attached
@@ -31,9 +31,10 @@ Then: S3 upload → external mindcoinapps API → response
 ```
 
 Pipeline 1 remains the source of truth for what counts as a violation.
-Pipeline 2 only filters (drops in enforcement mode, annotates in shadow mode);
-it never adds violations. Verifier is fail-open — if vLLM is down, Pipeline-1
-verdicts pass through unchanged.
+Pipeline 2 only filters (drops FALSE_POSITIVE @ confidence>=VLM_DROP_THRESHOLD
+and annotates every verified activity with `vlm_review`); it never adds
+violations. Verifier is fail-open — if vLLM is down, Pipeline-1 verdicts
+pass through unchanged.
 
 ---
 
@@ -180,8 +181,7 @@ eating_drinking are all suppressed. microsleep + cell_phone remain active
 | `VLM_BASE_URL` | `http://localhost:8001/v1` | vLLM endpoint |
 | `VLM_MODEL` | `Qwen/Qwen2.5-VL-7B-Instruct-AWQ` | |
 | `VLM_VERIFY_ACTIVITIES` | `writing,eating_drinking` | Allowlist; non-listed activities pass through |
-| `VLM_DROP_THRESHOLD` | `0.80` | Min confidence to drop a FALSE_POSITIVE in enforcement mode |
-| `VLM_SHADOW_MODE` | `1` | `1`=annotate only; `0`=drop FPs above threshold |
+| `VLM_DROP_THRESHOLD` | `0.80` | Min confidence to drop a FALSE_POSITIVE. Set >1.0 to record verdicts without dropping |
 | `VLM_TIMEOUT_SECONDS` | `8.0` (15 in prod) | Per-call HTTP timeout; on timeout the activity passes through |
 | `VLM_MAX_ACTIVITIES_PER_RUN` | `0` | Cap (0=no cap) |
 
@@ -275,7 +275,7 @@ End-to-end live (`run_20260426_085645`, 5-activity TV22_10 trip):
 
 ```
 [vlm] verification stats: verified=5 kept=5 dropped=0 uncertain=0
-      skipped_unavailable=0 parse_errors=0 shadow=True
+      skipped_unavailable=0 parse_errors=0
 ```
 
 Latencies: cold first call ~13 s (Marlin kernel JIT), steady-state 1.6-2.0 s
@@ -322,8 +322,9 @@ packing_bags, cell_phone are wired. To add a new activity:
 ```
 
 ### Rollout state (current production)
-Shadow mode enabled. Compare verdicts vs ground truth for ~1 week, then
-flip `VLM_SHADOW_MODE=0` on writing first. See `deploy/README-vlm.md`.
+Enforcement enabled (`VLM_DROP_THRESHOLD=0.80`) for writing, eating_drinking,
+and packing_bags. To roll back to observe-only without disabling the
+verifier, raise `VLM_DROP_THRESHOLD` above 1.0. See `deploy/README-vlm.md`.
 
 ### Operations
 ```bash

@@ -754,10 +754,10 @@ async def process_and_upload_video(
 
         # Step 2b: VLM verification (Pipeline-2 false-positive filter).
         # Runs while local clip/image paths in activities.json are still valid
-        # (before S3 swap below). In shadow mode (default) attaches vlm_review
-        # to each activity but never drops; in enforcement mode FALSE_POSITIVE
-        # @ confidence>=threshold are filtered out before S3 upload + API push.
-        # Fail-open: VLM endpoint down → activities pass through unchanged.
+        # (before S3 swap below). Attaches vlm_review to each verified activity
+        # and drops FALSE_POSITIVE @ confidence>=VLM_DROP_THRESHOLD before S3
+        # upload + API push. Fail-open: VLM endpoint down → activities pass
+        # through unchanged.
         vlm_service = get_vlm_verification_service()
         if vlm_service.is_enabled():
             # process_video returns the key as `runDirectory` (camelCase) and
@@ -814,8 +814,7 @@ async def process_and_upload_video(
                     logger.info(
                         f"[VLM] verified pre={pre_count} post={len(post_vlm_activities)} "
                         f"dropped={vlm_stats['dropped']} uncertain={vlm_stats['uncertain']} "
-                        f"skipped_unavail={vlm_stats['skipped_unavailable']} "
-                        f"shadow={vlm_service.settings.vlm_shadow_mode}"
+                        f"skipped_unavail={vlm_stats['skipped_unavailable']}"
                     )
                 except Exception as vlm_exc:  # pragma: no cover — fail-open at top level
                     logger.error(

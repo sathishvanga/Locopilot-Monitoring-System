@@ -610,25 +610,32 @@ class Settings(BaseSettings):
     # ==========================================
     # Post-Pipeline-1 verification using a vision-language model (Qwen2.5-VL).
     # The verifier sees the activity keyframe + an activity-specific prompt and
-    # returns TRUE_POSITIVE / FALSE_POSITIVE / UNCERTAIN. In shadow mode the
-    # verdict is recorded on the activity but no activities are dropped; in
-    # enforcement mode FALSE_POSITIVE @ confidence>=threshold are filtered out.
-    # Designed to fail-open: if the vLLM endpoint is unreachable, the
-    # Pipeline-1 verdict passes through unchanged.
+    # returns TRUE_POSITIVE / FALSE_POSITIVE / UNCERTAIN. Activities with
+    # FALSE_POSITIVE @ confidence>=VLM_DROP_THRESHOLD are filtered out before
+    # S3 upload + external API push. To disable enforcement without disabling
+    # the verifier, set VLM_DROP_THRESHOLD=2.0 (impossible threshold, keeps
+    # vlm_review annotations on every activity). Designed to fail-open: if the
+    # vLLM endpoint is unreachable, the Pipeline-1 verdict passes through.
     vlm_verification_enabled: bool = bool(int(os.getenv("VLM_VERIFICATION_ENABLED", "0")))
     vlm_base_url: str = os.getenv("VLM_BASE_URL", "http://localhost:8001/v1")
     vlm_model: str = os.getenv("VLM_MODEL", "Qwen/Qwen2.5-VL-7B-Instruct-AWQ")
     # Comma-separated activity names (matches ACTIVITY_REGISTRY keys) to verify.
     # Activities not listed are passed through unchanged.
     vlm_verify_activities: str = os.getenv("VLM_VERIFY_ACTIVITIES", "writing,eating_drinking")
-    # Minimum VLM confidence required to drop a Pipeline-1 detection (enforcement mode only).
+    # Minimum VLM confidence required to drop a Pipeline-1 detection. Set to a
+    # value > 1.0 to disable dropping while still recording verdicts.
     vlm_drop_threshold: float = float(os.getenv("VLM_DROP_THRESHOLD", "0.80"))
-    # 1 = log verdicts but never drop (safe default); 0 = drop FPs above threshold.
-    vlm_shadow_mode: bool = bool(int(os.getenv("VLM_SHADOW_MODE", "1")))
     # HTTP timeout per VLM call. Verifier is fail-open on timeout.
     vlm_timeout_seconds: float = float(os.getenv("VLM_TIMEOUT_SECONDS", "8.0"))
     # Max activities verified per request. 0 = no cap.
     vlm_max_activities_per_run: int = int(os.getenv("VLM_MAX_ACTIVITIES_PER_RUN", "0"))
+    # When 1, the VLM's `train_appears_to_be` observation can override Pipeline-1's
+    # motionState=RUNNING → STOPPED if the VLM reports a hard visual stopped cue
+    # (cabin door open, platform/station visible). Downstream STOPPED-filter then
+    # drops the activity from the external API post. RUNNING-direction overrides
+    # are NOT applied (those would require deferring gates.apply_train_stopped_
+    # suppression; tracked separately as Direction B). Default 0 (opt-in).
+    vlm_motion_override_enabled: bool = bool(int(os.getenv("VLM_MOTION_OVERRIDE_ENABLED", "0")))
 
     @model_validator(mode='after')
     def _validate_overlap_window(self) -> "Settings":
