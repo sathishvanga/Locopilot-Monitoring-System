@@ -59,6 +59,30 @@ class TrainMotionDetector:
         self.person_bbox_history = max(0, int(
             getattr(settings, 'train_motion_person_bbox_history', 2)
         ))
+        # Cold-start guard: at the start of each chunk (per-worker fresh
+        # detector) the temporal smoother has no history, so a single noisy
+        # frame (person moving while seated, bag set down, door opening at a
+        # station) can produce vib_mean spikes >> vibration_high and commit
+        # RAW=RUNNING. While the detector has fewer than cold_start_frames
+        # vibration samples in its buffer, demote RAW=RUNNING to STOPPED
+        # unless the side-window optical flow is also elevated — a genuinely
+        # running train shows scenery streaming, a station-stop with cab
+        # activity does not.
+        self.cold_start_require_window_flow = bool(
+            getattr(settings, 'train_motion_cold_start_require_window_flow', True)
+        )
+        # Independent of vibration_median_window so the median smoother can
+        # stay narrow (its default is 1, no-op) while the cold-start guard
+        # still covers the first ~10s of a chunk at sample_fps=0.5.
+        self.cold_start_frames = max(0, int(
+            getattr(settings, 'train_motion_cold_start_frames', 5)
+        ))
+        # Counter of how many frames this detector has seen vibration data for
+        # (i.e. after prev_gray was set on frame 0). Used by the cold-start
+        # guard instead of len(_vib_history) so the guard works even when
+        # vibration_median_window=1 (no-op smoother) collapses the buffer to
+        # a single entry after frame 1.
+        self._frames_seen = 0
         self.stability_block_size = 16
         self.confidence_threshold = 0.6
 
@@ -391,9 +415,22 @@ class TrainMotionDetector:
         )
 
         # Decision
+        cold_start = (
+            self.cold_start_require_window_flow
+            and self._frames_seen < self.cold_start_frames
+        )
+        self._frames_seen += 1
         if combined_score >= self.running_threshold:
-            raw_state = "RUNNING"
-            confidence = min(1.0, combined_score / self.running_threshold)
+            if cold_start and win["window_score"] <= 0.0:
+                # Vibration alone during cold start can be person motion, not
+                # the train. Demote to STOPPED so the gate stays effective at
+                # chunk boundaries; the smoother will recover RUNNING quickly
+                # once real scenery flow appears.
+                raw_state = "STOPPED"
+                confidence = 0.5
+            else:
+                raw_state = "RUNNING"
+                confidence = min(1.0, combined_score / self.running_threshold)
         else:
             raw_state = "STOPPED"
             confidence = min(1.0, (self.running_threshold - combined_score) / self.running_threshold)
@@ -424,6 +461,7 @@ class TrainMotionDetector:
             "raw_confidence": confidence,
             "smoothed_state": smoothed_state,
             "smoothed_confidence": smoothed_conf,
+            "cold_start": cold_start,
         }
 
         if self.person_bbox_history > 0:

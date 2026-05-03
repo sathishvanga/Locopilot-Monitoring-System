@@ -550,6 +550,24 @@ class Settings(BaseSettings):
     # person crosses many pixels per sample, so 1-frame prev-mask isn't enough.
     # Default 2 (union last 2 frames + current). Set to 0 to use current only.
     train_motion_person_bbox_history: int = int(os.getenv("TRAIN_MOTION_PERSON_BBOX_HISTORY", "2"))
+    # Cold-start guard for the multiprocessing chunk-boundary case. Each worker
+    # creates a fresh TrainMotionDetector with empty state buffers, so the
+    # first few frames of every chunk lack the temporal smoothing that catches
+    # 1-2 frame vibration spikes from person motion (writing/packing seated).
+    # When True (default) and the rolling vib history is shorter than
+    # vibration_median_window, we require the side-window optical-flow signal
+    # to be elevated before committing RAW=RUNNING; otherwise we demote to
+    # STOPPED. Trade-off: ~5-10s of false-STOPPED at the start of a video that
+    # actually opens with the train running, in exchange for eliminating
+    # station-context FPs that leak past the gate at chunk boundaries.
+    train_motion_cold_start_require_window_flow: bool = bool(int(
+        os.getenv("TRAIN_MOTION_COLD_START_REQUIRE_WINDOW_FLOW", "1")
+    ))
+    # How many frames at the start of each per-worker detector instance the
+    # cold-start guard applies to. At sample_fps=0.5 each frame is 2s, so the
+    # default 5 covers the first 10s — enough to pass the chunk-overlap region
+    # (5s) plus a margin for the temporal smoother to acquire history.
+    train_motion_cold_start_frames: int = int(os.getenv("TRAIN_MOTION_COLD_START_FRAMES", "5"))
 
     # Suppress no_person_detected when trip schedule is unavailable
     # (cannot distinguish station halts from running without schedule)
