@@ -29,6 +29,57 @@ from app.core.activity_registry import ACTIVITY_REGISTRY, ActivityConfig
 from app.core.gates import apply_train_stopped_suppression
 from app.core.evidence_manager import EvidenceManager
 
+# ---------------------------------------------------------------------------
+# TR (refactor) imports — extracted helpers wired into the monolith via thin
+# wrappers below. Each ``_fn`` alias names the module-level function so the
+# instance method that delegates to it remains readable and signature-stable.
+# ---------------------------------------------------------------------------
+from app.core.utils.pose_checks import (
+    check_hands_below_shoulders as _check_hands_below_shoulders_fn,
+    check_hand_object_interaction as _check_hand_object_interaction_fn,
+)
+from app.core.utils.pose_validators import (
+    validate_pose_landmarks as _validate_pose_landmarks_fn,
+    validate_anatomical_consistency as _validate_anatomical_consistency_fn,
+    check_landmark_stability as _check_landmark_stability_fn,
+)
+from app.core.utils.video_io import video_capture_context  # supersedes the local def
+from app.core.detectors.writing_fallbacks import (
+    detect_writing_by_wrist_proximity as _detect_writing_by_wrist_proximity_fn,
+    detect_writing_by_book_and_posture as _detect_writing_by_book_and_posture_fn,
+    WritingFallbackThresholds,
+)
+from app.core.detectors.mind_diversion_suppression import (
+    should_suppress_mind_diversion as _should_suppress_mind_diversion_fn,
+)
+from app.core.tracking.hand_history import HandHistoryTracker
+from app.core.tracking.coordination import (
+    check_hand_gesture_coordination as _check_hand_gesture_coordination_fn,
+)
+from app.core.tracking.static_object_filter import StaticObjectFilter
+from app.core.tracking.per_person_state import PerPersonState
+from app.core.pipeline.frame_sampling import sample_video_frames as _sample_video_frames_fn
+from app.core.pipeline.pose_batch import detect_poses_batch as _detect_poses_batch_fn
+from app.core.visualization.mediapipe_overlay import (
+    draw_mediapipe_outputs as _draw_mediapipe_outputs_fn,
+    draw_multi_person_mediapipe_outputs as _draw_multi_person_mediapipe_outputs_fn,
+)
+from app.core.visualization.evidence_frame_annotator import (
+    annotate_evidence_frame as _annotate_evidence_frame_fn,
+)
+from app.core.media.clip_writer import (
+    save_video_clip as _save_video_clip_fn,
+    reencode_to_h264 as _reencode_to_h264_fn,
+)
+
+
+__all__ = [
+    "LocopilotActivityMonitor",
+    "ACTIVITY_REGISTRY",
+    "ActivityConfig",
+    "video_capture_context",
+]
+
 
 # ---------------------------------------------------------------------------
 # Task 0001 (2026-04): Activity metadata now lives in app/core/activity_registry.
@@ -142,18 +193,9 @@ def _setup_module_logger(logger_name: str, level=logging.INFO) -> logging.Logger
 # Module-level loggers removed - consolidated to self.logger instance hierarchy
 
 
-@contextlib.contextmanager
-def video_capture_context(video_path):
-    """
-    Context manager to ensure VideoCapture is always released.
-    This prevents memory leaks from unclosed video captures.
-    """
-    cap = cv2.VideoCapture(video_path)
-    try:
-        yield cap
-    finally:
-        if cap.isOpened():
-            cap.release()
+# NOTE: ``video_capture_context`` is imported from ``app.core.utils.video_io``
+# above (TR refactor). Re-exported via ``__all__`` for downstream callers that
+# previously did ``from locopilot_monitor import video_capture_context``.
 
 
 class LocopilotActivityMonitor:
@@ -501,9 +543,14 @@ class LocopilotActivityMonitor:
             for name in ACTIVITY_REGISTRY
         }
 
+        # TR refactor: per-person tracking dicts now owned by PerPersonState.
+        # The monitor keeps direct attribute aliases so the rest of __init__
+        # and the gigantic ``process_all_persons_activities`` continue to
+        # read/mutate the same dict objects unchanged. (Section 3 / TR-2.)
+        self._pps = PerPersonState()
         # TEMPORAL SUPPRESSION: Track recent activities per person for gesture suppression
         # Format: {person_idx: {'writing': last_timestamp, 'packing_bags': last_timestamp, 'cell_phone': last_timestamp}}
-        self.recent_person_activities = {}
+        self.recent_person_activities = self._pps.recent_person_activities
         self.temporal_suppression_window = self.settings.temporal_suppression_window if self.settings else 10.0
 
         # Hand gesture coordination temporal window
@@ -549,18 +596,21 @@ class LocopilotActivityMonitor:
 
         # No-pose sleep detection tracking (for IR mode where YOLO pose fails)
         # Format: {person_idx: {'first_seen': timestamp, 'last_bbox': [x1,y1,x2,y2], 'stable_since': timestamp}}
-        self.no_pose_sleep_tracking = {}
+        # TR refactor: aliased to PerPersonState (same dict object).
+        self.no_pose_sleep_tracking = self._pps.no_pose_sleep_tracking
 
         # NOTE: per_person_sleep_tracking and ir_forward_lean_tracking are now managed by SleepDetector
-        
+
         # Wrist proximity tracking for writing detection (per person)
         # Format: {person_idx: {'start_time': timestamp, 'duration': seconds, 'consecutive_frames': int}}
-        self.wrist_proximity_tracking = {}
+        # TR refactor: aliased to PerPersonState (same dict object).
+        self.wrist_proximity_tracking = self._pps.wrist_proximity_tracking
 
         # Per-person consecutive detection tracking for temporal filtering
         # Format: {person_idx: {activity_type: count}} - uses defaultdict to support all activity types
-        self.per_person_consecutive_detections = defaultdict(lambda: defaultdict(int))
-        self.per_person_grace_counters = defaultdict(lambda: defaultdict(int))
+        # TR refactor: aliased to PerPersonState (same defaultdict objects).
+        self.per_person_consecutive_detections = self._pps.per_person_consecutive_detections
+        self.per_person_grace_counters = self._pps.per_person_grace_counters
 
         # Last timestamp_sec at which a book bbox was associated with this
         # person (used by the writing pose-only fallback to avoid firing on
@@ -569,29 +619,58 @@ class LocopilotActivityMonitor:
 
         # Hand position history for velocity/trajectory analysis
         # Format: {person_idx: {'right_wrist': deque([coords]), 'left_wrist': deque([coords]), 'timestamps': deque([t])}}
-        self.hand_position_history = {}
+        # TR refactor: aliased to PerPersonState (same dict object).
+        self.hand_position_history = self._pps.hand_position_history
         self.hand_history_max_length = 10  # Track last 10 positions (~20s at 0.5 fps)
-
-        # Static backpack suppression — track backpack bboxes across frames
-        # Format: list of {'bbox': [x1,y1,x2,y2], 'frame_count': int}
-        # Backpacks in same location (IoU > threshold) for N+ frames are treated as static fixtures
-        self.static_backpack_candidates = []
-        self.static_backpack_iou_threshold = getattr(settings, 'packing_static_iou_threshold', 0.80)
-        self.static_backpack_min_frames = getattr(settings, 'packing_static_min_frames', 10)
-        self.static_backpack_suppression_enabled = getattr(settings, 'packing_static_suppression_enabled', True)
-
-        # Static cell phone suppression — filter panel instruments misidentified as phones
-        # Same pattern as backpacks: if bbox stays at same location for N frames, it's a fixture
-        self.static_phone_candidates = []
-        self.static_phone_iou_threshold = getattr(settings, 'phone_static_iou_threshold', 0.70)
-        self.static_phone_min_frames = getattr(settings, 'phone_static_min_frames', 5)
-        self.static_phone_suppression_enabled = getattr(settings, 'phone_static_suppression_enabled', True)
-
-        # NOTE: packing_motion_history is now managed by ActivityDetector
 
         # Hand smoothing buffers for coordinate smoothing (CR-015: moved from lazy init)
         # Format: {(person_idx, hand_side): {'positions': deque, 'timestamps': deque}}
-        self.hand_smoothing_buffers = {}
+        # TR refactor: aliased to PerPersonState (same dict object).
+        # NOTE: this aliasing must happen BEFORE constructing HandHistoryTracker
+        # so we can pass the live dicts in by reference.
+        self.hand_smoothing_buffers = self._pps.hand_smoothing_buffers
+
+        # TR refactor: HandHistoryTracker owns the helpers that read/write
+        # hand_position_history + hand_smoothing_buffers. Reassign its dict
+        # attributes to the SAME object identities the monitor exposes so
+        # _cleanup_stale_person_tracking touches the same data.
+        self._hand_history = HandHistoryTracker(
+            history_max_length=self.hand_history_max_length,
+            smoothing_window=3,
+            packing_wrist_motion_min_velocity=getattr(self.settings, 'packing_wrist_motion_min_velocity', 0.008),
+            packing_wrist_motion_gate_enabled=getattr(self.settings, 'packing_wrist_motion_gate_enabled', True),
+            logger=self.logger,
+        )
+        self._hand_history.position_history = self.hand_position_history
+        self._hand_history.smoothing_buffers = self.hand_smoothing_buffers
+
+        # Static backpack suppression — track backpack bboxes across frames
+        # Backpacks in same location (IoU > threshold) for N+ frames are treated as static fixtures.
+        # TR refactor: replaces self.static_backpack_candidates / iou_threshold / min_frames /
+        # suppression_enabled with a single StaticObjectFilter instance.
+        self._backpack_filter = StaticObjectFilter(
+            label='backpack',
+            iou_threshold=getattr(settings, 'packing_static_iou_threshold', 0.80),
+            min_frames=getattr(settings, 'packing_static_min_frames', 10),
+            enabled=getattr(settings, 'packing_static_suppression_enabled', True),
+            log_level='debug',
+            logger=self.logger,
+        )
+
+        # Static cell phone suppression — filter panel instruments misidentified as phones.
+        # Same pattern as backpacks: if bbox stays at same location for N frames, it's a fixture.
+        # TR refactor: replaces self.static_phone_candidates / iou_threshold / min_frames /
+        # suppression_enabled with a single StaticObjectFilter instance.
+        self._phone_filter = StaticObjectFilter(
+            label='phone',
+            iou_threshold=getattr(settings, 'phone_static_iou_threshold', 0.70),
+            min_frames=getattr(settings, 'phone_static_min_frames', 5),
+            enabled=getattr(settings, 'phone_static_suppression_enabled', True),
+            log_level='info',
+            logger=self.logger,
+        )
+
+        # NOTE: packing_motion_history is now managed by ActivityDetector
 
         # Cached frame object detection results (CR-015: moved from lazy init)
         self._cached_frame_objects = None
@@ -603,8 +682,22 @@ class LocopilotActivityMonitor:
 
         # Landmark stability tracking to detect erratic jumps (poor detection quality)
         # Format: {person_idx: {'right_shoulder': deque([coords]), 'left_shoulder': deque([coords])}}
-        self.landmark_stability_history = {}
+        # TR refactor: aliased to PerPersonState (same dict object).
+        self.landmark_stability_history = self._pps.landmark_stability_history
         self.max_landmark_jump_threshold = 100  # pixels - shoulders shouldn't jump more than this
+
+        # TR refactor: bundle the writing-fallback numeric thresholds once so
+        # the extracted detect_writing_by_* helpers receive a single argument.
+        self._writing_thresholds = WritingFallbackThresholds(
+            max_wrist_distance=self.MAX_WRIST_DISTANCE,
+            max_single_wrist_distance=self.MAX_SINGLE_WRIST_DISTANCE,
+            max_elbow_distance=self.MAX_ELBOW_DISTANCE,
+            writing_required_consecutive=self.WRITING_REQUIRED_CONSECUTIVE,
+            writing_min_duration=self.WRITING_MIN_DURATION,
+            person_book_overlap_margin=self.PERSON_BOOK_OVERLAP_MARGIN,
+            book_posture_required_consecutive=self.BOOK_POSTURE_REQUIRED_CONSECUTIVE,
+            book_posture_min_duration=self.BOOK_POSTURE_MIN_DURATION,
+        )
 
         # Evidence counter
         self.evidence_counter = 0
@@ -835,100 +928,41 @@ class LocopilotActivityMonitor:
         Returns:
             bool: True if activity should trigger alert (threshold met)
         """
-        # Access tracking for this person (defaultdict auto-initializes for any activity type)
-        person_counters = self.per_person_consecutive_detections[person_idx]
-        person_grace = self.per_person_grace_counters[person_idx]
-
-        required_consecutive = self.activity_thresholds[activity_type]['required_consecutive']
-        grace_frames = self.activity_thresholds[activity_type]['grace_frames']
-
-        if detected:
-            person_counters[activity_type] += 1
-            person_grace[activity_type] = 0
-
-            if person_counters[activity_type] >= required_consecutive:
-                return True  # Trigger activity
-        else:
-            if person_counters[activity_type] > 0:
-                person_grace[activity_type] += 1
-
-                if person_grace[activity_type] > grace_frames:
-                    person_counters[activity_type] = 0
-                    person_grace[activity_type] = 0
-
-        return False
+        # TR refactor: forwards to PerPersonState.update_consecutive (same dicts).
+        return self._pps.update_consecutive(
+            person_idx,
+            activity_type,
+            detected,
+            timestamp_sec,
+            required_consecutive=self.activity_thresholds[activity_type]['required_consecutive'],
+            grace_frames=self.activity_thresholds[activity_type]['grace_frames'],
+        )
 
     def sample_video_frames(self, video_path: str, start_frame: Optional[int] = None, end_frame: Optional[int] = None) -> Generator[Tuple[int, float, Any, int], None, None]:
         """Sample frames at fixed intervals based on sample_fps.
-        
+
         Yields tuples: (sample_index, timestamp_sec, frame_bgr, frame_idx)
-        
+
         Args:
             video_path: Path to video file
             start_frame: Optional starting frame index (for range processing)
             end_frame: Optional ending frame index (for range processing)
-            
+
         Yields:
             sample_index: Sequential index of sampled frames (0, 1, 2, ...)
             timestamp_sec: Timestamp in seconds from video start
             frame_bgr: BGR frame from OpenCV
             frame_idx: Original frame index in the video
         """
-        with video_capture_context(video_path) as cap:
-            if not cap.isOpened():
-                raise RuntimeError(f"Failed to open video: {video_path}")
-            
-            native_fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
-            total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
-            
-            # Determine frame range
-            start_frame = start_frame if start_frame is not None else 0
-            end_frame = end_frame if end_frame is not None else total_frames
-            
-            # Calculate stride: how many frames to skip between samples
-            step = max(1, int(round(native_fps / max(1e-6, float(self.sample_fps)))))
-            
-            self.logger.debug(f"[Frame Sampling] Native FPS: {native_fps:.2f}, Sample FPS: {self.sample_fps}")
-            self.logger.debug(f"[Frame Sampling] Step: {step} (sampling 1 frame every {step} frames)")
-            self.logger.debug(f"[Frame Sampling] Frame range: {start_frame} - {end_frame}")
-            self.logger.debug(f"[Frame Sampling] Expected sampled frames: ~{((end_frame - start_frame) // step)}")
-            
-            sampled_idx = 0
-            # Start from the beginning of the range, aligned to step
-            first_sample_frame = start_frame + (step - (start_frame % step)) % step
+        # TR refactor: forwards to app.core.pipeline.frame_sampling.
+        yield from _sample_video_frames_fn(
+            video_path,
+            sample_fps=self.sample_fps,
+            start_frame=start_frame,
+            end_frame=end_frame,
+            logger=self.logger,
+        )
 
-            # Single seek to the first sample, then sequential grab()/retrieve().
-            # grab() skips full decode where the H.264 bitstream allows (P/B
-            # frames can be parsed without YUV conversion), while cap.set()
-            # per-sample forces a seek to the preceding keyframe and
-            # re-decodes forward — O(keyframe_distance) per sample on
-            # typical ~2s GOPs. This gives an order of magnitude speedup
-            # for the frame-sampling phase on long H.264 files.
-            cap.set(cv2.CAP_PROP_POS_FRAMES, int(first_sample_frame))
-            current_frame = first_sample_frame
-
-            while current_frame < end_frame:
-                ret, frame = cap.read()
-                if not ret:
-                    break
-
-                timestamp = current_frame / native_fps
-                yield sampled_idx, timestamp, frame, current_frame
-                sampled_idx += 1
-
-                # Advance by (step - 1) grabs to position for the next sample.
-                # Bail out if we run past end_frame while grabbing.
-                next_sample = current_frame + step
-                if next_sample >= end_frame:
-                    break
-                for _ in range(step - 1):
-                    if not cap.grab():
-                        next_sample = end_frame  # force outer loop to exit
-                        break
-                current_frame = next_sample
-            
-            self.logger.debug(f"[Frame Sampling] Completed sampling, total samples: {sampled_idx}")
-        
     # Sleep detection methods now accessed via self.sleep_detector directly
 
     # Activity detection methods now accessed via self.activity_detector directly
@@ -944,228 +978,54 @@ class LocopilotActivityMonitor:
         Returns:
             bool: True if both hands are below shoulders, False otherwise
         """
-        try:
-            left_shoulder = self.get_keypoint(pose_landmarks, 'left_shoulder')
-            right_shoulder = self.get_keypoint(pose_landmarks, 'right_shoulder')
-            left_wrist = self.get_keypoint(pose_landmarks, 'left_wrist')
-            right_wrist = self.get_keypoint(pose_landmarks, 'right_wrist')
-
-            if any(p is None for p in [left_shoulder, right_shoulder, left_wrist, right_wrist]):
-                return False
-
-            shoulder_y = (left_shoulder.y + right_shoulder.y) / 2
-            return left_wrist.y > shoulder_y and right_wrist.y > shoulder_y
-
-        except Exception as e:
-            self.logger.debug(f"Exception in check_hands_below_shoulders: {e}")
-            return False
+        # TR refactor: forwards to app.core.utils.pose_checks.
+        return _check_hands_below_shoulders_fn(
+            pose_landmarks,
+            get_keypoint=self.get_keypoint,
+            logger=self.logger,
+        )
 
     def detect_writing_by_wrist_proximity(self, pose_landmarks: Any, frame_shape: Tuple[int, ...], person_idx: int, timestamp_sec: float) -> bool:
         """Detect writing activity based on wrist/elbow proximity + head posture heuristic.
 
-        When both wrists (or elbows as fallback) are close together AND head is tilted down
-        (typical writing posture) for a sustained duration, it indicates writing activity.
-        This method serves as a fallback when book detection doesn't trigger but person is clearly writing.
-
-        Required Conditions (both must be true):
-        1. Wrist/Elbow proximity: Left and right wrists within 300px (or elbows within 450px)
-        2. Head posture: Head tilted down (nose below eye line)
-        3. Temporal: Sustained for 1+ seconds across 2+ consecutive frames
-
-        Args:
-            pose_landmarks: MediaPipe pose landmarks (must include wrist/elbow + head keypoints)
-            frame_shape: Tuple of (height, width) of the frame
-            person_idx: Index of the person being analyzed
-            timestamp_sec: Current timestamp in seconds
-
-        Returns:
-            bool: True if writing detected by pose-based heuristic, False otherwise
+        See ``app.core.detectors.writing_fallbacks.detect_writing_by_wrist_proximity``
+        for the full algorithm. This wrapper preserves the historical method
+        signature so callers like ``process_all_persons_activities`` continue
+        to invoke it as ``self.detect_writing_by_wrist_proximity(...)``.
         """
-        # Calculate distance between wrists (with elbow fallback)
-        distance_result = self.activity_detector.calculate_wrist_distance(pose_landmarks, frame_shape)
-
-        # Handle tuple return (distance, source)
-        if isinstance(distance_result, tuple):
-            distance, source = distance_result
-        else:
-            # Backward compatibility if function returns single value
-            distance = distance_result
-            source = 'wrist' if distance is not None else None
-
-        # DEBUG: Log distance calculation
-        if distance is None:
-            self.logger.debug(f"Person {person_idx}: Wrist/elbow distance = None (landmarks missing)")
-            return False
-        else:
-            self.logger.debug(f"Person {person_idx}: {source.capitalize()} distance = {distance:.1f}px")
-
-        # Initialize tracking for this person if needed
-        if person_idx not in self.wrist_proximity_tracking:
-            self.wrist_proximity_tracking[person_idx] = {
-                'start_time': None,
-                'duration': 0.0,
-                'consecutive_frames': 0
-            }
-
-        # Configurable thresholds - different for wrist vs elbow
-
-        # Select threshold based on detection source
-        if source == 'wrist':
-            max_distance = self.MAX_WRIST_DISTANCE
-        elif source == 'single_wrist':
-            max_distance = self.MAX_SINGLE_WRIST_DISTANCE
-        else:
-            max_distance = self.MAX_ELBOW_DISTANCE
-
-        person_tracking = self.wrist_proximity_tracking[person_idx]
-
-        # Check if distance is within threshold
-        if distance <= max_distance:
-            # NEW: Check if head is looking down (required for writing posture)
-            head_looking_down = self.activity_detector.detect_head_looking_down(pose_landmarks)
-
-            # DEBUG: Log head state
-            self.logger.debug(f"Person {person_idx}: Head looking down = {head_looking_down} (source={source})")
-
-            if not head_looking_down:
-                # Head not down - reset tracking (not a writing posture)
-                if person_tracking['start_time'] is not None:
-                    # Was tracking, now stopped because head is up
-                    self.logger.debug(
-                        f"Person {person_idx}: {source.capitalize()}s close ({distance:.1f}px) but head not down - "
-                        f"resetting writing tracker"
-                    )
-                person_tracking['start_time'] = None
-                person_tracking['duration'] = 0.0
-                person_tracking['consecutive_frames'] = 0
-                return False
-
-            # BOTH conditions met: distance close AND head down
-            # Update tracking
-            if person_tracking['start_time'] is None:
-                # Start new proximity event
-                person_tracking['start_time'] = timestamp_sec
-                person_tracking['consecutive_frames'] = 1
-                self.logger.debug(
-                    f"Person {person_idx}: Writing posture started ({source}) - dist={distance:.1f}px, head=down"
-                )
-            else:
-                # Continue existing proximity event
-                person_tracking['duration'] = timestamp_sec - person_tracking['start_time']
-                person_tracking['consecutive_frames'] += 1
-                self.logger.debug(
-                    f"Person {person_idx}: Writing posture continuing ({source}) - dist={distance:.1f}px, "
-                    f"head=down, frames={person_tracking['consecutive_frames']}, "
-                    f"duration={person_tracking['duration']:.1f}s"
-                )
-
-            # Check if thresholds are met
-            if (person_tracking['consecutive_frames'] >= self.WRITING_REQUIRED_CONSECUTIVE and
-                person_tracking['duration'] >= self.WRITING_MIN_DURATION):
-                self.logger.info(
-                    f"Person {person_idx}: WRITING CONFIRMED via {source} - distance close + head down for "
-                    f"{person_tracking['duration']:.1f}s ({person_tracking['consecutive_frames']} frames)"
-                )
-                return True
-        else:
-            # Distance too far apart - reset tracking
-            if person_tracking['start_time'] is not None:
-                self.logger.debug(
-                    f"Person {person_idx}: Writing posture lost - {source}s too far ({distance:.1f}px) - "
-                    f"resetting tracker"
-                )
-            person_tracking['start_time'] = None
-            person_tracking['duration'] = 0.0
-            person_tracking['consecutive_frames'] = 0
-
-        return False
+        # TR refactor: forwards to app.core.detectors.writing_fallbacks.
+        return _detect_writing_by_wrist_proximity_fn(
+            pose_landmarks=pose_landmarks,
+            frame_shape=frame_shape,
+            person_idx=person_idx,
+            timestamp_sec=timestamp_sec,
+            activity_detector=self.activity_detector,
+            wrist_proximity_tracking=self.wrist_proximity_tracking,
+            thresholds=self._writing_thresholds,
+            logger=self.logger,
+        )
 
     def detect_writing_by_book_and_posture(self, pose_landmarks: Any, person_bbox: List[int], book_bboxes: List[List[int]], person_idx: int, timestamp_sec: float) -> bool:
         """Fallback writing detection when wrists are not visible.
 
-        Detects writing based on:
-        1. Book detected in person's region
-        2. Head looking down (reading/writing posture)
-        3. Sustained for minimum duration
-
-        This is a fallback when wrist/elbow detection fails.
-
-        Args:
-            pose_landmarks: Pose landmarks for this person
-            person_bbox: [x1, y1, x2, y2] bounding box of person
-            book_bboxes: List of book bounding boxes detected in frame
-            person_idx: Index of person being analyzed
-            timestamp_sec: Current timestamp in seconds
-
-        Returns:
-            bool: True if writing detected via book+posture, False otherwise
+        See ``app.core.detectors.writing_fallbacks.detect_writing_by_book_and_posture``
+        for the full algorithm. This wrapper preserves the historical method
+        signature so callers continue to invoke it as
+        ``self.detect_writing_by_book_and_posture(...)``.
         """
-        if not book_bboxes or len(book_bboxes) == 0:
-            return False
-
-        # Initialize tracking if needed
-        tracking_key = f"book_posture_{person_idx}"
-        if tracking_key not in self.wrist_proximity_tracking:
-            self.wrist_proximity_tracking[tracking_key] = {
-                'start_time': None,
-                'duration': 0.0,
-                'consecutive_frames': 0
-            }
-
-        person_tracking = self.wrist_proximity_tracking[tracking_key]
-
-        # Check if any book is in person's region
-        person_book_margin = self.PERSON_BOOK_OVERLAP_MARGIN  # Same margin used elsewhere
-        book_in_region = False
-        for book_bbox in book_bboxes:
-            if bbox_overlap_with_margin(book_bbox, person_bbox, person_book_margin):
-                book_in_region = True
-                break
-
-        if not book_in_region:
-            person_tracking['start_time'] = None
-            person_tracking['duration'] = 0.0
-            person_tracking['consecutive_frames'] = 0
-            return False
-
-        # Check head posture (must be looking down toward book)
-        head_looking_down = self.activity_detector.detect_head_looking_down(pose_landmarks)
-
-        if not head_looking_down:
-            if person_tracking['start_time'] is not None:
-                self.logger.debug(
-                    f"Person {person_idx}: Book in region but head not down - resetting book+posture tracker"
-                )
-            person_tracking['start_time'] = None
-            person_tracking['duration'] = 0.0
-            person_tracking['consecutive_frames'] = 0
-            return False
-
-        # Both conditions met: book in region + head down
-
-        if person_tracking['start_time'] is None:
-            person_tracking['start_time'] = timestamp_sec
-            person_tracking['consecutive_frames'] = 1
-            self.logger.debug(
-                f"Person {person_idx}: Book+posture writing started - book in region, head down"
-            )
-        else:
-            person_tracking['duration'] = timestamp_sec - person_tracking['start_time']
-            person_tracking['consecutive_frames'] += 1
-            self.logger.debug(
-                f"Person {person_idx}: Book+posture continuing - frames={person_tracking['consecutive_frames']}, "
-                f"duration={person_tracking['duration']:.1f}s"
-            )
-
-        if (person_tracking['consecutive_frames'] >= self.BOOK_POSTURE_REQUIRED_CONSECUTIVE and
-            person_tracking['duration'] >= self.BOOK_POSTURE_MIN_DURATION):
-            self.logger.info(
-                f"Person {person_idx}: WRITING CONFIRMED via book+posture fallback - "
-                f"book in region + head down for {person_tracking['duration']:.1f}s"
-            )
-            return True
-
-        return False
+        # TR refactor: forwards to app.core.detectors.writing_fallbacks.
+        return _detect_writing_by_book_and_posture_fn(
+            pose_landmarks=pose_landmarks,
+            person_bbox=person_bbox,
+            book_bboxes=book_bboxes,
+            person_idx=person_idx,
+            timestamp_sec=timestamp_sec,
+            activity_detector=self.activity_detector,
+            wrist_proximity_tracking=self.wrist_proximity_tracking,
+            thresholds=self._writing_thresholds,
+            bbox_overlap_with_margin_fn=bbox_overlap_with_margin,
+            logger=self.logger,
+        )
 
     # Object detection methods now accessed via self.object_detector directly
 
@@ -1184,170 +1044,35 @@ class LocopilotActivityMonitor:
             Format matches self.yolo_pose.process() output:
             {person_idx: {'bbox': [...], 'bbox_confidence': float, 'keypoints': YoloPoseLandmarks}}
         """
-        # Import at method level (not inside loop)
-        from app.services.yolo_pose_adapter import YoloPoseLandmarks, PersonKeypoints
-
-        if not frames:
-            return []
-
-        effective_conf = conf_threshold if conf_threshold is not None else self.yolo_pose.conf_threshold
-        self.logger.debug(f"[GPU BATCH] detect_poses_batch: {len(frames)} frames, batch_size={batch_size}, conf={effective_conf}")
-        all_poses = []
-
-        # Process frames in batches
-        for batch_start in range(0, len(frames), batch_size):
-            batch_frames = frames[batch_start:batch_start + batch_size]
-
-            try:
-                # Run batch inference on pose model with device parameter
-                batch_results = self.yolo_pose.model(
-                    batch_frames,
-                    verbose=False,
-                    conf=effective_conf,
-                    device=self.yolo_device
-                )
-            except Exception as e:
-                self.logger.error(f"[GPU BATCH] Pose detection failed for batch starting at {batch_start}: {e}")
-                # Fallback: return empty poses for this batch
-                for _ in batch_frames:
-                    all_poses.append({})
-                continue
-
-            # Process results for each frame in batch
-            for frame_idx, (frame, results) in enumerate(zip(batch_frames, batch_results)):
-                persons = {}
-
-                if results.keypoints is not None and results.boxes is not None:
-                    for idx in range(len(results.boxes)):
-                        box = results.boxes[idx]
-                        person_keypoints = PersonKeypoints(results.keypoints, idx)
-
-                        persons[idx] = {
-                            'bbox': box.xyxy[0].cpu().numpy().tolist(),
-                            'bbox_confidence': float(box.conf[0]),
-                            'keypoints': YoloPoseLandmarks(person_keypoints, frame.shape)
-                        }
-
-                all_poses.append(persons)
-
-        self.logger.debug(f"[GPU BATCH] detect_poses_batch complete: {len(all_poses)} results")
-        return all_poses
+        # TR refactor: forwards to app.core.pipeline.pose_batch.
+        return _detect_poses_batch_fn(
+            self.yolo_pose,
+            frames,
+            batch_size=batch_size,
+            conf_threshold=conf_threshold,
+            device=self.yolo_device,
+            logger=self.logger,
+        )
 
     # Visualization methods now accessed via self.frame_annotator directly
     
     def draw_mediapipe_outputs(self, frame: Any, pose_results: Any, face_results: Any, pose_sleep_info: Optional[Dict[str, Any]] = None, head_pose_info: Optional[Dict[str, Any]] = None) -> Any:
         """Draw MediaPipe pose and face mesh landmarks on frame"""
-        annotated_frame = frame.copy()
-        
-        face_detected = face_results.multi_face_landmarks is not None and len(face_results.multi_face_landmarks) > 0
-        
-        if pose_results.pose_landmarks:
-            self.mp_drawing.draw_landmarks(
-                annotated_frame,
-                pose_results.pose_landmarks,
-                self.mp_pose.POSE_CONNECTIONS,
-                landmark_drawing_spec=self.mp_drawing_styles.get_default_pose_landmarks_style()
-            )
-        
-        if face_detected:
-            for face_landmarks in face_results.multi_face_landmarks:
-                self.mp_drawing.draw_landmarks(
-                    image=annotated_frame,
-                    landmark_list=face_landmarks,
-                    connections=self.mp_face_mesh.FACEMESH_TESSELATION,
-                    landmark_drawing_spec=None,
-                    connection_drawing_spec=self.mp_drawing_styles.get_default_face_mesh_tesselation_style()
-                )
-                self.mp_drawing.draw_landmarks(
-                    image=annotated_frame,
-                    landmark_list=face_landmarks,
-                    connections=self.mp_face_mesh.FACEMESH_CONTOURS,
-                    landmark_drawing_spec=None,
-                    connection_drawing_spec=self.mp_drawing_styles.get_default_face_mesh_contours_style()
-                )
-        
-        if face_detected:
-            cv2.putText(annotated_frame, "FACE DETECTED", (10, 30),
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2, cv2.LINE_AA)
-        else:
-            cv2.putText(annotated_frame, "FACE NOT DETECTED", (10, 30),
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 165, 255), 2, cv2.LINE_AA)
+        # TR refactor: forwards to app.core.visualization.mediapipe_overlay.
+        return _draw_mediapipe_outputs_fn(
+            frame,
+            pose_results,
+            face_results,
+            mp_drawing=self.mp_drawing,
+            mp_pose=self.mp_pose,
+            mp_face_mesh=self.mp_face_mesh,
+            mp_drawing_styles=self.mp_drawing_styles,
+            pose_sleep_info=pose_sleep_info,
+            head_pose_info=head_pose_info,
+            sleep_strong_duration_sec=self.SLEEP_STRONG_DURATION,
+            sleep_microsleep_duration_sec=self.SLEEP_MICROSLEEP_DURATION,
+        )
 
-        # Display pose-based sleep detection info
-        if pose_sleep_info and pose_results.pose_landmarks:
-            y_offset = 60 if not face_detected else 120
-            
-            # Head tilt angle
-            if 'head_tilt' in pose_sleep_info and pose_sleep_info['head_tilt'] is not None:
-                head_tilt = pose_sleep_info['head_tilt']
-                tilt_color = (0, 0, 255) if head_tilt < -15 else (0, 255, 0)
-                tilt_text = f"Head Tilt: {head_tilt:.1f}deg"
-                cv2.putText(annotated_frame, tilt_text, (10, y_offset), 
-                           cv2.FONT_HERSHEY_SIMPLEX, 0.6, tilt_color, 2, cv2.LINE_AA)
-                y_offset += 30
-            
-            # Movement score
-            if 'avg_movement' in pose_sleep_info:
-                movement = pose_sleep_info['avg_movement']
-                movement_color = (0, 0, 255) if movement < 0.02 else (0, 255, 0)  # Updated threshold
-                movement_text = f"Movement: {movement:.4f}"
-                cv2.putText(annotated_frame, movement_text, (10, y_offset), 
-                           cv2.FONT_HERSHEY_SIMPLEX, 0.6, movement_color, 2, cv2.LINE_AA)
-                y_offset += 30
-            
-            # Pose sleep duration
-            if 'pose_sleep_duration' in pose_sleep_info and pose_sleep_info['pose_sleep_duration'] > 0:
-                duration = pose_sleep_info['pose_sleep_duration']
-                duration_text = f"Pose Sleep: {duration:.1f}s"
-                
-                if duration >= self.SLEEP_STRONG_DURATION:
-                    duration_text += " - SLEEP DETECTED!"
-                    duration_color = (0, 0, 255)
-                elif duration >= self.SLEEP_MICROSLEEP_DURATION:
-                    duration_text += " - MICROSLEEP!"
-                    duration_color = (0, 140, 255)
-                else:
-                    duration_color = (0, 165, 255)
-                
-                cv2.putText(annotated_frame, duration_text, (10, y_offset), 
-                           cv2.FONT_HERSHEY_SIMPLEX, 0.7, duration_color, 2, cv2.LINE_AA)
-        
-        # Display head pose angles for mind diversion detection
-        if head_pose_info and head_pose_info.get('method') != 'none':
-            y_offset = 60 if not face_detected else (120 if not pose_sleep_info else 180)
-            
-            yaw = head_pose_info.get('yaw', 0)
-            pitch = head_pose_info.get('pitch', 0)
-            detected = head_pose_info.get('detected', False)
-            method = head_pose_info.get('method', 'unknown')
-            
-            # Display yaw (side turn)
-            yaw_direction = "RIGHT" if yaw > 0 else "LEFT"
-            yaw_color = (0, 0, 255) if abs(yaw) > 45 else (0, 255, 0)
-            yaw_text = f"Head Yaw: {abs(yaw):.1f}° {yaw_direction}"
-            cv2.putText(annotated_frame, yaw_text, (10, y_offset), 
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.7, yaw_color, 2, cv2.LINE_AA)
-            
-            # Display pitch (up/down tilt)
-            pitch_direction = "DOWN" if pitch > 0 else "UP"
-            pitch_color = (0, 0, 255) if pitch > 15 else (0, 255, 0)
-            pitch_text = f"Head Pitch: {abs(pitch):.1f}° {pitch_direction}"
-            cv2.putText(annotated_frame, pitch_text, (10, y_offset + 30), 
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.7, pitch_color, 2, cv2.LINE_AA)
-            
-            # Display mind diversion alert if detected
-            if detected:
-                alert_text = "[WARN] MIND DIVERSION - ATTENTION DIVERTED!"
-                cv2.putText(annotated_frame, alert_text, (10, y_offset + 60), 
-                           cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2, cv2.LINE_AA)
-                
-                # Show detection method
-                method_text = f"(Method: {method})"
-                cv2.putText(annotated_frame, method_text, (10, y_offset + 85), 
-                           cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1, cv2.LINE_AA)
-        
-        return annotated_frame
-    
 
     def draw_multi_person_mediapipe_outputs(self, frame: Any, persons_data: Dict[int, Dict[str, Any]], face_results: Any) -> Any:
         """Draw MediaPipe pose landmarks for ALL detected persons
@@ -1361,334 +1086,63 @@ class LocopilotActivityMonitor:
         Returns:
             Annotated frame with all persons' pose landmarks drawn
         """
-        annotated_frame = frame.copy()
-        
-        # Custom drawing specs for more visible landmarks
-        landmark_drawing_spec = mp.solutions.drawing_utils.DrawingSpec(
-            color=(0, 255, 0),      # Green color for landmarks
-            thickness=3,             # Thicker circles (increased from default 2)
-            circle_radius=5          # Larger circles (increased from default 2)
+        # TR refactor: forwards to app.core.visualization.mediapipe_overlay.
+        return _draw_multi_person_mediapipe_outputs_fn(
+            frame,
+            persons_data,
+            face_results,
+            mp_drawing=self.mp_drawing,
+            mp_face_mesh=self.mp_face_mesh,
+            mp_drawing_styles=self.mp_drawing_styles,
+            get_keypoint=self.get_keypoint,
         )
-        
-        connection_drawing_spec = mp.solutions.drawing_utils.DrawingSpec(
-            color=(0, 255, 255),     # Cyan color for connections
-            thickness=3              # Thicker connections (increased from default 2)
-        )
-        
-        # Key landmarks to label (using YOLO keypoint names)
-        key_landmarks_to_label = [
-            ('nose', "Nose"),
-            ('left_shoulder', "L Shoulder"),
-            ('right_shoulder', "R Shoulder"),
-            ('left_elbow', "L Elbow"),
-            ('right_elbow', "R Elbow"),
-            ('left_wrist', "L Wrist"),
-            ('right_wrist', "R Wrist"),
-            ('left_hip', "L Hip"),
-            ('right_hip', "R Hip"),
-            ('left_knee', "L Knee"),
-            ('right_knee', "R Knee"),
-            ('left_ankle', "L Ankle"),
-            ('right_ankle', "R Ankle"),
-        ]
-
-        # YOLO skeleton connections (COCO format)
-        skeleton_connections = [
-            ('nose', 'left_eye'), ('nose', 'right_eye'),
-            ('left_eye', 'left_ear'), ('right_eye', 'right_ear'),
-            ('left_shoulder', 'right_shoulder'),
-            ('left_shoulder', 'left_elbow'), ('right_shoulder', 'right_elbow'),
-            ('left_elbow', 'left_wrist'), ('right_elbow', 'right_wrist'),
-            ('left_shoulder', 'left_hip'), ('right_shoulder', 'right_hip'),
-            ('left_hip', 'right_hip'),
-            ('left_hip', 'left_knee'), ('right_hip', 'right_knee'),
-            ('left_knee', 'left_ankle'), ('right_knee', 'right_ankle'),
-        ]
-
-        # Draw pose landmarks for ALL persons
-        for person_idx, person_data in persons_data.items():
-            pose_landmarks = person_data.get('pose_landmarks')
-            if pose_landmarks:
-                h, w = annotated_frame.shape[:2]
-
-                # Draw skeleton connections
-                for start_name, end_name in skeleton_connections:
-                    try:
-                        start = self.get_keypoint(pose_landmarks, start_name)
-                        end = self.get_keypoint(pose_landmarks, end_name)
-
-                        if start.visibility > 0.5 and end.visibility > 0.5:
-                            start_pt = (int(start.x * w), int(start.y * h))
-                            end_pt = (int(end.x * w), int(end.y * h))
-                            cv2.line(annotated_frame, start_pt, end_pt, (0, 255, 255), 3)
-                    except (cv2.error, ValueError, TypeError):
-                        continue
-
-                # Draw keypoints
-                for i in range(17):
-                    try:
-                        landmark = pose_landmarks.landmark[i]
-                        if landmark.visibility > 0.5:
-                            pt = (int(landmark.x * w), int(landmark.y * h))
-                            cv2.circle(annotated_frame, pt, 8, (0, 255, 0), -1)
-                    except (cv2.error, ValueError, TypeError):
-                        continue
-
-                # Draw labels for key landmarks
-                for keypoint_name, label_name in key_landmarks_to_label:
-                    try:
-                        landmark = self.get_keypoint(pose_landmarks, keypoint_name)
-
-                        # Only draw if landmark is visible enough
-                        if landmark.visibility > 0.5:
-                            x = int(landmark.x * w)
-                            y = int(landmark.y * h)
-
-                            # Draw small label with background
-                            label_size, _ = cv2.getTextSize(label_name, cv2.FONT_HERSHEY_SIMPLEX, 0.4, 1)
-                            label_w, label_h = label_size
-
-                            # Background rectangle for better visibility
-                            cv2.rectangle(annotated_frame,
-                                        (x - 2, y - label_h - 4),
-                                        (x + label_w + 2, y + 2),
-                                        (0, 0, 0), -1)
-
-                            # Label text in white
-                            cv2.putText(annotated_frame, label_name,
-                                       (x, y),
-                                       cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 255), 1, cv2.LINE_AA)
-                    except (cv2.error, ValueError, TypeError):
-                        pass
-
-                # Add person label near their head
-                try:
-                    nose = self.get_keypoint(pose_landmarks, 'nose')
-                    nose_x = int(nose.x * w)
-                    nose_y = int(nose.y * h)
-                    
-                    role_name = person_data.get('role_name', 'Unknown')
-                    label = f"{role_name} ({person_idx+1})"
-                    
-                    # Draw label with background
-                    label_size, _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)
-                    label_w, label_h = label_size
-                    
-                    # Background rectangle
-                    cv2.rectangle(annotated_frame, 
-                                (nose_x - 5, nose_y - label_h - 15), 
-                                (nose_x + label_w + 5, nose_y - 5), 
-                                (0, 0, 0), -1)
-                    
-                    # Label text
-                    cv2.putText(annotated_frame, label, 
-                               (nose_x, nose_y - 10), 
-                               cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2, cv2.LINE_AA)
-                except (cv2.error, ValueError, TypeError):
-                    pass
-        
-        # Draw face mesh (same as before)
-        face_detected = face_results.multi_face_landmarks is not None and len(face_results.multi_face_landmarks) > 0
-        
-        if face_detected:
-            for face_landmarks in face_results.multi_face_landmarks:
-                self.mp_drawing.draw_landmarks(
-                    image=annotated_frame,
-                    landmark_list=face_landmarks,
-                    connections=self.mp_face_mesh.FACEMESH_TESSELATION,
-                    landmark_drawing_spec=None,
-                    connection_drawing_spec=self.mp_drawing_styles.get_default_face_mesh_tesselation_style()
-                )
-                self.mp_drawing.draw_landmarks(
-                    image=annotated_frame,
-                    landmark_list=face_landmarks,
-                    connections=self.mp_face_mesh.FACEMESH_CONTOURS,
-                    landmark_drawing_spec=None,
-                    connection_drawing_spec=self.mp_drawing_styles.get_default_face_mesh_contours_style()
-                )
-        
-        # Draw face detection status
-        if face_detected:
-            cv2.putText(annotated_frame, "FACE DETECTED", (10, 30),
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2, cv2.LINE_AA)
-        else:
-            cv2.putText(annotated_frame, "FACE NOT DETECTED", (10, 30),
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 165, 255), 2, cv2.LINE_AA)
-        
-        # Draw activity warnings for each person
-        y_offset = 100
-        for person_idx, person_data in persons_data.items():
-            activities = person_data.get('activities', {})
-            role_name = person_data.get('role_name', 'Unknown')
-            debug_info = person_data.get('debug_info', {})
-            
-            # Mind diversion
-            if activities.get('mind_diversion'):
-                head_pose = debug_info.get('head_pose', {})
-                yaw = head_pose.get('yaw', 0)
-                pitch = head_pose.get('pitch', 0)
-                
-                alert_text = f"!!! {role_name}: MIND DIVERSION - ATTENTION DIVERTED!"
-                cv2.putText(annotated_frame, alert_text, (10, y_offset), 
-                           cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2, cv2.LINE_AA)
-                
-                details_text = f"    Yaw={abs(yaw):.1f}°, Pitch={abs(pitch):.1f}°"
-                cv2.putText(annotated_frame, details_text, (10, y_offset + 25), 
-                           cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1, cv2.LINE_AA)
-                y_offset += 55
-            
-            # Sleep/microsleep
-            if activities.get('sleep'):
-                alert_text = f"!!! {role_name}: SLEEP DETECTED"
-                cv2.putText(annotated_frame, alert_text, (10, y_offset), 
-                           cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2, cv2.LINE_AA)
-                y_offset += 30
-            elif activities.get('microsleep'):
-                alert_text = f"!!! {role_name}: MICROSLEEP DETECTED"
-                cv2.putText(annotated_frame, alert_text, (10, y_offset), 
-                           cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 140, 255), 2, cv2.LINE_AA)
-                y_offset += 30
-            
-            # Cell phone
-            if activities.get('cell_phone'):
-                alert_text = f"! {role_name}: CELL PHONE IN USE"
-                cv2.putText(annotated_frame, alert_text, (10, y_offset), 
-                           cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 165, 255), 2, cv2.LINE_AA)
-                y_offset += 25
-            
-            # Writing
-            if activities.get('writing'):
-                alert_text = f"! {role_name}: WRITING"
-                cv2.putText(annotated_frame, alert_text, (10, y_offset),
-                           cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2, cv2.LINE_AA)
-                y_offset += 25
-
-        # Hand gesture alerts - only show if NOT coordinated (one raised but not the other)
-        # Check if BOTH LP and ALP raised hands across all persons
-        any_lp_gesture = any(p.get('activities', {}).get('lp_hand_gesture', False) for p in persons_data.values())
-        any_alp_gesture = any(p.get('activities', {}).get('alp_hand_gesture', False) for p in persons_data.values())
-        both_raised = any_lp_gesture and any_alp_gesture
-
-        # Only show hand gesture alerts if it's a coordination failure (one raised, other didn't)
-        if not both_raised:
-            for person_idx, person_data in persons_data.items():
-                activities = person_data.get('activities', {})
-                role_name = person_data.get('role_name', 'Unknown')
-
-                if activities.get('lp_hand_gesture'):
-                    alert_text = f"! {role_name}: LP HAND GESTURE (ALP not responding)"
-                    cv2.putText(annotated_frame, alert_text, (10, y_offset),
-                               cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 0), 2, cv2.LINE_AA)
-                    y_offset += 25
-
-                if activities.get('alp_hand_gesture'):
-                    alert_text = f"! {role_name}: ALP HAND GESTURE (LP not responding)"
-                    cv2.putText(annotated_frame, alert_text, (10, y_offset),
-                               cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 165, 0), 2, cv2.LINE_AA)
-                    y_offset += 25
-
-        return annotated_frame
 
     def _get_smoothed_hand_position(self, person_idx: int, hand_side: str, landmark: Any,
                                      w: int, h: int, timestamp_sec: float) -> Tuple[int, int]:
         """Get temporally smoothed hand position to reduce pose estimation noise.
 
         Uses simple average over last 3 positions (6 seconds @ 0.5fps).
-
-        Args:
-            person_idx: Person identifier
-            hand_side: 'right' or 'left'
-            landmark: Pose landmark with .x, .y attributes (normalised coords)
-            w, h: Frame dimensions in pixels
-            timestamp_sec: Current timestamp
-
-        Returns:
-            tuple: (smoothed_x, smoothed_y) pixel coordinates
         """
-        key = (person_idx, hand_side)
-        if key not in self.hand_smoothing_buffers:
-            self.hand_smoothing_buffers[key] = {
-                'positions': deque(maxlen=3),
-                'timestamps': deque(maxlen=3)
-            }
-
-        buffer = self.hand_smoothing_buffers[key]
-
-        current_x = int(landmark.x * w)
-        current_y = int(landmark.y * h)
-        buffer['positions'].append((current_x, current_y))
-        buffer['timestamps'].append(timestamp_sec)
-
-        if len(buffer['positions']) > 0:
-            avg_x = sum(pos[0] for pos in buffer['positions']) / len(buffer['positions'])
-            avg_y = sum(pos[1] for pos in buffer['positions']) / len(buffer['positions'])
-            return (int(avg_x), int(avg_y))
-
-        return (current_x, current_y)
+        # TR refactor: forwards to HandHistoryTracker (shared smoothing_buffers dict).
+        return self._hand_history.get_smoothed_hand_position(
+            person_idx, hand_side, landmark, w, h, timestamp_sec
+        )
 
     def check_hand_object_interaction(self, hand_coords: Tuple[float, float], object_bbox: List[int], margin: int = 50) -> bool:
         """Check if hand is interacting with an object
-        
+
         Args:
             hand_coords: (x, y) coordinates of hand
             object_bbox: [x1, y1, x2, y2] bounding box of object
             margin: proximity margin in pixels (default 50, use 30 for tighter checks)
         """
-        if hand_coords is None or object_bbox is None:
-            return False
-        
-        hx, hy = hand_coords
-        x1, y1, x2, y2 = object_bbox
-        return (x1 - margin <= hx <= x2 + margin and
-                y1 - margin <= hy <= y2 + margin)
+        # TR refactor: forwards to app.core.utils.pose_checks.
+        return _check_hand_object_interaction_fn(hand_coords, object_bbox, margin)
 
     # NOTE: detect_pose_per_person removed - replaced by YOLO26-Pose
     # NOTE: translate_pose_landmarks removed - not needed with YOLO26-Pose (native multi-person)
 
     def validate_pose_landmarks(self, pose_landmarks: Any, min_landmarks: Optional[int] = None, min_visibility: Optional[float] = None) -> bool:
         """Validate that pose landmarks are valid and usable for activity detection.
-        
+
         Args:
             pose_landmarks: MediaPipe pose landmarks
             min_landmarks: Minimum number of landmarks required (default: MIN_POSE_LANDMARKS)
             min_visibility: Minimum average visibility score (default: MIN_POSE_VISIBILITY)
-        
+
         Returns:
             bool: True if landmarks are valid, False otherwise
         """
+        # TR refactor: forwards to app.core.utils.pose_validators.
         if min_landmarks is None:
             min_landmarks = self.MIN_POSE_LANDMARKS
         if min_visibility is None:
             min_visibility = self.MIN_POSE_VISIBILITY
-        if pose_landmarks is None:
-            return False
-        
-        # Support both YoloPoseLandmarks (has .landmark) and plain list
-        landmark_list = pose_landmarks.landmark if hasattr(pose_landmarks, 'landmark') else pose_landmarks if isinstance(pose_landmarks, list) else None
-        if landmark_list is None or len(landmark_list) < min_landmarks:
-            return False
-
-        # Validate coordinates are within valid range (0-1 for normalized)
-        valid_count = 0
-        total_visibility = 0.0
-
-        for landmark in landmark_list:
-            # Check if coordinates are valid (normalized 0-1)
-            if 0 <= landmark.x <= 1 and 0 <= landmark.y <= 1:
-                valid_count += 1
-                visibility = landmark.visibility if hasattr(landmark, 'visibility') else 1.0
-                total_visibility += visibility
-        
-        # Check we have enough valid landmarks
-        if valid_count < min_landmarks:
-            return False
-        
-        # Check average visibility
-        avg_visibility = total_visibility / valid_count if valid_count > 0 else 0.0
-        if avg_visibility < min_visibility:
-            return False
-        
-        return True
+        return _validate_pose_landmarks_fn(
+            pose_landmarks,
+            min_landmarks=min_landmarks,
+            min_visibility=min_visibility,
+        )
 
     def validate_anatomical_consistency(self, pose_landmarks: Any, frame_shape: Tuple[int, ...]) -> Tuple[bool, str]:
         """
@@ -1697,70 +1151,12 @@ class LocopilotActivityMonitor:
 
         Returns: (is_valid: bool, reason: str)
         """
-        h, w = frame_shape[:2]
-
-        try:
-            # Get key landmarks
-            right_shoulder = self.get_keypoint(pose_landmarks, 'right_shoulder')
-            left_shoulder = self.get_keypoint(pose_landmarks, 'left_shoulder')
-            right_elbow = self.get_keypoint(pose_landmarks, 'right_elbow')
-            left_elbow = self.get_keypoint(pose_landmarks, 'left_elbow')
-            right_wrist = self.get_keypoint(pose_landmarks, 'right_wrist')
-            left_wrist = self.get_keypoint(pose_landmarks, 'left_wrist')
-            right_hip = self.get_keypoint(pose_landmarks, 'right_hip')
-            left_hip = self.get_keypoint(pose_landmarks, 'left_hip')
-            nose = self.get_keypoint(pose_landmarks, 'nose')
-
-            # Rule 1: Shoulders should be roughly horizontal (±30 degrees)
-            shoulder_y_diff = abs(right_shoulder.y - left_shoulder.y) * h
-            shoulder_x_diff = abs(right_shoulder.x - left_shoulder.x) * w
-            if shoulder_x_diff > 0:
-                shoulder_slope = shoulder_y_diff / shoulder_x_diff
-                if shoulder_slope > 0.6:  # ~30 degrees
-                    return False, "Shoulders not horizontal (slope too steep)"
-
-            # Rule 2: Shoulder-elbow-wrist distances must be reasonable
-            # Forearm (elbow-wrist) typically 80-120% of upper arm (shoulder-elbow)
-            def distance(lm1, lm2):
-                dx = (lm1.x - lm2.x) * w
-                dy = (lm1.y - lm2.y) * h
-                return (dx**2 + dy**2)**0.5
-
-            right_upper_arm = distance(right_shoulder, right_elbow)
-            right_forearm = distance(right_elbow, right_wrist)
-            left_upper_arm = distance(left_shoulder, left_elbow)
-            left_forearm = distance(left_elbow, left_wrist)
-
-            # Check proportions (forearm should be 50-150% of upper arm length)
-            if right_upper_arm > 10:  # Avoid division by very small numbers
-                right_ratio = right_forearm / right_upper_arm
-                if right_ratio < 0.5 or right_ratio > 1.5:
-                    return False, f"Right arm proportions invalid ({right_ratio:.2f})"
-
-            if left_upper_arm > 10:
-                left_ratio = left_forearm / left_upper_arm
-                if left_ratio < 0.5 or left_ratio > 1.5:
-                    return False, f"Left arm proportions invalid ({left_ratio:.2f})"
-
-            # Rule 3: Nose should be above shoulders (not inverted person)
-            avg_shoulder_y = (right_shoulder.y + left_shoulder.y) / 2
-            if nose.y > avg_shoulder_y + 0.1:  # Nose more than 10% below shoulders
-                return False, "Nose below shoulders (inverted detection)"
-
-            # Rule 4: Hips should be below shoulders
-            avg_hip_y = (right_hip.y + left_hip.y) / 2
-            if avg_hip_y < avg_shoulder_y:
-                return False, "Hips above shoulders (inverted detection)"
-
-            # Rule 5: High visibility required for key landmarks
-            if (right_shoulder.visibility < 0.5 or left_shoulder.visibility < 0.5 or
-                nose.visibility < 0.5):
-                return False, "Low visibility for critical landmarks"
-
-            return True, "Valid"
-
-        except (IndexError, AttributeError) as e:
-            return False, f"Missing landmarks: {e}"
+        # TR refactor: forwards to app.core.utils.pose_validators.
+        return _validate_anatomical_consistency_fn(
+            pose_landmarks,
+            frame_shape,
+            get_keypoint=self.get_keypoint,
+        )
 
     def check_landmark_stability(self, person_idx: int, pose_landmarks: Any, frame_shape: Tuple[int, ...]) -> Tuple[bool, float]:
         """
@@ -1769,44 +1165,15 @@ class LocopilotActivityMonitor:
 
         Returns: (is_stable: bool, max_jump: float)
         """
-        h, w = frame_shape[:2]
-
-        if person_idx not in self.landmark_stability_history:
-            self.landmark_stability_history[person_idx] = {
-                'right_shoulder': deque(maxlen=3),
-                'left_shoulder': deque(maxlen=3)
-            }
-
-        history = self.landmark_stability_history[person_idx]
-
-        # Get current shoulder positions (most stable body parts)
-        right_shoulder = self.get_keypoint(pose_landmarks, 'right_shoulder')
-        left_shoulder = self.get_keypoint(pose_landmarks, 'left_shoulder')
-
-        right_pos = (int(right_shoulder.x * w), int(right_shoulder.y * h))
-        left_pos = (int(left_shoulder.x * w), int(left_shoulder.y * h))
-
-        history['right_shoulder'].append(right_pos)
-        history['left_shoulder'].append(left_pos)
-
-        # Need at least 2 positions to check stability
-        if len(history['right_shoulder']) < 2:
-            return True, 0  # Not enough data, assume stable
-
-        # Calculate maximum jump between consecutive frames
-        max_jump = 0
-        for key in ['right_shoulder', 'left_shoulder']:
-            positions = list(history[key])
-            for i in range(1, len(positions)):
-                dx = positions[i][0] - positions[i-1][0]
-                dy = positions[i][1] - positions[i-1][1]
-                jump = (dx**2 + dy**2)**0.5
-                max_jump = max(max_jump, jump)
-
-        # Shoulders shouldn't jump more than 100px between frames (person sitting, camera static)
-        is_stable = max_jump < self.max_landmark_jump_threshold
-
-        return is_stable, max_jump
+        # TR refactor: forwards to app.core.utils.pose_validators (shared history dict).
+        return _check_landmark_stability_fn(
+            person_idx,
+            pose_landmarks,
+            frame_shape,
+            history=self.landmark_stability_history,
+            max_jump_threshold=self.max_landmark_jump_threshold,
+            get_keypoint=self.get_keypoint,
+        )
 
     def detect_hand_gesture(self, pose_landmarks: Any, frame_shape: Tuple[int, ...], person_roles: Dict[int, Dict[str, Any]], yolo_person_boxes: Optional[List[List[int]]] = None, 
                            person_activities: Optional[Dict[str, Any]] = None, backpack_detections: Optional[List[Any]] = None, 
@@ -2360,145 +1727,30 @@ class LocopilotActivityMonitor:
 
         Returns:
             tuple: (lp_not_coordinating, alp_not_coordinating)
-                - lp_not_coordinating: True if ALP raised hand but LP failed to coordinate
-                - alp_not_coordinating: True if LP raised hand but ALP failed to coordinate
         """
-        # Get last hand raise times from recent activities
-        lp_last_raise_time = None
-        alp_last_raise_time = None
-
-        for person_idx, activities in self.recent_person_activities.items():
-            if 'lp_hand_raise' in activities:
-                t = activities['lp_hand_raise']
-                if lp_last_raise_time is None or t > lp_last_raise_time:
-                    lp_last_raise_time = t
-            if 'alp_hand_raise' in activities:
-                t = activities['alp_hand_raise']
-                if alp_last_raise_time is None or t > alp_last_raise_time:
-                    alp_last_raise_time = t
-
-        # Helper: Check if both raised hands within coordination window
-        def both_within_window(lp_time, alp_time):
-            if lp_time is None or alp_time is None:
-                return False
-            lp_recent = (current_time - lp_time) <= self.hand_gesture_coordination_window
-            alp_recent = (current_time - alp_time) <= self.hand_gesture_coordination_window
-            return lp_recent and alp_recent
-
-        # Check coordination with temporal window logic
-        lp_not_coordinating = False
-        alp_not_coordinating = False
-
-        if alp_detected and not lp_detected:
-            # ALP raised hand, LP didn't in current frame
-            # Check if LP raised recently (within window)
-            if not both_within_window(lp_last_raise_time, alp_last_raise_time):
-                lp_not_coordinating = True  # True coordination failure
-
-        if lp_detected and not alp_detected:
-            # LP raised hand, ALP didn't in current frame
-            # Check if ALP raised recently (within window)
-            if not both_within_window(lp_last_raise_time, alp_last_raise_time):
-                alp_not_coordinating = True  # True coordination failure
-
-        return lp_not_coordinating, alp_not_coordinating
+        # TR refactor: forwards to app.core.tracking.coordination.
+        return _check_hand_gesture_coordination_fn(
+            lp_detected=lp_detected,
+            alp_detected=alp_detected,
+            current_time=current_time,
+            recent_person_activities=self.recent_person_activities,
+            hand_gesture_coordination_window=self.hand_gesture_coordination_window,
+        )
 
     def analyze_hand_velocity_and_trajectory(self, person_idx: int, landmarks: Any, frame_shape: Tuple[int, ...], timestamp_sec: float) -> Dict[str, Any]:
         """
         Analyze hand velocity and trajectory patterns to enhance gesture detection.
 
         Detects rapid hand raises (signaling) vs static positions (control operations).
-
-        Args:
-            person_idx: Person index
-            landmarks: MediaPipe pose landmarks
-            frame_shape: Frame dimensions (h, w, c)
-            timestamp_sec: Current timestamp
-
-        Returns:
-            dict: Velocity/trajectory analysis results
         """
-        import numpy as np
-        h, w = frame_shape[:2]
-
-        # Initialize history for this person
-        if person_idx not in self.hand_position_history:
-            self.hand_position_history[person_idx] = {
-                'right_wrist': deque(maxlen=self.hand_history_max_length),
-                'left_wrist': deque(maxlen=self.hand_history_max_length),
-                'timestamps': deque(maxlen=self.hand_history_max_length)
-            }
-
-        history = self.hand_position_history[person_idx]
-
-        # Get current wrist positions
-        right_wrist = self.get_keypoint(landmarks, 'right_wrist')
-        left_wrist = self.get_keypoint(landmarks, 'left_wrist')
-
-        right_coords = (int(right_wrist.x * w), int(right_wrist.y * h))
-        left_coords = (int(left_wrist.x * w), int(left_wrist.y * h))
-
-        # Append current positions
-        history['right_wrist'].append(right_coords)
-        history['left_wrist'].append(left_coords)
-        history['timestamps'].append(timestamp_sec)
-
-        # Need at least 3 positions to analyze velocity
-        if len(history['timestamps']) < 3:
-            return {
-                'right_velocity': 0.0,
-                'left_velocity': 0.0,
-                'right_trajectory': 'unknown',
-                'left_trajectory': 'unknown',
-                'rapid_raise_detected': False,
-                'analysis_quality': 'insufficient_data'
-            }
-
-        # Calculate velocities (pixels per second)
-        def calculate_velocity(position_history, timestamps):
-            if len(position_history) < 2:
-                return 0.0, 'unknown'
-
-            recent_positions = list(position_history)[-3:]
-            recent_times = list(timestamps)[-3:]
-
-            dx = recent_positions[-1][0] - recent_positions[0][0]
-            dy = recent_positions[-1][1] - recent_positions[0][1]
-            dt = recent_times[-1] - recent_times[0]
-
-            if dt == 0:
-                return 0.0, 'unknown'
-
-            displacement = np.sqrt(dx**2 + dy**2)
-            velocity = displacement / dt  # pixels/second
-
-            # Determine trajectory
-            if abs(dy) > abs(dx) * 1.5:
-                trajectory = 'upward' if dy < 0 else 'downward'  # Y increases downward
-            elif abs(dx) > abs(dy) * 1.5:
-                trajectory = 'lateral'
-            else:
-                trajectory = 'diagonal'
-
-            return velocity, trajectory
-
-        right_vel, right_traj = calculate_velocity(history['right_wrist'], history['timestamps'])
-        left_vel, left_traj = calculate_velocity(history['left_wrist'], history['timestamps'])
-
-        # Detect rapid hand raise: velocity > 150 px/s AND upward trajectory
-        rapid_raise = (
-            (right_vel > 150 and right_traj == 'upward') or
-            (left_vel > 150 and left_traj == 'upward')
+        # TR refactor: forwards to HandHistoryTracker (shared position_history dict).
+        return self._hand_history.analyze_velocity_and_trajectory(
+            person_idx,
+            landmarks,
+            frame_shape,
+            timestamp_sec,
+            get_keypoint=self.get_keypoint,
         )
-
-        return {
-            'right_velocity': right_vel,
-            'left_velocity': left_vel,
-            'right_trajectory': right_traj,
-            'left_trajectory': left_traj,
-            'rapid_raise_detected': rapid_raise,
-            'analysis_quality': 'good' if len(history['timestamps']) >= 5 else 'limited'
-        }
 
     def analyze_packing_hand_motion(self, person_idx: int, landmarks: Any, frame_shape: Tuple[int, ...], timestamp_sec: float, backpack_bbox: List[int]) -> Dict[str, Any]:
         """Analyze hand motion patterns to detect actual packing activity - delegates to ActivityDetector."""
@@ -2516,58 +1768,8 @@ class LocopilotActivityMonitor:
         Returns:
             Filtered list of backpack detections with static objects removed.
         """
-        if not self.static_backpack_suppression_enabled or not backpack_detections:
-            return backpack_detections
-
-        current_bboxes = [det[:4] if len(det) >= 4 else det for det in backpack_detections]
-        new_candidates = []
-        matched_old = set()
-
-        for curr_bbox in current_bboxes:
-            best_iou = 0.0
-            best_idx = -1
-            for idx, cand in enumerate(self.static_backpack_candidates):
-                iou = calculate_iou(curr_bbox, cand['bbox'])
-                if iou > best_iou:
-                    best_iou = iou
-                    best_idx = idx
-
-            if best_iou >= self.static_backpack_iou_threshold and best_idx >= 0:
-                # Same object as previous frame — increment counter
-                old = self.static_backpack_candidates[best_idx]
-                new_candidates.append({
-                    'bbox': list(curr_bbox),
-                    'frame_count': old['frame_count'] + 1,
-                })
-                matched_old.add(best_idx)
-            else:
-                # New detection — start tracking
-                new_candidates.append({
-                    'bbox': list(curr_bbox),
-                    'frame_count': 1,
-                })
-
-        self.static_backpack_candidates = new_candidates
-
-        # Filter: keep only backpacks that have NOT been static for too long
-        filtered = []
-        for i, det in enumerate(backpack_detections):
-            bbox = det[:4] if len(det) >= 4 else det
-            is_static = False
-            for cand in self.static_backpack_candidates:
-                iou = calculate_iou(bbox, cand['bbox'])
-                if iou >= self.static_backpack_iou_threshold and cand['frame_count'] >= self.static_backpack_min_frames:
-                    is_static = True
-                    break
-            if not is_static:
-                filtered.append(det)
-            else:
-                self.logger.debug(
-                    f"[STATIC BACKPACK] Suppressed static backpack at {list(bbox[:4])} "
-                    f"(seen for {cand['frame_count']} frames)"
-                )
-
-        return filtered
+        # TR refactor: forwards to StaticObjectFilter (preserves [STATIC BACKPACK] log lines).
+        return self._backpack_filter.filter(backpack_detections)
 
     def _update_static_phone_tracking(self, phone_detections: List) -> List:
         """Filter out static cell phone detections (panel instruments misidentified as phones).
@@ -2579,95 +1781,16 @@ class LocopilotActivityMonitor:
         Returns:
             Filtered list of phone detections with static objects removed.
         """
-        if not self.static_phone_suppression_enabled or not phone_detections:
-            return phone_detections
-
-        current_bboxes = [det[:4] if len(det) >= 4 else det for det in phone_detections]
-        new_candidates = []
-
-        for curr_bbox in current_bboxes:
-            best_iou = 0.0
-            best_idx = -1
-            for idx, cand in enumerate(self.static_phone_candidates):
-                iou = calculate_iou(curr_bbox, cand['bbox'])
-                if iou > best_iou:
-                    best_iou = iou
-                    best_idx = idx
-
-            if best_iou >= self.static_phone_iou_threshold and best_idx >= 0:
-                old = self.static_phone_candidates[best_idx]
-                new_candidates.append({
-                    'bbox': list(curr_bbox),
-                    'frame_count': old['frame_count'] + 1,
-                })
-            else:
-                new_candidates.append({
-                    'bbox': list(curr_bbox),
-                    'frame_count': 1,
-                })
-
-        self.static_phone_candidates = new_candidates
-
-        # Filter: keep only phones that have NOT been static for too long
-        filtered = []
-        for i, det in enumerate(phone_detections):
-            bbox = det[:4] if len(det) >= 4 else det
-            is_static = False
-            for cand in self.static_phone_candidates:
-                iou = calculate_iou(bbox, cand['bbox'])
-                if iou >= self.static_phone_iou_threshold and cand['frame_count'] >= self.static_phone_min_frames:
-                    is_static = True
-                    break
-            if not is_static:
-                filtered.append(det)
-            else:
-                self.logger.info(
-                    f"[STATIC PHONE] Suppressed static phone at {[int(x) for x in bbox[:4]]} "
-                    f"(seen for {cand['frame_count']} frames — likely panel instrument)"
-                )
-
-        return filtered
+        # TR refactor: forwards to StaticObjectFilter (preserves [STATIC PHONE] log lines).
+        return self._phone_filter.filter(phone_detections)
 
     def _check_wrist_motion_for_packing(self, person_idx: int, timestamp_sec: float) -> bool:
         """Check if wrists show sufficient motion to indicate actual packing activity.
 
         Returns True if wrist motion is above the threshold, False if hands are stationary.
         """
-        if not getattr(self.settings, 'packing_wrist_motion_gate_enabled', True):
-            return True  # Gate disabled, always pass
-
-        min_velocity = getattr(self.settings, 'packing_wrist_motion_min_velocity', 0.008)
-
-        history = self.hand_position_history.get(person_idx)
-        if not history or len(history.get('timestamps', [])) < 2:
-            return True  # Not enough data, allow detection
-
-        timestamps = list(history['timestamps'])
-        right_positions = list(history.get('right_wrist', []))
-        left_positions = list(history.get('left_wrist', []))
-
-        # Calculate recent wrist velocities (last 3 frames)
-        max_velocity = 0.0
-        n = min(3, len(timestamps) - 1)
-        for i in range(-n, 0):
-            dt = timestamps[i] - timestamps[i - 1]
-            if dt <= 0:
-                continue
-
-            for positions in [right_positions, left_positions]:
-                if len(positions) >= abs(i - 1):
-                    try:
-                        p1 = positions[i - 1]
-                        p2 = positions[i]
-                        if p1 is not None and p2 is not None:
-                            disp = math.sqrt((p2[0] - p1[0]) ** 2 + (p2[1] - p1[1]) ** 2)
-                            # Normalize by frame diagonal (~1280 for 720p)
-                            vel = disp / (1280.0 * dt)
-                            max_velocity = max(max_velocity, vel)
-                    except (IndexError, TypeError):
-                        continue
-
-        return max_velocity >= min_velocity
+        # TR refactor: forwards to HandHistoryTracker (shared position_history dict).
+        return self._hand_history.check_wrist_motion_for_packing(person_idx, timestamp_sec)
 
     # NOTE: detect_multi_person_pose_and_gestures removed - replaced by YOLO26-Pose
 
@@ -3879,62 +3002,21 @@ class LocopilotActivityMonitor:
         This function checks multiple conditions to prevent false positives when the LP
         is legitimately working on documents (logbook, papers, etc.).
 
-        Args:
-            person_idx: Index of the person being checked
-            person_activities: Dict of detected activities for this person
-            pose_landmarks: Pose landmarks for the person
-            detections: YOLO detections dict (may contain 'book', etc.)
-            frame_shape: (height, width) of the frame
-            current_time: Current timestamp (optional, for recent activity check)
-
         Returns:
             tuple: (should_suppress: bool, reason: str or None)
         """
-        h, w = frame_shape[:2]
-        settings = self.settings
-
-        # 1. WRITING ACTIVITY SUPPRESSION
-        if settings.mind_diversion_suppress_with_writing:
-            if person_activities.get('writing', False):
-                return True, "suppressed_writing_active"
-
-            # Check recent writing (within grace period)
-            if current_time is not None and hasattr(self, 'recent_person_activities'):
-                writing_timestamp = self.recent_person_activities.get(person_idx, {}).get('writing')
-                if writing_timestamp and (current_time - writing_timestamp) < settings.mind_diversion_writing_grace_seconds:
-                    return True, "suppressed_recent_writing"
-
-        # 2. BOOK DETECTION SUPPRESSION
-        if detections and 'book' in detections and len(detections.get('book', [])) > 0:
-            return True, "suppressed_book_detected"
-
-        # 3. HAND POSITION HEURISTIC (Critical for camera angle)
-        # If both wrists visible and close together in lap area → likely document work
-        if pose_landmarks:
-            try:
-                left_wrist = self.get_keypoint(pose_landmarks, 'left_wrist')
-                right_wrist = self.get_keypoint(pose_landmarks, 'right_wrist')
-                nose = self.get_keypoint(pose_landmarks, 'nose')
-
-                if left_wrist.visibility > 0.3 and right_wrist.visibility > 0.3:
-                    # Calculate wrist positions
-                    left_wrist_coords = np.array([left_wrist.x * w, left_wrist.y * h])
-                    right_wrist_coords = np.array([right_wrist.x * w, right_wrist.y * h])
-                    wrist_distance = np.linalg.norm(left_wrist_coords - right_wrist_coords)
-
-                    # Check if wrists are in "lap area" (below nose, in front of body)
-                    nose_y = nose.y * h
-                    avg_wrist_y = (left_wrist_coords[1] + right_wrist_coords[1]) / 2
-                    wrists_below_face = avg_wrist_y > nose_y
-
-                    # If wrists close together AND below face → writing pose
-                    if wrist_distance < settings.mind_diversion_wrist_distance_threshold and wrists_below_face:
-                        return True, "suppressed_writing_pose_detected"
-            except (AttributeError, IndexError):
-                pass  # Landmarks not available, continue without suppression
-
-        # 4. NO SUPPRESSION - Allow detection
-        return False, None
+        # TR refactor: forwards to app.core.detectors.mind_diversion_suppression.
+        return _should_suppress_mind_diversion_fn(
+            person_idx=person_idx,
+            person_activities=person_activities,
+            pose_landmarks=pose_landmarks,
+            detections=detections,
+            frame_shape=frame_shape,
+            current_time=current_time,
+            settings=self.settings,
+            recent_person_activities=self.recent_person_activities,
+            get_keypoint=self.get_keypoint,
+        )
 
     # CR-NEW-003: calculate_iou, deduplicate_person_boxes, _compute_iou removed
     # Use calculate_iou(), deduplicate_person_boxes() from app.core.utils.geometry
@@ -3953,100 +3035,20 @@ class LocopilotActivityMonitor:
         """Overlay object bboxes + pose skeleton on an evidence frame.
 
         Re-runs object + pose inference on the extracted frame so the saved
-        *_activity.jpg visually explains why the activity fired — the reviewer
-        sees exactly which person bbox, book/cell-phone/cup bbox, and which
-        wrist/shoulder keypoints the detector was looking at.
+        *_activity.jpg visually explains why the activity fired.
 
         Safe no-op if inference fails — returns the original frame unchanged.
         """
-        try:
-            img = frame.copy()
-
-            # Object detections (full-frame, no pose-guided ROI — we just want
-            # a display, not re-triggering the activity logic)
-            det = self.object_detector.detect_objects(img, pose_landmarks=None, use_pose_guided=False)
-
-            color_by_class = {
-                'person': (0, 255, 0),        # green
-                'book': (0, 215, 255),        # amber
-                'cell_phone': (0, 0, 255),    # red
-                'cup': (255, 200, 0),         # cyan
-                'bottle': (255, 200, 0),
-                'backpack': (255, 0, 255),    # magenta
-                'handbag': (255, 0, 255),
-                'suitcase': (255, 0, 255),
-                'radio_handset': (128, 64, 255),
-            }
-            for cls_name, boxes in det.items():
-                if cls_name in ('rois', 'num_detections'):
-                    continue
-                color = color_by_class.get(cls_name, (200, 200, 200))
-                for b in boxes or []:
-                    try:
-                        x1, y1, x2, y2 = int(b[0]), int(b[1]), int(b[2]), int(b[3])
-                    except Exception:
-                        continue
-                    cv2.rectangle(img, (x1, y1), (x2, y2), color, 2)
-                    label = cls_name
-                    if len(b) > 4 and isinstance(b[4], (int, float)):
-                        label = f"{cls_name} {float(b[4]):.2f}"
-                    cv2.putText(img, label, (x1, max(15, y1 - 6)),
-                                cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1, cv2.LINE_AA)
-
-            # Pose skeleton per person
-            try:
-                persons = self.yolo_pose.process(img) if hasattr(self, 'yolo_pose') and self.yolo_pose else {}
-            except Exception:
-                persons = {}
-            SKELETON = [
-                ('left_shoulder', 'right_shoulder'),
-                ('left_shoulder', 'left_elbow'), ('left_elbow', 'left_wrist'),
-                ('right_shoulder', 'right_elbow'), ('right_elbow', 'right_wrist'),
-                ('left_shoulder', 'left_hip'), ('right_shoulder', 'right_hip'),
-                ('left_hip', 'right_hip'),
-                ('left_hip', 'left_knee'), ('left_knee', 'left_ankle'),
-                ('right_hip', 'right_knee'), ('right_knee', 'right_ankle'),
-                ('nose', 'left_shoulder'), ('nose', 'right_shoulder'),
-            ]
-            h, w = img.shape[:2]
-            for pidx, pdata in (persons or {}).items():
-                kp = pdata.get('keypoints')
-                if kp is None:
-                    continue
-                def _pt(name):
-                    try:
-                        k = self._get_keypoint_by_name(kp, name)
-                        if k.visibility < 0.3:
-                            return None
-                        return (int(k.x * w), int(k.y * h))
-                    except Exception:
-                        return None
-                for a, b in SKELETON:
-                    pa, pb = _pt(a), _pt(b)
-                    if pa and pb:
-                        cv2.line(img, pa, pb, (255, 255, 255), 2, cv2.LINE_AA)
-                # highlight wrists + shoulders + nose
-                for kname, color, r in (
-                    ('left_wrist', (0, 0, 255), 7),
-                    ('right_wrist', (0, 0, 255), 7),
-                    ('left_shoulder', (0, 255, 255), 5),
-                    ('right_shoulder', (0, 255, 255), 5),
-                    ('nose', (255, 0, 255), 5),
-                ):
-                    pt = _pt(kname)
-                    if pt:
-                        cv2.circle(img, pt, r, color, -1, cv2.LINE_AA)
-
-            # Header banner so the viewer knows what this frame is
-            banner = f"{activity_name.upper()}  f{frame_number}"
-            cv2.rectangle(img, (0, 0), (max(420, 10 * len(banner) + 20), 28), (0, 0, 0), -1)
-            cv2.putText(img, banner, (8, 20),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2, cv2.LINE_AA)
-            return img
-        except Exception as e:
-            if self.logger:
-                self.logger.debug(f"[annotate_evidence_frame] failed, saving raw: {e}")
-            return frame
+        # TR refactor: forwards to app.core.visualization.evidence_frame_annotator.
+        return _annotate_evidence_frame_fn(
+            frame,
+            activity_name=activity_name,
+            frame_number=frame_number,
+            object_detector=self.object_detector,
+            yolo_pose=self.yolo_pose if hasattr(self, 'yolo_pose') else None,
+            get_keypoint=self._get_keypoint_by_name,
+            logger=self.logger,
+        )
 
     def start_activity(self, activity_name: str, timestamp: float, fps: float, frame_count: int, person_roles: Optional[Dict[int, Dict[str, Any]]] = None, ocr_timestamp: Optional[str] = None, triggering_person_idx: Optional[int] = None) -> None:
         """Start tracking an activity
@@ -4097,48 +3099,12 @@ class LocopilotActivityMonitor:
         Args:
             active_person_indices: Set of person indices currently detected in the frame.
         """
-        active_set = set(active_person_indices)
-
-        # Delegate sleep-detector cleanup to its own method (C-11 fix)
-        self.sleep_detector.cleanup_stale_tracking(active_set)
-
-        # All per-person tracking dictionaries to clean up
-        tracking_dicts = [
-            ('per_person_consecutive_detections', self.per_person_consecutive_detections),
-            ('per_person_grace_counters', self.per_person_grace_counters),
-            ('hand_position_history', self.hand_position_history),
-            ('landmark_stability_history', self.landmark_stability_history),
-            ('wrist_proximity_tracking', self.wrist_proximity_tracking),
-            ('no_pose_sleep_tracking', self.no_pose_sleep_tracking),
-            ('recent_person_activities', self.recent_person_activities),
-        ]
-
-        total_removed = 0
-        for dict_name, tracking_dict in tracking_dicts:
-            stale_keys = set(tracking_dict.keys()) - active_set
-            for stale_key in stale_keys:
-                del tracking_dict[stale_key]
-                total_removed += 1
-
-        # M-03: Clean up tuple-keyed dicts where key is (person_idx, hand_side).
-        # These cannot be cleaned by simple set subtraction against active_set
-        # because the keys are tuples, not plain integers.
-        tuple_keyed_dicts = [
-            ('hand_smoothing_buffers', self.hand_smoothing_buffers),
-        ]
-
-        for dict_name, tracking_dict in tuple_keyed_dicts:
-            stale_keys = [
-                key for key in tracking_dict
-                if key[0] not in active_set
-            ]
-            for stale_key in stale_keys:
-                del tracking_dict[stale_key]
-                total_removed += 1
-
-        if total_removed > 0:
-            self.logger.debug(f"[CR-012] Cleaned up {total_removed} stale person tracking entries "
-                              f"(active persons: {sorted(active_set)})")
+        # TR refactor: forwards to PerPersonState.cleanup_stale (touches the same dicts via aliases).
+        self._pps.cleanup_stale(
+            active_person_indices,
+            sleep_detector=self.sleep_detector,
+            logger=self.logger,
+        )
 
     def _get_video_metadata(self):
         """CR-011: Lazily load and cache video metadata (total_frames, fps, duration).
@@ -4435,65 +3401,19 @@ class LocopilotActivityMonitor:
         Returns:
             True if re-encoding succeeded, False otherwise
         """
-        import subprocess
-        temp_path = input_path + ".temp.mp4"
-        try:
-            result = subprocess.run([
-                '/usr/bin/ffmpeg', '-y', '-i', input_path,
-                '-c:v', 'libx264', '-preset', 'fast',
-                '-crf', '23', '-pix_fmt', 'yuv420p',
-                '-movflags', '+faststart',
-                '-loglevel', 'error',
-                temp_path
-            ], capture_output=True, timeout=120)
-            if result.returncode == 0 and os.path.exists(temp_path):
-                os.replace(temp_path, input_path)
-                self.logger.debug(f"Re-encoded to H.264: {input_path}")
-                return True
-            else:
-                stderr = result.stderr.decode() if result.stderr else ""
-                self.logger.warning(f"H.264 re-encoding failed (code {result.returncode}): {stderr}")
-        except FileNotFoundError:
-            self.logger.warning("ffmpeg not found - videos will use mp4v codec (may not play in browsers)")
-        except subprocess.TimeoutExpired:
-            self.logger.warning(f"H.264 re-encoding timed out for: {input_path}")
-        except Exception as e:
-            self.logger.warning(f"H.264 re-encoding failed: {e}")
-        finally:
-            if os.path.exists(temp_path):
-                try:
-                    os.remove(temp_path)
-                except Exception:
-                    pass
-        return False
+        # TR refactor: forwards to app.core.media.clip_writer.
+        return _reencode_to_h264_fn(input_path, logger=self.logger)
 
     def save_video_clip(self, frames: List[Any], output_path: str, fps: float) -> None:
         """Save frames as video clip at sample FPS for full-duration playback.
-        
+
         Args:
             frames: List of frames to save
             output_path: Path to save video
             fps: FPS to use for video (should be sample_fps for real-time duration)
         """
-        if len(frames) == 0:
-            return
-        
-        height, width = frames[0].shape[:2]
-        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-        
-        # Use the provided FPS (sample_fps) to create full-duration clips
-        # Example: 13 frames @ 0.5 FPS = 26 seconds (real-time)
-        # instead of: 13 frames @ 30 FPS = 0.43 seconds (fast-motion)
-        out = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
-        
-        for frame in frames:
-            out.write(frame)
-
-        out.release()
-
-        # Re-encode to H.264 for browser compatibility
-        # (mp4v codec from OpenCV doesn't play in browsers)
-        self._reencode_to_h264(output_path)
+        # TR refactor: forwards to app.core.media.clip_writer.
+        return _save_video_clip_fn(frames, output_path, fps, logger=self.logger)
 
     def extract_video_segment(self, source_video: str, output_path: str, start_seconds: float, end_seconds: float) -> bool:
         """Extract video segment - delegates to EvidenceManager.
