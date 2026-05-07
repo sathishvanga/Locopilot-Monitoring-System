@@ -3321,32 +3321,150 @@ class LocopilotActivityMonitor:
                     left_hand = self.get_keypoint(translated_landmarks, 'left_wrist')
                     rv = right_hand.visibility
                     lv = left_hand.visibility
-                    if rv >= 0.5 and lv >= 0.5:
+                    min_wrist_vis = getattr(
+                        self.settings, 'writing_min_wrist_visibility', 0.3
+                    )
+                    allow_single_wrist = getattr(
+                        self.settings, 'writing_allow_single_wrist', True
+                    )
+                    # LOG-BOOK ROI MASK: drop book detections whose centre falls
+                    # outside the desk/lap interaction zone. Most FPs in the
+                    # TV22 batch came from YOLO mis-classifying small control-
+                    # panel devices as "book" or from the wrist drifting near
+                    # an unrelated desk object during routine cab activity.
+                    # Format: ``WRITING_BOOK_ROI=x1,y1,x2,y2`` normalized to
+                    # frame size. Empty (default) keeps current behaviour.
+                    roi_str = getattr(self.settings, 'writing_book_roi', '') or ''
+                    if roi_str and person_books:
+                        try:
+                            r_parts = [float(v) for v in roi_str.split(',')]
+                            if len(r_parts) == 4:
+                                rx1 = r_parts[0] * w
+                                ry1 = r_parts[1] * h
+                                rx2 = r_parts[2] * w
+                                ry2 = r_parts[3] * h
+                                kept_books = []
+                                for _b in person_books:
+                                    bcx = (_b[0] + _b[2]) * 0.5
+                                    bcy = (_b[1] + _b[3]) * 0.5
+                                    if rx1 <= bcx <= rx2 and ry1 <= bcy <= ry2:
+                                        kept_books.append(_b)
+                                _filtered_n = len(person_books) - len(kept_books)
+                                if _filtered_n > 0:
+                                    self.logger.info(
+                                        f"[WRITING:roi-filter] P{person_idx} "
+                                        f"f{frame_number} t={timestamp_sec:.1f}s: "
+                                        f"dropped {_filtered_n}/{len(person_books)} "
+                                        f"book(s) outside ROI=[{r_parts[0]:.2f},"
+                                        f"{r_parts[1]:.2f},{r_parts[2]:.2f},"
+                                        f"{r_parts[3]:.2f}]"
+                                    )
+                                person_books = kept_books
+                        except (ValueError, IndexError):
+                            pass  # malformed; ignore
+                    has_book = len(person_books) > 0
+                    if rv >= min_wrist_vis and lv >= min_wrist_vis:
                         rwx, rwy = right_hand.x * w, right_hand.y * h
                         lwx, lwy = left_hand.x * w, left_hand.y * h
                         wr_dist = math.hypot(rwx - lwx, rwy - lwy)
 
-                        # PRIMARY PATH — wrists inside a book bbox
-                        if len(person_books) > 0:
-                            # Record that this person has a book visible at
-                            # this timestamp; the fallback uses a 30s recency
-                            # window.
+                        # PRIMARY PATH — relaxed wrist-vs-book rule.
+                        # Original "BOTH wrists inside book bbox" missed real
+                        # writing where one hand holds the page (inside bbox)
+                        # and the writing hand sits a few pixels off the page
+                        # edge, or where the page extends below the YOLO bbox.
+                        # Diagnostic logs across TV22.4/.7/.8/.9 GT windows
+                        # showed wrist→bbox edge distances of 4-44 px on the
+                        # "outside" wrist when one wrist was inside.
+                        # New rule: at least one wrist inside AND the other
+                        # within ``writing_other_wrist_max_dist`` px of the
+                        # nearest bbox edge (default 50).
+                        if has_book:
                             self._writing_last_book_seen[person_idx] = timestamp_sec
                             bbox_pad = 10
+                            other_wrist_max = getattr(
+                                self.settings, 'writing_other_wrist_max_dist', 50
+                            )
+                            def _edge_dist(x, y, b1, b2, b3, b4):
+                                dx = max(b1 - x, 0, x - b3)
+                                dy = max(b2 - y, 0, y - b4)
+                                return (dx * dx + dy * dy) ** 0.5
+                            best_miss = None  # (book_bbox, r_in, l_in, dR, dL)
                             for book_bbox in person_books:
                                 bx1, by1, bx2, by2 = book_bbox[:4]
                                 r_in = (bx1 - bbox_pad <= rwx <= bx2 + bbox_pad) and \
                                        (by1 - bbox_pad <= rwy <= by2 + bbox_pad)
                                 l_in = (bx1 - bbox_pad <= lwx <= bx2 + bbox_pad) and \
                                        (by1 - bbox_pad <= lwy <= by2 + bbox_pad)
-                                if r_in and l_in:
+                                dR = _edge_dist(rwx, rwy, bx1, by1, bx2, by2)
+                                dL = _edge_dist(lwx, lwy, bx1, by1, bx2, by2)
+                                fired_strict = r_in and l_in
+                                fired_relaxed = (
+                                    (r_in and dL <= other_wrist_max)
+                                    or (l_in and dR <= other_wrist_max)
+                                )
+                                if fired_strict or fired_relaxed:
+                                    writing_detected_raw = True
+                                    rule = 'strict' if fired_strict else 'relaxed'
+                                    self.logger.info(
+                                        f"[WRITING:book] P{person_idx} f{frame_number} "
+                                        f"t={timestamp_sec:.1f}s rule={rule}: "
+                                        f"wrist_dist={wr_dist:.0f} dR={dR:.0f} dL={dL:.0f} "
+                                        f"r_in={r_in} l_in={l_in} book_bbox={book_bbox}"
+                                    )
+                                    break
+                                if best_miss is None or (r_in or l_in):
+                                    best_miss = (book_bbox, r_in, l_in, dR, dL)
+                            if not writing_detected_raw and best_miss is not None:
+                                bb, r_in, l_in, dR, dL = best_miss
+                                bx1, by1, bx2, by2 = (int(v) for v in bb[:4])
+                                self.logger.info(
+                                    f"[WRITING:miss-bbox] P{person_idx} f{frame_number} "
+                                    f"t={timestamp_sec:.1f}s: books={len(person_books)} "
+                                    f"R=({int(rwx)},{int(rwy)})@{rv:.2f} r_in={r_in} dR={dR:.0f} "
+                                    f"L=({int(lwx)},{int(lwy)})@{lv:.2f} l_in={l_in} dL={dL:.0f} "
+                                    f"book=[{bx1},{by1},{bx2},{by2}]"
+                                )
+                    elif has_book:
+                        # SINGLE-WRIST FALLBACK — when one wrist is occluded by
+                        # the writing hand (visibility < min_wrist_vis) we lose
+                        # the dual-wrist signal. The visible wrist alone, if
+                        # confidently INSIDE the book bbox, is enough evidence
+                        # that this person is interacting with the log book.
+                        # Calibrated 2026-05-06 from TV22.5 4:47 (rv=0.99
+                        # lv=0.03), TV22.7 9:32 (rv=0.99 lv=0.03-0.21).
+                        # Stricter than the dual rule: visible wrist must be
+                        # fully inside the bbox (no edge-distance slack), so
+                        # we don't fire on a hand that just brushes the book
+                        # area while reaching for controls.
+                        bbox_pad = 10
+                        if allow_single_wrist and (rv >= 0.5) ^ (lv >= 0.5):
+                            if rv >= 0.5:
+                                wx, wy, wname = right_hand.x * w, right_hand.y * h, 'R'
+                                wvis = rv
+                            else:
+                                wx, wy, wname = left_hand.x * w, left_hand.y * h, 'L'
+                                wvis = lv
+                            for book_bbox in person_books:
+                                bx1, by1, bx2, by2 = book_bbox[:4]
+                                if (bx1 - bbox_pad <= wx <= bx2 + bbox_pad and
+                                        by1 - bbox_pad <= wy <= by2 + bbox_pad):
                                     writing_detected_raw = True
                                     self.logger.info(
                                         f"[WRITING:book] P{person_idx} f{frame_number} "
-                                        f"t={timestamp_sec:.1f}s: wrist_dist={wr_dist:.0f} "
-                                        f"both wrists inside book_bbox={book_bbox}"
+                                        f"t={timestamp_sec:.1f}s rule=single_wrist: "
+                                        f"{wname}=({int(wx)},{int(wy)})@{wvis:.2f} "
+                                        f"inside book_bbox={book_bbox}"
                                     )
+                                    self._writing_last_book_seen[person_idx] = timestamp_sec
                                     break
+                        if not writing_detected_raw:
+                            self.logger.info(
+                                f"[WRITING:miss-vis] P{person_idx} f{frame_number} "
+                                f"t={timestamp_sec:.1f}s: books={len(person_books)} "
+                                f"rv={rv:.2f} lv={lv:.2f} (need >={min_wrist_vis:.1f} each, "
+                                f"or single >=0.5 inside bbox)"
+                            )
 
                         # FALLBACK PATH — REMOVED (2026-04-26)
                         # The pose-only "wrists-together-in-lap, book seen
@@ -4804,9 +4922,12 @@ class LocopilotActivityMonitor:
                     'mind_diversion_detected': mind_diversion_detected,
                     'eating_drinking_detected': eating_drinking_detected,
                 }
+                _suppress_override = getattr(self.settings, 'train_motion_stopped_suppress_list', '') or ''
+                _suppress_override = [s.strip() for s in _suppress_override.split(',') if s.strip()]
                 apply_train_stopped_suppression(
                     aggregated=_train_stopped_aggregated,
                     persons_data=persons_data,
+                    suppressed=_suppress_override or None,
                 )
                 # Propagate the helper's mutations back to the locals that
                 # downstream code reads for activities_map.

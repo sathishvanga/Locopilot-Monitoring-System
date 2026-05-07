@@ -448,6 +448,30 @@ class Settings(BaseSettings):
     # ==========================================
     writing_min_duration: float = float(os.getenv("WRITING_MIN_DURATION", "1.0"))
     writing_required_consecutive: int = int(os.getenv("WRITING_REQUIRED_CONSECUTIVE", "2"))
+    # Relaxed-rule slack: when one wrist is inside the book bbox, the other
+    # wrist may be up to this many pixels from the nearest bbox edge and still
+    # count as "writing". Calibrated 2026-05-06 from TV22 GT diagnostic logs
+    # showing 4-44 px gaps on the off-hand during real writing posture.
+    # Set to 0 to fall back to the original strict "BOTH wrists inside" rule.
+    writing_other_wrist_max_dist: int = int(os.getenv("WRITING_OTHER_WRIST_MAX_DIST", "50"))
+    # Lower bound on pose-keypoint visibility for the dual-wrist rule. The pose
+    # model can return high-confidence (>0.95) right-wrist + near-zero (~0.03)
+    # left-wrist on real writing frames where the writing hand occludes the
+    # other one. Lower this from 0.5 to 0.3 so frames with one moderate-vis
+    # wrist still enter the rule.
+    writing_min_wrist_visibility: float = float(os.getenv("WRITING_MIN_WRIST_VIS", "0.3"))
+    # Single-wrist fallback: when only one wrist clears 0.5 visibility, fire
+    # writing if that wrist is fully inside the book bbox. Captures occluded-
+    # wrist GTs (TV22.5 4:47, TV22.7 9:32) without the edge-distance slack
+    # used in the dual-wrist relaxed path. Set to 0 to disable.
+    writing_allow_single_wrist: bool = bool(int(os.getenv("WRITING_ALLOW_SINGLE_WRIST", "1")))
+    # Log-book ROI mask: only fire writing if the book bbox centre falls inside
+    # this normalised rectangle. Drops control-panel-device-misclassified-as-
+    # book FPs and books detected in the upper window/door area. Format:
+    # ``WRITING_BOOK_ROI=x1,y1,x2,y2`` (each in [0,1]). Empty (default)
+    # disables the mask. For the TV22 overhead camera, the desk-and-lap zone
+    # is roughly ``0.15,0.30,0.75,0.95``.
+    writing_book_roi: str = os.getenv("WRITING_BOOK_ROI", "")
     book_posture_min_duration: float = float(os.getenv("BOOK_POSTURE_MIN_DURATION", "2.0"))
     book_posture_required_consecutive: int = int(os.getenv("BOOK_POSTURE_REQUIRED_CONSECUTIVE", "2"))
 
@@ -512,6 +536,27 @@ class Settings(BaseSettings):
     # payload, so downstream consumers can distinguish station-context
     # events from running-train violations.
     train_motion_suppress_when_stopped: bool = bool(int(os.getenv("TRAIN_MOTION_SUPPRESS_WHEN_STOPPED", "1")))
+    # Comma-separated activity ``objectType`` names that bypass the downstream
+    # STOPPED motion filter when posting to the external API. Per CLAUDE.md:
+    # "microsleep + cell_phone are never suppressed (safety-critical even at
+    # stations)". Pipeline-1's ``apply_train_stopped_suppression`` already
+    # leaves these active, but the API-post motion filter (in
+    # ``video_processing_service.py`` and ``video_controller.py``) used to
+    # strip ALL STOPPED activities — including these — silently. This setting
+    # restores the spec'd behaviour. Names are normalised (lowercase, spaces
+    # to underscores), so both "cell_phone" and "cell phone" match.
+    motion_filter_bypass_types: str = os.getenv(
+        "MOTION_FILTER_BYPASS_TYPES", "cell_phone,microsleep"
+    )
+    # Comma-separated override of the activities suppressed when train is STOPPED.
+    # Empty (default) means use ``DEFAULT_SUPPRESSED_WHEN_STOPPED`` from
+    # ``app/core/gates.py`` (sleep, writing, packing_bags, lp_hand_gesture,
+    # alp_hand_gesture, mind_diversion, eating_drinking). Set to a smaller list
+    # to let some activities through even at stations — e.g.
+    # ``TRAIN_MOTION_STOPPED_SUPPRESS_LIST=sleep,packing_bags,lp_hand_gesture,alp_hand_gesture,mind_diversion,eating_drinking``
+    # excludes ``writing`` so log-book writing is reported regardless of motion
+    # state. Names must match registry keys exactly.
+    train_motion_stopped_suppress_list: str = os.getenv("TRAIN_MOTION_STOPPED_SUPPRESS_LIST", "")
 
     # Train Motion Detection (vibration-based)
     train_motion_detection_enabled: bool = bool(int(os.getenv("TRAIN_MOTION_DETECTION_ENABLED", "0")))
@@ -636,6 +681,15 @@ class Settings(BaseSettings):
     # are NOT applied (those would require deferring gates.apply_train_stopped_
     # suppression; tracked separately as Direction B). Default 0 (opt-in).
     vlm_motion_override_enabled: bool = bool(int(os.getenv("VLM_MOTION_OVERRIDE_ENABLED", "0")))
+    # When 1, the verifier records VLM verdicts on every activity but never drops
+    # any detection (observe-only / shadow-mode rollout). Default 0 = enforcement.
+    vlm_shadow_mode: bool = bool(int(os.getenv("VLM_SHADOW_MODE", "0")))
+    # Target number of frames per VLM verification strip. Single-burst
+    # activities have ``_resolve_keyframes`` return 1 frame; the verifier
+    # supplements with frames sampled from ``activityClip`` to reach this
+    # target so the VLM gets temporal evidence even on short detections.
+    # Cap is 5 (matches ``_stitch_keyframes`` slice).
+    vlm_strip_target_frames: int = int(os.getenv("VLM_STRIP_TARGET_FRAMES", "5"))
 
     @model_validator(mode='after')
     def _validate_overlap_window(self) -> "Settings":
