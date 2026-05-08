@@ -204,12 +204,19 @@ class GPUResourceManager:
                     else:
                         logger.info("Using CPU device (GPU disabled in config)")
 
-                # Initialize semaphore for concurrency control
-                max_concurrent = self._settings.max_concurrent_videos
-                self._semaphore = asyncio.Semaphore(max_concurrent)
+                # Note: ``self._semaphore`` is intentionally *not* constructed
+                # here. ``asyncio.Semaphore`` binds to whichever event loop
+                # runs the first ``await`` against it; constructing it in this
+                # synchronous path (called from gunicorn startup or test
+                # ``setUp``) ties it to whatever loop happens to be current
+                # then — and later awaits from a different loop raise
+                # ``RuntimeError: <Semaphore [...]> is bound to a different
+                # event loop``. Defer creation to ``acquire_gpu_slot()`` where
+                # we are guaranteed to be inside the loop that will await it.
                 logger.info(
-                    f"Concurrency semaphore initialized: "
-                    f"max {max_concurrent} concurrent videos"
+                    f"Concurrency cap configured: max "
+                    f"{self._settings.max_concurrent_videos} concurrent videos "
+                    f"(semaphore lazy-constructed on first acquire_gpu_slot)"
                 )
 
                 logger.info("Exiting initialize() - success")
@@ -220,14 +227,12 @@ class GPUResourceManager:
                     f"GPU initialization failed: {e}",
                     exc_info=True
                 )
-                # Fallback to CPU on any error
+                # Fallback to CPU on any error. Semaphore is still lazy —
+                # see note above; do not construct it here either.
                 self._device = torch.device("cpu")
                 self._device_name = "CPU (fallback after error)"
                 self._total_memory_mb = 0.0
                 self._gpu_available = False
-                self._semaphore = asyncio.Semaphore(
-                    self._settings.max_concurrent_videos
-                )
                 logger.info("Exiting initialize() - fallback to CPU")
                 return False
 
@@ -431,10 +436,40 @@ class GPUResourceManager:
         Async context manager for acquiring a GPU processing slot
 
         Limits concurrent video processing to prevent GPU memory exhaustion.
+        The underlying ``asyncio.Semaphore`` is lazy-constructed on first
+        call so the manager can be instantiated synchronously (outside any
+        event loop) and then awaited from whichever loop the request lands
+        in — ``asyncio.Semaphore`` binds to the loop running the first
+        ``await``, so eager construction tied it to the wrong loop.
 
-        Usage:
+        Counter authority (Task 0003): this method does *not* increment
+        ``_active_count`` on entry. The migration from pending → active
+        happens atomically inside :meth:`mark_enqueued_started`, which
+        every caller (controller path *and* queue-worker path) is
+        expected to invoke once the slot is held. That keeps an admitted
+        request in *exactly one* of pending or active at every observable
+        moment — never both — which is the invariant
+        :meth:`try_enqueue`'s position formula depends on. The matching
+        ``_active_count`` decrement on slot release lives in this
+        method's finally block.
+
+        Usage (controller path — request went through ``try_enqueue``):
             async with gpu_resource_manager.acquire_gpu_slot():
-                # Process video here
+                # Migrate the request from pending → active so the
+                # counters reflect that it is now running rather than
+                # waiting. This is the only path that should call
+                # ``mark_enqueued_started``.
+                gpu_resource_manager.mark_enqueued_started()
+                results = model.predict(frame)
+
+        Usage (queue-worker path — bypassed ``try_enqueue``):
+            async with gpu_resource_manager.acquire_gpu_slot():
+                # No pending entry to consume; just bump active so
+                # observability sees the running job. ``mark_enqueued_started``
+                # would corrupt ``_pending_count`` for any in-flight
+                # controller admission, so use ``increment_active``
+                # instead.
+                gpu_resource_manager.increment_active()
                 results = model.predict(frame)
 
         Yields:
@@ -444,35 +479,52 @@ class GPUResourceManager:
             f"Entering acquire_gpu_slot() - current active: {self._active_count}"
         )
 
-        # Ensure semaphore is initialized
+        # Lazy-construct the semaphore on first use. We deliberately do NOT
+        # call ``self.initialize()`` here for the semaphore alone — that
+        # method is for CUDA setup and is unsafe to call from arbitrary
+        # event loops. The semaphore itself is cheap to build inline. The
+        # check + assignment is guarded by ``_initialization_lock`` so
+        # concurrent first-callers from threads/loops can't both create
+        # competing semaphores.
         if self._semaphore is None:
-            self.initialize()
+            with self._initialization_lock:
+                if self._semaphore is None:
+                    self._semaphore = asyncio.Semaphore(
+                        self._settings.max_concurrent_videos
+                    )
+                    logger.info(
+                        f"Concurrency semaphore lazy-constructed "
+                        f"(max {self._settings.max_concurrent_videos})"
+                    )
 
-        try:
-            await self._semaphore.acquire()
-
-            with self._active_count_lock:
-                self._active_count += 1
-                current_count = self._active_count
-
+        async with self._semaphore:
+            # Post-acquire log line. The "Entering acquire_gpu_slot()" line
+            # above logs the *request* — but if the semaphore is contended
+            # the value of ``_active_count`` it carries is stale by the time
+            # the slot is actually held. This second line is emitted right
+            # after the await succeeds so ops can correlate the timeline:
+            # request → wait → acquired. Reading ``_active_count`` is racy
+            # without the lock, but it's only an observability hint here so
+            # we keep the log path lock-free.
             logger.info(
-                f"GPU slot acquired - active workers: {current_count}/"
+                f"acquire_gpu_slot() slot acquired - active={self._active_count}/"
                 f"{self._settings.max_concurrent_videos}"
             )
+            try:
+                yield
+            finally:
+                # Symmetric ``_active_count`` decrement. We don't know
+                # whether ``mark_enqueued_started`` actually ran (the
+                # caller might raise before it does), so clamp at zero
+                # to stay robust under partial-failure paths.
+                with self._active_count_lock:
+                    self._active_count = max(0, self._active_count - 1)
+                    current_count = self._active_count
 
-            yield
-
-        finally:
-            self._semaphore.release()
-
-            with self._active_count_lock:
-                self._active_count -= 1
-                current_count = self._active_count
-
-            logger.info(
-                f"GPU slot released - active workers: {current_count}/"
-                f"{self._settings.max_concurrent_videos}"
-            )
+                logger.info(
+                    f"GPU slot released - active workers: {current_count}/"
+                    f"{self._settings.max_concurrent_videos}"
+                )
 
     def increment_active(self) -> int:
         """
@@ -486,20 +538,6 @@ class GPUResourceManager:
             count = self._active_count
 
         logger.debug(f"Active video count incremented to {count}")
-        return count
-
-    def decrement_active(self) -> int:
-        """
-        Decrement active video count when a job completes.
-
-        Returns:
-            int: New active count
-        """
-        with self._active_count_lock:
-            self._active_count = max(0, self._active_count - 1)
-            count = self._active_count
-
-        logger.debug(f"Active video count decremented to {count}")
         return count
 
     def can_accept_job(self) -> bool:
@@ -518,31 +556,73 @@ class GPUResourceManager:
         - ``admitted=True``  → caller may proceed to ``acquire_gpu_slot()``.
           The pending counter is incremented; caller MUST call
           ``mark_enqueued_started()`` right after the slot is acquired so
-          pending decrements and active increments stay consistent.
+          pending decrements stay consistent. ``acquire_gpu_slot()`` itself
+          owns ``_active_count`` (single counter authority).
         - ``admitted=False`` → queue is full. Caller returns HTTP 503.
 
         The admissions cap is ``max_concurrent_videos + job_queue_max_size``.
-        At steady state this allows one active job plus up to
-        ``job_queue_max_size`` waiters. Beyond that we shed load rather than
-        grow the queue unbounded.
+        At steady state this allows up to ``max_concurrent_videos`` active
+        jobs plus ``job_queue_max_size`` waiters. Beyond that we shed load
+        rather than grow the queue unbounded.
+
+        Counter discipline:
+        - ``_pending_count`` counts only requests admitted but not yet
+          inside ``acquire_gpu_slot()``'s body. Once the slot is acquired
+          and ``mark_enqueued_started()`` runs, the request migrates from
+          pending to active.
+        - The cap check uses ``_pending_count + _active_count`` (a request
+          is in *exactly one* of those buckets, never both — that was the
+          double-count bug this method previously had).
+        - ``position`` reflects ordinal place in the line including the
+          currently running jobs: with one active job and an empty queue,
+          a freshly admitted request gets ``position=2`` (one ahead of it,
+          itself is the second).
         """
         max_active = int(self._settings.max_concurrent_videos)
         max_queue = int(getattr(self._settings, 'job_queue_max_size', 10))
         with self._pending_count_lock:
             with self._active_count_lock:
                 in_system = self._active_count + self._pending_count
-            if in_system >= max_active + max_queue:
-                return False, in_system
-            self._pending_count += 1
-            position = max(0, (self._active_count + self._pending_count) - max_active)
+                if in_system >= max_active + max_queue:
+                    return False, in_system
+                self._pending_count += 1
+                # Position = "your ordinal in the queue counting active
+                # jobs in front of you". One active job + this newly
+                # pending request → position 2.
+                position = self._active_count + self._pending_count
         return True, position
 
     def mark_enqueued_started(self) -> None:
-        """Called after ``acquire_gpu_slot()`` yields control — the job is
-        no longer pending; ``acquire_gpu_slot()`` itself bumps ``_active_count``.
-        Pairs with ``try_enqueue()``."""
+        """Migrate a controller-path request from pending to active.
+
+        Called *inside* the ``acquire_gpu_slot()`` ``with`` block, after
+        the semaphore has been acquired, by callers that previously went
+        through :meth:`try_enqueue`. Decrements ``_pending_count`` and
+        increments ``_active_count``, so an admitted request is counted
+        in *exactly one* of pending or active at every observable moment
+        — that's the single counter authority promise this module makes
+        (Task 0003).
+
+        Only the controller / admission-gate path should call this. The
+        queue-worker path bypasses ``try_enqueue`` and instead calls
+        :meth:`increment_active` directly, because decrementing pending
+        without a matching ``try_enqueue`` increment would corrupt the
+        admission accounting for any in-flight controller request.
+
+        Pairs with ``try_enqueue()``.
+
+        Lock ordering note: ``_pending_count_lock`` is acquired *before*
+        ``_active_count_lock`` (nested), matching ``try_enqueue``'s order.
+        This makes the pending→active migration atomic — no observer can
+        see the request as neither pending nor active (a one-slot
+        under-count window the previous sequential-locks version had).
+        Keeping the same lock acquisition order across the module avoids
+        deadlock with concurrent ``try_enqueue`` callers.
+        """
         with self._pending_count_lock:
-            self._pending_count = max(0, self._pending_count - 1)
+            with self._active_count_lock:
+                self._pending_count = max(0, self._pending_count - 1)
+                self._active_count += 1
 
     def release_enqueue_on_error(self) -> None:
         """Roll back a pending admission if the caller bailed before the slot
