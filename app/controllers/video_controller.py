@@ -984,7 +984,8 @@ async def process_and_upload_video(
                     events=postable_activities,  # Exclude STOPPED activities
                     job_id=run_id,
                     video_s3_url=None,  # No original video URL - we don't upload original video
-                    division=division
+                    division=division,
+                    run_dir=run_dir,  # Per-run DLQ scoping per spec 0004
                 )
                 
                 if external_api_result.get("success"):

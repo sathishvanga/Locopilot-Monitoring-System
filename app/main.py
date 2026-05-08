@@ -28,6 +28,7 @@ from .middleware import LoggingMiddleware
 from .utils.logger import setup_logging, get_logger
 from .utils.config import get_settings
 from .utils.video_multiprocessing import shutdown_shared_pool
+from .services.dlq import drain_dlq
 from .services.gpu_resource_manager import get_gpu_resource_manager
 from .services.job_manager import job_manager
 from .services.video_processing_service import VideoProcessingService
@@ -186,11 +187,41 @@ async def lifespan(app: FastAPI):
         logger.error(f"Failed to start job queue workers: {e}", exc_info=True)
         print(f"[WARNING] Job queue workers failed to start: {e}")
 
+    # Schedule a one-shot DLQ re-drain in the background so any external-API
+    # failures from the previous run get replayed on this boot. The task is
+    # fire-and-forget — DLQ writes survive restarts so a crash here is
+    # recoverable on the next boot.
+    async def _drain_dlq_on_startup() -> None:
+        try:
+            stats = await asyncio.get_running_loop().run_in_executor(None, drain_dlq)
+            if stats and stats.get("drained"):
+                logger.info(
+                    f"[dlq] Startup drain finished drained={stats['drained']} "
+                    f"succeeded={stats['succeeded']} failed={stats['failed']}"
+                )
+        except Exception as e:
+            logger.warning(f"[dlq] Startup drain task failed: {e}", exc_info=True)
+
+    try:
+        app.state.dlq_drain_task = asyncio.create_task(_drain_dlq_on_startup())
+        logger.info("[dlq] Startup re-drain task scheduled")
+    except Exception as e:
+        logger.warning(f"[dlq] Failed to schedule startup re-drain task: {e}")
+
     yield
 
     # Shutdown
     print("\n[STOP] Shutting down application...")
     logger.info("Shutting down application...")
+
+    # Cancel the DLQ drain task if it's still in flight on shutdown.
+    drain_task = getattr(app.state, "dlq_drain_task", None)
+    if drain_task is not None and not drain_task.done():
+        drain_task.cancel()
+        try:
+            await drain_task
+        except (asyncio.CancelledError, Exception):
+            pass
 
     # Stop job queue workers
     try:
