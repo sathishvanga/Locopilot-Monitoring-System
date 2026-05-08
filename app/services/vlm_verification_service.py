@@ -6,12 +6,15 @@ JSON verdict. Designed to fail-open: if the endpoint is down or slow, the
 Pipeline-1 verdict passes through unchanged — VLM downtime must never silently
 swallow real violations.
 
-Every verified activity gets a ``vlm_review`` field attached to
-``activities.json`` with verdict + reasoning + latency. Activities with
-``verdict=FALSE_POSITIVE`` and ``confidence >= VLM_DROP_THRESHOLD`` are
-filtered out of the list passed downstream to S3 upload + external API.
-To disable dropping while still recording verdicts (e.g. during a tuning
-window), set ``VLM_DROP_THRESHOLD`` above 1.0.
+Two modes (controlled by ``VLM_SHADOW_MODE``):
+
+- **Shadow** (default): every verified activity gets a ``vlm_review`` field
+  attached to ``activities.json`` with verdict + reasoning + latency, but
+  nothing is dropped. Used to compare VLM judgement against ground truth
+  before enabling enforcement.
+- **Enforcement**: activities with ``verdict=FALSE_POSITIVE`` and
+  ``confidence >= VLM_DROP_THRESHOLD`` are filtered out of the activities list
+  passed downstream to S3 upload + external API.
 
 Prompt design follows the patterns validated in the Phase-0 spike (2026-04-26),
 which scored ~85-90% precision on FP detection across the writing/eating
@@ -19,18 +22,18 @@ confounder archetypes (brake handle, radio handset, idle-lap, static book).
 """
 from __future__ import annotations
 
+import asyncio
 import base64
 import json
 import logging
 import re
 import threading
 import time
-import urllib.error
-import urllib.request
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 import cv2
+import httpx
 import numpy as np
 
 from ..utils.config import get_settings
@@ -39,45 +42,130 @@ from ..utils.config import get_settings
 logger = logging.getLogger(__name__)
 
 
-_PROMPT_WRITING = """You are a railway safety auditor reviewing CCTV footage from a locomotive cabin.
-Camera angle: overhead, looking down/across the cab. Up to 2 persons visible:
+# ---------------------------------------------------------------------------
+# Verdict enum + parser-error sentinel
+# ---------------------------------------------------------------------------
+_ALLOWED_VERDICTS: frozenset = frozenset({"TRUE_POSITIVE", "FALSE_POSITIVE", "UNCERTAIN"})
+
+
+# ---------------------------------------------------------------------------
+# Circuit breaker — protects vLLM during cold-starts / GC pauses
+# ---------------------------------------------------------------------------
+class _CircuitBreaker:
+    """Simple threshold-based circuit breaker for the VLM HTTP client.
+
+    After ``threshold`` consecutive failures the breaker opens; subsequent
+    calls short-circuit to ``SKIPPED_VLM_UNAVAILABLE`` for ``cooldown_s``
+    seconds, after which it resets.  A single success closes the breaker
+    early.  Used by :class:`VlmVerificationService` to avoid wasting
+    ``N x timeout_seconds`` per video during a vLLM cold-start window.
+    """
+
+    def __init__(self, threshold: int = 3, cooldown_s: float = 30.0) -> None:
+        self.threshold = threshold
+        self.cooldown_s = cooldown_s
+        self._fail_count = 0
+        self._opened_at: Optional[float] = None
+        self._lock = threading.Lock()
+
+    def is_open(self) -> bool:
+        with self._lock:
+            if self._opened_at is None:
+                return False
+            if time.monotonic() - self._opened_at > self.cooldown_s:
+                self._opened_at = None
+                self._fail_count = 0
+                return False
+            return True
+
+    def record_failure(self) -> None:
+        with self._lock:
+            self._fail_count += 1
+            if self._fail_count >= self.threshold and self._opened_at is None:
+                self._opened_at = time.monotonic()
+                logger.warning(
+                    "[vlm] circuit breaker OPEN after %d consecutive failures; "
+                    "skipping VLM calls for %.1fs",
+                    self._fail_count, self.cooldown_s,
+                )
+
+    def record_success(self) -> None:
+        with self._lock:
+            if self._fail_count > 0 or self._opened_at is not None:
+                logger.info("[vlm] circuit breaker CLOSED (success after failures)")
+            self._fail_count = 0
+            self._opened_at = None
+
+    def reset(self) -> None:
+        with self._lock:
+            self._fail_count = 0
+            self._opened_at = None
+
+
+_PROMPT_WRITING = """You are a railway safety auditor reviewing CCTV from a locomotive cabin.
+Camera angle: overhead, looking down/across the cab. The frame may contain up to 2 persons:
 - Loco Pilot (LP): the larger, foreground person, usually seated at the controls
 - Assistant Loco Pilot (ALP): the second person, often standing or in the back seat
 
+The image you receive may be a HORIZONTAL STRIP of 1-5 keyframes from the SAME activity
+burst, ordered LEFT-TO-RIGHT in time. Each frame is labelled "FRAME 1", "FRAME 2", ...
+in the top-left corner. Examine ALL frames before deciding. If the activity is clearly
+happening in ANY single frame, that is sufficient for TRUE_POSITIVE. If NO frame shows
+the activity clearly, return FALSE_POSITIVE — do not generalise from posture alone, the
+hand-on-object evidence must be visible in at least one frame. Note in `evidence_frame`
+which frame number provides the strongest evidence (1-N). If only one frame is shown
+or no frame is decisive, return 0.
+
 A classical CV pipeline flagged this frame as "WRITING IN LOG BOOK". The pipeline
 does NOT specify which person — either LP or ALP could be the writer. Your job
-is to VERIFY or REFUTE this classification by examining the image directly.
+is to verify whether ANYONE in the strip is actually writing in a log book in
+at least one of the frames shown.
 
-The image may have person/object bounding boxes drawn on it by the pipeline (green
-person box, amber book box, white skeleton). Do NOT trust those overlays — verify
-the activity from the underlying scene. A box labelled "book 0.96" may be drawn on
-something that is not actually a book; verify yourself.
+The strip you receive has been CROPPED to the hand + book / desk region — far
+window, seats, and most of the cabin walls have been removed so you can focus
+on the relevant area at higher pixel density. Use the visible scene context
+inside the crop to make your call.
 
-True writing requires ALL of these to be visibly true for the SAME person:
-  (a) An OPEN book / notepad / paper is visible on the desk or in their lap
-      (closed books and folded papers do NOT count)
-  (b) Their hand is in PHYSICAL CONTACT with the open page — a fingertip or pen
-      tip is visibly touching paper. Hand resting NEAR the book, or hand merely
-      in the same image region as the book, does NOT qualify.
-  (c) A pen/pencil is visible in the writing hand, OR a fingertip is unambiguously
-      on the page surface.
-  (d) Head is tilted DOWN toward the open page.
+When you ARE confident in your verdict (whether TRUE or FALSE), say so with high
+confidence (≥ 0.8). Reserve UNCERTAIN + low confidence for genuinely ambiguous
+cases. Do NOT default to FALSE_POSITIVE just because verification is hard —
+if you can clearly see writing happening in any frame, return TRUE_POSITIVE.
 
-If you cannot see (b) AND (c) confirmed for one specific person, the verdict is
-FALSE_POSITIVE. When genuinely uncertain, return UNCERTAIN with confidence ≤ 0.5.
-Do NOT return TRUE_POSITIVE just because a book is visible somewhere in the frame.
+Note: the scene-observation fields below (book_visible_on_desk, book_is_open,
+hand_actually_on_book, head_oriented_to_book) describe WHAT YOU SEE in the
+strip. Populate them based on the visual content, NOT based on what your verdict
+needs. A book may be visible but with no hand on it — that is FP, but
+book_visible_on_desk should still be true.
 
-KNOWN LIMITATION: The overhead camera angle can occlude fingertip-on-page contact
-under the hand itself. Some real writing-in-progress frames will be classified
-FALSE_POSITIVE because (b)+(c) cannot be visually confirmed from this view; that
-is an accepted trade-off in favor of high precision on the FP-heavy archetypes.
+True writing requires ALL FOUR of these to be VISIBLY CONFIRMED for the SAME person
+in at least one frame. Posture alone is NEVER sufficient.
+
+  (a) An OPEN book / notepad / paper is visible (closed books do NOT count;
+      bound logbooks lying flat on the desk do not count unless the pages are
+      open and visible)
+  (b) That person's hand is in PHYSICAL CONTACT with the open page — a fingertip
+      or pen tip must be visibly touching the paper. Hand resting NEAR the book,
+      hand HOLDING a closed/folded book, or hand merely in the same image region
+      as the book do NOT qualify.
+  (c) EITHER a pen/pencil is clearly visible in the writing hand (held by
+      fingertips, NOT the brake-handle grip) OR a fingertip is unambiguously on
+      the page surface
+  (d) Head is tilted DOWN toward the open page (not turned forward, not toward
+      the window, not toward the controls)
+
+If you cannot see (b) AND (c) confirmed for one specific person in at least one
+frame, the verdict is FALSE_POSITIVE. Holding papers at chest level, looking
+sideways, reading from a clipboard, reviewing the logbook without writing, or
+operating any cab control are all NOT writing. When in doubt, return UNCERTAIN
+with confidence ≤ 0.5 — do NOT default to TRUE_POSITIVE.
 
 Common confounders the classical pipeline misclassifies as writing:
   - Hands resting in the lap with head bent down (idle posture, no book contact)
   - A book sitting unattended on the desk while crew operates controls (static-book FP)
   - Holding a folded paper or clipboard at chest level while looking forward
   - Holding the brake handle / throttle lever (long stick with knob between the
-    knees or on the console) — verify the hand is on PAPER, not on a metal control
+    knees or on the console) — the hand may briefly look like it is reaching
+    forward; verify it is on PAPER, not on a metal control
   - Holding a railway radio handset to face/ear (brick-shaped, often with coiled cord)
 
 ALSO observe whether the train is moving, using cues OUTSIDE the cabin (window/door):
@@ -88,46 +176,56 @@ ALSO observe whether the train is moving, using cues OUTSIDE the cabin (window/d
                open), or the outside view is clearly stationary with no motion blur
   - "unclear": window is dark, blocked, glare, or you simply cannot see enough outside
                to tell — DO NOT GUESS, return "unclear"
-Writing in the logbook is only a violation while the train is RUNNING; this motion
-observation is independent of the activity verdict — report what you actually see.
+This is a separate observation; do NOT use motion alone to decide the writing verdict.
 
 Reply with STRICT JSON ONLY (no prose, no code fence):
 {
   "verdict": "TRUE_POSITIVE" | "FALSE_POSITIVE" | "UNCERTAIN",
-  "confidence": <float 0.0 to 1.0>,
+  "which_person": "LP" | "ALP" | "neither" | "unclear",
+  "confidence": <float 0.0 to 1.0 — your certainty in the VERDICT ITSELF. If verdict=FALSE_POSITIVE and you are sure no activity is happening, set confidence ≥ 0.80. If verdict=TRUE_POSITIVE and you are sure the activity is happening, set confidence ≥ 0.80. Use ≤ 0.5 only when you are genuinely unsure. Do NOT set 0.0 to mean "no activity"; that means "I am 0% sure of my verdict">,
+  "book_visible_on_desk": <true|false>,
+  "book_is_open": <true|false>,
+  "hand_actually_on_book": <true|false>,
+  "head_oriented_to_book": <true|false>,
+  "primary_object_in_hand": "pen" | "brake_or_throttle" | "radio_handset" | "phone" | "nothing_visible" | "unclear",
   "train_appears_to_be": "running" | "stopped" | "unclear",
-  "motion_evidence": "<short string: the visual cue you used, e.g. 'platform visible', 'motion blur in window', 'cabin door open', 'no outside visible'>",
-  "reasoning": "<one short sentence describing what you actually see>"
+  "motion_evidence": "<short string: the visual cue you used, e.g. 'platform visible', 'motion blur in window', 'no outside visible'>",
+  "evidence_frame": <integer: frame number 1..N giving strongest evidence; 0 if single-frame input or no decisive frame>,
+  "reasoning": "<one short sentence describing what you actually see, naming the FRAME number>"
 }"""
 
-_PROMPT_EATING = """You are a railway safety auditor reviewing CCTV footage from a locomotive cabin.
-Camera angle: overhead, looking down/across the cab. Up to 2 persons visible:
+_PROMPT_EATING = """You are a railway safety auditor reviewing CCTV from a locomotive cabin.
+Camera angle: overhead, looking down/across the cab. The frame may contain up to 2 persons:
 - Loco Pilot (LP): the larger, foreground person, usually seated at the controls
 - Assistant Loco Pilot (ALP): the second person, often standing or in the back seat
 
+The image you receive may be a HORIZONTAL STRIP of 1-5 keyframes from the SAME activity
+burst, ordered LEFT-TO-RIGHT in time. Each frame is labelled "FRAME 1", "FRAME 2", ...
+in the top-left corner. Examine ALL frames before deciding. If the activity is clearly
+happening in ANY single frame, that is sufficient for TRUE_POSITIVE. If NO frame shows
+the activity clearly, return FALSE_POSITIVE — do not generalise from posture alone, the
+hand-on-object evidence must be visible in at least one frame. Note in `evidence_frame`
+which frame number provides the strongest evidence (1-N). If only one frame is shown
+or no frame is decisive, return 0.
+
 A classical CV pipeline flagged this frame as "EATING OR DRINKING". The pipeline does
-NOT specify which person. Your job is to VERIFY or REFUTE this classification by
-examining the image directly.
+NOT specify which person — either LP or ALP could be the one eating/drinking. Your job
+is to verify whether ANYONE in the frame is actually eating or drinking RIGHT NOW.
 
-The image may have person/object bounding boxes drawn on it by the pipeline. Do NOT
-trust those overlays — verify the activity from the underlying scene.
-
-True eating/drinking requires ALL of these for the SAME person:
+True eating/drinking requires ALL of these to hold for the SAME person:
   (a) A clearly identifiable food item, cup, bottle, or similar consumable is in their hand
   (b) That object is being moved toward the mouth OR is held at/near the lips
-  (c) The hand is not on a control, lever, handset, or radio
+  (c) The hand is not on a control/lever/handset/radio
 
-If the object is a railway radio handset (brick-shaped, often with a coiled cord), it
-is NOT eating/drinking — return FALSE_POSITIVE regardless of hand position.
-
-When genuinely uncertain, return UNCERTAIN with confidence ≤ 0.5. Do NOT return
-TRUE_POSITIVE just because a hand is near the face.
+If the object is a radio handset (brick-shaped, often with a coiled cord), it is NOT
+eating/drinking — return FALSE_POSITIVE regardless of hand position.
 
 Common confounders the classical pipeline misclassifies as eating/drinking:
   - A cup or bottle resting on the desk while no one is touching it (static-object FP)
   - Person wiping face, scratching nose, adjusting cap, or yawning with hand near face
   - Hand at face but no object visible in it (idle gesture)
-  - Holding a railway radio handset to face/ear
+  - Holding a radio handset to face/ear — ONLY claim "radio_handset" if you can
+    clearly see the brick shape or coiled cord; do not invent a radio.
 
 ALSO observe whether the train is moving, using cues OUTSIDE the cabin (window/door):
   - "running": visible motion blur in the outside window, scenery/track streaking past,
@@ -137,42 +235,50 @@ ALSO observe whether the train is moving, using cues OUTSIDE the cabin (window/d
                open), or the outside view is clearly stationary with no motion blur
   - "unclear": window is dark, blocked, glare, or you simply cannot see enough outside
                to tell — DO NOT GUESS, return "unclear"
-Eating/drinking is only a violation while the train is RUNNING; this motion
-observation is independent of the activity verdict — report what you actually see.
+This is a separate observation; do NOT use motion alone to decide the eating verdict.
 
 Reply with STRICT JSON ONLY (no prose, no code fence):
 {
   "verdict": "TRUE_POSITIVE" | "FALSE_POSITIVE" | "UNCERTAIN",
-  "confidence": <float 0.0 to 1.0>,
+  "which_person": "LP" | "ALP" | "neither" | "unclear",
+  "confidence": <float 0.0 to 1.0 — your certainty in the VERDICT ITSELF. If verdict=FALSE_POSITIVE and you are sure no activity is happening, set confidence ≥ 0.80. If verdict=TRUE_POSITIVE and you are sure the activity is happening, set confidence ≥ 0.80. Use ≤ 0.5 only when you are genuinely unsure. Do NOT set 0.0 to mean "no activity"; that means "I am 0% sure of my verdict">,
+  "primary_object_in_hand": "cup" | "bottle" | "food" | "radio_handset" | "phone" | "nothing_visible" | "unclear",
+  "object_at_mouth": <true|false>,
   "train_appears_to_be": "running" | "stopped" | "unclear",
-  "motion_evidence": "<short string: the visual cue you used, e.g. 'platform visible', 'motion blur in window', 'cabin door open', 'no outside visible'>",
-  "reasoning": "<one short sentence describing what you actually see>"
+  "motion_evidence": "<short string: the visual cue you used, e.g. 'platform visible', 'motion blur in window', 'no outside visible'>",
+  "evidence_frame": <integer: frame number 1..N giving strongest evidence; 0 if single-frame input or no decisive frame>,
+  "reasoning": "<one short sentence describing what you actually see, naming the FRAME number>"
 }"""
 
-_PROMPT_PACKING = """You are a railway safety auditor reviewing CCTV footage from a locomotive cabin.
-Camera angle: overhead, looking down/across the cab. Up to 2 persons visible:
+_PROMPT_PACKING = """You are a railway safety auditor reviewing CCTV from a locomotive cabin.
+Camera angle: overhead, looking down/across the cab. The frame may contain up to 2 persons:
 - Loco Pilot (LP): the larger, foreground person, usually seated at the controls
 - Assistant Loco Pilot (ALP): the second person, often standing or in the back seat
 
+The image you receive may be a HORIZONTAL STRIP of 1-5 keyframes from the SAME activity
+burst, ordered LEFT-TO-RIGHT in time. Each frame is labelled "FRAME 1", "FRAME 2", ...
+in the top-left corner. Examine ALL frames before deciding. If the activity is clearly
+happening in ANY single frame, that is sufficient for TRUE_POSITIVE. If NO frame shows
+the activity clearly, return FALSE_POSITIVE — do not generalise from posture alone, the
+hand-on-object evidence must be visible in at least one frame. Note in `evidence_frame`
+which frame number provides the strongest evidence (1-N). If only one frame is shown
+or no frame is decisive, return 0.
+
 A classical CV pipeline flagged this frame as "PACKING BAGS". The pipeline does NOT
-specify which person. Your job is to VERIFY or REFUTE this classification by
-examining the image directly.
+specify which person — either LP or ALP could be the one packing. Your job is to
+verify whether ANYONE in the frame is actually packing/handling a bag RIGHT NOW.
 
-The image may have person/object bounding boxes drawn on it by the pipeline. Do NOT
-trust those overlays — verify the activity from the underlying scene.
+True packing requires ALL of these to hold for the SAME person:
+  (a) A bag, backpack, or suitcase is visible and clearly identifiable
+  (b) That person's hand is INSIDE the bag opening, or actively gripping/lifting it
+  (c) Body posture is clearly oriented toward the bag (not toward controls or window)
 
-True packing requires ALL of these for the SAME person:
-  (a) A bag, backpack, suitcase, or duffel is visible and clearly identifiable
-  (b) That person's hand is INSIDE the bag opening, or actively gripping/lifting/
-      manipulating it (zipping, lifting, pushing items in/out)
-  (c) Body posture is clearly oriented toward the bag (leaning, bent over)
-
-When genuinely uncertain, return UNCERTAIN with confidence ≤ 0.5. A bag merely
-visible in the frame is not packing — the hand must be on or inside it.
+If the bag is just sitting on the floor or seat with no one touching it, return
+FALSE_POSITIVE — a bag in the frame is not the same as packing.
 
 Common confounders the classical pipeline misclassifies as packing:
   - A bag/suitcase visible on the floor or seat but no one is interacting with it
-  - Crew reaching for controls and a bag happens to be in the same image region
+  - LP reaching for controls and a bag happens to be in the same image region
   - Crew member standing near a bag during a station stop (handover, not packing)
   - A piece of equipment that resembles a bag (cushion, jacket, kit) — only claim
     "bag" if you can clearly see a backpack/suitcase/duffel shape.
@@ -185,16 +291,20 @@ ALSO observe whether the train is moving, using cues OUTSIDE the cabin (window/d
                open), or the outside view is clearly stationary with no motion blur
   - "unclear": window is dark, blocked, glare, or you simply cannot see enough outside
                to tell — DO NOT GUESS, return "unclear"
-Packing bags is only a violation while the train is RUNNING; this motion
-observation is independent of the activity verdict — report what you actually see.
+This is a separate observation; do NOT use motion alone to decide the packing verdict.
 
 Reply with STRICT JSON ONLY (no prose, no code fence):
 {
   "verdict": "TRUE_POSITIVE" | "FALSE_POSITIVE" | "UNCERTAIN",
-  "confidence": <float 0.0 to 1.0>,
+  "which_person": "LP" | "ALP" | "neither" | "unclear",
+  "confidence": <float 0.0 to 1.0 — your certainty in the VERDICT ITSELF. If verdict=FALSE_POSITIVE and you are sure no activity is happening, set confidence ≥ 0.80. If verdict=TRUE_POSITIVE and you are sure the activity is happening, set confidence ≥ 0.80. Use ≤ 0.5 only when you are genuinely unsure. Do NOT set 0.0 to mean "no activity"; that means "I am 0% sure of my verdict">,
+  "bag_visible": <true|false>,
+  "hand_in_or_on_bag": <true|false>,
+  "posture_oriented_to_bag": <true|false>,
   "train_appears_to_be": "running" | "stopped" | "unclear",
-  "motion_evidence": "<short string: the visual cue you used, e.g. 'platform visible', 'motion blur in window', 'cabin door open', 'no outside visible'>",
-  "reasoning": "<one short sentence describing what you actually see>"
+  "motion_evidence": "<short string: the visual cue you used, e.g. 'platform visible', 'motion blur in window', 'no outside visible'>",
+  "evidence_frame": <integer: frame number 1..N giving strongest evidence; 0 if single-frame input or no decisive frame>,
+  "reasoning": "<one short sentence describing what you actually see, naming the FRAME number>"
 }"""
 
 _PROMPT_CELL_PHONE = """You are a railway safety auditor reviewing CCTV from a locomotive cabin.
@@ -670,6 +780,7 @@ def _stitch_keyframes(
     for idx, p in enumerate(cap):
         img = cv2.imread(str(p))
         if img is None:
+            logger.warning("[vlm] cv2.imread returned None for %s", p)
             continue
         if crop_to_roi:
             img = _crop_to_roi(img)
@@ -705,26 +816,21 @@ def _stitch_keyframes(
     return buf.tobytes()
 
 
-# Hard visual cues that deterministically imply the train is STOPPED. We only
-# trust the VLM to override Pipeline-1's motionState=RUNNING when it cites one
-# of these in `motion_evidence` — soft cues like "no motion blur visible" alone
-# are too easy to confuse with low-light / glare false negatives.
-#
-# Word-boundary regex (not substring) so "destination" does not match "station"
-# and "doorway" does not match "door". The door pattern accepts up to three
-# intermediate words ("door is open", "door appears open", "door slightly
-# open", "door appears to be open") so the regex doesn't reject the
-# descriptive phrasings the prompts actively encourage.
+# ---------------------------------------------------------------------------
+# Motion-override regex helpers
+# ---------------------------------------------------------------------------
+# A "hard stopped cue" is concrete visual evidence the VLM saw OUTSIDE the
+# cabin (window or door) of a stationary state. We require word-boundary
+# matches (so "destination" does not match "station" and "doorway" does not
+# match "door") and reject when the same clause contains a negation token.
 _HARD_STOPPED_CUE_RE = re.compile(
     r"\b(?:door\s+(?:\w+\s+){0,3}open|open\s+door|platforms?|stations?)\b",
     re.IGNORECASE,
 )
-# Reject when the *same clause* contains a negation/uncertainty token. The
-# prompts ask the VLM to "report what you see" and it commonly returns a
-# compound observation like "platform visible, no motion blur in window" —
-# the cue and the negation are about different things, so we split on
-# sentence punctuation and apply the guard per-clause. Matching anywhere in
-# the full string would wrongly reject those genuine STOPPED observations.
+# Reject when the *same clause* contains a negation/uncertainty token so
+# "platform visible, no motion blur" is split per-clause and the genuine
+# STOPPED observation in the first clause is honored without being
+# accidentally rejected by the negation in the second.
 _NEGATION_RE = re.compile(
     r"\b(?:no|not|none|without|absent|unclear|cannot|can't)\b",
     re.IGNORECASE,
@@ -764,12 +870,73 @@ def _parse_verdict(raw_text: str) -> Dict[str, Any]:
         return {"parse_error": f"json_decode: {exc}", "raw_text": raw_text[:300]}
 
 
+def _safe_motion_state(activity: Dict[str, Any], verdict_dict: Dict[str, Any]) -> str:
+    """Return Pipeline-1's authoritative motion state, never the VLM's free text.
+
+    Hardening rule: the VLM emits ``motion_evidence`` (free string) and
+    ``train_appears_to_be`` (semi-structured: running/stopped/unclear).
+    Pipeline-1's ``train_motion_detector`` produces ``activity['motionState']``
+    which is the source of truth.  We refuse to flip ``RUNNING -> STOPPED``
+    based on VLM motion observations alone — that would let a jail-broken
+    VLM emitting ``motion_evidence: "platform"`` silently drop a real
+    violation.
+
+    This helper exists explicitly so that future "use VLM motion as a
+    tiebreaker" code paths route through one validated function instead of
+    sprinkling ad-hoc regexes across the codebase.
+
+    Returns the Pipeline-1 motion state UPPER-cased.  Allowed values are
+    ``RUNNING``, ``STOPPED``, ``UNCERTAIN``.  Any unknown / missing value
+    becomes ``UNCERTAIN``.
+
+    Tiebreaker policy:
+      - If Pipeline-1 says RUNNING:  return RUNNING (VLM cannot override).
+      - If Pipeline-1 says STOPPED:  return STOPPED.
+      - If Pipeline-1 says UNCERTAIN AND the VLM's *structured* field
+        ``train_appears_to_be`` is exactly ``"stopped"``: return UNCERTAIN
+        (we still don't promote to STOPPED on VLM signal alone — that
+        decision belongs to the dedicated train_motion_detector).
+    """
+    p1 = (activity.get("motionState") or "").strip().upper()
+    if p1 in ("RUNNING", "STOPPED"):
+        return p1
+    # Pipeline-1 was UNCERTAIN / empty.  We DO NOT promote based on VLM
+    # text — return UNCERTAIN so callers fall back to the safe default
+    # (treat the activity as a real violation, do not drop).
+    _ = verdict_dict.get("train_appears_to_be")  # observed only, not acted upon
+    return "UNCERTAIN"
+
+
 class VlmVerificationService:
     """Stateless verifier that talks to a vLLM endpoint over HTTP.
 
     The class itself is lightweight (no model loaded in-process); each call
     POSTs to ``{vlm_base_url}/chat/completions`` with one inline-encoded image.
+
+    HTTP transport: a shared ``httpx.AsyncClient`` is created lazily per
+    asyncio event loop (clients cannot be shared across loops).  Connection
+    pooling avoids the per-activity TCP+TLS handshake of the legacy
+    ``urllib`` path.  Per-activity calls are dispatched concurrently via an
+    asyncio semaphore (bounded by ``max_keepalive_connections``).
+
+    Resilience: a process-level :class:`_CircuitBreaker` opens after three
+    consecutive failures and short-circuits subsequent calls for 30s, so a
+    cold-start vLLM doesn't burn ``N x timeout_seconds`` per video.
+
+    Fail-open contract: every per-activity body is wrapped in
+    ``try/except``; on any exception the activity is appended to ``kept``
+    with ``vlm_review = {"verdict": "SKIPPED_VLM_UNAVAILABLE"}``.  Pipeline-1
+    violations are NEVER silently dropped.
     """
+
+    # Per-loop cache of httpx.AsyncClient instances (clients are tied to a
+    # specific event loop; safer to pin one per loop than to share globally).
+    _async_clients: Dict[int, "httpx.AsyncClient"] = {}
+    _async_clients_lock = threading.Lock()
+
+    # Process-level circuit breaker; shared across calls so a single bad
+    # cold-start window opens it for everyone.
+    _breaker: _CircuitBreaker = _CircuitBreaker(threshold=3, cooldown_s=30.0)
 
     def __init__(self) -> None:
         self.settings = get_settings()
@@ -777,16 +944,81 @@ class VlmVerificationService:
         self._verify_set: frozenset[str] = frozenset(
             x.strip() for x in self.settings.vlm_verify_activities.split(",") if x.strip()
         )
+        # Bounded concurrency for the async dispatch.  4 in-flight matches
+        # the keepalive pool below; each activity is one request.
+        self._concurrency = 4
         logger.info(
-            "[vlm] VlmVerificationService init enabled=%s endpoint=%s "
+            "[vlm] VlmVerificationService init enabled=%s shadow=%s endpoint=%s "
             "model=%s verify=%s drop_threshold=%.2f timeout=%.1fs",
             self.settings.vlm_verification_enabled,
+            self.settings.vlm_shadow_mode,
             self.settings.vlm_base_url,
             self.settings.vlm_model,
             sorted(self._verify_set),
             self.settings.vlm_drop_threshold,
             self.settings.vlm_timeout_seconds,
         )
+
+    # ------------------------------------------------------------------
+    # Async client lifecycle
+    # ------------------------------------------------------------------
+    @classmethod
+    def _get_async_client(cls, timeout_s: float) -> "httpx.AsyncClient":
+        """Return a per-event-loop ``httpx.AsyncClient`` (lazy-created).
+
+        ``httpx.AsyncClient`` instances are bound to the loop that creates
+        them, so we key the cache by ``id(asyncio.get_running_loop())``.
+        Within a single ``verify_activities`` invocation the same loop is
+        active for all dispatched calls, so they share the keepalive pool.
+        Across invocations the loop changes (``asyncio.run`` builds a new
+        one each time), so a fresh client is constructed.
+
+        The cache here is mostly a safety net for tests / future code that
+        might pin a loop across multiple service calls; production benefit
+        comes from the in-call pooling.
+        """
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            # No running loop — caller is misusing the API.  Build a
+            # one-shot client that the caller must close.
+            return httpx.AsyncClient(
+                timeout=httpx.Timeout(timeout_s),
+                limits=httpx.Limits(
+                    max_connections=8, max_keepalive_connections=4,
+                ),
+            )
+        loop_key = id(loop)
+        with cls._async_clients_lock:
+            client = cls._async_clients.get(loop_key)
+            if client is None or client.is_closed:
+                # Drop any stale entries that point at closed clients to
+                # avoid unbounded growth across many verify_activities
+                # calls (each builds a new loop).
+                stale = [k for k, v in cls._async_clients.items() if v.is_closed]
+                for k in stale:
+                    cls._async_clients.pop(k, None)
+                client = httpx.AsyncClient(
+                    timeout=httpx.Timeout(timeout_s),
+                    limits=httpx.Limits(
+                        max_connections=8,
+                        max_keepalive_connections=4,
+                    ),
+                )
+                cls._async_clients[loop_key] = client
+            return client
+
+    @classmethod
+    async def aclose(cls) -> None:
+        """Close all cached async clients.  Safe to call from shutdown hooks."""
+        with cls._async_clients_lock:
+            clients = list(cls._async_clients.values())
+            cls._async_clients.clear()
+        for c in clients:
+            try:
+                await c.aclose()
+            except Exception:  # noqa: BLE001 — best-effort cleanup
+                logger.debug("[vlm] error closing async client", exc_info=True)
 
     # ------------------------------------------------------------------
     # Public API
@@ -799,23 +1031,88 @@ class VlmVerificationService:
     ) -> Tuple[List[Dict[str, Any]], Dict[str, int]]:
         """Verify a batch of activities and return the post-filter list.
 
+        Synchronous wrapper around :meth:`verify_activities_async`.  Both
+        existing call-sites (``video_processing_service.process_video``
+        and ``video_controller.process_and_upload_video``) call this
+        synchronously.  The latter happens to live inside an async FastAPI
+        handler — when we detect an already-running event loop we spin up
+        a fresh thread that owns its own loop, so we never collide with
+        ``asyncio.run cannot be called from a running event loop``.
+
         Each input activity dict is mutated in place to add a ``vlm_review``
-        sub-dict with the verdict, latency, and (when enforcement drops the
-        activity) a ``dropped`` flag. When ``vlm_motion_override_enabled`` is
-        set and the verifier sees a hard STOPPED cue, the activity's
-        ``motionState`` is also rewritten to ``STOPPED`` and a
-        ``motion_override`` audit block is attached.
+        sub-dict with the verdict, latency, and (in enforcement mode) a
+        ``dropped`` flag.
+
+        Fail-open contract: any unexpected exception in ``_verify_one`` is
+        caught here, the activity is annotated with
+        ``SKIPPED_VLM_UNAVAILABLE``, and it is kept in the output list.
+        Pipeline-1 violations are never silently dropped.
 
         Returns:
             Tuple of (kept_activities, stats_dict). ``stats_dict`` keys:
             verified, skipped_type, skipped_stopped, skipped_unavailable,
-            skipped_no_image, dropped, kept, uncertain, parse_errors,
+            skipped_no_image, dropped, kept, uncertain, skipped_parse_error,
             motion_overrides.
         """
-        # motion_overrides is orthogonal to verified / kept / dropped: an
-        # activity that gets motionState flipped to STOPPED still counts toward
-        # whichever verdict bucket its FALSE_POSITIVE/TRUE_POSITIVE/UNCERTAIN
-        # judgement landed in. Don't fold it into the kept-count math below.
+        async def _run() -> Tuple[List[Dict[str, Any]], Dict[str, int]]:
+            try:
+                return await self.verify_activities_async(activities)
+            finally:
+                # Close any clients pinned to this loop before the loop
+                # tears down — avoids "unclosed client" warnings.
+                await VlmVerificationService.aclose()
+
+        # Detect whether we're already inside an event loop.  If yes
+        # (FastAPI handler context), run on a worker thread that owns
+        # its own loop so we can safely `asyncio.run`.
+        try:
+            asyncio.get_running_loop()
+            in_loop = True
+        except RuntimeError:
+            in_loop = False
+
+        if not in_loop:
+            return asyncio.run(_run())
+
+        # Inside a running loop: dispatch to a worker thread.
+        result_box: List[Any] = []
+
+        def _thread_main() -> None:
+            try:
+                result_box.append(asyncio.run(_run()))
+            except BaseException as e:  # noqa: BLE001
+                result_box.append(e)
+
+        t = threading.Thread(target=_thread_main, daemon=True, name="vlm-verify")
+        t.start()
+        t.join()
+        if not result_box:
+            raise RuntimeError("vlm verify thread produced no result")
+        out = result_box[0]
+        if isinstance(out, BaseException):
+            raise out
+        return out
+
+    async def verify_activities_async(
+        self, activities: List[Dict[str, Any]]
+    ) -> Tuple[List[Dict[str, Any]], Dict[str, int]]:
+        """Async core of :meth:`verify_activities`.
+
+        Two-phase design:
+
+        1.  Iterate the input list once, classifying each activity into one
+            of three buckets: ``passthrough`` (skipped types / STOPPED /
+            cap-exceeded — no VLM call), ``to_verify`` (eligible for the
+            VLM), or ``no_image`` (eligible but no keyframe found).
+        2.  Dispatch the ``to_verify`` bucket concurrently via
+            :func:`asyncio.gather` with a bounded semaphore.
+
+        Each per-activity body is wrapped in ``try/except``; on any
+        exception the activity is appended to ``kept`` with
+        ``vlm_review = {"verdict": "SKIPPED_VLM_UNAVAILABLE",
+        "reason": type(e).__name__}``.  This is the load-bearing invariant:
+        Pipeline-1 violations must never be lost.
+        """
         stats = {
             "verified": 0,
             "skipped_type": 0,
@@ -825,192 +1122,334 @@ class VlmVerificationService:
             "dropped": 0,
             "kept": 0,
             "uncertain": 0,
-            "parse_errors": 0,
+            # Spec key (docs/specs/code-review-fixes/tasks/0007-...): the
+            # canonical name for "vLLM responded but its body was
+            # un-parseable" is `skipped_parse_error`.  Older code used
+            # `parse_errors`; renamed for cross-reference compatibility.
+            "skipped_parse_error": 0,
+            # Count of activities where the VLM's motion_evidence flipped
+            # motionState from RUNNING -> STOPPED so the downstream filter
+            # in video_controller.py drops them. Only the RUNNING -> STOPPED
+            # direction is supported here; the inverse case (P1 says STOPPED
+            # but VLM disagrees) requires deferring gates.apply_train_stopped_
+            # suppression because suppressed activities never reach this
+            # verifier in the first place.
             "motion_overrides": 0,
         }
         if not self.is_enabled() or not activities:
             return activities, stats
 
-        kept: List[Dict[str, Any]] = []
-        verified_count = 0
         cap = int(self.settings.vlm_max_activities_per_run or 0)
 
-        for act in activities:
-            # Normalize: writers use "packing bags" (space) but the registry
-            # key is "packing_bags" (underscore). Match either form.
-            object_type = (act.get("objectType") or "").strip().lower().replace(" ", "_")
-            if object_type not in self._verify_set or object_type not in _PROMPTS_BY_OBJECT_TYPE:
-                stats["skipped_type"] += 1
-                kept.append(act)
-                continue
+        # Phase 1: classify activities, preserving input order in `kept`.
+        # `to_verify` collects (index_in_kept, activity, prompt, object_type)
+        # so we can patch the result back in-place after gather() returns.
+        kept: List[Dict[str, Any]] = []
+        to_verify: List[Tuple[int, Dict[str, Any], str, str]] = []
+        verified_count = 0
 
-            # Mirror the downstream STOPPED filter in video_controller.py.
-            # Two cases:
-            #   1. object_type IS in the train-stopped suppress list (writing,
-            #      sleep, packing_bags, gestures, mind_diversion, eating). The
-            #      gate would drop these from the API post regardless, so a
-            #      VLM call is wasted compute — skip with SKIPPED_STOPPED.
-            #   2. object_type is NOT in the suppress list (cell_phone,
-            #      microsleep — safety-critical types in
-            #      MOTION_FILTER_BYPASS_TYPES). The gate keeps these even when
-            #      STOPPED, so they DO reach the API. Fall through and verify
-            #      so VLM has a chance to drop the FP. Without this branch the
-            #      verifier silently no-ops on the exact archetype it was added
-            #      to catch (e.g. radio-handset misclassified as phone).
-            if (act.get("motionState") or "").strip().upper() == "STOPPED":
-                _override = getattr(self.settings, 'train_motion_stopped_suppress_list', '') or ''
-                if _override:
-                    _gate_drops = {s.strip() for s in _override.split(',') if s.strip()}
-                else:
-                    from app.core.gates import DEFAULT_SUPPRESSED_WHEN_STOPPED
-                    _gate_drops = set(DEFAULT_SUPPRESSED_WHEN_STOPPED)
-                if object_type in _gate_drops:
-                    stats["skipped_stopped"] += 1
-                    act["vlm_review"] = {
-                        "status": "SKIPPED_STOPPED",
-                        "verdict": None,
-                        "reason": "motionState=STOPPED; gate suppresses this type",
-                    }
+        for act in activities:
+            try:
+                object_type = (act.get("objectType") or "").strip().lower().replace(" ", "_")
+                if object_type not in self._verify_set or object_type not in _PROMPTS_BY_OBJECT_TYPE:
+                    stats["skipped_type"] += 1
                     kept.append(act)
                     continue
-                # Else: gate would NOT drop this type — fall through to verify.
 
-            if cap and verified_count >= cap:
-                stats["skipped_type"] += 1
+                # Mirror the downstream STOPPED filter in video_controller.py.
+                # Two cases:
+                #   1. object_type IS in the train-stopped suppress list (writing,
+                #      sleep, packing_bags, gestures, mind_diversion, eating). The
+                #      gate would drop these from the API post regardless, so a
+                #      VLM call is wasted compute — skip with SKIPPED_STOPPED.
+                #   2. object_type is NOT in the suppress list (cell_phone,
+                #      microsleep — safety-critical types in
+                #      MOTION_FILTER_BYPASS_TYPES). The gate keeps these even when
+                #      STOPPED, so they DO reach the API. Fall through and verify
+                #      so VLM has a chance to drop the FP. Without this branch the
+                #      verifier silently no-ops on the exact archetype it was added
+                #      to catch (e.g. radio-handset misclassified as phone).
+                if (act.get("motionState") or "").strip().upper() == "STOPPED":
+                    _override = getattr(self.settings, "train_motion_stopped_suppress_list", "") or ""
+                    if _override:
+                        _gate_drops = {s.strip() for s in _override.split(",") if s.strip()}
+                    else:
+                        from app.core.gates import DEFAULT_SUPPRESSED_WHEN_STOPPED
+                        _gate_drops = set(DEFAULT_SUPPRESSED_WHEN_STOPPED)
+                    if object_type in _gate_drops:
+                        stats["skipped_stopped"] += 1
+                        act["vlm_review"] = {
+                            "status": "SKIPPED_STOPPED",
+                            "verdict": None,
+                            "reason": "motionState=STOPPED; gate suppresses this type",
+                        }
+                        kept.append(act)
+                        continue
+                    # Else: gate would NOT drop this type — fall through to verify.
+
+                if cap and verified_count >= cap:
+                    stats["skipped_type"] += 1
+                    kept.append(act)
+                    continue
+
+                # Eligible — schedule for the VLM call.
+                prompt = _PROMPTS_BY_OBJECT_TYPE[object_type]
+                kept_idx = len(kept)
                 kept.append(act)
-                continue
-
-            prompt = _PROMPTS_BY_OBJECT_TYPE[object_type]
-            review = self._verify_one(act, prompt, object_type)
-            verified_count += 1
-            act["vlm_review"] = review
-
-            status = review.get("status")
-            if status == "SKIPPED_VLM_UNAVAILABLE":
+                to_verify.append((kept_idx, act, prompt, object_type))
+                verified_count += 1
+            except Exception as classify_exc:  # noqa: BLE001
+                # Even classification can blow up (weird types, bad dicts).
+                # Keep the activity, mark it skipped, never lose it.
+                logger.exception(
+                    "[vlm] classification failed for activity id=%s type=%s",
+                    act.get("id"), act.get("activityType"),
+                )
+                act["vlm_review"] = {
+                    "status": "SKIPPED_VLM_UNAVAILABLE",
+                    "verdict": "SKIPPED_VLM_UNAVAILABLE",
+                    "reason": type(classify_exc).__name__,
+                }
                 stats["skipped_unavailable"] += 1
                 kept.append(act)
-                continue
-            if status == "SKIPPED_NO_IMAGE":
-                stats["skipped_no_image"] += 1
-                kept.append(act)
-                continue
-            if status == "PARSE_ERROR":
-                stats["parse_errors"] += 1
-                kept.append(act)
-                continue
 
-            stats["verified"] += 1
-            verdict_block = review.get("verdict") or {}
-            verdict = verdict_block.get("verdict")
-            confidence = verdict_block.get("confidence", 0.0)
-            try:
-                confidence = float(confidence)
-            except (TypeError, ValueError):
-                confidence = 0.0
+        # Phase 2: dispatch all eligible activities concurrently.
+        if to_verify:
+            sem = asyncio.Semaphore(self._concurrency)
 
-            if verdict == "UNCERTAIN":
-                stats["uncertain"] += 1
-
-            # Direction A: VLM motion override (RUNNING -> STOPPED only).
-            # If Pipeline-1's vibration/window-flow detector missed a station
-            # stop but the VLM clearly sees a hard STOPPED cue (cabin door
-            # open, platform/station visible), overwrite motionState so the
-            # downstream STOPPED-filter in video_controller.py drops the
-            # activity from the external API post. The reverse direction
-            # (VLM-says-RUNNING, P1-says-STOPPED) is NOT handled here — that
-            # case requires deferring gates.apply_train_stopped_suppression
-            # because suppressed activities never reach this verifier.
-            if self.settings.vlm_motion_override_enabled:
-                train_obs = (verdict_block.get("train_appears_to_be") or "").strip().lower()
-                motion_evidence = str(verdict_block.get("motion_evidence") or "")
-                current_motion = (act.get("motionState") or "").strip().upper()
-                if (
-                    train_obs == "stopped"
-                    and _has_hard_stopped_cue(motion_evidence)
-                    and current_motion != "STOPPED"
-                ):
-                    act["motionState"] = "STOPPED"
-                    act["vlm_review"]["motion_override"] = {
-                        "from": current_motion or "UNKNOWN",
-                        "to": "STOPPED",
-                        "cue": motion_evidence[:200],
-                    }
-                    stats["motion_overrides"] += 1
-                    logger.info(
-                        "[vlm] MOTION OVERRIDE activity type=%s at t=%s: %s -> STOPPED "
-                        "(cue=%r)",
-                        act.get("activityType"),
-                        act.get("activityStartTime"),
-                        current_motion or "UNKNOWN",
-                        motion_evidence[:120],
+            async def _run_one(idx: int, activity: Dict[str, Any], prompt: str,
+                               obj_type: str) -> Tuple[int, Dict[str, Any]]:
+                try:
+                    async with sem:
+                        review = await self._verify_one_async(activity, prompt, obj_type)
+                    return idx, review
+                except Exception as e:  # noqa: BLE001
+                    # CRITICAL: never let a single activity's failure
+                    # propagate up and truncate the kept list.
+                    logger.exception(
+                        "[vlm] verify_one failed for activity id=%s type=%s",
+                        activity.get("id"), activity.get("activityType"),
                     )
+                    return idx, {
+                        "status": "SKIPPED_VLM_UNAVAILABLE",
+                        "verdict": "SKIPPED_VLM_UNAVAILABLE",
+                        "reason": type(e).__name__,
+                        "error": str(e)[:200],
+                    }
 
-            should_drop = (
-                verdict == "FALSE_POSITIVE"
-                and confidence >= self.settings.vlm_drop_threshold
+            results = await asyncio.gather(
+                *(_run_one(i, a, p, o) for (i, a, p, o) in to_verify),
+                return_exceptions=False,
             )
-            if should_drop:
-                act["vlm_review"]["dropped"] = True
-                stats["dropped"] += 1
-                logger.info(
-                    "[vlm] DROPPED activity type=%s desc=%r at t=%s "
-                    "verdict=FALSE_POSITIVE conf=%.2f reason=%r",
-                    act.get("activityType"),
-                    act.get("des", "")[:60],
-                    act.get("activityStartTime"),
-                    confidence,
-                    (verdict_block.get("reasoning") or "")[:120],
-                )
-                # Skip appending — activity is dropped
-                continue
 
-            stats["kept"] += 1
-            kept.append(act)
+            # Phase 3: post-process each result, mutate the activity in
+            # `kept`, and update stats / drop flags.
+            #
+            # Each iteration is wrapped in try/except so an unexpected shape
+            # (e.g. `review` being a non-dict truthy value, or a stray
+            # AttributeError from a misbehaving mock) cannot propagate out
+            # of `verify_activities_async` and discard the entire `kept`
+            # list mid-loop.  The activity is already in `kept` from
+            # Phase 1 — a failure here just means it stays un-annotated,
+            # which is acceptable under the fail-open contract.
+            drop_indices: List[int] = []
+            for kept_idx, review in results:
+                act = kept[kept_idx]
+                try:
+                    act["vlm_review"] = review
+
+                    status = review.get("status")
+                    if status == "SKIPPED_VLM_UNAVAILABLE":
+                        stats["skipped_unavailable"] += 1
+                        continue
+                    if status == "SKIPPED_NO_IMAGE":
+                        stats["skipped_no_image"] += 1
+                        continue
+                    if status == "PARSE_ERROR":
+                        stats["skipped_parse_error"] += 1
+                        continue
+
+                    stats["verified"] += 1
+                    verdict_dict = review.get("verdict") or {}
+                    verdict = verdict_dict.get("verdict")
+                    confidence = verdict_dict.get("confidence", 0.0)
+                    try:
+                        confidence = float(confidence)
+                    except (TypeError, ValueError):
+                        confidence = 0.0
+
+                    # Verdict enum validation (defensive — _verify_one_async
+                    # already filters, but cheap to double-check at the boundary).
+                    if verdict not in _ALLOWED_VERDICTS:
+                        stats["skipped_parse_error"] += 1
+                        review["status"] = "PARSE_ERROR"
+                        review["error"] = f"verdict not in enum: {verdict!r}"
+                        continue
+
+                    # Motion-override observability: record the helper's
+                    # opinion on the activity for ops audit. _safe_motion_state
+                    # is conservative — it never flips RUNNING -> STOPPED on
+                    # its own and is purely diagnostic.
+                    act["motion_state_after_vlm"] = _safe_motion_state(act, verdict_dict)
+
+                    # Motion-override active path (RUNNING -> STOPPED only).
+                    # If Pipeline-1's vibration/window-flow detector missed a
+                    # station stop but the VLM clearly sees a hard STOPPED cue
+                    # (cabin door open, platform/station visible) AND is not
+                    # negated in the same clause, overwrite motionState so the
+                    # downstream STOPPED-filter in video_controller.py drops
+                    # the activity from the external API post. The reverse
+                    # direction (VLM-says-RUNNING, P1-says-STOPPED) is not
+                    # handled here — that case requires deferring
+                    # gates.apply_train_stopped_suppression because
+                    # suppressed activities never reach this verifier.
+                    if getattr(self.settings, "vlm_motion_override_enabled", False):
+                        train_obs = (verdict_dict.get("train_appears_to_be") or "").strip().lower()
+                        motion_evidence = str(verdict_dict.get("motion_evidence") or "")
+                        current_motion = (act.get("motionState") or "").strip().upper()
+                        if (
+                            train_obs == "stopped"
+                            and _has_hard_stopped_cue(motion_evidence)
+                            and current_motion != "STOPPED"
+                        ):
+                            act["motionState"] = "STOPPED"
+                            review["motion_override"] = {
+                                "from": current_motion or "UNKNOWN",
+                                "to": "STOPPED",
+                                "cue": motion_evidence[:200],
+                            }
+                            stats["motion_overrides"] += 1
+                            logger.info(
+                                "[vlm] MOTION OVERRIDE activity type=%s at t=%s: %s -> STOPPED "
+                                "(cue=%r)",
+                                act.get("activityType"),
+                                act.get("activityStartTime"),
+                                current_motion or "UNKNOWN",
+                                motion_evidence[:120],
+                            )
+
+                    if verdict == "UNCERTAIN":
+                        stats["uncertain"] += 1
+
+                    should_drop = (
+                        not self.settings.vlm_shadow_mode
+                        and verdict == "FALSE_POSITIVE"
+                        and confidence >= self.settings.vlm_drop_threshold
+                    )
+                    if should_drop:
+                        review["dropped"] = True
+                        stats["dropped"] += 1
+                        drop_indices.append(kept_idx)
+                        logger.info(
+                            "[vlm] DROPPED activity type=%s desc=%r at t=%s "
+                            "verdict=FALSE_POSITIVE conf=%.2f reason=%r",
+                            act.get("activityType"),
+                            (act.get("des") or "")[:60],
+                            act.get("activityStartTime"),
+                            confidence,
+                            (verdict_dict.get("reasoning") or "")[:120],
+                        )
+                    else:
+                        stats["kept"] += 1
+                except Exception:  # noqa: BLE001
+                    # Fail-open: never let a single malformed review
+                    # truncate `kept`.  The activity is already retained
+                    # in `kept` from Phase 1; we simply leave it
+                    # un-annotated (or partially annotated) and continue.
+                    logger.exception(
+                        "[vlm] post-process failed for activity %s",
+                        act.get("id"),
+                    )
+                    continue
+
+            # Materialise drops by removing in reverse-index order.
+            if drop_indices:
+                drop_set = set(drop_indices)
+                kept = [a for i, a in enumerate(kept) if i not in drop_set]
 
         logger.info(
             "[vlm] verification stats: verified=%d kept=%d dropped=%d uncertain=%d "
             "motion_overrides=%d skipped_type=%d skipped_stopped=%d "
-            "skipped_unavailable=%d parse_errors=%d",
+            "skipped_unavailable=%d skipped_parse_error=%d shadow=%s",
             stats["verified"],
             stats["kept"] + stats["skipped_type"] + stats["skipped_stopped"]
             + stats["skipped_unavailable"] + stats["skipped_no_image"]
-            + stats["parse_errors"],
+            + stats["skipped_parse_error"],
             stats["dropped"],
             stats["uncertain"],
             stats["motion_overrides"],
             stats["skipped_type"],
             stats["skipped_stopped"],
             stats["skipped_unavailable"],
-            stats["parse_errors"],
+            stats["skipped_parse_error"],
+            self.settings.vlm_shadow_mode,
         )
         return kept, stats
 
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
-    def _verify_one(self, activity: Dict[str, Any], prompt: str,
-                    object_type: str = "") -> Dict[str, Any]:
-        # Collect all per-burst keyframes for grouped activities; falls back
-        # to the single activityImage when no source-clip metadata exists.
-        keyframes = _resolve_keyframes(activity)
-        if not keyframes:
-            return {"status": "SKIPPED_NO_IMAGE", "verdict": None,
-                    "image_path": activity.get("activityImage") or ""}
+    async def _verify_one_async(
+        self,
+        activity: Dict[str, Any],
+        prompt: str,
+        object_type: str = "",
+    ) -> Dict[str, Any]:
+        """Async per-activity verifier.
 
-        # Sleep / mind_diversion / no_person / group_detected need full-frame
-        # context (body posture, head pose vs window, cabin emptiness, head-
-        # count). The hand+book ROI crop used by writing/eating/packing/cell
-        # would discard the relevant scene context for those.
-        crop_to_roi = object_type not in _FULL_FRAME_OBJECT_TYPES
+        Resilience layers, applied in order:
 
-        # Stitch into a labelled multi-frame strip when more than one
-        # keyframe is available; otherwise just send the single image.
-        strip_bytes = _stitch_keyframes(keyframes, crop_to_roi=crop_to_roi)
-        if not strip_bytes:
-            return {"status": "SKIPPED_NO_IMAGE", "verdict": None,
-                    "image_path": str(keyframes[0])}
-        b64 = base64.b64encode(strip_bytes).decode("ascii")
-        n_frames = len(keyframes)
+        1. **Circuit breaker**: if open, return ``SKIPPED_VLM_UNAVAILABLE``
+           immediately — no HTTP attempt.
+        2. **Single retry on connect/timeout**: 0.5s backoff, then record
+           failure on the second miss.
+        3. **Tolerant body parsing**: malformed JSON / missing keys map to
+           ``PARSE_ERROR`` — never an unhandled exception.
+
+        The caller (``verify_activities_async``) wraps this in another
+        try/except so any leaked exception still produces a fail-open
+        ``SKIPPED_VLM_UNAVAILABLE`` review block.
+        """
+        # 0) Image prep — pure CPU, no network.  Wrapped in try because
+        #    cv2/np can fail in interesting ways.
+        try:
+            keyframes = _resolve_keyframes(activity)
+            if not keyframes:
+                return {
+                    "status": "SKIPPED_NO_IMAGE",
+                    "verdict": None,
+                    "image_path": activity.get("activityImage") or "",
+                }
+            crop_to_roi = object_type not in _FULL_FRAME_OBJECT_TYPES
+            strip_bytes = _stitch_keyframes(keyframes, crop_to_roi=crop_to_roi)
+            if not strip_bytes:
+                return {
+                    "status": "SKIPPED_NO_IMAGE",
+                    "verdict": None,
+                    "image_path": str(keyframes[0]),
+                }
+            b64 = base64.b64encode(strip_bytes).decode("ascii")
+            n_frames = len(keyframes)
+        except Exception as e:  # noqa: BLE001
+            logger.warning(
+                "[vlm] image-prep failure for activity type=%s: %s",
+                activity.get("activityType"), e,
+            )
+            return {
+                "status": "SKIPPED_VLM_UNAVAILABLE",
+                "verdict": "SKIPPED_VLM_UNAVAILABLE",
+                "reason": type(e).__name__,
+                "error": str(e)[:200],
+            }
+
+        # 1) Circuit breaker — short-circuit before opening a socket.
+        if self._breaker.is_open():
+            return {
+                "status": "SKIPPED_VLM_UNAVAILABLE",
+                "verdict": "SKIPPED_VLM_UNAVAILABLE",
+                "reason": "circuit_breaker_open",
+                "latency_sec": 0.0,
+            }
 
         payload = {
             "model": self.settings.vlm_model,
@@ -1031,32 +1470,87 @@ class VlmVerificationService:
         }
 
         url = f"{self.settings.vlm_base_url.rstrip('/')}/chat/completions"
-        req = urllib.request.Request(
-            url,
-            data=json.dumps(payload).encode("utf-8"),
-            headers={"Content-Type": "application/json"},
-            method="POST",
-        )
+        client = self._get_async_client(self.settings.vlm_timeout_seconds)
         t0 = time.time()
-        try:
-            with urllib.request.urlopen(
-                req, timeout=self.settings.vlm_timeout_seconds
-            ) as resp:
-                body = json.loads(resp.read())
-        except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, OSError) as exc:
+
+        # 2) HTTP with single retry.  Treat connect/timeout errors as
+        #    candidates for retry; treat HTTP 5xx as transient too.
+        last_exc: Optional[BaseException] = None
+        body: Optional[Dict[str, Any]] = None
+        for attempt in (1, 2):
+            try:
+                resp = await client.post(
+                    url,
+                    json=payload,
+                    headers={"Content-Type": "application/json"},
+                )
+                # Non-2xx: treat 5xx as transient (retry once); 4xx as fatal.
+                if resp.status_code >= 500 and attempt == 1:
+                    last_exc = httpx.HTTPStatusError(
+                        f"{resp.status_code} server error",
+                        request=resp.request, response=resp,
+                    )
+                    await asyncio.sleep(0.5)
+                    continue
+                if resp.status_code >= 400:
+                    last_exc = httpx.HTTPStatusError(
+                        f"{resp.status_code} {resp.reason_phrase}",
+                        request=resp.request, response=resp,
+                    )
+                    break
+                # Decode JSON; malformed body must NOT crash the loop.
+                try:
+                    body = resp.json()
+                except (json.JSONDecodeError, ValueError) as decode_exc:
+                    latency = round(time.time() - t0, 3)
+                    logger.warning(
+                        "[vlm] malformed JSON from vLLM (status=%s): %s",
+                        resp.status_code, decode_exc,
+                    )
+                    # Malformed JSON is a parse error, not a circuit-breaker
+                    # event — vLLM is up, just confused.  Fail-open via
+                    # PARSE_ERROR (verify_activities keeps the activity).
+                    return {
+                        "status": "PARSE_ERROR",
+                        "verdict": None,
+                        "error": f"json_decode: {decode_exc}",
+                        "latency_sec": latency,
+                    }
+                last_exc = None
+                break
+            except (httpx.ConnectError, httpx.ConnectTimeout,
+                    httpx.ReadTimeout, httpx.WriteTimeout,
+                    httpx.PoolTimeout, httpx.RemoteProtocolError) as exc:
+                last_exc = exc
+                if attempt == 1:
+                    await asyncio.sleep(0.5)
+                    continue
+                break
+            except httpx.HTTPError as exc:
+                # Other HTTP errors — single attempt, no retry.
+                last_exc = exc
+                break
+
+        if body is None:
+            # Failure path: record breaker hit and fail open.
+            self._breaker.record_failure()
+            latency = round(time.time() - t0, 3)
             logger.warning(
                 "[vlm] endpoint unavailable for activity type=%s at t=%s: %s",
                 activity.get("activityType"),
                 activity.get("activityStartTime"),
-                exc,
+                last_exc,
             )
             return {
                 "status": "SKIPPED_VLM_UNAVAILABLE",
-                "verdict": None,
-                "error": str(exc),
-                "latency_sec": round(time.time() - t0, 3),
+                "verdict": "SKIPPED_VLM_UNAVAILABLE",
+                "reason": type(last_exc).__name__ if last_exc else "unknown",
+                "error": str(last_exc)[:200] if last_exc else "",
+                "latency_sec": latency,
             }
 
+        # 3) Success path — record and parse.
+        self._breaker.record_success()
         latency = round(time.time() - t0, 3)
         try:
             text = body["choices"][0]["message"]["content"]
@@ -1076,6 +1570,17 @@ class VlmVerificationService:
                 "latency_sec": latency,
             }
 
+        # Verdict enum validation — refuse unknown labels (a jail-broken
+        # VLM emitting "DROP" or similar would otherwise sneak through).
+        v = parsed.get("verdict")
+        if v not in _ALLOWED_VERDICTS:
+            return {
+                "status": "PARSE_ERROR",
+                "verdict": parsed,
+                "error": f"verdict not in enum: {v!r}",
+                "latency_sec": latency,
+            }
+
         return {
             "status": "OK",
             "verdict": parsed,
@@ -1083,6 +1588,49 @@ class VlmVerificationService:
             "model": self.settings.vlm_model,
             "frames_sent": n_frames,
         }
+
+    # ------------------------------------------------------------------
+    # Backwards-compat sync shim (used by existing tests & any caller that
+    # held a reference to the old name).  Just runs the async version.
+    # ------------------------------------------------------------------
+    def _verify_one(
+        self,
+        activity: Dict[str, Any],
+        prompt: str,
+        object_type: str = "",
+    ) -> Dict[str, Any]:
+        """Synchronous wrapper around :meth:`_verify_one_async`.
+
+        Retained for backwards compatibility with any caller that pokes the
+        internal method directly.  New code should use the async variant.
+        Same already-running-loop dance as :meth:`verify_activities`.
+        """
+        try:
+            asyncio.get_running_loop()
+            in_loop = True
+        except RuntimeError:
+            in_loop = False
+
+        if not in_loop:
+            return asyncio.run(self._verify_one_async(activity, prompt, object_type))
+
+        result_box: List[Any] = []
+
+        def _thread_main() -> None:
+            try:
+                result_box.append(
+                    asyncio.run(self._verify_one_async(activity, prompt, object_type))
+                )
+            except BaseException as e:  # noqa: BLE001
+                result_box.append(e)
+
+        t = threading.Thread(target=_thread_main, daemon=True, name="vlm-verify-one")
+        t.start()
+        t.join()
+        out = result_box[0]
+        if isinstance(out, BaseException):
+            raise out
+        return out
 
 
 # Singleton wiring (mirrors external_api_service pattern)
