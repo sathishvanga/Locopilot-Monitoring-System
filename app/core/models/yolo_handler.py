@@ -855,7 +855,8 @@ class YOLOHandler:
                 for _ in batch_frames:
                     all_detections.append({
                         'person': [], 'cell_phone': [], 'book': [],
-                        'backpack': [], 'roi_detections': [], 'roi_boxes': []
+                        'backpack': [], 'cup_bottle': [],
+                        'roi_detections': [], 'roi_boxes': []
                     })
                 continue
 
@@ -865,6 +866,7 @@ class YOLOHandler:
                     'cell_phone': [],
                     'book': [],
                     'backpack': [],
+                    'cup_bottle': [],
                     'roi_detections': [],
                     'roi_boxes': [],
                     # Per-frame raw (class, conf) list for diagnostic logging.
@@ -905,16 +907,42 @@ class YOLOHandler:
                             pending_books.append(xyxy)
                         elif class_name == 'cell phone' and conf > self.cell_phone_confidence:
                             detections['cell_phone'].append(xyxy)
+                        # Cup/bottle detection for eating/drinking — mirrors the
+                        # single-frame ``detect_objects`` handler so multiprocess
+                        # runs produce the same ``cup_bottle`` signal as serial
+                        # runs (deterministic two-pass contract; see CLAUDE.md).
+                        elif class_name in ['cup', 'bottle']:
+                            floor_conf = (
+                                getattr(
+                                    self.settings,
+                                    'eating_drinking_cup_floor_confidence',
+                                    0.20,
+                                )
+                                if self.settings else 0.20
+                            )
+                            if conf > floor_conf:
+                                detections['cup_bottle'].append(xyxy)
 
-                # Process pending books
+                # Process pending books — use the configurable
+                # ``book_person_margin`` so multiprocess and serial paths agree
+                # on what counts as "near a person" (deterministic two-pass).
+                # Also call ``validate_object_aspect_ratio('book')`` to mirror
+                # the single-frame ``detect_objects`` handler at lines 306-313;
+                # without it, batch-path runs admit improbable book aspect
+                # ratios that the serial path would have rejected — a parity
+                # gap in the same spirit as the cup_bottle fix.
                 for book_xyxy in pending_books:
                     if len(person_boxes) > 0:
                         for person_box in person_boxes:
-                            if self._boxes_overlap_or_near(book_xyxy, person_box, margin=200):
-                                detections['book'].append(book_xyxy)
+                            if self._boxes_overlap_or_near(
+                                book_xyxy, person_box, margin=self.book_person_margin
+                            ):
+                                if self.validate_object_aspect_ratio(book_xyxy, 'book'):
+                                    detections['book'].append(book_xyxy)
                                 break
                     else:
-                        detections['book'].append(book_xyxy)
+                        if self.validate_object_aspect_ratio(book_xyxy, 'book'):
+                            detections['book'].append(book_xyxy)
 
                 all_detections.append(detections)
 
