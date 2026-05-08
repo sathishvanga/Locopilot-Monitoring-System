@@ -37,25 +37,34 @@ class LoggingMiddleware(BaseHTTPMiddleware):
             Response from downstream handler
         """
         request_start_time = datetime.now()
-        
+
         # Extract request metadata
         trace_id = request.headers.get("traceid", "N/A")
         user_id = request.headers.get("sub", "N/A")
         unique_request_id = str(uuid.uuid4())
         http_method = request.method
         request_path = request.url.path.rstrip("/")
-        auth_header = request.headers.get("Authorization", "N/A")
+        # SECURITY: never store the raw Authorization header value in the
+        # request context — it would propagate into every log line emitted
+        # during the request's lifetime (see CLAUDE.md: tokens must never
+        # appear in logs). Record only whether a credential was supplied.
+        # ``has_auth`` is kept for routes that need to branch on presence;
+        # the literal token is intentionally not retained anywhere.
+        has_auth = request.headers.get("Authorization") is not None
         source_request_id = request.headers.get("source_request_id", "N/A")
         client_host = request.client.host if request.client else "unknown"
-        
-        # Store request context for logging throughout request lifecycle
+
+        # Store request context for logging throughout request lifecycle.
+        # ``authorization`` carries a fixed sentinel — "***" when a header
+        # was supplied, "None" when it was absent — so any downstream
+        # formatter can render the field safely without leaking the token.
         set_request_context({
             "cookie_id": trace_id,
             "user_id": user_id,
             "method": http_method,
             "url": request_path,
             "request_id": unique_request_id,
-            "authorization": auth_header if auth_header != "N/A" else "None",
+            "authorization": "***" if has_auth else "None",
             "source_request_id": source_request_id,
             "client_host": client_host
         })
