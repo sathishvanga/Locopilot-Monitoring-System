@@ -939,14 +939,31 @@ async def process_and_upload_video(
                 logger.info(f"[API] Posting results to external API with S3 URLs for trip: {tripId}")
                 external_api_service = get_external_api_service()
                 
-                # Filter out STOPPED activities (only post RUNNING and UNCERTAIN)
-                postable_activities = [
-                    a for a in activities
-                    if a.get('motionState', 'UNKNOWN') != 'STOPPED'
-                ]
+                # Filter out STOPPED activities (only post RUNNING and UNCERTAIN),
+                # EXCEPT safety-critical types whitelisted via
+                # ``MOTION_FILTER_BYPASS_TYPES`` (defaults to cell_phone +
+                # microsleep). Per spec, those violations matter regardless of
+                # train motion state and must reach the external API.
+                _bypass_raw = getattr(settings, 'motion_filter_bypass_types', '') or ''
+                _bypass = {
+                    s.strip().lower().replace(' ', '_')
+                    for s in _bypass_raw.split(',') if s.strip()
+                }
+                def _postable(a):
+                    if (a.get('motionState') or 'UNKNOWN').upper() != 'STOPPED':
+                        return True
+                    ot = (a.get('objectType') or '').strip().lower().replace(' ', '_')
+                    return ot in _bypass
+                postable_activities = [a for a in activities if _postable(a)]
+                _bypassed = sum(
+                    1 for a in activities
+                    if (a.get('motionState') or '').upper() == 'STOPPED' and _postable(a)
+                )
+                _excluded = len(activities) - len(postable_activities)
                 logger.info(
                     f"[API] Motion filter: {len(postable_activities)}/{len(activities)} "
-                    f"activities to post (excluded {len(activities) - len(postable_activities)} STOPPED)"
+                    f"activities to post (excluded {_excluded} STOPPED, "
+                    f"bypassed {_bypassed} safety-critical STOPPED)"
                 )
 
                 external_api_result = external_api_service.post_cvvr_results(

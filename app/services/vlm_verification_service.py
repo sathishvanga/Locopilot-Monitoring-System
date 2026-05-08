@@ -839,23 +839,36 @@ class VlmVerificationService:
                 kept.append(act)
                 continue
 
-            # Mirror the downstream STOPPED filter in video_controller.py: any
-            # activity with motionState=STOPPED gets dropped before the
-            # external API post anyway, so spending a VLM call on it is wasted
-            # compute. Today's verify list (writing/eating/packing) is also
-            # suppressed by gates.apply_train_stopped_suppression upstream, so
-            # this branch should rarely fire — but it's a cheap guard for the
-            # day cell_phone or microsleep enter the verify list (those are
-            # NOT suppressed when STOPPED, see gates.py:14-15).
+            # Mirror the downstream STOPPED filter in video_controller.py.
+            # Two cases:
+            #   1. object_type IS in the train-stopped suppress list (writing,
+            #      sleep, packing_bags, gestures, mind_diversion, eating). The
+            #      gate would drop these from the API post regardless, so a
+            #      VLM call is wasted compute — skip with SKIPPED_STOPPED.
+            #   2. object_type is NOT in the suppress list (cell_phone,
+            #      microsleep — safety-critical types in
+            #      MOTION_FILTER_BYPASS_TYPES). The gate keeps these even when
+            #      STOPPED, so they DO reach the API. Fall through and verify
+            #      so VLM has a chance to drop the FP. Without this branch the
+            #      verifier silently no-ops on the exact archetype it was added
+            #      to catch (e.g. radio-handset misclassified as phone).
             if (act.get("motionState") or "").strip().upper() == "STOPPED":
-                stats["skipped_stopped"] += 1
-                act["vlm_review"] = {
-                    "status": "SKIPPED_STOPPED",
-                    "verdict": None,
-                    "reason": "motionState=STOPPED; downstream filter would drop anyway",
-                }
-                kept.append(act)
-                continue
+                _override = getattr(self.settings, 'train_motion_stopped_suppress_list', '') or ''
+                if _override:
+                    _gate_drops = {s.strip() for s in _override.split(',') if s.strip()}
+                else:
+                    from app.core.gates import DEFAULT_SUPPRESSED_WHEN_STOPPED
+                    _gate_drops = set(DEFAULT_SUPPRESSED_WHEN_STOPPED)
+                if object_type in _gate_drops:
+                    stats["skipped_stopped"] += 1
+                    act["vlm_review"] = {
+                        "status": "SKIPPED_STOPPED",
+                        "verdict": None,
+                        "reason": "motionState=STOPPED; gate suppresses this type",
+                    }
+                    kept.append(act)
+                    continue
+                # Else: gate would NOT drop this type — fall through to verify.
 
             if cap and verified_count >= cap:
                 stats["skipped_type"] += 1
