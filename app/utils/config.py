@@ -167,6 +167,30 @@ class Settings(BaseSettings):
     minio_secret_key: str = os.getenv("MINIO_SECRET_KEY", "login123")
     minio_secure: bool = bool(int(os.getenv("MINIO_SECURE", "1")))
     minio_bucket: str = os.getenv("MINIO_BUCKET", "cvss")
+
+    # Task 0008 — SSRF defense for the ``videoUrl`` form field on
+    # ``/api/video/analyze``. Hostnames in this allowlist are the ONLY
+    # hosts that ``validate_external_url`` will accept; everything else
+    # (including cloud-metadata IPs, RFC1918, localhost) is rejected
+    # with 400. ``MINIO_ALLOWED_HOSTS`` may be set as either a JSON
+    # array string (``'["mind.snikbtel.uk", "backup.example.com"]'``) or
+    # a plain comma-separated host list
+    # (``mind.snikbtel.uk,backup.example.com``). Parsing happens in
+    # ``parse_minio_allowed_hosts`` below; bad input fails fast at
+    # startup with a clear error rather than crashing at class-definition
+    # time as it did when this was inlined as ``json.loads(os.getenv(...))``
+    # (reviewer finding H4 — empty string or malformed JSON took the
+    # whole process down before pydantic could surface a useful error).
+    minio_allowed_hosts: List[str] = ["mind.snikbtel.uk"]
+    # Hard cap on the number of bytes ``MinioService.download_video`` will
+    # accept from a remote URL. A hostile (or misconfigured) server could
+    # return a 100 GB stream and exhaust the GPU box's disk; the streaming
+    # downloader aborts and unlinks the partial file once this cap is
+    # exceeded. Default 5 GiB matches ``max_upload_size`` for parity
+    # between the upload and URL-download paths.
+    max_external_download_bytes: int = int(
+        os.getenv("MAX_EXTERNAL_DOWNLOAD_BYTES", str(5 * 1024 ** 3))
+    )
     
     # Image preprocessing settings (for MediaPipe detection enhancement)
     enable_image_preprocessing: bool = bool(int(os.getenv("ENABLE_IMAGE_PREPROCESSING", "1")))  # Enable by default
@@ -177,6 +201,48 @@ class Settings(BaseSettings):
     adaptive_preprocessing: bool = bool(int(os.getenv("ADAPTIVE_PREPROCESSING", "1")))  # Use quality metrics
     clahe_clip_limit: float = float(os.getenv("CLAHE_CLIP_LIMIT", "1.5"))  # REDUCED from 2.0 (less aggressive CLAHE)
     
+    # Parse ``MINIO_ALLOWED_HOSTS`` (Task 0008, reviewer finding H4).
+    # ``pydantic-settings`` will pass the raw env string through here
+    # ``mode='before'``; we accept JSON arrays first, fall back to
+    # comma-split, and raise a clear ``ValueError`` if both fail so a
+    # bad config surfaces at startup with a useful message rather than
+    # crashing at class-definition with an unrelated ``json.JSONDecodeError``.
+    @field_validator('minio_allowed_hosts', mode='before')
+    @classmethod
+    def parse_minio_allowed_hosts(cls, v):
+        """Parse the allowlist from env (JSON list, comma-split, or default)."""
+        # Field default (None / unset / already a Python list).
+        if v is None:
+            return ["mind.snikbtel.uk"]
+        if isinstance(v, list):
+            return [str(h).strip() for h in v if str(h).strip()]
+        if not isinstance(v, str):
+            raise ValueError(
+                "MINIO_ALLOWED_HOSTS must be JSON list or comma-separated host list"
+            )
+        s = v.strip()
+        if not s:
+            return ["mind.snikbtel.uk"]
+        # Try JSON first (the documented form).
+        try:
+            parsed = json.loads(s)
+        except (json.JSONDecodeError, ValueError):
+            parsed = None
+        if isinstance(parsed, list):
+            cleaned = [str(h).strip() for h in parsed if str(h).strip()]
+            if not cleaned:
+                raise ValueError(
+                    "MINIO_ALLOWED_HOSTS must be JSON list or comma-separated host list"
+                )
+            return cleaned
+        # JSON failed (or returned a non-list). Fall back to comma-split.
+        cleaned = [h.strip() for h in s.split(",") if h.strip()]
+        if cleaned:
+            return cleaned
+        raise ValueError(
+            "MINIO_ALLOWED_HOSTS must be JSON list or comma-separated host list"
+        )
+
     # Parse tile grid size from environment variable (JSON array string)
     @field_validator('clahe_tile_grid_size', mode='before')
     @classmethod

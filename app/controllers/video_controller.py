@@ -75,6 +75,7 @@ from ..services.vlm_verification_service import get_vlm_verification_service
 from ..services.gpu_resource_manager import get_gpu_resource_manager
 from ..utils.logger import get_logger
 from ..utils.config import get_settings
+from ..utils.url_safety import validate_external_url, URLNotAllowed
 
 
 logger = get_logger(__name__)
@@ -98,6 +99,37 @@ _RUN_ID_RE = re.compile(r"^run_\d{8}_\d{6}$")
 # dependency still allows the request through in that case (rollout mode);
 # we just don't want to spam the log on every request.
 _media_api_key_missing_warned = False
+
+
+async def enforce_max_upload_size(request: Request) -> None:
+    """Task 0008: reject oversize uploads BEFORE any Form/File body parsing.
+
+    FastAPI resolves ``File(...)`` / ``Form(...)`` parameters by reading the
+    multipart body — by the time the handler body runs, bytes have already
+    been buffered. This dependency runs FIRST (declared on the route via
+    ``dependencies=[...]``), reads only the ``Content-Length`` header, and
+    short-circuits with HTTP 413 when it advertises a body larger than
+    ``settings.max_upload_size``. Lying / chunked clients that omit the
+    header still get caught by the post-stream ``validate_video_file`` check
+    in the handler.
+    """
+    raw = request.headers.get("content-length")
+    if not raw:
+        return
+    try:
+        advertised_len = int(raw)
+    except (TypeError, ValueError):
+        return
+    if advertised_len > settings.max_upload_size:
+        max_size_mb = settings.max_upload_size / (1024 * 1024)
+        logger.warning(
+            f"[SECURITY] Upload rejected: Content-Length {advertised_len} "
+            f"exceeds max_upload_size {settings.max_upload_size}"
+        )
+        raise HTTPException(
+            status_code=413,
+            detail=f"upload exceeds max size {max_size_mb:.0f} MB",
+        )
 
 
 async def require_api_key(
@@ -248,6 +280,24 @@ async def process_video(
                 status_code=400,
                 detail="Either 'video' file or 'videoUrl' must be provided"
             )
+
+        # Task 0008: SSRF defense. Reject any videoUrl that targets a host
+        # outside the configured allowlist or resolves to a private/loopback
+        # range (cloud metadata IPs, RFC1918, localhost). Done BEFORE the
+        # admission gate so we don't burn a queue slot on a hostile URL.
+        if has_url:
+            try:
+                validate_external_url(
+                    videoUrl.strip(), settings.minio_allowed_hosts
+                )
+            except URLNotAllowed as e:
+                logger.warning(
+                    f"[SECURITY] videoUrl rejected for trip {tripId}: {e}"
+                )
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"videoUrl rejected: {e}",
+                )
 
         # --- Concurrency admission gate -----------------------------------
         # GPU is saturated at 1 concurrent video on this hardware; additional
@@ -627,10 +677,14 @@ async def get_run_media(run_id: str, filename: str, request: Request) -> Respons
     3. Upload evidence clips to S3 (original video is NOT uploaded)
     4. Post results to external API with evidence clip S3 URLs
     5. Return S3 URLs and processing results
-    
+
     Note: Original video is processed locally only and not uploaded to S3.
     Only evidence clips are uploaded to S3.
-    """
+    """,
+    # Task 0008: enforce ``Content-Length <= max_upload_size`` BEFORE
+    # FastAPI parses the multipart body. ``Depends`` resolves the size
+    # check before the ``File(...)``/``Form(...)`` body reads kick in.
+    dependencies=[Depends(enforce_max_upload_size)],
 )
 async def process_and_upload_video(
     background_tasks: BackgroundTasks,
@@ -661,6 +715,10 @@ async def process_and_upload_video(
     try:
         logger.info(f"[OK] Process and upload request for trip: {tripId}, train: {trainNumber}, date: {tripDate}")
 
+        # Note: pre-stream size guard runs as ``Depends(enforce_max_upload_size)``
+        # on the route — see the decorator above. ``validate_video_file``
+        # below catches clients that lied about / omitted Content-Length.
+
         # Validate and sanitize tripId
         tripId = sanitize_identifier(tripId, "tripId", required=True)
 
@@ -669,10 +727,10 @@ async def process_and_upload_video(
             lpCrewId = sanitize_identifier(lpCrewId, "lpCrewId", required=False, max_length=64)
         if alpCrewId:
             alpCrewId = sanitize_identifier(alpCrewId, "alpCrewId", required=False, max_length=64)
-        
+
         # Build crew members dictionary
         crew_members = {}
-        
+
         if lpCrewName and lpCrewId:
             if lpCrewName.strip() and lpCrewId.strip():
                 crew_members['LP'] = {
@@ -680,7 +738,7 @@ async def process_and_upload_video(
                     'id': lpCrewId.strip(),
                     'role': 'LP'
                 }
-        
+
         if alpCrewName and alpCrewId:
             if alpCrewName.strip() and alpCrewId.strip():
                 crew_members['ALP'] = {
@@ -688,7 +746,7 @@ async def process_and_upload_video(
                     'id': alpCrewId.strip(),
                     'role': 'ALP'
                 }
-        
+
         # Validate video file
         filename = video_file.filename
         if not filename:
@@ -696,7 +754,7 @@ async def process_and_upload_video(
                 status_code=400,
                 detail="Invalid video file - filename is empty"
             )
-        
+
         # Check file extension
         file_ext = os.path.splitext(filename)[1].lower()
         if file_ext not in settings.allowed_video_extensions:
@@ -704,10 +762,64 @@ async def process_and_upload_video(
                 status_code=400,
                 detail=f"Invalid file extension {file_ext}. Allowed: {', '.join(settings.allowed_video_extensions)}"
             )
-        
+
+        # Task 0008 / reviewer H3 — chunked-encoding bypass.
+        # ``enforce_max_upload_size`` only inspects ``Content-Length``, so a
+        # client sending ``Transfer-Encoding: chunked`` (or omitting the
+        # length header entirely) skips the pre-stream cap. To close that
+        # gap we must read the body in chunks and abort once we cross
+        # ``max_upload_size`` rather than calling ``.read()`` unconditionally
+        # (which would buffer an unbounded body before we noticed).
+        # Mirrors the streaming cap used in ``MinioService.download_video``.
+        max_size = settings.max_upload_size
+        chunk_size = 1024 * 1024  # 1 MiB
+        chunks: list[bytes] = []
+        file_size = 0
+        # ``video_file.read`` is the FastAPI/Starlette ``UploadFile`` async
+        # reader — it streams from the underlying SpooledTemporaryFile and
+        # plays nicely with chunked transfer encoding.
+        while True:
+            chunk = await video_file.read(chunk_size)
+            if not chunk:
+                break
+            file_size += len(chunk)
+            if max_size and file_size > max_size:
+                max_size_mb = max_size / (1024 * 1024)
+                logger.warning(
+                    f"[SECURITY] Upload rejected mid-stream for trip {tripId}: "
+                    f"body exceeded max_upload_size {max_size} (chunked / "
+                    f"missing Content-Length bypass)"
+                )
+                raise HTTPException(
+                    status_code=413,
+                    detail=f"upload exceeds max size {max_size_mb:.0f} MB",
+                )
+            chunks.append(chunk)
+        video_bytes = b"".join(chunks)
+
+        # Task 0008: full size + extension validation post-stream. Catches
+        # clients that omit Content-Length or under-report it. (Oversize
+        # bodies were already aborted above; this still catches empty
+        # uploads, bad extensions, and any other ``validate_video_file``
+        # rejection criteria.)
+        is_valid, error_message = video_processing_service.validate_video_file(
+            filename=filename,
+            file_size=file_size,
+        )
+        if not is_valid:
+            # ``validate_video_file`` returns the same "File too large"
+            # message for any size > max_upload_size; map that to 413 to
+            # match the pre-stream check, while extension / empty-file
+            # failures stay 400.
+            status_code = 413 if file_size > settings.max_upload_size else 400
+            logger.warning(
+                f"[WARN] Video validation failed for trip {tripId}: {error_message}"
+            )
+            raise HTTPException(status_code=status_code, detail=error_message)
+
         # Save uploaded video
         video_path = await video_processing_service.save_uploaded_video(
-            video_file.file.read(),
+            video_bytes,
             filename,
             tripId
         )
