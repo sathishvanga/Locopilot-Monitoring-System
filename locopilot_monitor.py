@@ -4309,10 +4309,13 @@ class LocopilotActivityMonitor:
         if self.evidence_manager:
             self.evidence_manager.generate_summary_report(self.all_activities, save_json=True)
         else:
-            # Fallback: save activities.json directly if no evidence manager
-            activities_json_path = os.path.join(self.run_dir, "activities.json")
-            with open(activities_json_path, 'w') as f:
-                json.dump(self.all_activities, f, indent=2, default=lambda o: float(o) if isinstance(o, np.floating) else int(o) if isinstance(o, np.integer) else o)
+            # Fallback: save activities.json via the ActivityRepository so
+            # this legacy path uses the same atomic + locked + numpy-aware
+            # write as the modern Pipeline-1 / Pipeline-2 writers (Task 0002).
+            from app.repositories.activity_repository import ActivityRepository
+            activities_json_path = ActivityRepository().save_activities(
+                self.all_activities, self.run_dir
+            )
             self.logger.info(f"Activities JSON saved: {activities_json_path}")
             self.logger.info(f"Total activities detected: {len(self.all_activities)}")
 

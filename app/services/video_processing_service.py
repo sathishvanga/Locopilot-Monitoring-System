@@ -346,9 +346,13 @@ class VideoProcessingService:
                     try:
                         pre_count = len(activities)
                         activities, vlm_stats = vlm_service.verify_activities(activities)
-                        import json as _json
-                        with open(activities_json_path, 'w', encoding='utf-8') as _f:
-                            _json.dump(activities, _f, indent=2, ensure_ascii=False, default=str)
+                        # Re-save activities through the repository so the
+                        # post-VLM rewrite uses the same atomic + locked +
+                        # numpy-aware writer as Pipeline-1 (Task 0002).
+                        self.activity_repository.save_activities(
+                            activities=activities,
+                            run_dir=run_dir,
+                        )
                         logger.info(
                             f"[VLM] verified pre={pre_count} post={len(activities)} "
                             f"dropped={vlm_stats['dropped']} uncertain={vlm_stats['uncertain']} "

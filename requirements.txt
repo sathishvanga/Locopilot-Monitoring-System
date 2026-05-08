@@ -35,6 +35,9 @@ scipy>=1.12.0
 pytesseract>=0.3.10  # OCR for timestamp extraction from video frames
 cachetools>=5.3.0    # TTL caching for trip schedule data
 
+# Atomic + locked activities.json writes (Task 0002)
+portalocker>=2.8.2,<3
+
 # Note: mediapipe requires numpy<2, which is incompatible with opencv-python>=4.12
 # Using opencv-contrib-python instead, which includes all opencv-python features
 
