@@ -1526,6 +1526,36 @@ class SleepDetector:
             self.per_person_tracking.clear()
             self.ir_forward_lean_tracking.clear()
 
+    def reset(self) -> None:
+        """Detector-protocol alias for :meth:`reset_tracking`.
+
+        Provided so every detector exposes a uniform ``reset()`` contract
+        that callers (video_processing_service, train-stopped gate) can
+        invoke without per-class case logic. Clears all per-person and
+        IR-forward-lean tracking state.
+        """
+        self.reset_tracking()
+
+    def on_suppressed(self, person_idx: Optional[int], activity_name: str) -> None:
+        """Hook invoked when sleep is suppressed by the train-stopped gate.
+
+        Resets the per-person sleep state machine and counters so duration
+        timers (``pose_sleep_duration``, sustained-stillness, hands-clasped,
+        head-bob, head-drop, IR forward-lean streak) do not mature while
+        the train is stopped. Without this, internal counters would already
+        be saturated when the train resumes, producing instant FP sleep
+        violations on resume.
+
+        Args:
+            person_idx: Per-person index to reset. ``None`` is a no-op.
+            activity_name: Suppressed activity key (only acts on
+                ``'sleep'``).
+        """
+        if person_idx is None or activity_name != 'sleep':
+            return
+        # Re-use the canonical per-person reset path.
+        self.reset_tracking(person_idx=person_idx)
+
     def get_tracking_state(self, person_idx: int) -> Dict[str, Any]:
         """Get current tracking state for a person.
 

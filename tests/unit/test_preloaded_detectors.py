@@ -191,7 +191,7 @@ def test_monitor_reuses_preloaded_detectors_when_present():
     from locopilot_monitor import LocopilotActivityMonitor
 
     # Stubs with the minimum surface the monitor touches during __init__:
-    # reset_tracking() on sleep, reset() on gesture.
+    # reset() on every detector (task 0006: uniform reset() contract).
     sleep_stub = MagicMock(name='sleep_stub')
     sleep_stub.per_person_tracking = {'person_0': {'sleep_score': 3}}
     gesture_stub = MagicMock(name='gesture_stub')
@@ -228,15 +228,19 @@ def test_monitor_reuses_preloaded_detectors_when_present():
     assert monitor.activity_detector is activity_stub, \
         'monitor must reuse preloaded activity_detector instance'
 
-    # reset_tracking() must have been called during __init__ (state reset
-    # on reuse — the per-chunk contract documented in the monitor docstring).
-    sleep_stub.reset_tracking.assert_called_once()
+    # reset() must have been called during __init__ (state reset on reuse
+    # — the per-chunk contract documented in the monitor docstring).
+    # Task 0006: every detector now exposes a uniform ``reset()`` method;
+    # the monitor calls it on each preloaded detector.
+    sleep_stub.reset.assert_called_once()
     gesture_stub.reset.assert_called_once()
-    # clear_motion_history() on the activity detector must also fire — the
-    # monitor must zero ActivityDetector.packing_motion_history so stale
+    # ActivityDetector.reset() zeroes packing_motion_history so stale
     # deques from a prior chunk cannot trigger packing_bags FPs in the
     # first frames of a new chunk.
-    activity_stub.clear_motion_history.assert_called_once()
+    activity_stub.reset.assert_called_once()
+    # MindDiversionDetector.reset() zeroes _recent_person_activities so
+    # writing-grace cache from a prior chunk cannot leak into the new one.
+    mind_stub.reset.assert_called_once()
 
 
 def test_real_sleep_detector_state_cleared_after_chunk_reset():

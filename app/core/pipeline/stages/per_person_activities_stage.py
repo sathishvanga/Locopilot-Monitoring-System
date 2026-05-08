@@ -54,13 +54,24 @@ class PerPersonActivitiesStage:
         state.aggregated = multi_person_results['aggregated']
         aggregated = state.aggregated
 
-        # Initialize detection flags from aggregated results
+        # Initialize detection flags from aggregated results.
+        #
+        # Both ``packing_detected`` (legacy short key, kept for
+        # backwards-compatibility with existing downstream consumers) and
+        # ``packing_bags_detected`` (canonical registry key matching
+        # ``ACTIVITY_REGISTRY['packing_bags']``) are emitted side by side so
+        # the train-stopped gate's canonical-name lookup succeeds and any
+        # stage that still reads the legacy alias keeps working. Downstream
+        # consumers may read either; new code should prefer the canonical
+        # ``packing_bags_detected`` form.
+        packing_value = aggregated['packing_detected']
         state.activity_flags = {
             'microsleep_detected': aggregated['microsleep_detected'],
             'sleep_detected': aggregated['sleep_detected'],
             'cell_phone_detected': aggregated['cell_phone_detected'],
             'writing_detected': aggregated['writing_detected'],
-            'packing_detected': aggregated['packing_detected'],
+            'packing_detected': packing_value,
+            'packing_bags_detected': packing_value,
             'lp_hand_gesture_detected': aggregated['lp_hand_gesture_detected'],
             'alp_hand_gesture_detected': aggregated['alp_hand_gesture_detected'],
             'mind_diversion_detected': aggregated['mind_diversion_detected'],

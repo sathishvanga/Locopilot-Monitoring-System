@@ -638,3 +638,30 @@ class MindDiversionDetector:
             self._recent_person_activities.pop(person_idx, None)
         else:
             self._recent_person_activities.clear()
+
+    def reset(self) -> None:
+        """Clear all per-video state.
+
+        Wipes ``_recent_person_activities``, the only state-holding dict on
+        this detector, so the next video begins with no carryover writing
+        grace-period entries from the previous video.
+        """
+        self._recent_person_activities.clear()
+
+    def on_suppressed(self, person_idx: Optional[int], activity_name: str) -> None:
+        """Hook invoked when an activity for a person is suppressed by the
+        train-stopped gate.
+
+        For ``mind_diversion`` we drop the per-person writing-grace cache
+        entry so a writing event suppressed during the STOPPED window does
+        not extend its grace period into the resume window.
+
+        Args:
+            person_idx: Per-person index whose state should be cleared.
+            activity_name: Suppressed activity key (only acts on
+                ``'mind_diversion'`` and ``'writing'``).
+        """
+        if person_idx is None:
+            return
+        if activity_name in ('mind_diversion', 'writing'):
+            self._recent_person_activities.pop(person_idx, None)

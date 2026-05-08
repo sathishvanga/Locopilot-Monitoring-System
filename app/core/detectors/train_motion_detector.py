@@ -103,6 +103,30 @@ class TrainMotionDetector:
         # Rolling buffer of recent trimmed vibration_mean values, used to compute
         # a median-smoothed vibration_mean before scoring.
         self._vib_history: deque = deque(maxlen=self.vibration_median_window)
+        # Counter of frames seen since the last reset. Used by callers that
+        # want to confirm "first frame after reset" semantics.
+        self._frames_seen: int = 0
+
+    def reset(self) -> None:
+        """Clear all per-video state.
+
+        MUST be called between videos so the first frame of video B is not
+        diffed against the last frame of video A (which would otherwise emit
+        a phantom RUNNING signal at the start of every subsequent video).
+
+        This clears every stateful attribute populated by the per-frame
+        helpers (``compute_vibration``, ``compute_window_flow``,
+        ``compute_stability``, ``get_smoothed_state`` and the
+        person-bbox-history accumulator). Configuration / threshold
+        attributes are left untouched.
+        """
+        self.prev_gray = None
+        self.prev_gray_window = None
+        self.state_history.clear()
+        self._prev_block_vars = None
+        self.person_bbox_history_buf.clear()
+        self._vib_history.clear()
+        self._frames_seen = 0
 
     def create_interior_mask(
         self, frame_shape: Tuple[int, int], person_bboxes: List
@@ -428,5 +452,7 @@ class TrainMotionDetector:
 
         if self.person_bbox_history > 0:
             self.person_bbox_history_buf.append(list(person_bboxes))
+
+        self._frames_seen += 1
 
         return smoothed_state, smoothed_conf, diagnostics

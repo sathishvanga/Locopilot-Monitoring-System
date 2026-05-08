@@ -773,7 +773,38 @@ class GestureDetector:
             return 'LP' if person_center_x < frame_center_x else 'ALP'
 
     def reset(self):
-        """Reset all session tracking data."""
+        """Reset all session tracking data.
+
+        Clears the three state-holding dicts populated during gesture
+        analysis: ``gesture_sessions`` (LP/ALP raise timestamps + counts),
+        ``recent_person_activities`` (work-activity suppression cache),
+        and ``hand_position_history`` (per-person rolling wrist trail).
+        """
         self.gesture_sessions.clear()
         self.recent_person_activities.clear()
         self.hand_position_history.clear()
+
+    def on_suppressed(self, person_idx: Optional[int], activity_name: str) -> None:
+        """Hook invoked when an activity for a person is suppressed by the
+        train-stopped gate.
+
+        For gesture activities (``lp_hand_gesture`` / ``alp_hand_gesture``)
+        this clears the matching role's ``last_raise_time`` so a stale
+        STOPPED-period raise can't be paired against a fresh resume-period
+        raise from the other crew member, which would otherwise trigger
+        a phantom ``not_coordinating`` violation on resume.
+
+        Args:
+            person_idx: Per-person index (unused; kept for hook symmetry).
+            activity_name: Suppressed activity key (e.g. ``'lp_hand_gesture'``).
+        """
+        # Map activity -> role whose session must be cleared.
+        role: Optional[str] = None
+        if activity_name == 'lp_hand_gesture':
+            role = 'LP'
+        elif activity_name == 'alp_hand_gesture':
+            role = 'ALP'
+        if role is not None and role in self.gesture_sessions:
+            # Drop the entire role session (raise time, counts, last update)
+            # so the next RUNNING-window raise starts from a clean slate.
+            del self.gesture_sessions[role]
