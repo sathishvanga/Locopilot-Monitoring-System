@@ -23,6 +23,7 @@ import atexit
 from .multiprocessing_config import MultiprocessingConfig
 from .logger import get_logger
 from .config import get_settings
+from .json_utils import NumpyEncoder
 
 
 logger = get_logger(__name__)
@@ -31,19 +32,9 @@ logger = get_logger(__name__)
 # to prevent caching before environment variables are fully loaded.
 # Do not use a module-level settings variable.
 
-
-class NumpyEncoder(json.JSONEncoder):
-    """JSON encoder that handles numpy types."""
-    def default(self, obj):
-        if isinstance(obj, (np.integer,)):
-            return int(obj)
-        if isinstance(obj, (np.floating,)):
-            return float(obj)
-        if isinstance(obj, (np.bool_,)):
-            return bool(obj)
-        if isinstance(obj, np.ndarray):
-            return obj.tolist()
-        return super().default(obj)
+# NumpyEncoder is imported from app.utils.json_utils (the single canonical
+# encoder). Earlier this module shipped its own copy that was missing
+# np.bool_ in the repository copy; consolidating fixes that drift.
 
 
 # Global variables for worker processes (initialized once per worker)
@@ -1073,12 +1064,15 @@ class VideoMultiprocessingOrchestrator:
         clips_dir = os.path.join(run_dir, "clips")
         os.makedirs(clips_dir, exist_ok=True)
 
-        # Save merged activities to main run directory
+        # Save merged activities to main run directory.
+        # Route through ActivityRepository so every writer in the codebase
+        # uses the same atomic + locked write protocol (Task 0002).
         if len(all_activities) > 0:
-            activities_json_path = os.path.join(run_dir, "activities.json")
             try:
-                with open(activities_json_path, 'w') as f:
-                    json.dump(all_activities, f, indent=2, cls=NumpyEncoder)
+                from ..repositories.activity_repository import ActivityRepository
+                activities_json_path = ActivityRepository().save_activities(
+                    all_activities, run_dir
+                )
                 logger.info(f"Saved {len(all_activities)} activities to {activities_json_path}")
             except Exception as e:
                 logger.error(f"Failed to save activities.json: {e}")

@@ -783,14 +783,19 @@ async def process_and_upload_video(
                     post_vlm_activities, vlm_stats = vlm_service.verify_activities(
                         pre_vlm_activities
                     )
-                    # default=str defends against numpy scalars (float32 etc.)
-                    # that may have leaked into Pipeline-1 outputs — we never
-                    # want the verifier to be the thing that breaks JSON write.
-                    with open(activities_json_for_vlm, 'w', encoding='utf-8') as f:
-                        _json.dump(
-                            post_vlm_activities, f,
-                            indent=2, ensure_ascii=False, default=str,
-                        )
+                    # Route the rewrite through ActivityRepository so it
+                    # uses the canonical atomic + locked + numpy-aware
+                    # writer (see app/utils/json_utils.py). Prior to
+                    # Task 0002 this site did a non-atomic open(...,'w')
+                    # which could race with the Pipeline-1 final write
+                    # and leave a half-truncated file on crash.
+                    from app.repositories.activity_repository import (
+                        ActivityRepository as _ActivityRepository,
+                    )
+                    _ActivityRepository().save_activities(
+                        post_vlm_activities,
+                        os.path.dirname(activities_json_for_vlm),
+                    )
                     # Keep result['activities'] in sync so downstream S3/API
                     # blocks see the post-verifier list.
                     if 'activities' in result:
@@ -914,10 +919,18 @@ async def process_and_upload_video(
                         
                         updated_activities.append(activity)
                     
-                    # Save updated activities.json with S3 URLs
-                    with open(activities_json_path, 'w', encoding='utf-8') as f:
-                        json.dump(updated_activities, f, indent=2, ensure_ascii=False)
-                    
+                    # Save updated activities.json with S3 URLs through
+                    # the canonical atomic + locked writer. This used to
+                    # be a plain open(..., 'w') that could race with the
+                    # VLM rewrite hook above and the Pipeline-1 writer.
+                    from app.repositories.activity_repository import (
+                        ActivityRepository as _ActivityRepository,
+                    )
+                    _ActivityRepository().save_activities(
+                        updated_activities,
+                        os.path.dirname(activities_json_path),
+                    )
+
                     # Update activities for response
                     activities = updated_activities
                     
