@@ -669,10 +669,10 @@ async def process_and_upload_video(
             lpCrewId = sanitize_identifier(lpCrewId, "lpCrewId", required=False, max_length=64)
         if alpCrewId:
             alpCrewId = sanitize_identifier(alpCrewId, "alpCrewId", required=False, max_length=64)
-        
+
         # Build crew members dictionary
         crew_members = {}
-        
+
         if lpCrewName and lpCrewId:
             if lpCrewName.strip() and lpCrewId.strip():
                 crew_members['LP'] = {
@@ -680,7 +680,7 @@ async def process_and_upload_video(
                     'id': lpCrewId.strip(),
                     'role': 'LP'
                 }
-        
+
         if alpCrewName and alpCrewId:
             if alpCrewName.strip() and alpCrewId.strip():
                 crew_members['ALP'] = {
@@ -688,7 +688,7 @@ async def process_and_upload_video(
                     'id': alpCrewId.strip(),
                     'role': 'ALP'
                 }
-        
+
         # Validate video file
         filename = video_file.filename
         if not filename:
@@ -696,7 +696,7 @@ async def process_and_upload_video(
                 status_code=400,
                 detail="Invalid video file - filename is empty"
             )
-        
+
         # Check file extension
         file_ext = os.path.splitext(filename)[1].lower()
         if file_ext not in settings.allowed_video_extensions:
@@ -704,7 +704,7 @@ async def process_and_upload_video(
                 status_code=400,
                 detail=f"Invalid file extension {file_ext}. Allowed: {', '.join(settings.allowed_video_extensions)}"
             )
-        
+
         # Save uploaded video
         video_path = await video_processing_service.save_uploaded_video(
             video_file.file.read(),
