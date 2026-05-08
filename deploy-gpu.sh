@@ -105,9 +105,27 @@ sshpass -p "$SERVER_PASS" ssh -p "$SERVER_PORT" -o StrictHostKeyChecking=no \
 
 echo ""
 echo -e "${YELLOW}[4/6] Installing Python dependencies...${NC}"
+# Per task 0009: production installs are hash-locked. Prefer requirements.lock
+# when populated; fall back to requirements.txt only if the lock is still the
+# placeholder. The PyTorch CUDA 12.1 wheel index is required so torch picks the
+# GPU wheel and not the silent CPU fallback.
 sshpass -p "$SERVER_PASS" ssh -p "$SERVER_PORT" -o StrictHostKeyChecking=no \
     "$SERVER_USER@$SERVER_IP" \
-    "cd $REMOTE_PATH && source venv/bin/activate && pip install -r requirements.txt -q"
+    "cd $REMOTE_PATH && source venv/bin/activate && \
+     if [ -f requirements.lock ] && ! grep -q PLACEHOLDER requirements.lock; then \
+         echo '[deploy] installing from requirements.lock (--require-hashes)' && \
+         pip install --require-hashes --no-deps \
+             --extra-index-url https://download.pytorch.org/whl/cu121 \
+             -r requirements.lock && \
+         echo '[deploy] verifying torch sees the GPU...' && \
+         (python -c \"import torch; assert torch.cuda.is_available(), 'CUDA not available — wrong torch wheel?'\" || { \
+              echo '[deploy] FATAL: torch installed but CUDA not visible. Aborting.'; \
+              exit 1; \
+          }); \
+     else \
+         echo '[deploy] WARNING: requirements.lock not populated, falling back to requirements.txt' && \
+         pip install -r requirements.txt -q; \
+     fi"
 
 echo ""
 echo -e "${YELLOW}[5/6] Updating systemd service and restarting...${NC}"

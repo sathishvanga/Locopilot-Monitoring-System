@@ -1,0 +1,64 @@
+# Locopilot Monitoring System - dependency input file
+#
+# This file is the human-readable source of truth for all Python deps.
+# It is compiled into `requirements.lock` (with `--generate-hashes`) by
+# `scripts/lock-deps.sh`. Production, deploy, and dev all install from
+# the lock file using `pip install --require-hashes -r requirements.lock`.
+#
+# DO NOT install this file directly in production. Run
+# `bash scripts/lock-deps.sh` after editing, commit the resulting lock
+# file, and install the lock instead.
+#
+# Upper bounds are explicit per task 0009 spec — they protect us from
+# silent breaking changes between minor releases (especially YOLO/torch
+# wheel selection, pydantic validators, opencv ABI shifts).
+
+# --- Web framework ---
+fastapi>=0.110,<0.120
+uvicorn[standard]>=0.30,<0.40
+gunicorn>=21,<24
+pydantic>=2.6,<3
+pydantic-settings>=2.2,<3
+python-multipart>=0.0.9,<0.1   # FastAPI file-upload form parser
+
+# --- CV / ML ---
+# torch + torchvision MUST be installed from the PyTorch CUDA 12.1 wheel
+# index (see scripts/lock-deps.sh — uses --extra-index-url
+# https://download.pytorch.org/whl/cu121). The default PyPI wheels are
+# CPU-only and will silently fall back at runtime on the GPU box.
+torch==2.4.0
+torchvision==0.19.0
+ultralytics>=8.3,<8.4
+opencv-contrib-python>=4.10,<4.13
+mediapipe==0.10.21
+numpy>=1.26,<2.0   # mediapipe 0.10.21 ships compiled extensions linked against numpy 1.x ABI
+pillow>=10.3,<12   # CVE-2024-28219 et al. require >=10.3
+
+# --- HTTP / clients ---
+# httpx is currently only imported by scripts/smoke_concurrent_uploads.py and
+# will become production-required when task 0007 (vlm verifier async refactor)
+# lands. Keep pinned now to avoid a churn at that point.
+httpx>=0.27,<0.29
+requests>=2.32,<3
+minio>=7.2,<8
+
+# --- Resilience ---
+# portalocker is required by task 0002 (atomic-locked activities.json).
+portalocker>=2.8,<3
+
+# --- OCR ---
+easyocr>=1.7,<2
+pytesseract>=0.3.10,<0.4
+
+# --- Other ---
+cachetools>=5.3,<6
+
+# --- Transitive deps that the previous requirements.txt pinned explicitly.
+# Kept here so the lock can resolve consistently; remove if pip-compile
+# already resolves them via the packages above.
+absl-py>=2.3,<3
+attrs>=23,<26
+flatbuffers>=23,<26
+protobuf>=4.25.3,<5
+matplotlib>=3.8,<4
+scipy>=1.12,<2
