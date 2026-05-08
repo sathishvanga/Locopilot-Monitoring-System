@@ -91,7 +91,7 @@ class ExternalAPIService:
         """Initialize external API service"""
         self.settings = get_settings()
         logger.info(
-            f"🔌 External API service initialized - "
+            f"[external_api] External API service initialized - "
             f"Enabled: {self.settings.cvvr_api_enabled}, "
             f"URL: {self.settings.cvvr_api_url}, "
             f"Timeout: {self.settings.cvvr_api_timeout}s"
@@ -465,7 +465,7 @@ class ExternalAPIService:
         idempotency_key = _compute_idempotency_key(trip_id, unique_violations)
 
         logger.info(
-            f"[external_api] Posting {len(unique_violations)} unique violations "
+            f"[external_api] [PAYLOAD] Posting {len(unique_violations)} unique violations "
             f"(from {len(violations)} total) to {url} for trip_id={trip_id} "
             f"idempotency_key={idempotency_key[:24]}"
         )
@@ -627,10 +627,10 @@ class ExternalAPIService:
                 if violation:
                     violations.append(violation)
             except Exception as e:
-                logger.warning(f"⚠️ [external_api] Failed to transform event: {e}")
+                logger.warning(f"[WARN] [external_api] Failed to transform event: {e}")
                 continue
 
-        logger.info(f"🔄 [external_api] Transformed {len(violations)} events to violations")
+        logger.info(f"[external_api] Transformed {len(violations)} events to violations")
         return violations
     
     def _calculate_clip_duration(self, start_time: str, end_time: str) -> str:
@@ -660,7 +660,7 @@ class ExternalAPIService:
 
             return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
         except Exception as e:
-            logger.warning(f"⚠️ [external_api] Failed to calculate clip duration: {e}")
+            logger.warning(f"[WARN] [external_api] Failed to calculate clip duration: {e}")
             return "00:00:00"
 
     def _event_to_violation(

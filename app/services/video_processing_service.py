@@ -241,7 +241,7 @@ class VideoProcessingService:
                             )
                         if trip_schedule:
                             logger.info(
-                                f"[MOTION-RULES] 🚂 Successfully fetched trip schedule for train {train_number}: "
+                                f"[MOTION-RULES] [TRAIN] Successfully fetched trip schedule for train {train_number}: "
                                 f"{len(trip_schedule.halts)} station halts"
                             )
                             # Log first few halts for debugging (include delay info if available)

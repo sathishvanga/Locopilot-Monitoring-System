@@ -13,34 +13,12 @@ The detector accounts for camera placement (behind-right of crew) where
 negative yaw indicates looking toward the track (legitimate work).
 """
 import logging
-import os
 from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 
 from app.core.utils.pose_utils import get_keypoint as _canonical_get_keypoint
-
-
-def _setup_module_logger(name: str, level: int = logging.DEBUG) -> logging.Logger:
-    """Setup a file-only logger for the module."""
-    log_dir = os.getenv("LOG_DIR", "logs")
-    os.makedirs(log_dir, exist_ok=True)
-
-    logger = logging.getLogger(name)
-    logger.setLevel(level)
-
-    if not logger.handlers:
-        file_handler = logging.FileHandler(os.path.join(log_dir, "LocopilotMonitoring.log"))
-        file_handler.setLevel(logging.DEBUG)
-
-        formatter = logging.Formatter(
-            '%(asctime)s,%(msecs)03d [N/A] [N/A] [N/A] [N/A] [%(levelname)s] [%(name)s] [N/A N/A] %(message)s',
-            datefmt='%Y-%m-%d %H:%M:%S'
-        )
-        file_handler.setFormatter(formatter)
-        logger.addHandler(file_handler)
-
-    return logger
+from app.utils.logger import get_logger
 
 
 class MindDiversionDetector:
@@ -75,7 +53,7 @@ class MindDiversionDetector:
                      If None, default values are used.
             logger: Optional logger instance. If None, creates a file-only logger.
         """
-        self.logger = logger or _setup_module_logger('MindDiversionDetector')
+        self.logger = logger or get_logger('MindDiversionDetector')
         self.settings = settings
 
         # Yaw/Pitch thresholds (from settings or defaults)

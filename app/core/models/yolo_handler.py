@@ -10,13 +10,13 @@ This module encapsulates all YOLO-related operations including:
 Extracted from locopilot_monitor.py for modularity and reusability.
 """
 
-import logging
-import os
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
 import cv2
 import numpy as np
+
+from app.utils.logger import get_logger
 
 # YOLO Keypoint indices (COCO format) - shared across detection methods
 YOLO_KEYPOINT_INDICES = {
@@ -43,28 +43,6 @@ YOLO_KEYPOINT_INDICES = {
 YOLO_HEAD_INDICES = [0, 1, 2, 3, 4]  # nose, left_eye, right_eye, left_ear, right_ear
 YOLO_BODY_INDICES = [5, 6, 7, 8, 11, 12]  # left/right shoulders, elbows, hips
 YOLO_MIN_KEYPOINTS = 13  # Minimum landmarks required (indices 0-12)
-
-
-def _setup_module_logger(name: str, level: int = logging.DEBUG) -> logging.Logger:
-    """Setup a file-only logger for the module."""
-    log_dir = os.getenv("LOG_DIR", "logs")
-    os.makedirs(log_dir, exist_ok=True)
-
-    logger = logging.getLogger(name)
-    logger.setLevel(level)
-
-    if not logger.handlers:
-        file_handler = logging.FileHandler(os.path.join(log_dir, "LocopilotMonitoring.log"))
-        file_handler.setLevel(logging.DEBUG)
-
-        formatter = logging.Formatter(
-            '%(asctime)s,%(msecs)03d [N/A] [N/A] [N/A] [N/A] [%(levelname)s] [%(name)s] [N/A N/A] %(message)s',
-            datefmt='%Y-%m-%d %H:%M:%S'
-        )
-        file_handler.setFormatter(formatter)
-        logger.addHandler(file_handler)
-
-    return logger
 
 
 class YOLOHandler:
@@ -109,7 +87,7 @@ class YOLOHandler:
             preprocessing_service: Optional ImagePreprocessingService for dark/IR frames
             settings: Optional settings object for configuration thresholds
         """
-        self.logger = _setup_module_logger('YOLOHandler')
+        self.logger = get_logger('YOLOHandler')
         self.device = device
         self.imgsz = imgsz
         self.settings = settings

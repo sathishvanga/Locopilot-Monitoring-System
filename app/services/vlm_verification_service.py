@@ -25,7 +25,6 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
-import logging
 import re
 import threading
 import time
@@ -37,9 +36,10 @@ import httpx
 import numpy as np
 
 from ..utils.config import get_settings
+from ..utils.logger import get_logger
 
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 # ---------------------------------------------------------------------------

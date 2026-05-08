@@ -6,15 +6,15 @@ duration measurement, and structured log formatting.
 """
 
 import uuid
-import logging
 from datetime import datetime
 from fastapi import Request
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from ..utils.request_context import set_request_context, reset_request_context
+from ..utils.logger import get_logger
 
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 class LoggingMiddleware(BaseHTTPMiddleware):
@@ -44,12 +44,15 @@ class LoggingMiddleware(BaseHTTPMiddleware):
         unique_request_id = str(uuid.uuid4())
         http_method = request.method
         request_path = request.url.path.rstrip("/")
-        # SECURITY: never store the raw Authorization header value in the
-        # request context — it would propagate into every log line emitted
-        # during the request's lifetime (see CLAUDE.md: tokens must never
-        # appear in logs). Record only whether a credential was supplied.
-        # ``has_auth`` is kept for routes that need to branch on presence;
-        # the literal token is intentionally not retained anywhere.
+        # SECURITY (tasks 0005 + 0010): never store the raw Authorization
+        # header value in the request context — it would propagate into
+        # every log line emitted during the request's lifetime (see
+        # CLAUDE.md: tokens must never appear in logs). Record only whether
+        # a credential was supplied. ``has_auth`` is kept for routes that
+        # need to branch on presence; the literal token is intentionally
+        # not retained anywhere. The context dict is interpolated into
+        # log lines via the request formatter — the RedactFilter installed
+        # by ``setup_logging`` is a second line of defense.
         has_auth = request.headers.get("Authorization") is not None
         source_request_id = request.headers.get("source_request_id", "N/A")
         client_host = request.client.host if request.client else "unknown"
@@ -68,10 +71,10 @@ class LoggingMiddleware(BaseHTTPMiddleware):
             "source_request_id": source_request_id,
             "client_host": client_host
         })
-        
+
         # Log incoming request
         logger.info(
-            f"📥 Request received - Method: {http_method}, Path: {request_path}, "
+            f"[REQ] Request received - Method: {http_method}, Path: {request_path}, "
             f"Client: {client_host}, User: {user_id}"
         )
         
@@ -84,7 +87,7 @@ class LoggingMiddleware(BaseHTTPMiddleware):
             
             # Log successful response
             logger.info(
-                f"📤 Request completed - Status: {response.status_code}, "
+                f"[RES] Request completed - Status: {response.status_code}, "
                 f"Duration: {request_duration:.4f}s"
             )
             
@@ -100,7 +103,7 @@ class LoggingMiddleware(BaseHTTPMiddleware):
             
             # Log error
             logger.error(
-                f"💥 Request failed - Error: {str(e)}, "
+                f"[ERR] Request failed - Error: {str(e)}, "
                 f"Duration: {request_duration:.4f}s",
                 exc_info=True
             )

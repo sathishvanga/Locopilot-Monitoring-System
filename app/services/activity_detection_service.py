@@ -297,7 +297,7 @@ class ActivityDetectionService:
         # Get run_dir for aggregation (may be from monitor if not provided)
         actual_run_dir = run_dir or getattr(monitor, 'run_dir', None)
 
-        # ✅ MEMORY FIX: Explicit cleanup (closes MediaPipe, clears buffers, forces GC)
+        # MEMORY FIX: Explicit cleanup (closes MediaPipe, clears buffers, forces GC)
         monitor.cleanup()
 
         # Group overlapping activities of different types into combined records
@@ -358,7 +358,7 @@ class ActivityDetectionService:
             run_dir = activity_repo.create_run_directory(base_name="run")
         
         # Create multiprocessing configuration
-        # ✅ PERFORMANCE: 15s chunks ensure hand gesture coordination detection works correctly
+        # PERFORMANCE: 15s chunks ensure hand gesture coordination detection works correctly
         # Coordination window is 10s, so 15s chunks capture full coordination sequences
         # Each chunk processes in ~15-20s, keeping workers busy and reducing idle time
         config = MultiprocessingConfig(
@@ -395,7 +395,7 @@ class ActivityDetectionService:
                 camera_angle=camera_angle
             )
             
-            # ✅ MEMORY FIX: Force garbage collection after processing
+            # MEMORY FIX: Force garbage collection after processing
             gc.collect()
 
             # Group overlapping activities of different types into combined records
