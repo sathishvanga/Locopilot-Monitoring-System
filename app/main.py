@@ -82,13 +82,30 @@ def print_startup_banner(gpu_manager=None):
     print(banner)
 
 
+# Module-level singleton VideoProcessingService instance for the queue
+# worker path. The class is itself stateless (its dependencies are
+# singletons), so a single instance is fine and avoids constructing one
+# per job. Task 0010 will introduce a proper ``get_video_processing_service``
+# accessor; until then this inline-once construction matches the spec
+# guidance in tasks/0003.
+_video_processing_service_for_jobs: VideoProcessingService = VideoProcessingService()
+
+
 async def process_video_job(job: Job) -> dict:
     """
     Process a video job using the VideoProcessingService.
 
     This function is called by job queue workers to process submitted jobs.
     It wraps the synchronous video processing in an executor to avoid
-    blocking the event loop.
+    blocking the event loop, and gates the work behind
+    ``GPUResourceManager.acquire_gpu_slot()`` so the three queue workers
+    (started in :func:`lifespan`) cannot run more than
+    ``MAX_CONCURRENT_VIDEOS`` videos against the GPU concurrently.
+
+    Without that gate, three workers + a synchronous /process-and-upload
+    request could all hit the 20 GB RTX 4000 Ada at once and OOM
+    (Pipeline-1 ~8 GB peak + vLLM ~10 GB resident only leaves ~3 GB
+    headroom — see CLAUDE.md "One-worker rule").
 
     Args:
         job: Job instance with video_path and config
@@ -108,24 +125,33 @@ async def process_video_job(job: Job) -> dict:
     use_mp = config.get("use_multiprocessing", settings.enable_multiprocessing)
     save_clips = config.get("save_clips", False)
 
-    # Create video processing service instance
-    video_service = VideoProcessingService()
+    gpu_manager = get_gpu_resource_manager()
 
-    # Run synchronous processing in thread pool to not block event loop
-    result = await asyncio.get_running_loop().run_in_executor(
-        None,
-        lambda: video_service.process_video(
-            video_path=job.video_path,
-            trip_id=trip_id,
-            crew_members=crew_members,
-            crew_name=lp_crew_name,
-            crew_id=lp_crew_id,
-            crew_role=1,
-            use_mock_detection=use_mock,
-            use_multiprocessing=use_mp,
-            save_clips=save_clips
+    # Hold a GPU slot for the duration of heavy processing. The queue
+    # worker bypasses ``try_enqueue`` (the job_manager queue is the
+    # admission gate for this path), so we use ``increment_active``
+    # directly rather than ``mark_enqueued_started`` — the latter
+    # decrements ``_pending_count`` which would corrupt the controller
+    # path's admission accounting if a controller request were also in
+    # flight. ``acquire_gpu_slot``'s finally still does the matching
+    # decrement on exit (single counter authority for the - side).
+    async with gpu_manager.acquire_gpu_slot():
+        gpu_manager.increment_active()
+        # Run synchronous processing in thread pool to not block event loop
+        result = await asyncio.get_running_loop().run_in_executor(
+            None,
+            lambda: _video_processing_service_for_jobs.process_video(
+                video_path=job.video_path,
+                trip_id=trip_id,
+                crew_members=crew_members,
+                crew_name=lp_crew_name,
+                crew_id=lp_crew_id,
+                crew_role=1,
+                use_mock_detection=use_mock,
+                use_multiprocessing=use_mp,
+                save_clips=save_clips
+            )
         )
-    )
 
     logger.info(
         f"Job {job.id} completed - activities: {result.get('activitiesCount', 0)}, "

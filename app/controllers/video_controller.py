@@ -196,6 +196,13 @@ async def process_video(
     """
     video_path = None
     video_filename = None
+    # Initialize admission-gate flags *outside* the try so the finally
+    # block can rely on them existing in every code path (including
+    # exceptions raised before ``try_enqueue`` runs). This replaces the
+    # previous ``'admitted' in locals()`` introspection.
+    admitted = False
+    slot_acquired = False
+    gpu_resource_manager = get_gpu_resource_manager()
 
     try:
         # If JSON body was sent, override form fields with JSON values
@@ -256,7 +263,6 @@ async def process_video(
         # ``max_concurrent_videos + job_queue_max_size`` requests — active
         # plus waiting. Reject past that point with 503 so clients retry
         # later instead of piling up unbounded work.
-        gpu_resource_manager = get_gpu_resource_manager()
         admitted, queue_position = gpu_resource_manager.try_enqueue()
         if not admitted:
             logger.warning(
@@ -271,14 +277,18 @@ async def process_video(
                     "Retry after the current jobs finish."
                 ),
             )
-        if queue_position > 0:
+        # Position counts active jobs + this newly-admitted pending slot.
+        # Anything beyond ``max_concurrent_videos`` means the request will
+        # actually have to wait on the semaphore — log the wait so it
+        # shows up in the production timeline.
+        if queue_position > settings.max_concurrent_videos:
             logger.info(
                 f"[QUEUE] Trip {tripId} admitted; waiting at position {queue_position}"
             )
-        # Track whether the slot was acquired so the finally block knows
-        # whether the pending counter still needs rollback (admitted but
-        # never entered acquire_gpu_slot due to an earlier error).
-        slot_acquired = False
+        # ``slot_acquired`` flips to True inside ``acquire_gpu_slot()`` once
+        # we are past the pending → active migration; the finally block
+        # uses it to decide whether the pending counter still needs rollback
+        # (admitted but never entered the gate due to an earlier error).
         # -----------------------------------------------------------------
 
         # Build crew members dictionary
@@ -451,9 +461,12 @@ async def process_video(
     finally:
         # Release the pending counter if we admitted the request but never
         # made it inside ``acquire_gpu_slot()`` (e.g. MinIO download failed
-        # or the upload save raised). If the slot was acquired, the semaphore
-        # context manager already accounted for the active count.
-        if 'admitted' in locals() and admitted and not locals().get('slot_acquired', False):
+        # or the upload save raised). If the slot was acquired, the
+        # ``mark_enqueued_started()`` call inside the gate already
+        # decremented pending — nothing to roll back. ``admitted`` and
+        # ``slot_acquired`` are guaranteed to exist (initialized before
+        # the try block), so we can drop the previous ``locals()`` shim.
+        if admitted and not slot_acquired:
             try:
                 gpu_resource_manager.release_enqueue_on_error()
             except Exception as _release_err:
@@ -652,11 +665,17 @@ async def process_and_upload_video(
 ):
     """
     Process video and upload everything to S3
-    
+
     This is the preferred endpoint for the desktop application as it handles
     the complete workflow in one request.
     """
     video_path = None
+    # Initialize admission-gate flags *outside* the try so the finally
+    # block can rely on them existing in every code path. Same pattern as
+    # ``process_video`` above (Task 0003).
+    admitted = False
+    slot_acquired = False
+    gpu_resource_manager = get_gpu_resource_manager()
 
     try:
         logger.info(f"[OK] Process and upload request for trip: {tripId}, train: {trainNumber}, date: {tripDate}")
@@ -696,7 +715,7 @@ async def process_and_upload_video(
                 status_code=400,
                 detail="Invalid video file - filename is empty"
             )
-        
+
         # Check file extension
         file_ext = os.path.splitext(filename)[1].lower()
         if file_ext not in settings.allowed_video_extensions:
@@ -704,16 +723,48 @@ async def process_and_upload_video(
                 status_code=400,
                 detail=f"Invalid file extension {file_ext}. Allowed: {', '.join(settings.allowed_video_extensions)}"
             )
-        
+
+        # --- Concurrency admission gate -----------------------------------
+        # Same OOM-safety story as ``/api/video/analyze``: this endpoint is
+        # the production path per CLAUDE.md and previously bypassed the GPU
+        # admission gate, allowing two simultaneous POSTs to fight for the
+        # 20 GB RTX 4000 Ada. Wrap the heavy body in ``acquire_gpu_slot``
+        # plus the ``try_enqueue / release_enqueue_on_error`` admission
+        # pattern so concurrent callers queue cooperatively (or get 503
+        # when ``max_concurrent_videos + job_queue_max_size`` is reached).
+        admitted, queue_position = gpu_resource_manager.try_enqueue()
+        if not admitted:
+            logger.warning(
+                f"[QUEUE FULL] Rejecting process-and-upload for trip {tripId}: "
+                f"system full (max {settings.max_concurrent_videos} active + "
+                f"{settings.job_queue_max_size} queued)"
+            )
+            raise HTTPException(
+                status_code=503,
+                detail=(
+                    "Server busy: maximum concurrent + queued jobs reached. "
+                    "Retry after the current jobs finish."
+                ),
+            )
+        # Position counts active jobs + this newly-admitted pending slot.
+        # Anything beyond ``max_concurrent_videos`` means the request
+        # will actually have to wait on the semaphore.
+        if queue_position > settings.max_concurrent_videos:
+            logger.info(
+                f"[QUEUE] Trip {tripId} admitted (process-and-upload); "
+                f"waiting at position {queue_position}"
+            )
+        # -----------------------------------------------------------------
+
         # Save uploaded video
         video_path = await video_processing_service.save_uploaded_video(
             video_file.file.read(),
             filename,
             tripId
         )
-        
+
         logger.info(f"[OK] Video saved: {video_path}")
-        
+
         # Determine multiprocessing setting
         use_mp = useMultiprocessing if useMultiprocessing is not None else settings.enable_multiprocessing
 
@@ -724,26 +775,34 @@ async def process_and_upload_video(
         )
 
         loop = asyncio.get_running_loop()
-        result = await loop.run_in_executor(
-            None,
-            functools.partial(
-                video_processing_service.process_video,
-                video_path=video_path,
-                trip_id=tripId,
-                crew_members=crew_members,
-                crew_name=list(crew_members.values())[0]['name'] if crew_members else "Unknown",
-                crew_id=list(crew_members.values())[0]['id'] if crew_members else "N/A",
-                crew_role=1,  # LP role
-                use_mock_detection=useMockDetection,
-                use_multiprocessing=use_mp,
-                save_clips=saveClips,
-                skip_external_api=True,  # Skip here - will call after S3 uploads with correct S3 URLs
-                skip_vlm_verification=True,  # Controller runs its own VLM hook below (also filters clip_files)
-                train_number=trainNumber,
-                trip_date=tripDate,
-                video_start_time=videoStartTime,
+        # Hold a GPU slot for the duration of heavy processing so two
+        # concurrent process-and-upload calls don't both touch the GPU.
+        # ``mark_enqueued_started`` migrates this request from pending to
+        # active inside the gate (single counter authority — see
+        # ``GPUResourceManager.acquire_gpu_slot`` docstring).
+        async with gpu_resource_manager.acquire_gpu_slot():
+            gpu_resource_manager.mark_enqueued_started()
+            slot_acquired = True
+            result = await loop.run_in_executor(
+                None,
+                functools.partial(
+                    video_processing_service.process_video,
+                    video_path=video_path,
+                    trip_id=tripId,
+                    crew_members=crew_members,
+                    crew_name=list(crew_members.values())[0]['name'] if crew_members else "Unknown",
+                    crew_id=list(crew_members.values())[0]['id'] if crew_members else "N/A",
+                    crew_role=1,  # LP role
+                    use_mock_detection=useMockDetection,
+                    use_multiprocessing=use_mp,
+                    save_clips=saveClips,
+                    skip_external_api=True,  # Skip here - will call after S3 uploads with correct S3 URLs
+                    skip_vlm_verification=True,  # Controller runs its own VLM hook below (also filters clip_files)
+                    train_number=trainNumber,
+                    trip_date=tripDate,
+                    video_start_time=videoStartTime,
+                )
             )
-        )
         
         logger.info(
             f"[OK] Processing complete - "
@@ -1016,6 +1075,19 @@ async def process_and_upload_video(
         )
     
     finally:
+        # Release the pending counter if we admitted the request but never
+        # made it inside ``acquire_gpu_slot()`` (e.g. ``save_uploaded_video``
+        # raised). When the slot was acquired, ``mark_enqueued_started()``
+        # already decremented pending — nothing to roll back. Same explicit
+        # flag pattern as ``process_video`` (no ``locals()`` introspection).
+        if admitted and not slot_acquired:
+            try:
+                gpu_resource_manager.release_enqueue_on_error()
+            except Exception as _release_err:
+                logger.warning(
+                    f"Failed to release pending slot on error: {_release_err}"
+                )
+
         # Optional: Clean up uploaded video file
         # Uncomment if you want to delete the original after upload
         # if video_path and os.path.exists(video_path):
@@ -1024,7 +1096,6 @@ async def process_and_upload_video(
         #         logger.info(f"Cleaned up uploaded video: {video_path}")
         #     except Exception as e:
         #         logger.warning(f"Failed to clean up video: {e}")
-        pass
 
 
 # =============================================================================
