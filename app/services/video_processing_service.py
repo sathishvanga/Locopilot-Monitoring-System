@@ -383,13 +383,16 @@ class VideoProcessingService:
                         f"activities to post (excluded {len(activities) - len(postable_activities)} STOPPED)"
                     )
 
-                    # Post to external API
+                    # Post to external API. ``run_dir`` is forwarded so a
+                    # retries-exhausted payload lands in
+                    # ``<run_dir>/_failed_external_api/`` per spec 0004.
                     api_result = external_api_service.post_cvvr_results(
                         trip_id=trip_id,
                         events=postable_activities,
                         job_id=run_id,
                         host_url=settings.host_url,
-                        division=division
+                        division=division,
+                        run_dir=run_dir,
                     )
                     
                     if api_result.get("success"):
