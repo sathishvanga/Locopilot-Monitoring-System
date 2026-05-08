@@ -22,23 +22,83 @@ confounder archetypes (brake handle, radio handset, idle-lap, static book).
 """
 from __future__ import annotations
 
+import asyncio
 import base64
 import json
 import logging
 import threading
 import time
-import urllib.error
-import urllib.request
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 import cv2
+import httpx
 import numpy as np
 
 from ..utils.config import get_settings
 
 
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Verdict enum + parser-error sentinel
+# ---------------------------------------------------------------------------
+_ALLOWED_VERDICTS: frozenset = frozenset({"TRUE_POSITIVE", "FALSE_POSITIVE", "UNCERTAIN"})
+
+
+# ---------------------------------------------------------------------------
+# Circuit breaker — protects vLLM during cold-starts / GC pauses
+# ---------------------------------------------------------------------------
+class _CircuitBreaker:
+    """Simple threshold-based circuit breaker for the VLM HTTP client.
+
+    After ``threshold`` consecutive failures the breaker opens; subsequent
+    calls short-circuit to ``SKIPPED_VLM_UNAVAILABLE`` for ``cooldown_s``
+    seconds, after which it resets.  A single success closes the breaker
+    early.  Used by :class:`VlmVerificationService` to avoid wasting
+    ``N x timeout_seconds`` per video during a vLLM cold-start window.
+    """
+
+    def __init__(self, threshold: int = 3, cooldown_s: float = 30.0) -> None:
+        self.threshold = threshold
+        self.cooldown_s = cooldown_s
+        self._fail_count = 0
+        self._opened_at: Optional[float] = None
+        self._lock = threading.Lock()
+
+    def is_open(self) -> bool:
+        with self._lock:
+            if self._opened_at is None:
+                return False
+            if time.monotonic() - self._opened_at > self.cooldown_s:
+                self._opened_at = None
+                self._fail_count = 0
+                return False
+            return True
+
+    def record_failure(self) -> None:
+        with self._lock:
+            self._fail_count += 1
+            if self._fail_count >= self.threshold and self._opened_at is None:
+                self._opened_at = time.monotonic()
+                logger.warning(
+                    "[vlm] circuit breaker OPEN after %d consecutive failures; "
+                    "skipping VLM calls for %.1fs",
+                    self._fail_count, self.cooldown_s,
+                )
+
+    def record_success(self) -> None:
+        with self._lock:
+            if self._fail_count > 0 or self._opened_at is not None:
+                logger.info("[vlm] circuit breaker CLOSED (success after failures)")
+            self._fail_count = 0
+            self._opened_at = None
+
+    def reset(self) -> None:
+        with self._lock:
+            self._fail_count = 0
+            self._opened_at = None
 
 
 _PROMPT_WRITING = """You are a railway safety auditor reviewing CCTV from a locomotive cabin.
@@ -719,6 +779,7 @@ def _stitch_keyframes(
     for idx, p in enumerate(cap):
         img = cv2.imread(str(p))
         if img is None:
+            logger.warning("[vlm] cv2.imread returned None for %s", p)
             continue
         if crop_to_roi:
             img = _crop_to_roi(img)
@@ -771,12 +832,73 @@ def _parse_verdict(raw_text: str) -> Dict[str, Any]:
         return {"parse_error": f"json_decode: {exc}", "raw_text": raw_text[:300]}
 
 
+def _safe_motion_state(activity: Dict[str, Any], verdict_dict: Dict[str, Any]) -> str:
+    """Return Pipeline-1's authoritative motion state, never the VLM's free text.
+
+    Hardening rule: the VLM emits ``motion_evidence`` (free string) and
+    ``train_appears_to_be`` (semi-structured: running/stopped/unclear).
+    Pipeline-1's ``train_motion_detector`` produces ``activity['motionState']``
+    which is the source of truth.  We refuse to flip ``RUNNING -> STOPPED``
+    based on VLM motion observations alone — that would let a jail-broken
+    VLM emitting ``motion_evidence: "platform"`` silently drop a real
+    violation.
+
+    This helper exists explicitly so that future "use VLM motion as a
+    tiebreaker" code paths route through one validated function instead of
+    sprinkling ad-hoc regexes across the codebase.
+
+    Returns the Pipeline-1 motion state UPPER-cased.  Allowed values are
+    ``RUNNING``, ``STOPPED``, ``UNCERTAIN``.  Any unknown / missing value
+    becomes ``UNCERTAIN``.
+
+    Tiebreaker policy:
+      - If Pipeline-1 says RUNNING:  return RUNNING (VLM cannot override).
+      - If Pipeline-1 says STOPPED:  return STOPPED.
+      - If Pipeline-1 says UNCERTAIN AND the VLM's *structured* field
+        ``train_appears_to_be`` is exactly ``"stopped"``: return UNCERTAIN
+        (we still don't promote to STOPPED on VLM signal alone — that
+        decision belongs to the dedicated train_motion_detector).
+    """
+    p1 = (activity.get("motionState") or "").strip().upper()
+    if p1 in ("RUNNING", "STOPPED"):
+        return p1
+    # Pipeline-1 was UNCERTAIN / empty.  We DO NOT promote based on VLM
+    # text — return UNCERTAIN so callers fall back to the safe default
+    # (treat the activity as a real violation, do not drop).
+    _ = verdict_dict.get("train_appears_to_be")  # observed only, not acted upon
+    return "UNCERTAIN"
+
+
 class VlmVerificationService:
     """Stateless verifier that talks to a vLLM endpoint over HTTP.
 
     The class itself is lightweight (no model loaded in-process); each call
     POSTs to ``{vlm_base_url}/chat/completions`` with one inline-encoded image.
+
+    HTTP transport: a shared ``httpx.AsyncClient`` is created lazily per
+    asyncio event loop (clients cannot be shared across loops).  Connection
+    pooling avoids the per-activity TCP+TLS handshake of the legacy
+    ``urllib`` path.  Per-activity calls are dispatched concurrently via an
+    asyncio semaphore (bounded by ``max_keepalive_connections``).
+
+    Resilience: a process-level :class:`_CircuitBreaker` opens after three
+    consecutive failures and short-circuits subsequent calls for 30s, so a
+    cold-start vLLM doesn't burn ``N x timeout_seconds`` per video.
+
+    Fail-open contract: every per-activity body is wrapped in
+    ``try/except``; on any exception the activity is appended to ``kept``
+    with ``vlm_review = {"verdict": "SKIPPED_VLM_UNAVAILABLE"}``.  Pipeline-1
+    violations are NEVER silently dropped.
     """
+
+    # Per-loop cache of httpx.AsyncClient instances (clients are tied to a
+    # specific event loop; safer to pin one per loop than to share globally).
+    _async_clients: Dict[int, "httpx.AsyncClient"] = {}
+    _async_clients_lock = threading.Lock()
+
+    # Process-level circuit breaker; shared across calls so a single bad
+    # cold-start window opens it for everyone.
+    _breaker: _CircuitBreaker = _CircuitBreaker(threshold=3, cooldown_s=30.0)
 
     def __init__(self) -> None:
         self.settings = get_settings()
@@ -784,6 +906,9 @@ class VlmVerificationService:
         self._verify_set: frozenset[str] = frozenset(
             x.strip() for x in self.settings.vlm_verify_activities.split(",") if x.strip()
         )
+        # Bounded concurrency for the async dispatch.  4 in-flight matches
+        # the keepalive pool below; each activity is one request.
+        self._concurrency = 4
         logger.info(
             "[vlm] VlmVerificationService init enabled=%s shadow=%s endpoint=%s "
             "model=%s verify=%s drop_threshold=%.2f timeout=%.1fs",
@@ -797,6 +922,67 @@ class VlmVerificationService:
         )
 
     # ------------------------------------------------------------------
+    # Async client lifecycle
+    # ------------------------------------------------------------------
+    @classmethod
+    def _get_async_client(cls, timeout_s: float) -> "httpx.AsyncClient":
+        """Return a per-event-loop ``httpx.AsyncClient`` (lazy-created).
+
+        ``httpx.AsyncClient`` instances are bound to the loop that creates
+        them, so we key the cache by ``id(asyncio.get_running_loop())``.
+        Within a single ``verify_activities`` invocation the same loop is
+        active for all dispatched calls, so they share the keepalive pool.
+        Across invocations the loop changes (``asyncio.run`` builds a new
+        one each time), so a fresh client is constructed.
+
+        The cache here is mostly a safety net for tests / future code that
+        might pin a loop across multiple service calls; production benefit
+        comes from the in-call pooling.
+        """
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            # No running loop — caller is misusing the API.  Build a
+            # one-shot client that the caller must close.
+            return httpx.AsyncClient(
+                timeout=httpx.Timeout(timeout_s),
+                limits=httpx.Limits(
+                    max_connections=8, max_keepalive_connections=4,
+                ),
+            )
+        loop_key = id(loop)
+        with cls._async_clients_lock:
+            client = cls._async_clients.get(loop_key)
+            if client is None or client.is_closed:
+                # Drop any stale entries that point at closed clients to
+                # avoid unbounded growth across many verify_activities
+                # calls (each builds a new loop).
+                stale = [k for k, v in cls._async_clients.items() if v.is_closed]
+                for k in stale:
+                    cls._async_clients.pop(k, None)
+                client = httpx.AsyncClient(
+                    timeout=httpx.Timeout(timeout_s),
+                    limits=httpx.Limits(
+                        max_connections=8,
+                        max_keepalive_connections=4,
+                    ),
+                )
+                cls._async_clients[loop_key] = client
+            return client
+
+    @classmethod
+    async def aclose(cls) -> None:
+        """Close all cached async clients.  Safe to call from shutdown hooks."""
+        with cls._async_clients_lock:
+            clients = list(cls._async_clients.values())
+            cls._async_clients.clear()
+        for c in clients:
+            try:
+                await c.aclose()
+            except Exception:  # noqa: BLE001 — best-effort cleanup
+                logger.debug("[vlm] error closing async client", exc_info=True)
+
+    # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
     def is_enabled(self) -> bool:
@@ -807,14 +993,86 @@ class VlmVerificationService:
     ) -> Tuple[List[Dict[str, Any]], Dict[str, int]]:
         """Verify a batch of activities and return the post-filter list.
 
+        Synchronous wrapper around :meth:`verify_activities_async`.  Both
+        existing call-sites (``video_processing_service.process_video``
+        and ``video_controller.process_and_upload_video``) call this
+        synchronously.  The latter happens to live inside an async FastAPI
+        handler — when we detect an already-running event loop we spin up
+        a fresh thread that owns its own loop, so we never collide with
+        ``asyncio.run cannot be called from a running event loop``.
+
         Each input activity dict is mutated in place to add a ``vlm_review``
         sub-dict with the verdict, latency, and (in enforcement mode) a
         ``dropped`` flag.
 
+        Fail-open contract: any unexpected exception in ``_verify_one`` is
+        caught here, the activity is annotated with
+        ``SKIPPED_VLM_UNAVAILABLE``, and it is kept in the output list.
+        Pipeline-1 violations are never silently dropped.
+
         Returns:
             Tuple of (kept_activities, stats_dict). ``stats_dict`` keys:
             verified, skipped_type, skipped_stopped, skipped_unavailable,
-            skipped_no_image, dropped, kept, uncertain, parse_errors.
+            skipped_no_image, dropped, kept, uncertain, skipped_parse_error.
+        """
+        async def _run() -> Tuple[List[Dict[str, Any]], Dict[str, int]]:
+            try:
+                return await self.verify_activities_async(activities)
+            finally:
+                # Close any clients pinned to this loop before the loop
+                # tears down — avoids "unclosed client" warnings.
+                await VlmVerificationService.aclose()
+
+        # Detect whether we're already inside an event loop.  If yes
+        # (FastAPI handler context), run on a worker thread that owns
+        # its own loop so we can safely `asyncio.run`.
+        try:
+            asyncio.get_running_loop()
+            in_loop = True
+        except RuntimeError:
+            in_loop = False
+
+        if not in_loop:
+            return asyncio.run(_run())
+
+        # Inside a running loop: dispatch to a worker thread.
+        result_box: List[Any] = []
+
+        def _thread_main() -> None:
+            try:
+                result_box.append(asyncio.run(_run()))
+            except BaseException as e:  # noqa: BLE001
+                result_box.append(e)
+
+        t = threading.Thread(target=_thread_main, daemon=True, name="vlm-verify")
+        t.start()
+        t.join()
+        if not result_box:
+            raise RuntimeError("vlm verify thread produced no result")
+        out = result_box[0]
+        if isinstance(out, BaseException):
+            raise out
+        return out
+
+    async def verify_activities_async(
+        self, activities: List[Dict[str, Any]]
+    ) -> Tuple[List[Dict[str, Any]], Dict[str, int]]:
+        """Async core of :meth:`verify_activities`.
+
+        Two-phase design:
+
+        1.  Iterate the input list once, classifying each activity into one
+            of three buckets: ``passthrough`` (skipped types / STOPPED /
+            cap-exceeded — no VLM call), ``to_verify`` (eligible for the
+            VLM), or ``no_image`` (eligible but no keyframe found).
+        2.  Dispatch the ``to_verify`` bucket concurrently via
+            :func:`asyncio.gather` with a bounded semaphore.
+
+        Each per-activity body is wrapped in ``try/except``; on any
+        exception the activity is appended to ``kept`` with
+        ``vlm_review = {"verdict": "SKIPPED_VLM_UNAVAILABLE",
+        "reason": type(e).__name__}``.  This is the load-bearing invariant:
+        Pipeline-1 violations must never be lost.
         """
         stats = {
             "verified": 0,
@@ -825,114 +1083,204 @@ class VlmVerificationService:
             "dropped": 0,
             "kept": 0,
             "uncertain": 0,
-            "parse_errors": 0,
+            # Spec key (docs/specs/code-review-fixes/tasks/0007-...): the
+            # canonical name for "vLLM responded but its body was
+            # un-parseable" is `skipped_parse_error`.  Older code used
+            # `parse_errors`; renamed for cross-reference compatibility.
+            "skipped_parse_error": 0,
         }
         if not self.is_enabled() or not activities:
             return activities, stats
 
-        kept: List[Dict[str, Any]] = []
-        verified_count = 0
         cap = int(self.settings.vlm_max_activities_per_run or 0)
 
+        # Phase 1: classify activities, preserving input order in `kept`.
+        # `to_verify` collects (index_in_kept, activity, prompt, object_type)
+        # so we can patch the result back in-place after gather() returns.
+        kept: List[Dict[str, Any]] = []
+        to_verify: List[Tuple[int, Dict[str, Any], str, str]] = []
+        verified_count = 0
+
         for act in activities:
-            # Normalize: writers use "packing bags" (space) but the registry
-            # key is "packing_bags" (underscore). Match either form.
-            object_type = (act.get("objectType") or "").strip().lower().replace(" ", "_")
-            if object_type not in self._verify_set or object_type not in _PROMPTS_BY_OBJECT_TYPE:
-                stats["skipped_type"] += 1
-                kept.append(act)
-                continue
+            try:
+                object_type = (act.get("objectType") or "").strip().lower().replace(" ", "_")
+                if object_type not in self._verify_set or object_type not in _PROMPTS_BY_OBJECT_TYPE:
+                    stats["skipped_type"] += 1
+                    kept.append(act)
+                    continue
 
-            # Mirror the downstream STOPPED filter in video_controller.py: any
-            # activity with motionState=STOPPED gets dropped before the
-            # external API post anyway, so spending a VLM call on it is wasted
-            # compute. Today's verify list (writing/eating/packing) is also
-            # suppressed by gates.apply_train_stopped_suppression upstream, so
-            # this branch should rarely fire — but it's a cheap guard for the
-            # day cell_phone or microsleep enter the verify list (those are
-            # NOT suppressed when STOPPED, see gates.py:14-15).
-            if (act.get("motionState") or "").strip().upper() == "STOPPED":
-                stats["skipped_stopped"] += 1
+                # Mirror downstream STOPPED filter — see notes in original code.
+                if (act.get("motionState") or "").strip().upper() == "STOPPED":
+                    stats["skipped_stopped"] += 1
+                    act["vlm_review"] = {
+                        "status": "SKIPPED_STOPPED",
+                        "verdict": None,
+                        "reason": "motionState=STOPPED; downstream filter would drop anyway",
+                    }
+                    kept.append(act)
+                    continue
+
+                if cap and verified_count >= cap:
+                    stats["skipped_type"] += 1
+                    kept.append(act)
+                    continue
+
+                # Eligible — schedule for the VLM call.
+                prompt = _PROMPTS_BY_OBJECT_TYPE[object_type]
+                kept_idx = len(kept)
+                kept.append(act)
+                to_verify.append((kept_idx, act, prompt, object_type))
+                verified_count += 1
+            except Exception as classify_exc:  # noqa: BLE001
+                # Even classification can blow up (weird types, bad dicts).
+                # Keep the activity, mark it skipped, never lose it.
+                logger.exception(
+                    "[vlm] classification failed for activity id=%s type=%s",
+                    act.get("id"), act.get("activityType"),
+                )
                 act["vlm_review"] = {
-                    "status": "SKIPPED_STOPPED",
-                    "verdict": None,
-                    "reason": "motionState=STOPPED; downstream filter would drop anyway",
+                    "status": "SKIPPED_VLM_UNAVAILABLE",
+                    "verdict": "SKIPPED_VLM_UNAVAILABLE",
+                    "reason": type(classify_exc).__name__,
                 }
-                kept.append(act)
-                continue
-
-            if cap and verified_count >= cap:
-                stats["skipped_type"] += 1
-                kept.append(act)
-                continue
-
-            prompt = _PROMPTS_BY_OBJECT_TYPE[object_type]
-            review = self._verify_one(act, prompt, object_type)
-            verified_count += 1
-            act["vlm_review"] = review
-
-            status = review.get("status")
-            if status == "SKIPPED_VLM_UNAVAILABLE":
                 stats["skipped_unavailable"] += 1
                 kept.append(act)
-                continue
-            if status == "SKIPPED_NO_IMAGE":
-                stats["skipped_no_image"] += 1
-                kept.append(act)
-                continue
-            if status == "PARSE_ERROR":
-                stats["parse_errors"] += 1
-                kept.append(act)
-                continue
 
-            stats["verified"] += 1
-            verdict = (review.get("verdict") or {}).get("verdict")
-            confidence = (review.get("verdict") or {}).get("confidence", 0.0)
-            try:
-                confidence = float(confidence)
-            except (TypeError, ValueError):
-                confidence = 0.0
+        # Phase 2: dispatch all eligible activities concurrently.
+        if to_verify:
+            sem = asyncio.Semaphore(self._concurrency)
 
-            if verdict == "UNCERTAIN":
-                stats["uncertain"] += 1
+            async def _run_one(idx: int, activity: Dict[str, Any], prompt: str,
+                               obj_type: str) -> Tuple[int, Dict[str, Any]]:
+                try:
+                    async with sem:
+                        review = await self._verify_one_async(activity, prompt, obj_type)
+                    return idx, review
+                except Exception as e:  # noqa: BLE001
+                    # CRITICAL: never let a single activity's failure
+                    # propagate up and truncate the kept list.
+                    logger.exception(
+                        "[vlm] verify_one failed for activity id=%s type=%s",
+                        activity.get("id"), activity.get("activityType"),
+                    )
+                    return idx, {
+                        "status": "SKIPPED_VLM_UNAVAILABLE",
+                        "verdict": "SKIPPED_VLM_UNAVAILABLE",
+                        "reason": type(e).__name__,
+                        "error": str(e)[:200],
+                    }
 
-            should_drop = (
-                not self.settings.vlm_shadow_mode
-                and verdict == "FALSE_POSITIVE"
-                and confidence >= self.settings.vlm_drop_threshold
+            results = await asyncio.gather(
+                *(_run_one(i, a, p, o) for (i, a, p, o) in to_verify),
+                return_exceptions=False,
             )
-            if should_drop:
-                act["vlm_review"]["dropped"] = True
-                stats["dropped"] += 1
-                logger.info(
-                    "[vlm] DROPPED activity type=%s desc=%r at t=%s "
-                    "verdict=FALSE_POSITIVE conf=%.2f reason=%r",
-                    act.get("activityType"),
-                    act.get("des", "")[:60],
-                    act.get("activityStartTime"),
-                    confidence,
-                    ((review.get("verdict") or {}).get("reasoning") or "")[:120],
-                )
-                # Skip appending — activity is dropped
-                continue
 
-            stats["kept"] += 1
-            kept.append(act)
+            # Phase 3: post-process each result, mutate the activity in
+            # `kept`, and update stats / drop flags.
+            #
+            # Each iteration is wrapped in try/except so an unexpected shape
+            # (e.g. `review` being a non-dict truthy value, or a stray
+            # AttributeError from a misbehaving mock) cannot propagate out
+            # of `verify_activities_async` and discard the entire `kept`
+            # list mid-loop.  The activity is already in `kept` from
+            # Phase 1 — a failure here just means it stays un-annotated,
+            # which is acceptable under the fail-open contract.
+            drop_indices: List[int] = []
+            for kept_idx, review in results:
+                act = kept[kept_idx]
+                try:
+                    act["vlm_review"] = review
+
+                    status = review.get("status")
+                    if status == "SKIPPED_VLM_UNAVAILABLE":
+                        stats["skipped_unavailable"] += 1
+                        continue
+                    if status == "SKIPPED_NO_IMAGE":
+                        stats["skipped_no_image"] += 1
+                        continue
+                    if status == "PARSE_ERROR":
+                        stats["skipped_parse_error"] += 1
+                        continue
+
+                    stats["verified"] += 1
+                    verdict_dict = review.get("verdict") or {}
+                    verdict = verdict_dict.get("verdict")
+                    confidence = verdict_dict.get("confidence", 0.0)
+                    try:
+                        confidence = float(confidence)
+                    except (TypeError, ValueError):
+                        confidence = 0.0
+
+                    # Verdict enum validation (defensive — _verify_one_async
+                    # already filters, but cheap to double-check at the boundary).
+                    if verdict not in _ALLOWED_VERDICTS:
+                        stats["skipped_parse_error"] += 1
+                        review["status"] = "PARSE_ERROR"
+                        review["error"] = f"verdict not in enum: {verdict!r}"
+                        continue
+
+                    # Motion-override hardening: refuse to act on the VLM's
+                    # free-text `motion_evidence`.  See _safe_motion_state().
+                    # NOTE: Pipeline-1's `motionState` field on the activity is
+                    # the source of truth; we never overwrite it with VLM text.
+                    # We expose the helper's verdict on the activity as a
+                    # diagnostic field so ops can audit how often the VLM
+                    # tried to flip motion state but was not granted.
+                    act["motion_state_after_vlm"] = _safe_motion_state(act, verdict_dict)
+
+                    if verdict == "UNCERTAIN":
+                        stats["uncertain"] += 1
+
+                    should_drop = (
+                        not self.settings.vlm_shadow_mode
+                        and verdict == "FALSE_POSITIVE"
+                        and confidence >= self.settings.vlm_drop_threshold
+                    )
+                    if should_drop:
+                        review["dropped"] = True
+                        stats["dropped"] += 1
+                        drop_indices.append(kept_idx)
+                        logger.info(
+                            "[vlm] DROPPED activity type=%s desc=%r at t=%s "
+                            "verdict=FALSE_POSITIVE conf=%.2f reason=%r",
+                            act.get("activityType"),
+                            (act.get("des") or "")[:60],
+                            act.get("activityStartTime"),
+                            confidence,
+                            (verdict_dict.get("reasoning") or "")[:120],
+                        )
+                    else:
+                        stats["kept"] += 1
+                except Exception:  # noqa: BLE001
+                    # Fail-open: never let a single malformed review
+                    # truncate `kept`.  The activity is already retained
+                    # in `kept` from Phase 1; we simply leave it
+                    # un-annotated (or partially annotated) and continue.
+                    logger.exception(
+                        "[vlm] post-process failed for activity %s",
+                        act.get("id"),
+                    )
+                    continue
+
+            # Materialise drops by removing in reverse-index order.
+            if drop_indices:
+                drop_set = set(drop_indices)
+                kept = [a for i, a in enumerate(kept) if i not in drop_set]
 
         logger.info(
             "[vlm] verification stats: verified=%d kept=%d dropped=%d uncertain=%d "
             "skipped_type=%d skipped_stopped=%d skipped_unavailable=%d "
-            "parse_errors=%d shadow=%s",
+            "skipped_parse_error=%d shadow=%s",
             stats["verified"],
             stats["kept"] + stats["skipped_type"] + stats["skipped_stopped"]
             + stats["skipped_unavailable"] + stats["skipped_no_image"]
-            + stats["parse_errors"],
+            + stats["skipped_parse_error"],
             stats["dropped"],
             stats["uncertain"],
             stats["skipped_type"],
             stats["skipped_stopped"],
             stats["skipped_unavailable"],
-            stats["parse_errors"],
+            stats["skipped_parse_error"],
             self.settings.vlm_shadow_mode,
         )
         return kept, stats
@@ -940,29 +1288,67 @@ class VlmVerificationService:
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
-    def _verify_one(self, activity: Dict[str, Any], prompt: str,
-                    object_type: str = "") -> Dict[str, Any]:
-        # Collect all per-burst keyframes for grouped activities; falls back
-        # to the single activityImage when no source-clip metadata exists.
-        keyframes = _resolve_keyframes(activity)
-        if not keyframes:
-            return {"status": "SKIPPED_NO_IMAGE", "verdict": None,
-                    "image_path": activity.get("activityImage") or ""}
+    async def _verify_one_async(
+        self,
+        activity: Dict[str, Any],
+        prompt: str,
+        object_type: str = "",
+    ) -> Dict[str, Any]:
+        """Async per-activity verifier.
 
-        # Sleep / mind_diversion / no_person / group_detected need full-frame
-        # context (body posture, head pose vs window, cabin emptiness, head-
-        # count). The hand+book ROI crop used by writing/eating/packing/cell
-        # would discard the relevant scene context for those.
-        crop_to_roi = object_type not in _FULL_FRAME_OBJECT_TYPES
+        Resilience layers, applied in order:
 
-        # Stitch into a labelled multi-frame strip when more than one
-        # keyframe is available; otherwise just send the single image.
-        strip_bytes = _stitch_keyframes(keyframes, crop_to_roi=crop_to_roi)
-        if not strip_bytes:
-            return {"status": "SKIPPED_NO_IMAGE", "verdict": None,
-                    "image_path": str(keyframes[0])}
-        b64 = base64.b64encode(strip_bytes).decode("ascii")
-        n_frames = len(keyframes)
+        1. **Circuit breaker**: if open, return ``SKIPPED_VLM_UNAVAILABLE``
+           immediately — no HTTP attempt.
+        2. **Single retry on connect/timeout**: 0.5s backoff, then record
+           failure on the second miss.
+        3. **Tolerant body parsing**: malformed JSON / missing keys map to
+           ``PARSE_ERROR`` — never an unhandled exception.
+
+        The caller (``verify_activities_async``) wraps this in another
+        try/except so any leaked exception still produces a fail-open
+        ``SKIPPED_VLM_UNAVAILABLE`` review block.
+        """
+        # 0) Image prep — pure CPU, no network.  Wrapped in try because
+        #    cv2/np can fail in interesting ways.
+        try:
+            keyframes = _resolve_keyframes(activity)
+            if not keyframes:
+                return {
+                    "status": "SKIPPED_NO_IMAGE",
+                    "verdict": None,
+                    "image_path": activity.get("activityImage") or "",
+                }
+            crop_to_roi = object_type not in _FULL_FRAME_OBJECT_TYPES
+            strip_bytes = _stitch_keyframes(keyframes, crop_to_roi=crop_to_roi)
+            if not strip_bytes:
+                return {
+                    "status": "SKIPPED_NO_IMAGE",
+                    "verdict": None,
+                    "image_path": str(keyframes[0]),
+                }
+            b64 = base64.b64encode(strip_bytes).decode("ascii")
+            n_frames = len(keyframes)
+        except Exception as e:  # noqa: BLE001
+            logger.warning(
+                "[vlm] image-prep failure for activity type=%s: %s",
+                activity.get("activityType"), e,
+            )
+            return {
+                "status": "SKIPPED_VLM_UNAVAILABLE",
+                "verdict": "SKIPPED_VLM_UNAVAILABLE",
+                "reason": type(e).__name__,
+                "error": str(e)[:200],
+            }
+
+        # 1) Circuit breaker — short-circuit before opening a socket.
+        if self._breaker.is_open():
+            return {
+                "status": "SKIPPED_VLM_UNAVAILABLE",
+                "verdict": "SKIPPED_VLM_UNAVAILABLE",
+                "reason": "circuit_breaker_open",
+                "latency_sec": 0.0,
+            }
 
         payload = {
             "model": self.settings.vlm_model,
@@ -983,32 +1369,87 @@ class VlmVerificationService:
         }
 
         url = f"{self.settings.vlm_base_url.rstrip('/')}/chat/completions"
-        req = urllib.request.Request(
-            url,
-            data=json.dumps(payload).encode("utf-8"),
-            headers={"Content-Type": "application/json"},
-            method="POST",
-        )
+        client = self._get_async_client(self.settings.vlm_timeout_seconds)
         t0 = time.time()
-        try:
-            with urllib.request.urlopen(
-                req, timeout=self.settings.vlm_timeout_seconds
-            ) as resp:
-                body = json.loads(resp.read())
-        except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, OSError) as exc:
+
+        # 2) HTTP with single retry.  Treat connect/timeout errors as
+        #    candidates for retry; treat HTTP 5xx as transient too.
+        last_exc: Optional[BaseException] = None
+        body: Optional[Dict[str, Any]] = None
+        for attempt in (1, 2):
+            try:
+                resp = await client.post(
+                    url,
+                    json=payload,
+                    headers={"Content-Type": "application/json"},
+                )
+                # Non-2xx: treat 5xx as transient (retry once); 4xx as fatal.
+                if resp.status_code >= 500 and attempt == 1:
+                    last_exc = httpx.HTTPStatusError(
+                        f"{resp.status_code} server error",
+                        request=resp.request, response=resp,
+                    )
+                    await asyncio.sleep(0.5)
+                    continue
+                if resp.status_code >= 400:
+                    last_exc = httpx.HTTPStatusError(
+                        f"{resp.status_code} {resp.reason_phrase}",
+                        request=resp.request, response=resp,
+                    )
+                    break
+                # Decode JSON; malformed body must NOT crash the loop.
+                try:
+                    body = resp.json()
+                except (json.JSONDecodeError, ValueError) as decode_exc:
+                    latency = round(time.time() - t0, 3)
+                    logger.warning(
+                        "[vlm] malformed JSON from vLLM (status=%s): %s",
+                        resp.status_code, decode_exc,
+                    )
+                    # Malformed JSON is a parse error, not a circuit-breaker
+                    # event — vLLM is up, just confused.  Fail-open via
+                    # PARSE_ERROR (verify_activities keeps the activity).
+                    return {
+                        "status": "PARSE_ERROR",
+                        "verdict": None,
+                        "error": f"json_decode: {decode_exc}",
+                        "latency_sec": latency,
+                    }
+                last_exc = None
+                break
+            except (httpx.ConnectError, httpx.ConnectTimeout,
+                    httpx.ReadTimeout, httpx.WriteTimeout,
+                    httpx.PoolTimeout, httpx.RemoteProtocolError) as exc:
+                last_exc = exc
+                if attempt == 1:
+                    await asyncio.sleep(0.5)
+                    continue
+                break
+            except httpx.HTTPError as exc:
+                # Other HTTP errors — single attempt, no retry.
+                last_exc = exc
+                break
+
+        if body is None:
+            # Failure path: record breaker hit and fail open.
+            self._breaker.record_failure()
+            latency = round(time.time() - t0, 3)
             logger.warning(
                 "[vlm] endpoint unavailable for activity type=%s at t=%s: %s",
                 activity.get("activityType"),
                 activity.get("activityStartTime"),
-                exc,
+                last_exc,
             )
             return {
                 "status": "SKIPPED_VLM_UNAVAILABLE",
-                "verdict": None,
-                "error": str(exc),
-                "latency_sec": round(time.time() - t0, 3),
+                "verdict": "SKIPPED_VLM_UNAVAILABLE",
+                "reason": type(last_exc).__name__ if last_exc else "unknown",
+                "error": str(last_exc)[:200] if last_exc else "",
+                "latency_sec": latency,
             }
 
+        # 3) Success path — record and parse.
+        self._breaker.record_success()
         latency = round(time.time() - t0, 3)
         try:
             text = body["choices"][0]["message"]["content"]
@@ -1028,6 +1469,17 @@ class VlmVerificationService:
                 "latency_sec": latency,
             }
 
+        # Verdict enum validation — refuse unknown labels (a jail-broken
+        # VLM emitting "DROP" or similar would otherwise sneak through).
+        v = parsed.get("verdict")
+        if v not in _ALLOWED_VERDICTS:
+            return {
+                "status": "PARSE_ERROR",
+                "verdict": parsed,
+                "error": f"verdict not in enum: {v!r}",
+                "latency_sec": latency,
+            }
+
         return {
             "status": "OK",
             "verdict": parsed,
@@ -1035,6 +1487,49 @@ class VlmVerificationService:
             "model": self.settings.vlm_model,
             "frames_sent": n_frames,
         }
+
+    # ------------------------------------------------------------------
+    # Backwards-compat sync shim (used by existing tests & any caller that
+    # held a reference to the old name).  Just runs the async version.
+    # ------------------------------------------------------------------
+    def _verify_one(
+        self,
+        activity: Dict[str, Any],
+        prompt: str,
+        object_type: str = "",
+    ) -> Dict[str, Any]:
+        """Synchronous wrapper around :meth:`_verify_one_async`.
+
+        Retained for backwards compatibility with any caller that pokes the
+        internal method directly.  New code should use the async variant.
+        Same already-running-loop dance as :meth:`verify_activities`.
+        """
+        try:
+            asyncio.get_running_loop()
+            in_loop = True
+        except RuntimeError:
+            in_loop = False
+
+        if not in_loop:
+            return asyncio.run(self._verify_one_async(activity, prompt, object_type))
+
+        result_box: List[Any] = []
+
+        def _thread_main() -> None:
+            try:
+                result_box.append(
+                    asyncio.run(self._verify_one_async(activity, prompt, object_type))
+                )
+            except BaseException as e:  # noqa: BLE001
+                result_box.append(e)
+
+        t = threading.Thread(target=_thread_main, daemon=True, name="vlm-verify-one")
+        t.start()
+        t.join()
+        out = result_box[0]
+        if isinstance(out, BaseException):
+            raise out
+        return out
 
 
 # Singleton wiring (mirrors external_api_service pattern)
