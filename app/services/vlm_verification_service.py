@@ -67,6 +67,11 @@ If you cannot see (b) AND (c) confirmed for one specific person, the verdict is
 FALSE_POSITIVE. When genuinely uncertain, return UNCERTAIN with confidence ≤ 0.5.
 Do NOT return TRUE_POSITIVE just because a book is visible somewhere in the frame.
 
+KNOWN LIMITATION: The overhead camera angle can occlude fingertip-on-page contact
+under the hand itself. Some real writing-in-progress frames will be classified
+FALSE_POSITIVE because (b)+(c) cannot be visually confirmed from this view; that
+is an accepted trade-off in favor of high precision on the FP-heavy archetypes.
+
 Common confounders the classical pipeline misclassifies as writing:
   - Hands resting in the lap with head bent down (idle posture, no book contact)
   - A book sitting unattended on the desk while crew operates controls (static-book FP)
