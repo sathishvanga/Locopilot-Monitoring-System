@@ -346,6 +346,11 @@ class SleepDetector:
 
             # Negative angle = head tilted forward/down
             angle = np.arctan2(delta_y, delta_x) * 180 / np.pi - 90
+            # Normalize to [-180, 180] so values near +/-180 don't produce
+            # spurious 300+ deg jumps when downstream code computes deltas
+            # against a baseline that wrapped the other way.
+            # See CLAUDE.md "Head tilt angle wrapping" FP pattern.
+            angle = (angle + 180) % 360 - 180
 
             return angle
 
@@ -728,6 +733,10 @@ class SleepDetector:
             if len(tracking['head_tilt_history']) >= 2:
                 tilt_list = tracking['head_tilt_history']
                 delta = tilt_list[-1] - tilt_list[-2]
+                # Wrap delta to [-180, 180] — without this, a tilt going
+                # +170 -> -170 across the +/-180 seam produces a -340 deg
+                # delta and trips the head-drop threshold falsely.
+                delta = (delta + 180) % 360 - 180
                 tracking['head_tilt_deltas'].append(delta)
 
         tracking['movement_history'].append(movement_score)
@@ -919,8 +928,17 @@ class SleepDetector:
                                 nose_below_px < baseline_nose - self.SLEEP_BASELINE_NOSE_BELOW_DELTA)
 
             baseline_tilt = baseline.get('head_tilt')
-            is_head_down = (baseline_tilt is not None and
-                            avg_head_tilt < baseline_tilt - self.SLEEP_BASELINE_HEAD_TILT_DELTA)
+            # Wrap (avg_head_tilt - baseline_tilt) into [-180, 180] before
+            # comparing against the negative SLEEP_BASELINE_HEAD_TILT_DELTA
+            # threshold.  Same wrap-around bug class as the per-frame delta
+            # and the head_tilt_drop branch: a baseline near +180 with a
+            # current avg near -180 (or vice-versa) would otherwise yield a
+            # 300+ deg apparent down-tilt and trip ``is_head_down`` falsely.
+            if baseline_tilt is not None:
+                avg_tilt_delta = (avg_head_tilt - baseline_tilt + 180) % 360 - 180
+                is_head_down = avg_tilt_delta < -self.SLEEP_BASELINE_HEAD_TILT_DELTA
+            else:
+                is_head_down = False
 
             baseline_torso = baseline.get('torso_height_px')
             is_torso_elongated = (torso_height_px is not None and baseline_torso is not None and
@@ -969,30 +987,55 @@ class SleepDetector:
         head_drop_detected = False
         nose_y_drop = 0.0
         head_tilt_drop = 0.0
+        head_drop_from_delta = False
 
         nose_y_drop_thresh = getattr(self.settings, 'sleep_nose_y_drop_threshold', 0.15) if self.settings else 0.15
         head_tilt_drop_thresh = getattr(self.settings, 'sleep_head_tilt_drop_threshold', 30.0) if self.settings else 30.0
 
+        # Compute nose_y_drop up-front so we can use it as a single short-circuit
+        # guard across ALL head-drop branches (nose-y, head-tilt-vs-baseline,
+        # and per-frame delta).  Spec ``docs/specs/code-review-fixes/tasks/
+        # 0001-restore-determinism-contract.md`` line 982 requires:
+        #     if nose_y_drop is not None and nose_y_drop < 0:
+        #         # skip head-drop branches
+        # Without this, a noisy head-tilt or per-frame delta blip can fire a
+        # head-drop while the nose actually moved UP — physically impossible
+        # for a real sleep onset.  When ``nose_y_drop`` is None (landmark
+        # unavailable) we keep the existing behavior and let the other
+        # branches evaluate normally.
+        nose_y_drop_value: Optional[float] = None
         if has_baseline:
             baseline_nose_y = baseline.get('nose_y_normalized')
+            if nose_y_normalized is not None and baseline_nose_y is not None:
+                nose_y_drop_value = nose_y_normalized - baseline_nose_y
+                nose_y_drop = nose_y_drop_value
+
+        skip_head_drop_branches = (
+            nose_y_drop_value is not None and nose_y_drop_value < 0
+        )
+
+        if has_baseline and not skip_head_drop_branches:
             baseline_head_tilt = baseline.get('head_tilt')
 
-            if nose_y_normalized is not None and baseline_nose_y is not None:
-                nose_y_drop = nose_y_normalized - baseline_nose_y
-                if nose_y_drop > nose_y_drop_thresh:
+            if nose_y_drop_value is not None:
+                # Only count downward drops — if the nose moved UP relative
+                # to baseline (smaller y), that's the opposite of sleeping.
+                if nose_y_drop_value > nose_y_drop_thresh:
                     head_drop_detected = True
 
             if head_tilt is not None and baseline_head_tilt is not None:
-                head_tilt_drop = head_tilt - baseline_head_tilt
+                # Wrap head_tilt_drop to [-180, 180] so a baseline near +180
+                # vs current near -180 doesn't fabricate a 300+ deg drop.
+                head_tilt_drop = (head_tilt - baseline_head_tilt + 180) % 360 - 180
                 if head_tilt_drop > head_tilt_drop_thresh:
                     head_drop_detected = True
 
-        head_drop_from_delta = False
-        if len(tracking.get('head_tilt_deltas', [])) >= 1:
-            last_delta = list(tracking['head_tilt_deltas'])[-1]
-            if last_delta > head_tilt_drop_thresh:
-                head_drop_from_delta = True
-                head_drop_detected = True
+        if not skip_head_drop_branches:
+            if len(tracking.get('head_tilt_deltas', [])) >= 1:
+                last_delta = list(tracking['head_tilt_deltas'])[-1]
+                if last_delta > head_tilt_drop_thresh:
+                    head_drop_from_delta = True
+                    head_drop_detected = True
 
         # FP-FIX: Require consecutive head_drop=True frames to confirm
         # Single-frame pose estimation noise should not trigger sleep detection
