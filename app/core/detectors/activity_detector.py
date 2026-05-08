@@ -751,3 +751,28 @@ class ActivityDetector:
                 del self.packing_motion_history[person_idx]
         else:
             self.packing_motion_history.clear()
+
+    def reset(self) -> None:
+        """Clear all per-video state.
+
+        Wipes ``packing_motion_history`` (per-person sustained-proximity
+        deques) so direction-change accumulation does not bleed across
+        video boundaries or train-STOPPED windows.
+        """
+        self.packing_motion_history.clear()
+
+    def on_suppressed(self, person_idx: Optional[int], activity_name: str) -> None:
+        """Hook invoked when an activity for a person is suppressed by the
+        train-stopped gate.
+
+        For ``packing_bags`` we drop the per-person motion-history deque so
+        direction-change counters mature only during the RUNNING window.
+
+        Args:
+            person_idx: Per-person index whose state should be cleared.
+            activity_name: Suppressed activity key (only acts on
+                ``'packing_bags'``).
+        """
+        if person_idx is None or activity_name != 'packing_bags':
+            return
+        self.packing_motion_history.pop(person_idx, None)

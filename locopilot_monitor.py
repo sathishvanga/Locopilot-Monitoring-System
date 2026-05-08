@@ -805,12 +805,14 @@ class LocopilotActivityMonitor:
         # packing_bags false positive.  Velocity calculations can also go
         # negative when the new chunk's first timestamp is smaller than the
         # stale one.  Clear all history when reusing the preloaded instance.
-        if preloaded_sleep is not None and hasattr(self.sleep_detector, 'reset_tracking'):
-            self.sleep_detector.reset_tracking()
+        if preloaded_sleep is not None and hasattr(self.sleep_detector, 'reset'):
+            self.sleep_detector.reset()
         if preloaded_gesture is not None and hasattr(self.gesture_detector, 'reset'):
             self.gesture_detector.reset()
-        if preloaded_activity is not None and hasattr(self.activity_detector, 'clear_motion_history'):
-            self.activity_detector.clear_motion_history()
+        if preloaded_activity is not None and hasattr(self.activity_detector, 'reset'):
+            self.activity_detector.reset()
+        if preloaded_mind is not None and hasattr(self.mind_diversion_detector, 'reset'):
+            self.mind_diversion_detector.reset()
 
         if _any_preloaded_detector:
             self.logger.info(
@@ -3842,12 +3844,28 @@ class LocopilotActivityMonitor:
                     'mind_diversion_detected': mind_diversion_detected,
                     'eating_drinking_detected': eating_drinking_detected,
                 }
+                # Settings-driven override (HEAD): operators can narrow which
+                # activity types are suppressed when STOPPED via
+                # TRAIN_MOTION_STOPPED_SUPPRESS_LIST without touching code.
+                # Task 0006: pass the live detector instances so the gate
+                # also resets per-detector state machines (sleep duration,
+                # gesture last-raise time, packing direction-change counter,
+                # mind-diversion writing grace cache) in lockstep with the
+                # public flag flip. Without that, internal counters mature
+                # while the activity is suppressed and produce instant FP
+                # violations on train resume.
                 _suppress_override = getattr(self.settings, 'train_motion_stopped_suppress_list', '') or ''
                 _suppress_override = [s.strip() for s in _suppress_override.split(',') if s.strip()]
                 apply_train_stopped_suppression(
                     aggregated=_train_stopped_aggregated,
                     persons_data=persons_data,
                     suppressed=_suppress_override or None,
+                    detectors={
+                        'sleep': self.sleep_detector,
+                        'gesture': self.gesture_detector,
+                        'mind_diversion': self.mind_diversion_detector,
+                        'activity': self.activity_detector,
+                    },
                 )
                 # Propagate the helper's mutations back to the locals that
                 # downstream code reads for activities_map.
@@ -4008,8 +4026,55 @@ class LocopilotActivityMonitor:
                 del rgb_frame
 
 
+    def reset_detectors(self) -> None:
+        """Reset every per-video detector state machine.
+
+        Called at the start of :meth:`process_video` and
+        :meth:`process_video_range` so the first frame of a new video is
+        not diffed/correlated against the last frame of the previous video
+        (most importantly for ``train_motion_detector.prev_gray``, which
+        otherwise produces a phantom RUNNING signal at the start of every
+        video after the first).
+
+        Each detector's ``reset()`` is best-effort: missing methods are
+        skipped silently so the call site stays safe across partial
+        upgrades.
+        """
+        for attr in (
+            'sleep_detector',
+            'gesture_detector',
+            'activity_detector',
+            'mind_diversion_detector',
+            'train_motion_detector',
+        ):
+            det = getattr(self, attr, None)
+            if det is None:
+                continue
+            reset_fn = getattr(det, 'reset', None)
+            if callable(reset_fn):
+                try:
+                    reset_fn()
+                except Exception as exc:
+                    self.logger.warning(
+                        f"[reset_detectors] {attr}.reset() raised {exc!r}; continuing"
+                    )
+
+        # Drop the train-stopped suppression tracker so any pairs already
+        # fired in the previous video do not silence ``on_suppressed`` hooks
+        # for the same (person, activity) at the start of the next video.
+        # See app/core/pipeline/stages/train_motion_suppress_stage.py.
+        tracker = getattr(self, '_train_stopped_suppressed_pairs', None)
+        if tracker:
+            tracker.clear()
+
     def process_video(self) -> None:
         """Main video processing loop - SAMPLES FRAMES AT SPECIFIED RATE"""
+        # Reset every detector's per-video state before the first frame so
+        # train_motion_detector.prev_gray (and friends) cannot bleed across
+        # video boundaries. This is the canonical contract documented in
+        # tasks/0006-detector-reset-and-train-stopped-invariant.
+        self.reset_detectors()
+
         # Get video metadata
         # CR-011: Use cached video metadata instead of reopening VideoCapture
         total_frames, fps, _duration = self._get_video_metadata()
@@ -4112,6 +4177,16 @@ class LocopilotActivityMonitor:
         Returns:
             List of detected activities in this range
         """
+        # Reset every detector's per-video state before the first frame so
+        # train_motion_detector.prev_gray (and friends) cannot bleed across
+        # video boundaries when this method is called directly (e.g. by a
+        # caller other than the multi-process worker pool, where each
+        # worker already gets a fresh monitor via __init__). This is the
+        # canonical contract documented in
+        # tasks/0006-detector-reset-and-train-stopped-invariant — defensive
+        # against future callers that reuse a single monitor across videos.
+        self.reset_detectors()
+
         # Get video metadata
         # CR-011: Use cached video metadata instead of reopening VideoCapture
         total_frames, fps, _duration = self._get_video_metadata()

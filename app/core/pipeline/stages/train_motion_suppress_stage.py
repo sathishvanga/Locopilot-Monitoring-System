@@ -1,32 +1,57 @@
 """Stage 11: Train-STOPPED activity suppression.
 
-This stage is present to match the 14-stage contract defined in task
-0002. In the code revision this worktree is based on, the train-STOPPED
-suppression gate does not exist in ``_process_frames_core``; it will
-land in a later revision. The stage is a no-op when
-``monitor.train_motion_detector`` is absent, and is forward-compatible
-— once rebased onto a revision that defines the detector and a
-``current_motion_state == 'STOPPED'`` branch, this stage will light up
-automatically.
+Delegates to :func:`app.core.gates.apply_train_stopped_suppression` so that
+the aggregated boolean flags AND each ``persons_data[*]['activities']``
+sub-dict are zeroed in lockstep, and so per-detector state machines get
+their ``on_suppressed`` hooks invoked. This is the single source of truth
+for the train-STOPPED gate — see ``app/core/gates.py``.
 
-See task 0008 for the "also zero ``persons_data[*]['activities']``"
-follow-up, which is left as a TODO here.
+``microsleep`` and ``cell_phone`` are intentionally left active because
+they remain safety-critical even at stations.
 """
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Dict
 
 from app.core.frame_pipeline import FrameState
+from app.core.gates import apply_train_stopped_suppression
 
 
 class TrainMotionSuppressStage:
     name = "train_motion_suppress"
 
+    def _collect_detectors(self, monitor: Any) -> Dict[str, Any]:
+        """Build the ``detectors`` map passed to the gate helper.
+
+        Detector attributes are looked up defensively so the stage stays
+        no-op when running against a partial monitor (e.g. unit tests that
+        only populate ``train_motion_detector``).
+        """
+        keys = (
+            ('sleep', 'sleep_detector'),
+            ('gesture', 'gesture_detector'),
+            ('mind_diversion', 'mind_diversion_detector'),
+            ('activity', 'activity_detector'),
+        )
+        out: Dict[str, Any] = {}
+        for short_key, attr in keys:
+            det = getattr(monitor, attr, None)
+            if det is not None:
+                out[short_key] = det
+        return out
+
     def run(self, state: FrameState, monitor: Any) -> FrameState:
         detector = getattr(monitor, "train_motion_detector", None)
         current_motion_state = getattr(monitor, "current_motion_state", None)
         if detector is None or current_motion_state != "STOPPED":
+            # Train is no longer stopped (or detector absent): clear the
+            # per-window already-fired (person, activity) tracker so the
+            # NEXT entry into a STOPPED window starts fresh and fires the
+            # ``on_suppressed`` hooks exactly once per flag flip again.
+            tracker = getattr(monitor, "_train_stopped_suppressed_pairs", None)
+            if tracker:
+                tracker.clear()
             return state
         # When TRAIN_MOTION_SUPPRESS_WHEN_STOPPED=0 the operator wants
         # stopped-state activities to flow through (tagged motionState=STOPPED
@@ -37,24 +62,40 @@ class TrainMotionSuppressStage:
         ):
             return state
 
-        flags = state.activity_flags
+        # Maintain a per-monitor mapping that records which
+        # (person_idx, activity) pairs already had their ``on_suppressed``
+        # hook fired in the current contiguous STOPPED window. The gate
+        # consults+updates this map so each detector hook fires once per
+        # True -> False flag flip per window — without it, every frame the
+        # detector recomputes the activity as positive and we'd re-fire
+        # the hook on every frame the train is stopped (wasted work, and
+        # log noise).
+        tracker = getattr(monitor, "_train_stopped_suppressed_pairs", None)
+        if tracker is None:
+            tracker = {}
+            monitor._train_stopped_suppressed_pairs = tracker
 
-        # Suppress motion-dependent activities when the train is stopped.
-        # Per spec: microsleep and cell_phone MUST trigger in both
-        # stationary and moving states, so they are NOT zeroed here.
-        flags['sleep_detected'] = False
-        flags['writing_detected'] = False
-        flags['packing_detected'] = False
-        flags['lp_hand_gesture_detected'] = False
-        flags['alp_hand_gesture_detected'] = False
-        flags['mind_diversion_detected'] = False
-        flags['eating_drinking_detected'] = False
-        # NOTE: lp_not_coordinating / alp_not_coordinating are intentionally
-        # NOT reset here — this matches the pre-refactor behavior in newer
-        # revisions of the monitor where the coordination-failure flags
-        # derived earlier from the hand-gesture signals continue to flow
-        # into activities_map when the train is stopped. Changing this
-        # would be a behavior change and is deferred to task 0008.
+        # Single-call gate: zero aggregated + per-person flags AND fan out
+        # the per-detector ``on_suppressed`` hook so internal counters
+        # (sleep duration, gesture last-raise time, packing direction
+        # changes, mind-diversion writing grace) reset in lockstep — and
+        # only on the first flag-flip per STOPPED window.
+        apply_train_stopped_suppression(
+            state.activity_flags,
+            state.persons_data,
+            detectors=self._collect_detectors(monitor),
+            previously_suppressed=tracker,
+        )
+        # Compatibility bridge — required because ``per_person_activities_stage``
+        # emits the legacy key ``'packing_detected'`` (no ``_bags`` suffix)
+        # alongside the canonical ``'packing_bags_detected'``. The canonical
+        # gate flips the registry-keyed ``'packing_bags_detected'`` flag, but
+        # any downstream stage that still reads the legacy alias would
+        # otherwise see a stale True during a STOPPED window. Mirror the flip
+        # here so both forms agree. (See per_person_activities_stage.py:58-79
+        # for the dual-emit rationale.)
+        if 'packing_detected' in state.activity_flags:
+            state.activity_flags['packing_detected'] = False
 
         # group_detected: raise threshold when stopped (only when the newer
         # ``train_motion_stopped_group_threshold`` attribute is present).
@@ -71,7 +112,4 @@ class TrainMotionSuppressStage:
             f"sleep/writing/packing/gesture/mind_diversion/eating suppressed; "
             f"microsleep and cell_phone remain active (safety-critical)"
         )
-        # TODO(task 0008): Also zero persons_data[*]['activities'] so
-        # downstream consumers don't see stale per-person flags after
-        # suppression. Kept out of this scaffolding pass.
         return state
