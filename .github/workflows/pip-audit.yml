@@ -1,0 +1,55 @@
+name: pip-audit
+
+# Per task 0009: every PR must pass pip-audit against the locked, hashed
+# requirements file. Failing on any HIGH / CRITICAL CVE in the supply chain.
+#
+# This job intentionally does NOT install the project — it only resolves
+# CVEs against the lock file. Installing torch + CUDA wheels in CI would
+# blow the runner disk budget and is unnecessary for an audit.
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    paths:
+      - 'requirements.in'
+      - 'requirements.lock'
+      - 'scripts/lock-deps.sh'
+      - '.github/workflows/pip-audit.yml'
+  schedule:
+    # Weekly Monday 06:00 UTC sweep so newly-published CVEs against pinned
+    # versions surface even when no PR touches deps.
+    - cron: '0 6 * * 1'
+  workflow_dispatch:
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'  # match GPU box runtime
+
+      - name: Verify lock file is populated
+        run: |
+          if [ ! -f requirements.lock ]; then
+            echo "::error::requirements.lock missing"
+            exit 1
+          fi
+          if grep -q "PLACEHOLDER" requirements.lock; then
+            echo "::error::requirements.lock is still the placeholder. Run scripts/lock-deps.sh on the GPU box and commit the result."
+            exit 1
+          fi
+
+      - name: Install pip-audit
+        run: |
+          python -m pip install --upgrade pip
+          pip install 'pip-audit>=2.7,<3'
+
+      - name: Run pip-audit (strict)
+        run: pip-audit --requirement requirements.lock --strict

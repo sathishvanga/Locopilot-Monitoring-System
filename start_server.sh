@@ -7,9 +7,11 @@ echo "=================================================="
 echo ""
 
 # Check if virtual environment exists
+FRESH_VENV=0
 if [ ! -d "venv" ]; then
     echo "⚠️  Virtual environment not found. Creating one..."
     python3 -m venv venv
+    FRESH_VENV=1
     echo "✅ Virtual environment created"
 fi
 
@@ -17,9 +19,40 @@ fi
 echo "🔧 Activating virtual environment..."
 source venv/bin/activate
 
-# Install/update dependencies
-echo "📦 Installing dependencies..."
-pip install -r requirements.txt --quiet
+# Per task 0009: do NOT run `pip install` on every server start. Production
+# uses a hash-locked install that is performed once during deploy
+# (deploy-gpu.sh or scripts/lock-deps.sh + manual install). The only time
+# this script installs deps is when it just created an empty venv above.
+#
+# Production-shaped environments should set LOCOPILOT_REQUIRE_LOCK=1 — this
+# refuses to start (and refuses to bootstrap) if requirements.lock is missing
+# or still the PLACEHOLDER. Default behavior (dev) keeps the requirements.txt
+# fallback.
+LOCK_OK=0
+if [ -f "requirements.lock" ] && ! grep -q "PLACEHOLDER" requirements.lock; then
+    LOCK_OK=1
+fi
+
+if [ "${LOCOPILOT_REQUIRE_LOCK:-0}" = "1" ] && [ "$LOCK_OK" != "1" ]; then
+    echo "❌ LOCOPILOT_REQUIRE_LOCK=1 but requirements.lock is missing or still the PLACEHOLDER."
+    echo "   Generate a real hashed lock with scripts/lock-deps.sh on a Python 3.12 + cu121 box,"
+    echo "   commit it, then redeploy. Refusing to start."
+    exit 1
+fi
+
+if [ "$FRESH_VENV" = "1" ]; then
+    if [ "$LOCK_OK" = "1" ]; then
+        echo "📦 Bootstrapping deps from requirements.lock (--require-hashes)..."
+        pip install --require-hashes --no-deps -r requirements.lock
+    elif [ -f "requirements.txt" ]; then
+        echo "⚠️  requirements.lock missing or placeholder — falling back to requirements.txt"
+        echo "   Run scripts/lock-deps.sh to generate a hashed lock file."
+        pip install -r requirements.txt --quiet
+    else
+        echo "❌ No requirements.lock or requirements.txt found; aborting."
+        exit 1
+    fi
+fi
 
 # Create necessary directories
 echo "📁 Creating directories..."
