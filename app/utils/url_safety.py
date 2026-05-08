@@ -42,6 +42,11 @@ class URLNotAllowed(ValueError):
 
 _ALLOWED_SCHEMES = frozenset({"http", "https"})
 
+# CGNAT (carrier-grade NAT) — RFC 6598. ipaddress.is_private only learned
+# this range in CPython 3.13 (bpo-105631), so we check it explicitly to
+# guarantee coverage on 3.11 / 3.12.
+_CGNAT_NET = ipaddress.ip_network("100.64.0.0/10")
+
 
 def _is_blocked_ip(ip: ipaddress._BaseAddress) -> bool:
     """Return True if ``ip`` is unsafe for server-side fetches.
@@ -67,6 +72,11 @@ def _is_blocked_ip(ip: ipaddress._BaseAddress) -> bool:
     # IPv4 loopback or RFC1918 addresses tunneled through IPv6.
     if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
         ip = ip.ipv4_mapped
+    # Python 3.11's ``is_private`` does NOT include 100.64/10 (CGNAT) — that
+    # was only fixed in CPython 3.13 (bpo-105631). Check it explicitly so the
+    # gap doesn't widen on older interpreters.
+    if isinstance(ip, ipaddress.IPv4Address) and ip in _CGNAT_NET:
+        return True
     return (
         ip.is_loopback
         or ip.is_private

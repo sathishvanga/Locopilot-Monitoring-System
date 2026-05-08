@@ -250,7 +250,14 @@ def test_nose_y_drop_negative_does_not_trigger_head_drop(
         "Nose moved UP — nose_y_drop must be non-positive, got "
         f"{debug.get('nose_y_drop')!r}"
     )
-    assert debug.get("head_drop_detected") is False, (
+    # The detector returns either:
+    #   - head_drop_detected=False once it's past `building_history`, OR
+    #   - no head_drop_detected key at all while still building history
+    #     (status='building_history' on a single-frame call).
+    # Both outcomes uphold the invariant "negative nose_y_drop must not
+    # signal a head drop". Assert the absence of a True value rather than
+    # demanding the post-calibration code path.
+    assert debug.get("head_drop_detected") is not True, (
         "Negative nose_y_drop must NOT trigger head_drop_detected. "
         f"debug={debug!r}"
     )

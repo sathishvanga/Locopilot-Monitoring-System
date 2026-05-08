@@ -9,8 +9,12 @@ from datetime import datetime
 import cv2
 import numpy as np
 
-from app.repositories.activity_repository import ActivityRepository
 from app.utils.json_utils import atomic_write_json
+# NOTE: ``ActivityRepository`` is imported lazily inside ``save_activities_json``
+# below to avoid a circular import: this module is loaded as part of
+# ``app.core`` package init, and ``activity_repository`` -> ``activity_models``
+# -> ``app.core.activity_registry`` would re-enter ``app.core.__init__`` while
+# this module is still being loaded.
 
 
 class EvidenceManager:
@@ -416,6 +420,8 @@ class EvidenceManager:
         json_path = os.path.join(self.run_dir, filename)
 
         if filename == "activities.json":
+            # Lazy import to break circular dep (see module-level NOTE).
+            from app.repositories.activity_repository import ActivityRepository
             ActivityRepository().save_activities(activities, self.run_dir)
         else:
             atomic_write_json(json_path, activities, indent=2)

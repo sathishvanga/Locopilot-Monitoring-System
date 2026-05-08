@@ -46,6 +46,12 @@ def _fresh_service():
     svc.settings.vlm_verification_enabled = True
     svc.settings.vlm_shadow_mode = False  # enforcement mode
     svc.settings.vlm_drop_threshold = 0.80
+    # Explicitly disable the production motion-override feature for these
+    # unit tests. The contract under test is "verifier never flips
+    # Pipeline-1 motionState on the basis of VLM free-text"; whether the
+    # opt-in feature is on in prod (.env) is a separate integration
+    # concern and would defeat the assertion at line 85 below.
+    svc.settings.vlm_motion_override_enabled = False
     svc._verify_set = frozenset({"writing", "eating_drinking", "packing_bags"})
     return svc
 
