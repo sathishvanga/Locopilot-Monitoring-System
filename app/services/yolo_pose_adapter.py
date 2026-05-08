@@ -14,37 +14,13 @@ YOLO-Pose provides 17 keypoints (COCO format):
     13: left_knee, 14: right_knee, 15: left_ankle, 16: right_ankle
 """
 
-import logging
-import os
-
 from ultralytics import YOLO
 import numpy as np
 
-
-# Setup module logger (file-only output)
-def _setup_module_logger():
-    """Setup a file-only logger for YOLO pose adapter."""
-    log_dir = os.getenv("LOG_DIR", "logs")
-    os.makedirs(log_dir, exist_ok=True)
-    
-    logger = logging.getLogger("YoloPoseAdapter")
-    logger.setLevel(logging.INFO)
-    
-    if not logger.handlers:
-        file_handler = logging.FileHandler(os.path.join(log_dir, "LocopilotMonitoring.log"))
-        file_handler.setLevel(logging.DEBUG)
-        
-        formatter = logging.Formatter(
-            '%(asctime)s,%(msecs)03d [N/A] [N/A] [N/A] [N/A] [%(levelname)s] [%(name)s] [N/A N/A] %(message)s',
-            datefmt='%Y-%m-%d %H:%M:%S'
-        )
-        file_handler.setFormatter(formatter)
-        logger.addHandler(file_handler)
-    
-    return logger
+from app.utils.logger import get_logger
 
 
-logger = _setup_module_logger()
+logger = get_logger(__name__)
 
 
 # YOLO Keypoint indices (COCO format)

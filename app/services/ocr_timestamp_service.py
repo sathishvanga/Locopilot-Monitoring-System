@@ -8,7 +8,6 @@ surveillance videos.
 EasyOCR is preferred for semi-transparent overlays common in IP cameras.
 """
 
-import logging
 import re
 import threading
 import time
@@ -19,8 +18,9 @@ from threading import Lock
 
 from ..models.trip_models import OCRTimestampResult
 from ..utils.config import get_settings
+from ..utils.logger import get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 # Check available OCR engines
 EASYOCR_AVAILABLE = False
@@ -133,7 +133,7 @@ class OCRTimestampService:
         start_time = time.time()
 
         if not self.enabled:
-            logger.debug(f"[OCR] ❌ OCR disabled (engine: {self.ocr_engine})")
+            logger.debug(f"[OCR] [FAIL] OCR disabled (engine: {self.ocr_engine})")
             return OCRTimestampResult(
                 success=False,
                 error_message=f"OCR disabled (engine: {self.ocr_engine})"
@@ -173,12 +173,12 @@ class OCRTimestampService:
                 self._last_timestamp = result.timestamp
                 self._last_extraction_time = time.time()
                 logger.info(
-                    f"[OCR] ✅ Extracted timestamp: {result.timestamp} "
+                    f"[OCR] [OK] Extracted timestamp: {result.timestamp} "
                     f"(confidence: {result.confidence:.2f}, time: {result.extraction_time_ms:.1f}ms)"
                 )
             else:
                 logger.debug(
-                    f"[OCR] ❌ Failed to extract timestamp - "
+                    f"[OCR] [FAIL] Failed to extract timestamp - "
                     f"raw_text: '{result.raw_text}', error: {result.error_message}"
                 )
 
@@ -186,7 +186,7 @@ class OCRTimestampService:
 
         except Exception as e:
             extraction_time_ms = (time.time() - start_time) * 1000
-            logger.error(f"[OCR] ❌ Exception during extraction: {e}", exc_info=True)
+            logger.error(f"[OCR] [FAIL] Exception during extraction: {e}", exc_info=True)
             return OCRTimestampResult(
                 success=False,
                 error_message=str(e),

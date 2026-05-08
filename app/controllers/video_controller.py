@@ -436,18 +436,18 @@ async def process_video(
         # Re-raise HTTP exceptions
         raise
         
-    except Exception as e:
-        logger.error(f"[ERROR] Video processing failed for trip {tripId}: {e}", exc_info=True)
-        
+    except Exception:
+        # task 0010: keep the full traceback + tripId on the server side via
+        # logger.exception, but NEVER let str(e) escape into the response
+        # body — exception messages frequently embed file paths, query
+        # fragments, and (worst case) request-derived secrets.
+        logger.exception("[ERROR] Video processing failed for trip %s", tripId)
+
         # Cleanup on error
         if video_path:
             video_processing_service.cleanup_uploaded_video(video_path)
-        
-        # Return error response
-        raise HTTPException(
-            status_code=500,
-            detail=f"Failed to process video: {str(e)}"
-        )
+
+        raise HTTPException(status_code=500, detail="internal_error")
     finally:
         # Release the pending counter if we admitted the request but never
         # made it inside ``acquire_gpu_slot()`` (e.g. MinIO download failed
@@ -496,12 +496,10 @@ async def get_processing_status(run_id: str):
     except HTTPException:
         raise
         
-    except Exception as e:
-        logger.error(f"Failed to get status: {e}", exc_info=True)
-        raise HTTPException(
-            status_code=500,
-            detail=f"Failed to get status: {str(e)}"
-        )
+    except Exception:
+        # task 0010: log full traceback for diagnosis; opaque body for the caller.
+        logger.exception("Failed to get status for run_id=%s", run_id)
+        raise HTTPException(status_code=500, detail="internal_error")
 
 
 @router.get(
@@ -1002,18 +1000,19 @@ async def process_and_upload_video(
     except HTTPException:
         raise
         
-    except Exception as e:
-        # Include more context in error message
-        error_detail = f"Processing failed for trip {tripId}"
-        if video_path:
-            error_detail += f" (video: {os.path.basename(video_path)})"
-        error_detail += f": {str(e)}"
-        
-        logger.error(f"Process and upload failed: {error_detail}", exc_info=True)
-        raise HTTPException(
-            status_code=500,
-            detail=error_detail
+    except Exception:
+        # task 0010: server-side log gets the full traceback + identifiers we
+        # need for diagnosis (trip_id, video filename); the response stays
+        # opaque so we never echo str(e) — which can include file paths,
+        # external API error bodies, or even raw header fragments — back to
+        # the client.
+        video_basename = os.path.basename(video_path) if video_path else None
+        logger.exception(
+            "Process-and-upload failed for trip=%s video=%s",
+            tripId,
+            video_basename,
         )
+        raise HTTPException(status_code=500, detail="internal_error")
     
     finally:
         # Optional: Clean up uploaded video file

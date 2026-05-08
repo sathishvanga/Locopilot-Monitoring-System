@@ -24,7 +24,6 @@ from __future__ import annotations
 
 import base64
 import json
-import logging
 import threading
 import time
 import urllib.error
@@ -36,9 +35,10 @@ import cv2
 import numpy as np
 
 from ..utils.config import get_settings
+from ..utils.logger import get_logger
 
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 _PROMPT_WRITING = """You are a railway safety auditor reviewing CCTV from a locomotive cabin.

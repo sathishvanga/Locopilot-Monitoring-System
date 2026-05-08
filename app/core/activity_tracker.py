@@ -6,34 +6,12 @@ grace periods, consecutive detections, and activity lifecycle (start/end).
 Extracted from locopilot_monitor.py for modularity and reusability.
 """
 
-import logging
-import os
 from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import timedelta
 from typing import Any, Dict, List, Optional
 
-
-def _setup_module_logger(name: str, level: int = logging.DEBUG) -> logging.Logger:
-    """Setup a file-only logger for the module."""
-    log_dir = os.getenv("LOG_DIR", "logs")
-    os.makedirs(log_dir, exist_ok=True)
-
-    logger = logging.getLogger(name)
-    logger.setLevel(level)
-
-    if not logger.handlers:
-        file_handler = logging.FileHandler(os.path.join(log_dir, "LocopilotMonitoring.log"))
-        file_handler.setLevel(logging.DEBUG)
-
-        formatter = logging.Formatter(
-            '%(asctime)s,%(msecs)03d [N/A] [N/A] [N/A] [N/A] [%(levelname)s] [%(name)s] [N/A N/A] %(message)s',
-            datefmt='%Y-%m-%d %H:%M:%S'
-        )
-        file_handler.setFormatter(formatter)
-        logger.addHandler(file_handler)
-
-    return logger
+from app.utils.logger import get_logger
 
 
 @dataclass
@@ -157,7 +135,7 @@ class ActivityTracker:
             activity_configs: Dictionary mapping activity names to ActivityConfig objects.
             fps: Frames per second for time calculations. Defaults to 1.0.
         """
-        self.logger = _setup_module_logger('ActivityTracker')
+        self.logger = get_logger('ActivityTracker')
         self.activity_configs = activity_configs
         self.fps = fps
 

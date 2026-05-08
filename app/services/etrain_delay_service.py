@@ -5,7 +5,6 @@ This service integrates with etrain.info to fetch actual train delay data
 for determining real arrival/departure times (scheduled + delay).
 """
 
-import logging
 import re
 import threading
 import requests
@@ -15,8 +14,9 @@ from functools import lru_cache
 from cachetools import TTLCache
 
 from ..utils.config import get_settings
+from ..utils.logger import get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 # TTL cache for delay data (30 minutes default)
 _delay_cache: Optional[TTLCache] = None

@@ -44,7 +44,7 @@ class MultiprocessingConfig:
     """Configuration for multiprocessing video pipeline"""
 
     # Process pool settings
-    # ✅ PRODUCTION OPTIMIZED: Environment-aware configuration
+    # PRODUCTION OPTIMIZED: Environment-aware configuration
     # Balance: More workers = better parallelization but more memory usage (each worker loads models)
     max_workers: Optional[int] = None  # None = auto-detect (min(CPU count, max_workers_cap))
     # Local (12-core): 10 workers × 2 threads ≈ 20 logical threads
@@ -53,7 +53,7 @@ class MultiprocessingConfig:
     start_method: str = "spawn"  # Use 'spawn' for cross-platform stability
 
     # Work partitioning settings
-    # ✅ Default sourced from Settings.mp_chunk_duration (15s) to ensure
+    # Default sourced from Settings.mp_chunk_duration (15s) to ensure
     # hand gesture coordination detection works correctly (coordination window is 10s).
     # Override via MP_CHUNK_DURATION env var or by passing chunk_duration_seconds explicitly.
     chunk_duration_seconds: Optional[float] = None  # None = use Settings.mp_chunk_duration
@@ -72,7 +72,7 @@ class MultiprocessingConfig:
     overlap_seconds: Optional[float] = None
 
     # Worker initialization settings
-    # ✅ PRODUCTION OPTIMIZED: Thread counts from environment or defaults
+    # PRODUCTION OPTIMIZED: Thread counts from environment or defaults
     # Production: 3 threads (Xeon processors benefit from higher threading)
     # Development: 3 threads (balanced for consumer CPUs)
     # M-11: These defaults are overridden at runtime by set_worker_env_vars()

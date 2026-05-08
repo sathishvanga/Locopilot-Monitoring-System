@@ -104,42 +104,12 @@ if os.environ.get('QT_QPA_PLATFORM') == 'offscreen':
     os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
     os.environ.setdefault('DISPLAY', '')
 
-# Configure module-level logger for file-only logging
-# Console output is disabled - all logs go to file only
-def _setup_module_logger(logger_name: str, level=logging.INFO) -> logging.Logger:
-    """
-    Setup a module-level logger with file-only output.
-    Console logging is disabled for clean terminal output.
-    
-    Args:
-        logger_name: Name for the logger
-        level: Logging level (default: INFO)
-        
-    Returns:
-        Configured logger instance
-    """
-    logger = logging.getLogger(logger_name)
-    if not logger.handlers:
-        # Create logs directory if it doesn't exist
-        log_dir = os.getenv("LOG_DIR", "logs")
-        os.makedirs(log_dir, exist_ok=True)
-        
-        # File handler only - no console output
-        file_handler = logging.FileHandler(os.path.join(log_dir, 'LocopilotMonitoring.log'))
-        file_handler.setLevel(logging.DEBUG)
-        
-        # Formatter matching application format
-        formatter = logging.Formatter(
-            '%(asctime)s,%(msecs)03d [N/A] [N/A] [N/A] [N/A] [%(levelname)s] [%(name)s] [N/A N/A] %(message)s',
-            datefmt='%Y-%m-%d %H:%M:%S'
-        )
-        file_handler.setFormatter(formatter)
-        
-        logger.addHandler(file_handler)
-        logger.setLevel(level)
-    return logger
-
-# Module-level loggers removed - consolidated to self.logger instance hierarchy
+# Module loggers come from the canonical app.utils.logger.get_logger.
+# All previous file-handler bootstrapping for this module has been
+# removed (task 0010): there is exactly one place that owns the
+# project log file (app/utils/logger.py:setup_logging) and every
+# other module reuses logging.getLogger via get_logger.
+from app.utils.logger import get_logger
 
 
 @contextlib.contextmanager
@@ -214,8 +184,8 @@ class LocopilotActivityMonitor:
         self._video_fps = None
         self._video_duration_seconds = None
 
-        # Initialize logger (file-only output, no console)
-        self.logger = _setup_module_logger(f'{self.__class__.__name__}', logging.DEBUG)
+        # Initialize logger (canonical project logger; root handler owns the file).
+        self.logger = get_logger(f'{self.__class__.__name__}')
         
         # Frame sampling configuration
         self.sample_fps = sample_fps  # Sample frames at this rate (e.g., 0.5 = 1 frame every 2 seconds)

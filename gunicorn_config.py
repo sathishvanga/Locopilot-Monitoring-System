@@ -7,42 +7,26 @@ Logging is configured to use file-only output for clean terminal operation.
 
 import multiprocessing
 import os
-import logging
-from logging.handlers import TimedRotatingFileHandler
 
 
-# Setup gunicorn logger (file-only output)
+# Setup gunicorn logger via the canonical project logger.
 def _setup_gunicorn_logger():
     """
-    Setup a file-only logger for gunicorn lifecycle events.
-    Console logging is disabled for clean terminal output.
+    Initialize the canonical project logger and return a child logger for
+    gunicorn lifecycle events.
+
+    Previously this attached its own ``TimedRotatingFileHandler`` directly to
+    the same on-disk log file as ``app.utils.logger.setup_logging``. Under
+    ``preload_app=True`` this runs in the gunicorn master process, then each
+    uvicorn worker imports ``app.main`` and triggers ``setup_logging`` again —
+    yielding two handlers writing to the same file (duplicate lines, broken
+    rotation). Routing through the canonical setup deduplicates by
+    ``baseFilename`` and keeps a single handler per process.
     """
-    log_dir = os.getenv("LOG_DIR", "logs")
-    os.makedirs(log_dir, exist_ok=True)
-    
-    logger = logging.getLogger("gunicorn.config")
-    logger.setLevel(logging.INFO)
-    
-    # Only add handler if not already present
-    if not logger.handlers:
-        file_handler = TimedRotatingFileHandler(
-            filename=os.path.join(log_dir, "LocopilotMonitoring.log"),
-            when="midnight",
-            interval=1,
-            backupCount=4,
-            encoding="utf-8",
-            utc=True,
-        )
-        file_handler.setLevel(logging.DEBUG)
-        
-        formatter = logging.Formatter(
-            '%(asctime)s,%(msecs)03d [N/A] [N/A] [N/A] [N/A] [%(levelname)s] [%(name)s] [N/A N/A] %(message)s',
-            datefmt='%Y-%m-%d %H:%M:%S'
-        )
-        file_handler.setFormatter(formatter)
-        logger.addHandler(file_handler)
-    
-    return logger
+    from app.utils.logger import setup_logging, get_logger
+
+    setup_logging()
+    return get_logger("gunicorn.config")
 
 
 # Initialize logger
@@ -86,13 +70,13 @@ logger.info(f"[gunicorn_config.py] Workers: {workers} (single-GPU admission mode
 preload_app = True
 
 # Timeouts
-# ✅ PRODUCTION: Increased timeout for long videos (15 minutes)
+# PRODUCTION: Increased timeout for long videos (15 minutes)
 timeout = int(os.getenv("GUNICORN_TIMEOUT", "900"))  # 15 minutes for long video processing
 graceful_timeout = 60
 keepalive = 5
 
 # Request limits
-# ✅ MEMORY FIX: Reduced from 2000 to 100 to force worker restarts and prevent memory accumulation
+# MEMORY FIX: Reduced from 2000 to 100 to force worker restarts and prevent memory accumulation
 max_requests = 100
 max_requests_jitter = 10
 

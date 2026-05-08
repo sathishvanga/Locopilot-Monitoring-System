@@ -83,7 +83,7 @@ class Settings(BaseSettings):
     
     # Multiprocessing settings
     enable_multiprocessing: bool = bool(int(os.getenv("ENABLE_MULTIPROCESSING", "1")))
-    # ✅ 15s chunks ensure hand gesture coordination detection works correctly
+    # 15s chunks ensure hand gesture coordination detection works correctly
     # Coordination window is 10s, so 15s chunks capture full coordination sequences
     # Tradeoff: fewer chunks (~118 for 30-min video) but reliable coordination detection
     mp_chunk_duration: float = 15.0  # Chunk duration in seconds (optimized for coordination detection)

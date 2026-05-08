@@ -38,7 +38,7 @@ class ExternalAPIService:
         """Initialize external API service"""
         self.settings = get_settings()
         logger.info(
-            f"🔌 External API service initialized - "
+            f"[external_api] External API service initialized - "
             f"Enabled: {self.settings.cvvr_api_enabled}, "
             f"URL: {self.settings.cvvr_api_url}, "
             f"Timeout: {self.settings.cvvr_api_timeout}s"
@@ -174,7 +174,7 @@ class ExternalAPIService:
         # Check if external API is enabled
         if not self.settings.cvvr_api_enabled:
             logger.warning(
-                f"⚠️ [external_api] CVVR API posting is disabled in configuration for trip_id={trip_id}"
+                f"[WARN] [external_api] CVVR API posting is disabled in configuration for trip_id={trip_id}"
             )
             return {
                 "success": False,
@@ -194,7 +194,7 @@ class ExternalAPIService:
         division = self._normalize_division(division)
 
         logger.info(
-            f"📤 [external_api] Preparing to post results for trip_id={trip_id}, "
+            f"[external_api] Preparing to post results for trip_id={trip_id}, "
             f"events_count={len(events)}, job_id={job_id}, division={division}, "
             f"video_s3_url={'provided' if video_s3_url else 'not provided'}"
         )
@@ -245,7 +245,7 @@ class ExternalAPIService:
         payload = {"tripId": trip_id}
         
         logger.info(
-            f"📭 [external_api] Posting no-events notice to {url_no_events} "
+            f"[external_api] Posting no-events notice to {url_no_events} "
             f"for trip_id={trip_id} (job_id={job_id})"
         )
 
@@ -260,7 +260,7 @@ class ExternalAPIService:
         # Handle complete failure (all retries exhausted with exceptions)
         if response is None:
             logger.error(
-                f"❌ [external_api] Failed to post no-events notice after "
+                f"[FAIL] [external_api] Failed to post no-events notice after "
                 f"{self.MAX_RETRIES} attempts: {error}. "
                 f"Consider dead-letter queue recovery for trip_id={trip_id}."
             )
@@ -274,7 +274,7 @@ class ExternalAPIService:
         # Check response status
         if response.status_code in [200, 201]:
             logger.info(
-                f"✅ [external_api] No-events notice posted successfully: "
+                f"[OK] [external_api] No-events notice posted successfully: "
                 f"{response.status_code} - {response.text[:200]}"
             )
             return {
@@ -286,7 +286,7 @@ class ExternalAPIService:
             }
         else:
             logger.warning(
-                f"⚠️ [external_api] No-events notice posting got non-2xx: "
+                f"[WARN] [external_api] No-events notice posting got non-2xx: "
                 f"{response.status_code} - {response.text[:200]}"
             )
             return {
@@ -337,14 +337,14 @@ class ExternalAPIService:
         try:
             file_urls = [v.get("fileUrl") for v in unique_violations if v.get("fileUrl")]
             logger.info(
-                f"📎 [external_api] fileUrls for trip_id={trip_id}, job_id={job_id}: "
+                f"[external_api] fileUrls for trip_id={trip_id}, job_id={job_id}: "
                 f"{file_urls if file_urls else 'NO fileUrls (clips) present'}"
             )
         except Exception as e:
-            logger.warning(f"⚠️ [external_api] Failed to log fileUrls for trip_id={trip_id}: {e}")
+            logger.warning(f"[WARN] [external_api] Failed to log fileUrls for trip_id={trip_id}: {e}")
         
         logger.info(
-            f"📦 [external_api] Posting {len(unique_violations)} unique violations "
+            f"[PAYLOAD] [external_api] Posting {len(unique_violations)} unique violations "
             f"(from {len(violations)} total) to {url} for trip_id={trip_id}"
         )
         
@@ -359,7 +359,7 @@ class ExternalAPIService:
         # Handle complete failure (all retries exhausted with exceptions)
         if response is None:
             logger.error(
-                f"❌ [external_api] Failed to post violations after "
+                f"[FAIL] [external_api] Failed to post violations after "
                 f"{self.MAX_RETRIES} attempts: {error}. "
                 f"Consider dead-letter queue recovery for trip_id={trip_id}."
             )
@@ -374,7 +374,7 @@ class ExternalAPIService:
         # Check response status
         if response.status_code in [200, 201]:
             logger.info(
-                f"✅ [external_api] Violations posted successfully: "
+                f"[OK] [external_api] Violations posted successfully: "
                 f"{response.status_code} - {response.text[:200]}"
             )
             return {
@@ -387,7 +387,7 @@ class ExternalAPIService:
             }
         else:
             logger.warning(
-                f"⚠️ [external_api] Violations posting got non-2xx: "
+                f"[WARN] [external_api] Violations posting got non-2xx: "
                 f"{response.status_code} - {response.text[:200]}"
             )
             return {
@@ -434,10 +434,10 @@ class ExternalAPIService:
                 if violation:
                     violations.append(violation)
             except Exception as e:
-                logger.warning(f"⚠️ [external_api] Failed to transform event: {e}")
+                logger.warning(f"[WARN] [external_api] Failed to transform event: {e}")
                 continue
 
-        logger.info(f"🔄 [external_api] Transformed {len(violations)} events to violations")
+        logger.info(f"[external_api] Transformed {len(violations)} events to violations")
         return violations
     
     def _calculate_clip_duration(self, start_time: str, end_time: str) -> str:
@@ -484,7 +484,7 @@ class ExternalAPIService:
 
             return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
         except Exception as e:
-            logger.warning(f"⚠️ [external_api] Failed to calculate clip duration: {e}")
+            logger.warning(f"[WARN] [external_api] Failed to calculate clip duration: {e}")
             return "00:00:00"
 
     def _event_to_violation(
@@ -623,7 +623,7 @@ class ExternalAPIService:
 
         if len(unique) < len(violations):
             logger.info(
-                f"🔍 [external_api] Deduplicated {len(violations)} violations "
+                f"[external_api] Deduplicated {len(violations)} violations "
                 f"to {len(unique)} unique violations"
             )
 

@@ -7,7 +7,6 @@ for determining train motion state (running vs stopped).
 Enhanced with etrain.info delay integration for actual arrival/departure times.
 """
 
-import logging
 import requests
 import threading
 from typing import Optional
@@ -17,8 +16,9 @@ from cachetools import TTLCache
 
 from ..models.trip_models import TripSchedule, StationHalt
 from ..utils.config import get_settings
+from ..utils.logger import get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 # Lazy import to avoid circular dependency
 _etrain_service = None
@@ -122,12 +122,12 @@ class TripDataService:
         )
 
         if not self.enabled:
-            logger.warning("[TRIP-DATA] ❌ Train motion rules disabled in config, skipping schedule fetch")
+            logger.warning("[TRIP-DATA] [FAIL] Train motion rules disabled in config, skipping schedule fetch")
             return None
 
         if not train_number or not journey_date:
             logger.warning(
-                f"[TRIP-DATA] ❌ Missing required params - "
+                f"[TRIP-DATA] [FAIL] Missing required params - "
                 f"train_number: '{train_number}', journey_date: '{journey_date}'"
             )
             return None
@@ -136,7 +136,7 @@ class TripDataService:
         train_num_clean = str(train_number).strip()
         if not train_num_clean.isdigit() or not (1 <= len(train_num_clean) <= 5):
             logger.warning(
-                f"[TRIP-DATA] ❌ Invalid train number format: '{train_number}' "
+                f"[TRIP-DATA] [FAIL] Invalid train number format: '{train_number}' "
                 f"(must be 1-5 digits). Skipping API call."
             )
             return None
@@ -146,7 +146,7 @@ class TripDataService:
         if cache_key in _schedule_cache:
             cached = _schedule_cache[cache_key]
             logger.info(
-                f"[TRIP-DATA] ✅ Cache HIT for {cache_key} - "
+                f"[TRIP-DATA] [OK] Cache HIT for {cache_key} - "
                 f"returning cached schedule with {len(cached.halts)} halts"
             )
             return cached
@@ -163,7 +163,7 @@ class TripDataService:
             headers = {"Accept": "application/json"}
 
             logger.info(
-                f"[TRIP-DATA] 🌐 Making API request - "
+                f"[TRIP-DATA] Making API request - "
                 f"URL: {url}, params: {params}, timeout: {self.api_timeout}s"
             )
 
@@ -185,7 +185,7 @@ class TripDataService:
 
                 # Check for success flag in response
                 if not json_data.get('success', False):
-                    logger.error(f"[TRIP-DATA] ❌ API returned success=false")
+                    logger.error(f"[TRIP-DATA] [FAIL] API returned success=false")
                     return None
 
                 # Extract data from response wrapper
@@ -193,7 +193,7 @@ class TripDataService:
                 train_info = data.get('train', {})
 
                 logger.info(
-                    f"[TRIP-DATA] ✅ API returned success - "
+                    f"[TRIP-DATA] [OK] API returned success - "
                     f"train_name: {train_info.get('trainName', 'N/A')}, "
                     f"route_count: {len(data.get('route', []))}"
                 )
@@ -203,7 +203,7 @@ class TripDataService:
                 # Cache the result
                 _schedule_cache[cache_key] = schedule
                 logger.info(
-                    f"[TRIP-DATA] ✅ Schedule parsed and cached - "
+                    f"[TRIP-DATA] [OK] Schedule parsed and cached - "
                     f"train: {train_number}, halts: {len(schedule.halts)}, "
                     f"origin: {schedule.origin_station}, dest: {schedule.destination_station}"
                 )
@@ -211,7 +211,7 @@ class TripDataService:
                 return schedule
             else:
                 logger.error(
-                    f"[TRIP-DATA] ❌ API error - "
+                    f"[TRIP-DATA] [FAIL] API error - "
                     f"status: {response.status_code}, "
                     f"response: {response.text[:500]}"
                 )
@@ -219,15 +219,15 @@ class TripDataService:
 
         except requests.Timeout:
             logger.error(
-                f"[TRIP-DATA] ❌ API timeout after {self.api_timeout}s - "
+                f"[TRIP-DATA] [FAIL] API timeout after {self.api_timeout}s - "
                 f"train: {train_number}"
             )
             return None
         except requests.RequestException as e:
-            logger.error(f"[TRIP-DATA] ❌ Request error: {e}")
+            logger.error(f"[TRIP-DATA] [FAIL] Request error: {e}")
             return None
         except Exception as e:
-            logger.error(f"[TRIP-DATA] ❌ Unexpected error: {e}", exc_info=True)
+            logger.error(f"[TRIP-DATA] [FAIL] Unexpected error: {e}", exc_info=True)
             return None
 
     def _parse_schedule(

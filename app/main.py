@@ -37,7 +37,7 @@ from .models.job_models import Job
 # Initialize settings and logging
 settings = get_settings()
 setup_logging(level=settings.log_level)
-logger = get_logger(__name__)
+logger = get_logger("app.main")
 
 
 def print_startup_banner(gpu_manager=None):
@@ -79,7 +79,7 @@ def print_startup_banner(gpu_manager=None):
 |  GPU Status:  http://{settings.host}:{settings.port}/api/gpu/status{' ' * (31 - len(str(settings.port)))} |
 +==================================================================+
 """
-    print(banner)
+    logger.info(banner)
 
 
 async def process_video_job(job: Job) -> dict:
@@ -150,11 +150,12 @@ async def lifespan(app: FastAPI):
     # This sets up CUDA device, memory fraction, and semaphore for concurrency control
     gpu_manager.initialize()
 
-    # Startup - Console banner for user visibility (with GPU info)
+    # Startup banner (now routed through the canonical logger so it goes
+    # through the redaction filter and respects the file-only handler config).
     print_startup_banner(gpu_manager)
-    print("[OK] Application started successfully!")
-    print(f"[LOG] Logs are being written to: {settings.log_dir}/LocopilotMonitoring.log")
-    print("-" * 68)
+    logger.info("[OK] Application started successfully!")
+    logger.info(f"[LOG] Logs are being written to: {settings.log_dir}/LocopilotMonitoring.log")
+    logger.info("-" * 68)
 
     # Log GPU startup statistics
     gpu_manager.log_startup_stats()
@@ -180,24 +181,22 @@ async def lifespan(app: FastAPI):
         num_workers = settings.max_concurrent_videos
         logger.info(f"Starting job queue workers (num_workers={num_workers})")
         await job_manager.start_workers(process_video_job)
-        print(f"[QUEUE] Job queue started with {num_workers} workers")
+        logger.info(f"[QUEUE] Job queue started with {num_workers} workers")
         logger.info(f"Job queue workers started successfully")
     except Exception as e:
         logger.error(f"Failed to start job queue workers: {e}", exc_info=True)
-        print(f"[WARNING] Job queue workers failed to start: {e}")
+        logger.warning(f"[WARNING] Job queue workers failed to start: {e}")
 
     yield
 
     # Shutdown
-    print("\n[STOP] Shutting down application...")
-    logger.info("Shutting down application...")
+    logger.info("[STOP] Shutting down application...")
 
     # Stop job queue workers
     try:
         logger.info("Stopping job queue workers...")
         await job_manager.stop_workers()
-        logger.info("Job queue workers stopped")
-        print("[OK] Job queue workers stopped")
+        logger.info("[OK] Job queue workers stopped")
     except Exception as e:
         logger.warning(
             f"Error while stopping job queue workers: {e}",
@@ -207,8 +206,7 @@ async def lifespan(app: FastAPI):
     # Shutdown GPU Resource Manager (clears memory, releases models)
     try:
         gpu_manager.shutdown()
-        logger.info("GPU Resource Manager shut down")
-        print("[OK] GPU Resource Manager shut down")
+        logger.info("[OK] GPU Resource Manager shut down")
     except Exception as e:
         logger.warning(f"Error shutting down GPU manager: {e}", exc_info=True)
 
@@ -222,8 +220,7 @@ async def lifespan(app: FastAPI):
             exc_info=True,
         )
 
-    logger.info("Shutdown complete")
-    print("[OK] Shutdown complete. Goodbye!")
+    logger.info("[OK] Shutdown complete. Goodbye!")
 
 
 # Create FastAPI application
@@ -297,21 +294,43 @@ def _sanitize_validation_errors(errors: list) -> list:
     return sanitized
 
 
+def _scrub_validation_errors_for_log(errors: list) -> list:
+    """
+    Strip the ``input`` key (and ``ctx.input``) from validation errors before
+    they are written to the log. Pydantic includes the raw rejected value in
+    every error dict by default — for malformed Authorization-style fields
+    that means a bearer token would otherwise land in the log file (task 0010).
+    """
+    scrubbed = []
+    for err in errors:
+        copy = {k: v for k, v in err.items() if k != "input"}
+        ctx = copy.get("ctx")
+        if isinstance(ctx, dict) and "input" in ctx:
+            copy["ctx"] = {k: v for k, v in ctx.items() if k != "input"}
+        scrubbed.append(copy)
+    return scrubbed
+
+
 @app.exception_handler(StarletteHTTPException)
 async def http_exception_handler(request: Request, exc: StarletteHTTPException):
-    """Handle HTTP exceptions with production-safe error messages (M-22)"""
+    """Handle HTTP exceptions with production-safe error messages (M-22, task 0010).
+
+    For 5xx responses we return a single opaque body — ``{"detail":
+    "internal_error"}`` — so we never echo a controller-side ``str(e)``
+    fragment back to the caller. The full exception is already on the
+    server side via ``logger.exception`` at the original raise site; the
+    response is intentionally minimal.
+    """
     logger.warning(f"HTTP {exc.status_code}: {exc.detail}")
 
-    # For server errors (5xx), avoid leaking internal details in production.
-    # Controller code often raises HTTPException(500, detail=str(e)) which
-    # can expose file paths, database errors, or stack trace fragments.
-    if exc.status_code >= 500 and not settings.debug:
+    # For server errors (5xx), return a fixed opaque body so we never leak
+    # an internal exception message via ``str(e)``-style detail. Debug mode
+    # is intentionally NOT given a free pass here — the leak would still
+    # occur if DEBUG were ever set in production by mistake.
+    if exc.status_code >= 500:
         return JSONResponse(
             status_code=exc.status_code,
-            content={
-                "status": "error",
-                "message": "Internal server error",
-            }
+            content={"detail": "internal_error"}
         )
 
     # For client errors (4xx) and debug mode, return the detail as-is
@@ -337,8 +356,14 @@ async def http_exception_handler(request: Request, exc: StarletteHTTPException):
 
 @app.exception_handler(RequestValidationError)
 async def validation_exception_handler(request: Request, exc: RequestValidationError):
-    """Handle request validation errors with sanitized output (M-22)"""
-    logger.warning(f"Validation error: {exc.errors()}")
+    """Handle request validation errors with sanitized output (M-22, task 0010).
+
+    The default ``exc.errors()`` payload includes the raw rejected ``input``
+    value for every failing field; for an Authorization-shaped header that
+    embeds the bearer in the log line. We always strip ``input`` from the
+    logged version, regardless of debug mode.
+    """
+    logger.warning(f"Validation error: {_scrub_validation_errors_for_log(exc.errors())}")
 
     # In production, sanitize validation errors to remove internal context
     # (e.g. raw input values that may contain sensitive data).
@@ -359,29 +384,17 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
 
 @app.exception_handler(Exception)
 async def general_exception_handler(request: Request, exc: Exception):
-    """Handle unexpected exceptions without leaking internals (M-22)"""
+    """Handle unexpected exceptions without leaking internals (M-22, task 0010).
+
+    The full exception is logged with traceback. The response body is the
+    same opaque ``{"detail": "internal_error"}`` shape used by the 5xx
+    HTTP exception handler so all server errors look the same to the caller.
+    """
     error_msg = str(exc) if exc else "Unknown error"
     logger.error(f"Unexpected error: {error_msg}", exc_info=True)
-
-    # Return generic message to clients to avoid leaking internal details
-    # (file paths, database details, stack traces) in production.
-    # In debug mode, include the actual error for local development convenience.
-    if settings.debug:
-        return JSONResponse(
-            status_code=500,
-            content={
-                "status": "error",
-                "message": f"Internal server error: {error_msg}",
-                "error": error_msg,
-                "detail": error_msg,
-            }
-        )
     return JSONResponse(
         status_code=500,
-        content={
-            "status": "error",
-            "message": "Internal server error",
-        }
+        content={"detail": "internal_error"}
     )
 
 
