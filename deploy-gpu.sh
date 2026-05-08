@@ -9,9 +9,17 @@ set -e
 SERVER_IP="103.116.80.162"
 SERVER_PORT="3781"
 SERVER_USER="admin1"
-SERVER_PASS='9o\P`3#W(9}K'
+# SECURITY: the deploy password is read from the LOCOPILOT_DEPLOY_PASS env
+# var. The bash ``${VAR:?msg}`` expansion exits the script with a clear
+# error if the variable is unset or empty. Set it in your shell before
+# running this script, e.g.:
+#     export LOCOPILOT_DEPLOY_PASS='...'
+#     ./deploy-gpu.sh
+# Never commit the literal password to source.
+SERVER_PASS="${LOCOPILOT_DEPLOY_PASS:?set this env var (export LOCOPILOT_DEPLOY_PASS=...)}"
 # Base64-encode password to safely pass through SSH command strings
-# (password contains backtick which breaks double-quoted shell expansions)
+# (password may contain shell metacharacters that break double-quoted
+# expansions).
 PASS_B64=$(printf '%s' "$SERVER_PASS" | base64)
 REMOTE_PATH="/opt/poc2"
 

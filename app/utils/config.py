@@ -162,9 +162,16 @@ class Settings(BaseSettings):
     host_url: str = os.getenv("HOST_URL", "https://celebxmedia.info")  # URL for building fileUrl
 
     # MinIO settings for video downloads
+    # SECURITY: Defaults are intentionally empty strings ("fail-closed"). Real
+    # credentials must be supplied via the MINIO_ACCESS_KEY / MINIO_SECRET_KEY
+    # environment variables (typically loaded from .env / .env.production).
+    # The ``_validate_minio_credentials_in_production`` model_validator below
+    # enforces that both values are non-empty whenever ENVIRONMENT=production
+    # so a misconfigured deploy fails fast at startup instead of silently
+    # falling back to a hardcoded literal.
     minio_endpoint: str = os.getenv("MINIO_ENDPOINT", "mind.snikbtel.uk:9000")
-    minio_access_key: str = os.getenv("MINIO_ACCESS_KEY", "admin")
-    minio_secret_key: str = os.getenv("MINIO_SECRET_KEY", "login123")
+    minio_access_key: str = os.getenv("MINIO_ACCESS_KEY", "")
+    minio_secret_key: str = os.getenv("MINIO_SECRET_KEY", "")
     minio_secure: bool = bool(int(os.getenv("MINIO_SECURE", "1")))
     minio_bucket: str = os.getenv("MINIO_BUCKET", "cvss")
 
@@ -884,6 +891,47 @@ class Settings(BaseSettings):
                     "(or onnxruntime-gpu for CUDA)."
                 ) from e
 
+        return self
+
+    # ==========================================================================
+    # Fail-closed secrets validator (task 0005 — rotate-secrets-scrub-source)
+    # ==========================================================================
+    # The MinIO credentials are intentionally defaulted to empty strings in
+    # this file. Previously they fell back to hardcoded production literals
+    # which leaked through every fresh checkout and made an accidental
+    # dev->prod credential mismatch invisible. By failing
+    # fast at startup whenever ENVIRONMENT=production with empty credentials,
+    # we guarantee the operator either supplies real values via the env file
+    # or sees a clear error instead of a silent permission failure deep in
+    # the MinIO client.
+    @model_validator(mode='after')
+    def _validate_minio_credentials_in_production(self) -> 'Settings':
+        """
+        Require MinIO credentials when running in production.
+
+        Raises:
+            ValueError: When ``environment`` is ``"production"`` and either
+                ``minio_access_key`` or ``minio_secret_key`` is empty/blank.
+        """
+        env_name = (getattr(self, 'environment', '') or '').strip().lower()
+        if env_name != 'production':
+            return self
+
+        access_key = (self.minio_access_key or '').strip()
+        secret_key = (self.minio_secret_key or '').strip()
+        missing = []
+        if not access_key:
+            missing.append('MINIO_ACCESS_KEY')
+        if not secret_key:
+            missing.append('MINIO_SECRET_KEY')
+        if missing:
+            raise ValueError(
+                "Production environment requires "
+                f"{' and '.join(missing)} to be set to non-empty values. "
+                "Refusing to start with empty MinIO credentials. "
+                "Populate them in .env.production (never commit real "
+                "credentials) or in the systemd EnvironmentFile."
+            )
         return self
 
 
