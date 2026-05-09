@@ -813,6 +813,16 @@ class Settings(BaseSettings):
         "VLM_TELEMETRY_LOG_PATH",
         "/opt/poc2/locopilot_evidence/vlm_telemetry.jsonl",
     )
+    # When 1, ``concurrent_activity_grouping_service.group_concurrent_activities``
+    # runs AFTER VLM verification rather than before. The verifier therefore
+    # sees raw single-type activities and never has to un-merge a combined
+    # record (the per-sub-type fanout in ``vlm/service.py`` becomes a no-op).
+    # Grouping then runs on the post-VLM survivor set, so merged clips only
+    # include sub-clips that survived verification. Default 0 = legacy
+    # pre-VLM grouping. Production opts in via ``.env.production`` after
+    # smoke tests pass on the GPU box. Phase B (separate task) deletes the
+    # now-dead fanout code.
+    concurrent_grouping_after_vlm: bool = bool(int(os.getenv("CONCURRENT_GROUPING_AFTER_VLM", "0")))
 
     @model_validator(mode='after')
     def _validate_overlap_window(self) -> "Settings":
