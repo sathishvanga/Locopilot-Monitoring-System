@@ -41,7 +41,10 @@ pass through unchanged.
 ## Repository layout
 
 ```
-locopilot_monitor.py            Core ~5200-line frame processor (LocopilotActivityMonitor)
+locopilot_monitor.py            Core ~3200-line frame processor (LocopilotActivityMonitor).
+                                The 1,200-line process_all_persons_activities was extracted
+                                to app/core/multi_person_runner.py in the 2026-05-09 cleanup;
+                                the monolith now delegates to it via a one-line shim.
 gunicorn_config.py              Workers pinned to 1 (per-process GPU singleton, see C-1)
 deploy-gpu.sh                   rsync + restart on the GPU box
 start_server.sh                 Local dev launcher
@@ -63,17 +66,31 @@ app/
     minio_service.py
     external_api_service.py     POST cvvr/cvvrTripViolations/addUpdateBulk
     ocr_timestamp_service.py    Reads time overlay from CCTV frames
-    trip_data_service.py
-    etrain_delay_service.py     etrain.info live status (for arrival window)
-    vlm_verification_service.py NEW: Pipeline-2 verifier (Qwen2.5-VL via vLLM)
+    vlm_verification_service.py 12-line back-compat shim. Real code lives in vlm/ below.
+    vlm/                        Pipeline-2 verifier package (split out 2026-05-09):
+      service.py                  VlmVerificationService orchestrator + telemetry
+      vlm_client.py               HTTP client + circuit breaker
+      keyframe_processor.py       Keyframe resolve / supplement / stitch / bbox count
+      image_encoder.py            ROI detect, crop, base64 encode
+      verdict_parser.py           JSON parse, calibration, motion-state logic
     concurrent_activity_grouping_service.py
   core/
     activity_registry.py        Single source of truth for activity types,
                                 consecutive-frame requirements, margins, evidence rules
+    activity_tracker.py         Re-exports ActivityConfig from activity_registry.py.
+    multi_person_runner.py      MultiPersonActivityRunner — extracted 2026-05-09 from
+                                LocopilotActivityMonitor.process_all_persons_activities.
+                                Per-frame multi-person detector dispatch.
     gates.py                    apply_train_stopped_suppression (single place that enforces
                                 "writing/sleep/etc. only count while train is RUNNING")
     detectors/
-      sleep_detector.py         EAR + reclined posture + head-tilt + state machine
+      sleep_detector.py         12-line back-compat shim. Real code in sleep/ below.
+      sleep/                    Sleep detector package (split out 2026-05-09):
+        detector.py               SleepDetector class + detect_pose_based_sleep
+        pose_geometry.py          Head tilt / wrist distance / movement score helpers
+        state_machine.py          DROWSY state machine
+        ir_fallback.py            IR forward-lean fallback
+        haar_eye_closure.py       Haar-cascade eye-closure fallback
       gesture_detector.py       Raise-hold-lower trajectory + RTMW hand-shape (optional)
       object_detector.py        YOLO wrapper, zone suppression, SAHI (opt-in)
       train_motion_detector.py  Vibration-based RUNNING/STOPPED/UNCERTAIN
@@ -166,13 +183,21 @@ groups that matter most. See `.env.example` for the full list with comments.
 ### Train-motion gate
 | Flag | Default | Purpose |
 |---|---|---|
-| `TRAIN_MOTION_RULES_ENABLED` | `1` (prod) | Engine that suppresses non-safety-critical activities while STOPPED |
-| `TRAIN_MOTION_DETECTION_ENABLED` | `1` (prod) | Required by the rules engine; vibration + window-flow detector |
+| `TRAIN_MOTION_DETECTION_ENABLED` | `1` (prod) | Vibration + window-flow detector that emits RUNNING/STOPPED/UNCERTAIN |
 | `TRAIN_MOTION_RUNNING_GROUP_THRESHOLD` | `5` | `>5` people in cab → `group_detected` (3-person supervisor visits OK) |
 
 When STOPPED: sleep, writing, packing_bags, lp/alp_hand_gesture, mind_diversion,
 eating_drinking are all suppressed. microsleep + cell_phone remain active
 (safety-critical even at stations).
+
+The schedule-aware "rules engine" that fetched live train schedules from
+RailRadar + etrain.info to distinguish scheduled-halt vs unscheduled-stop
+windows was deleted in the 2026-05-09 architecture cleanup (it was confirmed
+not customer-facing — `no_person_detected` is internal passthrough state, not
+a posted violation). Suppression now applies on every STOPPED period from the
+vibration detector. Stale env vars `TRAIN_MOTION_RULES_ENABLED`, `ETRAIN_*`,
+`TRIP_API_*` in `.env.production` are silently ignored (`extra="ignore"` in
+pydantic Settings).
 
 ### VLM verifier (Pipeline-2)
 | Flag | Default | Purpose |
@@ -188,7 +213,6 @@ eating_drinking are all suppressed. microsleep + cell_phone remain active
 ### Other
 - `MEDIA_API_KEY` — gates `/api/jobs/{run_id}/media` and `/api/status`. Currently unset → "rollout mode" warnings in log.
 - `CVVR_API_ENABLED` — toggles posting to mindcoinapps.
-- `ETRAIN_ENABLED` — fetch live train status from etrain.info.
 
 ---
 
@@ -442,8 +466,8 @@ jq '.[] | {t: .activityStartTime, type: .activityType, vlm: .vlm_review.verdict}
 - **Singleton services**: external_api, vlm_verification, gpu_resource_manager,
   job_manager all use thread-safe double-checked-locking singleton init.
 - **Env var validators**: pydantic `@model_validator(mode='after')` catches
-  incoherent flag combinations at startup (e.g. TRAIN_MOTION_RULES_ENABLED=1
-  needs TRAIN_MOTION_DETECTION_ENABLED=1).
+  incoherent flag combinations at startup (e.g. POSE_MODEL=rtmpose needs
+  rtmlib importable; absolute YOLO weight paths must exist).
 - **No emojis in commits or code** unless explicitly asked; logs use
   bracketed prefixes (`[vlm]`, `[OK]`, `[ERROR]`) for grep-ability.
 - **Don't bump gunicorn workers** above 1 without redesigning
@@ -469,3 +493,6 @@ jq '.[] | {t: .activityStartTime, type: .activityType, vlm: .vlm_review.verdict}
 - `tests/ground_truth/README.md` — GT format + scoring conventions
 - `.env.example` — every settable flag with comments
 - `tasks/code-review-critical-fixes.md` — historical critical-fix log (C-1, C-9, etc.)
+- `docs/specs/architecture-cleanup/PLAN.md` — 2026-05-09 three-wave cleanup
+  (god-class splits, dormant-pipeline deletion, MultiPersonRunner extraction);
+  task specs in `docs/specs/architecture-cleanup/tasks/0001..0008-*.md`.
