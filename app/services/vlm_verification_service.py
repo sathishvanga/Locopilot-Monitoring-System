@@ -43,6 +43,162 @@ logger = get_logger(__name__)
 
 
 # ---------------------------------------------------------------------------
+# Calibrator — Wave-2 scaffolding for confidence calibration.
+#
+# Production CV systems should NEVER trust raw model output as if it were
+# a probability. Quantised VLMs (AWQ in our case) systematically drift
+# from calibration: 0.95 raw confidence does not mean 95% accuracy. Once
+# we have labelled ground truth we fit a temperature-scaling or isotonic
+# mapping; until then this class is a deliberate no-op that lets the
+# verifier code path be unchanged when calibration data lands.
+#
+# The mapping file format (``vlm_calibration_path``) is intentionally
+# simple JSON so it can be regenerated from a notebook without code
+# changes:
+#
+#   {"method": "temperature", "temperature": 1.4}
+#       — calibrated_p = sigmoid(logit(raw) / T)
+#
+#   {"method": "isotonic", "x": [0.0, 0.3, 0.6, 0.95], "y": [0.0, 0.1, 0.4, 0.85]}
+#       — piecewise-linear interpolation over (x, y) breakpoints
+#
+#   {"method": "identity"}            — pass-through (default when missing)
+#
+# Per-activity calibrators ("by_object_type": {"writing": {...}}) override
+# the global mapping for that activity name.
+# ---------------------------------------------------------------------------
+class _Calibrator:
+    """Lazy-loaded confidence calibrator. Falls back to identity on any
+    error so a missing / malformed file never breaks the verifier."""
+
+    def __init__(self, path: str) -> None:
+        self._path = path
+        self._loaded = False
+        self._global: Dict[str, Any] = {"method": "identity"}
+        self._by_type: Dict[str, Dict[str, Any]] = {}
+
+    def _load(self) -> None:
+        if self._loaded:
+            return
+        self._loaded = True
+        try:
+            with open(self._path, "r") as f:
+                data = json.load(f) or {}
+        except (OSError, json.JSONDecodeError) as e:
+            logger.info(
+                "[vlm] calibration file unavailable at %s (%s); using identity",
+                self._path, type(e).__name__,
+            )
+            return
+        if not isinstance(data, dict):
+            return
+        if "by_object_type" in data and isinstance(data["by_object_type"], dict):
+            self._by_type = {
+                str(k): v for k, v in data["by_object_type"].items()
+                if isinstance(v, dict)
+            }
+        global_cfg = {k: v for k, v in data.items() if k != "by_object_type"}
+        if global_cfg:
+            self._global = global_cfg
+        logger.info(
+            "[vlm] calibration loaded from %s: global=%s per_type_keys=%s",
+            self._path, self._global.get("method", "identity"),
+            list(self._by_type.keys()),
+        )
+
+    def calibrate(self, raw_conf: float, object_type: str) -> float:
+        """Map raw confidence to calibrated probability, in [0, 1]."""
+        self._load()
+        cfg = self._by_type.get(object_type) or self._global
+        method = (cfg.get("method") or "identity").lower()
+        try:
+            r = float(raw_conf)
+        except (TypeError, ValueError):
+            return 0.0
+        r = max(0.0, min(1.0, r))
+        if method == "identity":
+            return r
+        if method == "temperature":
+            t = float(cfg.get("temperature", 1.0)) or 1.0
+            # Stable logit/sigmoid; clamp r to avoid log(0).
+            r_c = min(0.9999, max(1e-4, r))
+            import math
+            logit = math.log(r_c / (1.0 - r_c))
+            return 1.0 / (1.0 + math.exp(-logit / t))
+        if method == "isotonic":
+            xs = cfg.get("x") or []
+            ys = cfg.get("y") or []
+            if len(xs) >= 2 and len(xs) == len(ys):
+                # Piecewise-linear interp; relies on xs being sorted.
+                if r <= xs[0]:
+                    return float(ys[0])
+                if r >= xs[-1]:
+                    return float(ys[-1])
+                for i in range(1, len(xs)):
+                    if r <= xs[i]:
+                        x0, x1 = float(xs[i - 1]), float(xs[i])
+                        y0, y1 = float(ys[i - 1]), float(ys[i])
+                        if x1 == x0:
+                            return y1
+                        return y0 + (y1 - y0) * (r - x0) / (x1 - x0)
+        return r
+
+
+# Process-level lazy singleton — one calibrator file per gunicorn worker
+# is plenty (and avoids reload cost per call).
+_calibrator: Optional[_Calibrator] = None
+_calibrator_lock = threading.Lock()
+
+
+def _get_calibrator(path: str) -> _Calibrator:
+    global _calibrator
+    if _calibrator is None or _calibrator._path != path:
+        with _calibrator_lock:
+            if _calibrator is None or _calibrator._path != path:
+                _calibrator = _Calibrator(path)
+    return _calibrator
+
+
+# ---------------------------------------------------------------------------
+# Disagreement and telemetry JSONL writers.
+#
+# Both are thread-safe append loggers gated by feature flags. They use a
+# single lock per file path so concurrent writers never produce
+# interleaved partial lines (jsonl readers expect one complete object
+# per line).
+# ---------------------------------------------------------------------------
+_jsonl_locks: Dict[str, threading.Lock] = {}
+_jsonl_locks_guard = threading.Lock()
+
+
+def _jsonl_lock_for(path: str) -> threading.Lock:
+    with _jsonl_locks_guard:
+        lock = _jsonl_locks.get(path)
+        if lock is None:
+            lock = threading.Lock()
+            _jsonl_locks[path] = lock
+        return lock
+
+
+def _append_jsonl(path: str, record: Dict[str, Any]) -> None:
+    """Best-effort JSONL append. Failures are logged at debug only — the
+    verifier's correctness must never depend on telemetry write success."""
+    try:
+        from os import makedirs
+        from os.path import dirname
+
+        d = dirname(path)
+        if d:
+            makedirs(d, exist_ok=True)
+        line = json.dumps(record, default=str)
+        with _jsonl_lock_for(path):
+            with open(path, "a", encoding="utf-8") as f:
+                f.write(line + "\n")
+    except Exception:  # noqa: BLE001
+        logger.debug("[vlm] jsonl append failed for %s", path, exc_info=True)
+
+
+# ---------------------------------------------------------------------------
 # Verdict enum + parser-error sentinel
 # ---------------------------------------------------------------------------
 _ALLOWED_VERDICTS: frozenset = frozenset({"TRUE_POSITIVE", "FALSE_POSITIVE", "UNCERTAIN"})
@@ -629,6 +785,17 @@ _FULL_FRAME_OBJECT_TYPES: frozenset = frozenset({
 })
 
 
+# Activity types where the pre-VLM no-subject gate must NOT fire because
+# "no person visible" is either the violation itself (no_person_detected)
+# or operationally ambiguous (group_detected expects multiple persons but
+# Pipeline-1 may render zero bboxes when its own count disagrees with the
+# rendered set). For these types, the VLM is the right adjudicator.
+_PRE_GATE_SKIP_OBJECT_TYPES: frozenset = frozenset({
+    "no_person_detected",
+    "group_detected",
+})
+
+
 # Activity description fragments → prompt key. The verifier matches on the
 # activity's `objectType` field (writing/eating_drinking/packing_bags/cell_phone/
 # sleep/mind_diversion/no_person_detected/group_detected) rather than on the
@@ -681,6 +848,302 @@ def _resolve_keyframes(activity: Dict[str, Any]) -> List[Path]:
             if p.is_file():
                 paths.append(p)
     return paths
+
+
+def _supplement_keyframes_from_clip(
+    activity: Dict[str, Any],
+    existing: List[Path],
+    target_n: int,
+) -> List[Path]:
+    """Sample additional frames from ``activityClip`` to reach ``target_n``.
+
+    Single-burst activities (``_sourceActivities`` absent) yield exactly
+    one keyframe from :func:`_resolve_keyframes`. The setting
+    ``vlm_strip_target_frames`` (default 5) promises temporal evidence for
+    those cases, so when fewer keyframes are present than ``target_n``
+    we open the activity's ``activityClip`` and decode a small set of
+    evenly-spaced frames. Frames are written next to the existing keyframe
+    with a ``_supp{idx}.jpg`` suffix.
+
+    Returns the (possibly-extended) path list in time order. Failures
+    here are non-fatal: if cv2 can't open the clip we just return
+    ``existing`` unchanged so the verifier proceeds with whatever it has.
+    """
+    if target_n <= 1 or len(existing) >= target_n:
+        return existing
+    clip_path = activity.get("activityClip") or ""
+    if not clip_path:
+        return existing
+    clip = Path(str(clip_path))
+    if not clip.is_file():
+        return existing
+
+    # Anchor name for sibling frames (use first existing keyframe so the
+    # supplements colocate with the burst evidence, not the clip).
+    anchor = existing[0] if existing else clip.with_suffix(".jpg")
+    parent = anchor.parent
+    stem = anchor.stem.replace("_activity", "")
+
+    try:
+        cap = cv2.VideoCapture(str(clip))
+        if not cap.isOpened():
+            return existing
+        try:
+            frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+            if frame_count <= 0:
+                return existing
+            need = target_n - len(existing)
+            # Evenly distribute the supplementary frames across the clip,
+            # avoiding the exact endpoints (which often differ from the
+            # already-saved activity keyframe by only a frame or two).
+            offsets: List[int] = []
+            for i in range(need):
+                # i runs 0..need-1; map to (i+1)/(need+1) of the clip
+                pos = int(round((i + 1) * frame_count / (need + 1)))
+                pos = max(0, min(frame_count - 1, pos))
+                offsets.append(pos)
+            # De-dup while preserving order.
+            seen_ofs: set = set()
+            offsets = [o for o in offsets if not (o in seen_ofs or seen_ofs.add(o))]
+
+            new_paths: List[Path] = []
+            for idx, ofs in enumerate(offsets):
+                cap.set(cv2.CAP_PROP_POS_FRAMES, ofs)
+                ok, frame = cap.read()
+                if not ok or frame is None:
+                    continue
+                out = parent / f"{stem}_supp{idx}.jpg"
+                # If we already wrote this on a prior call, reuse it.
+                if not out.is_file():
+                    cv2.imwrite(str(out), frame, [cv2.IMWRITE_JPEG_QUALITY, 88])
+                if out.is_file():
+                    new_paths.append(out)
+            if not new_paths:
+                return existing
+            # Place originals first (they have Pipeline-1 bbox overlays the
+            # gate relies on); supplements after as additional context.
+            return existing + new_paths
+        finally:
+            cap.release()
+    except Exception as e:  # noqa: BLE001
+        logger.debug(
+            "[vlm] clip-supplement failed for %s: %s", clip_path, e,
+        )
+        return existing
+
+
+def _count_bboxes_in_keyframes(
+    jpg_paths: List[Path],
+    min_person_area: int = 1000,
+    min_object_area: int = 300,
+) -> Dict[str, int]:
+    """Count Pipeline-1 overlay bboxes by colour across keyframes.
+
+    Pipeline-1 renders each detected person bbox in bright GREEN (HSV hue
+    ~60) and each object bbox (book / cup / bottle / bag / phone) in
+    ORANGE/YELLOW (HSV hue 15-35) onto the saved ``*_activity.jpg``.
+
+    IMPORTANT: this helper is only meaningful for paths returned by
+    :func:`_resolve_keyframes` (the per-burst saved keyframes which
+    carry the rendered overlay). Supplementary frames sampled from
+    ``activityClip`` via :func:`_supplement_keyframes_from_clip` are
+    raw decoded frames with NO bbox overlay; passing them in will
+    return zero counts and defeat the gate logic that depends on
+    rendering being active.
+
+    Returns:
+        ``{"with_person": int, "with_object": int, "with_any_bbox": int, "total": int}``.
+        ``with_person`` and ``with_object`` are independent counts. The
+        rule of thumb for callers: only enforce gate decisions when
+        ``with_any_bbox > 0`` (i.e. overlay rendering is confirmed
+        active), otherwise fall through to the VLM.
+    """
+    with_person = 0
+    with_object = 0
+    with_any = 0
+    for p in jpg_paths:
+        try:
+            img = cv2.imread(str(p))
+            if img is None:
+                continue
+            hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
+            # Pipeline-1 colour palette as observed on the saved keyframes:
+            #   GREEN   ~ hue 60   → person bbox
+            #   YELLOW/ORANGE ~ hue 15-35 → object bbox (book, cup, etc.)
+            #   MAGENTA ~ hue 140-170 → bag/backpack bbox
+            #   RED     ~ hue 0 / 170-180 → keypoint markers + sometimes labels
+            # We use green strictly for the person count, orange for the
+            # object count, and treat green|orange|magenta|red collectively
+            # as the "rendering is active" signal so a frame with only a
+            # bag bbox (e.g. an empty-cab clip with a backpack on the seat)
+            # still confirms the overlay is on.
+            green = cv2.inRange(hsv, (45, 150, 150), (75, 255, 255))
+            orange = cv2.inRange(hsv, (15, 150, 150), (35, 255, 255))
+            magenta = cv2.inRange(hsv, (140, 100, 100), (170, 255, 255))
+            red_low = cv2.inRange(hsv, (0, 150, 100), (10, 255, 255))
+            red_high = cv2.inRange(hsv, (170, 150, 100), (180, 255, 255))
+
+            person_found = False
+            for c in cv2.findContours(
+                green, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+            )[0]:
+                if cv2.contourArea(c) >= min_person_area:
+                    _, _, w, h = cv2.boundingRect(c)
+                    # A person bbox is at least ~40x40; reject thin
+                    # skeleton-line fragments that survive area threshold.
+                    if w >= 40 and h >= 40:
+                        person_found = True
+                        break
+
+            object_found = False
+            for c in cv2.findContours(
+                orange, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+            )[0]:
+                if cv2.contourArea(c) >= min_object_area:
+                    _, _, w, h = cv2.boundingRect(c)
+                    if w >= 30 and h >= 30:
+                        object_found = True
+                        break
+
+            # Render-active probe: any sufficiently-large saturated cluster
+            # in green / orange / magenta / red. The threshold is small
+            # (200 px) because we only need *some* evidence of overlay
+            # rendering — a bag bbox or a few keypoint markers count.
+            render_active = person_found or object_found
+            if not render_active:
+                misc_mask = cv2.bitwise_or(
+                    magenta, cv2.bitwise_or(red_low, red_high),
+                )
+                for c in cv2.findContours(
+                    misc_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+                )[0]:
+                    if cv2.contourArea(c) >= 200:
+                        render_active = True
+                        break
+
+            if person_found:
+                with_person += 1
+            if object_found:
+                with_object += 1
+            if render_active:
+                with_any += 1
+        except Exception:  # noqa: BLE001
+            # Any per-frame failure is non-fatal — fall back to
+            # treating the frame as "unknown", which is conservatively
+            # the safer choice (don't drop on shaky signal).
+            continue
+    return {
+        "with_person": with_person,
+        "with_object": with_object,
+        "with_any_bbox": with_any,
+        "total": len(jpg_paths),
+    }
+
+
+# Activity types whose Pipeline-1 trigger requires a target object
+# (book / cup / bag / phone). For these, an absent orange/yellow object
+# bbox in EVERY original keyframe is strong evidence of a stale-state
+# Pipeline-1 trigger — the rule fired without the actual object bbox
+# being detected at the keyframe time. Used by the pre-VLM object gate.
+_OBJECT_REQUIRED_TYPES: frozenset = frozenset({
+    "writing",
+    "eating_drinking",
+    "packing_bags",
+    "cell_phone",
+})
+
+
+# Per-activity contradiction rules consulted after the VLM responds. When
+# the VLM emits ``TRUE_POSITIVE`` but the structured fields it filled in
+# contradict the verdict (e.g. ``hand_actually_on_book=false`` for a
+# writing TP), the wrapper demotes the verdict to ``UNCERTAIN`` and caps
+# the confidence. This is the structural counterpart to the prompt-level
+# "do not default to TRUE_POSITIVE" rule: the prompt asks the model to
+# be honest, this enforces it.
+def _consistency_check(
+    parsed: Dict[str, Any], object_type: str
+) -> Optional[str]:
+    """Return a reason string if the parsed VLM verdict is internally
+    inconsistent with its structured observation fields, else ``None``.
+
+    Only fires when verdict is ``TRUE_POSITIVE`` — false-positive verdicts
+    pass through unchanged because the consistency rules are designed to
+    catch cooperatively-filled-but-wrong-label hallucinations, not to
+    rescue genuine FPs.
+    """
+    if parsed.get("verdict") != "TRUE_POSITIVE":
+        return None
+
+    if object_type == "writing":
+        if not parsed.get("hand_actually_on_book"):
+            return "TP claimed but hand_actually_on_book=false"
+        if not parsed.get("book_visible_on_desk"):
+            return "TP claimed but book_visible_on_desk=false"
+        return None
+
+    if object_type == "eating_drinking":
+        obj = (parsed.get("primary_object_in_hand") or "").lower()
+        if obj in ("nothing_visible", "unclear", "radio_handset", "phone"):
+            return f"TP claimed but primary_object_in_hand={obj!r}"
+        if not parsed.get("object_at_mouth"):
+            return "TP claimed but object_at_mouth=false"
+        return None
+
+    if object_type == "packing_bags":
+        if not parsed.get("bag_visible"):
+            return "TP claimed but bag_visible=false"
+        if not parsed.get("hand_in_or_on_bag"):
+            return "TP claimed but hand_in_or_on_bag=false"
+        return None
+
+    if object_type == "cell_phone":
+        obj = (parsed.get("object_in_hand") or "").lower()
+        if obj != "smartphone":
+            return f"TP claimed but object_in_hand={obj!r} (not smartphone)"
+        return None
+
+    if object_type == "sleep":
+        criteria_met = sum(
+            bool(parsed.get(k))
+            for k in (
+                "eyes_closed",
+                "body_reclined",
+                "hands_still",
+                "head_motionless_across_frames",
+            )
+        )
+        if criteria_met < 2:
+            return f"TP claimed but only {criteria_met}/4 sleep criteria met"
+        return None
+
+    if object_type == "mind_diversion":
+        head_dir = (parsed.get("head_direction") or "").lower()
+        # "window" / "back" are the only directions consistent with
+        # mind_diversion as defined in the prompt.
+        if head_dir not in ("window", "back"):
+            return f"TP claimed but head_direction={head_dir!r}"
+        if not parsed.get("sustained_across_frames"):
+            return "TP claimed but sustained_across_frames=false"
+        return None
+
+    if object_type == "group_detected":
+        n = parsed.get("distinct_persons_visible_in_cabin", 0)
+        try:
+            n_int = int(n)
+        except (TypeError, ValueError):
+            n_int = 0
+        if n_int <= 5:
+            return f"TP claimed but distinct_persons_visible_in_cabin={n_int} (≤5)"
+        return None
+
+    if object_type == "no_person_detected":
+        if parsed.get("lp_visible_anywhere") or parsed.get("alp_visible_anywhere"):
+            return "TP claimed but lp_visible_anywhere or alp_visible_anywhere is true"
+        if not parsed.get("cabin_empty_in_all_frames"):
+            return "TP claimed but cabin_empty_in_all_frames=false"
+        return None
+
+    return None
 
 
 def _detect_roi(img: np.ndarray) -> Optional[Tuple[int, int, int, int]]:
@@ -1135,6 +1598,13 @@ class VlmVerificationService:
             # suppression because suppressed activities never reach this
             # verifier in the first place.
             "motion_overrides": 0,
+            # Pre-VLM no-subject gate drops (no person bbox in any keyframe).
+            # Counted separately from regular VLM-driven drops for telemetry
+            # so we can monitor false-drop risk during rollout.
+            "pre_gate_drops": 0,
+            # Post-VLM consistency overrides (TP demoted to UNCERTAIN
+            # because structured fields contradicted the verdict).
+            "consistency_overrides": 0,
         }
         if not self.is_enabled() or not activities:
             return activities, stats
@@ -1268,15 +1738,52 @@ class VlmVerificationService:
                     if status == "PARSE_ERROR":
                         stats["skipped_parse_error"] += 1
                         continue
+                    if status in ("PRE_GATE_DROP_NO_SUBJECT", "PRE_GATE_DROP_NO_OBJECT"):
+                        # Deterministic pre-VLM drop. Honor shadow mode
+                        # (don't actually drop) but always record the
+                        # decision so we can audit the gate's behaviour.
+                        stats["pre_gate_drops"] += 1
+                        if not self.settings.vlm_shadow_mode:
+                            review["dropped"] = True
+                            stats["dropped"] += 1
+                            drop_indices.append(kept_idx)
+                        else:
+                            stats["kept"] += 1
+                        continue
 
                     stats["verified"] += 1
                     verdict_dict = review.get("verdict") or {}
+                    if verdict_dict.get("consistency_override"):
+                        stats["consistency_overrides"] += 1
                     verdict = verdict_dict.get("verdict")
                     confidence = verdict_dict.get("confidence", 0.0)
                     try:
                         confidence = float(confidence)
                     except (TypeError, ValueError):
                         confidence = 0.0
+
+                    # Wave-2: confidence calibration. Maps raw VLM
+                    # confidence to calibrated probability via the
+                    # learned mapping (default identity until ground
+                    # truth is collected). Stored on review for audit.
+                    raw_confidence = confidence
+                    if getattr(self.settings, "vlm_calibration_enabled", False):
+                        try:
+                            cal = _get_calibrator(
+                                getattr(
+                                    self.settings, "vlm_calibration_path",
+                                    "/opt/poc2/app/data/vlm_calibration.json",
+                                )
+                            )
+                            object_type_for_cal = (
+                                act.get("objectType") or ""
+                            ).strip().lower().replace(" ", "_")
+                            confidence = cal.calibrate(raw_confidence, object_type_for_cal)
+                            verdict_dict["calibrated_confidence"] = round(confidence, 4)
+                            verdict_dict["raw_confidence"] = round(raw_confidence, 4)
+                        except Exception:  # noqa: BLE001
+                            # Identity fallback on any calibration failure.
+                            confidence = raw_confidence
 
                     # Verdict enum validation (defensive — _verify_one_async
                     # already filters, but cheap to double-check at the boundary).
@@ -1351,6 +1858,81 @@ class VlmVerificationService:
                         )
                     else:
                         stats["kept"] += 1
+
+                    # Wave-2 telemetry: structured JSONL line per VLM
+                    # call so we can analyse verdict distribution,
+                    # latency, gate impact, and drift offline. Best-effort.
+                    if getattr(self.settings, "vlm_telemetry_log_enabled", True):
+                        _append_jsonl(
+                            getattr(
+                                self.settings, "vlm_telemetry_log_path",
+                                "/opt/poc2/locopilot_evidence/vlm_telemetry.jsonl",
+                            ),
+                            {
+                                "ts": time.time(),
+                                "trip_id": act.get("tripId"),
+                                "activity_type": act.get("activityType"),
+                                "object_type": act.get("objectType"),
+                                "activity_start": act.get("activityStartTime"),
+                                "motion_state": act.get("motionState"),
+                                "people_count": act.get("peopleCount"),
+                                "vlm_status": review.get("status"),
+                                "verdict": verdict,
+                                "raw_confidence": raw_confidence,
+                                "calibrated_confidence": (
+                                    confidence if confidence != raw_confidence else None
+                                ),
+                                "consistency_override": bool(
+                                    verdict_dict.get("consistency_override")
+                                ),
+                                "frames_sent": review.get("frames_sent"),
+                                "latency_sec": review.get("latency_sec"),
+                                "dropped": bool(review.get("dropped")),
+                            },
+                        )
+
+                    # Wave-2 disagreement queue: capture cases where the
+                    # P1 verdict and the VLM verdict diverge sharply.
+                    # P1 fired the activity (so its verdict is implicitly
+                    # TP); a VLM FALSE_POSITIVE that didn't reach the
+                    # drop threshold OR an UNCERTAIN verdict means the
+                    # two pipelines disagree but the system kept the
+                    # detection. These are the highest-leverage examples
+                    # for ground-truthing and improving either pipeline.
+                    if getattr(self.settings, "vlm_disagreement_log_enabled", True):
+                        is_disagreement = (
+                            verdict in ("FALSE_POSITIVE", "UNCERTAIN")
+                            and not review.get("dropped")
+                        )
+                        if is_disagreement:
+                            _append_jsonl(
+                                getattr(
+                                    self.settings, "vlm_disagreement_log_path",
+                                    "/opt/poc2/locopilot_evidence/vlm_disagreements.jsonl",
+                                ),
+                                {
+                                    "ts": time.time(),
+                                    "trip_id": act.get("tripId"),
+                                    "activity_type": act.get("activityType"),
+                                    "object_type": act.get("objectType"),
+                                    "activity_start": act.get("activityStartTime"),
+                                    "activity_end": act.get("activityEndTime"),
+                                    "motion_state": act.get("motionState"),
+                                    "people_count": act.get("peopleCount"),
+                                    "p1_verdict": "TRUE_POSITIVE",  # P1 fired
+                                    "vlm_verdict": verdict,
+                                    "vlm_calibrated_confidence": confidence,
+                                    "vlm_raw_confidence": raw_confidence,
+                                    "vlm_reasoning": (
+                                        verdict_dict.get("reasoning") or ""
+                                    )[:300],
+                                    "consistency_override": (
+                                        verdict_dict.get("consistency_override")
+                                    ),
+                                    "activity_image": act.get("activityImage"),
+                                    "activity_clip": act.get("activityClip"),
+                                },
+                            )
                 except Exception:  # noqa: BLE001
                     # Fail-open: never let a single malformed review
                     # truncate `kept`.  The activity is already retained
@@ -1369,7 +1951,8 @@ class VlmVerificationService:
 
         logger.info(
             "[vlm] verification stats: verified=%d kept=%d dropped=%d uncertain=%d "
-            "motion_overrides=%d skipped_type=%d skipped_stopped=%d "
+            "motion_overrides=%d pre_gate_drops=%d consistency_overrides=%d "
+            "skipped_type=%d skipped_stopped=%d "
             "skipped_unavailable=%d skipped_parse_error=%d shadow=%s",
             stats["verified"],
             stats["kept"] + stats["skipped_type"] + stats["skipped_stopped"]
@@ -1378,6 +1961,8 @@ class VlmVerificationService:
             stats["dropped"],
             stats["uncertain"],
             stats["motion_overrides"],
+            stats["pre_gate_drops"],
+            stats["consistency_overrides"],
             stats["skipped_type"],
             stats["skipped_stopped"],
             stats["skipped_unavailable"],
@@ -1420,6 +2005,107 @@ class VlmVerificationService:
                     "verdict": None,
                     "image_path": activity.get("activityImage") or "",
                 }
+
+            # Pre-VLM gate runs on the ORIGINAL Pipeline-1-rendered keyframes
+            # ONLY (before any clip-supplementation, which adds raw frames
+            # without overlays). The gate makes two checks against the
+            # rendered bbox overlays:
+            #
+            #   1. No-subject gate (always for non-skipped types): every
+            #      keyframe lacks a person bbox → activity is bogus, drop.
+            #      Catches empty-cabin hallucinations.
+            #
+            #   2. No-object gate (writing/eating/packing/cell_phone only):
+            #      every keyframe lacks the orange/yellow target-object
+            #      bbox → Pipeline-1 fired the rule on stale state, drop.
+            #      Catches the "writing without book" / "eating without cup"
+            #      stale-trigger archetype.
+            #
+            # Both gates require ``with_any_bbox > 0`` somewhere in the
+            # original keyframes to confirm overlay rendering is active —
+            # otherwise we fall through to the VLM rather than risk
+            # mis-dropping a run with rendering disabled.
+            pre_gate_enabled = bool(
+                getattr(self.settings, "vlm_pre_gate_enabled", True)
+            )
+            if pre_gate_enabled and object_type not in _PRE_GATE_SKIP_OBJECT_TYPES:
+                counts = _count_bboxes_in_keyframes(
+                    keyframes,
+                    min_person_area=int(
+                        getattr(self.settings, "vlm_pre_gate_min_person_area", 1000)
+                    ),
+                )
+                rendering_active = counts["with_any_bbox"] > 0
+
+                if rendering_active and counts["with_person"] == 0:
+                    logger.info(
+                        "[vlm] PRE-GATE DROP (no_subject) activity type=%s at t=%s "
+                        "(0/%d keyframes have a person bbox; %d had non-person bboxes)",
+                        activity.get("activityType"),
+                        activity.get("activityStartTime"),
+                        counts["total"], counts["with_any_bbox"],
+                    )
+                    return {
+                        "status": "PRE_GATE_DROP_NO_SUBJECT",
+                        "verdict": {
+                            "verdict": "FALSE_POSITIVE",
+                            "confidence": 1.0,
+                            "reasoning": (
+                                f"pre-VLM gate: 0/{counts['total']} original keyframes "
+                                f"contain a person bbox (rendering confirmed active by "
+                                f"{counts['with_any_bbox']} non-person bboxes)"
+                            ),
+                        },
+                        "model": self.settings.vlm_model,
+                        "frames_sent": counts["total"],
+                        "latency_sec": 0.0,
+                        "pre_gate_counts": counts,
+                    }
+
+                if (
+                    rendering_active
+                    and object_type in _OBJECT_REQUIRED_TYPES
+                    and counts["with_object"] == 0
+                ):
+                    logger.info(
+                        "[vlm] PRE-GATE DROP (no_object) activity type=%s at t=%s "
+                        "(0/%d keyframes have a target-object bbox; "
+                        "person bbox count=%d)",
+                        activity.get("activityType"),
+                        activity.get("activityStartTime"),
+                        counts["total"], counts["with_person"],
+                    )
+                    return {
+                        "status": "PRE_GATE_DROP_NO_OBJECT",
+                        "verdict": {
+                            "verdict": "FALSE_POSITIVE",
+                            "confidence": 1.0,
+                            "reasoning": (
+                                f"pre-VLM gate: 0/{counts['total']} original keyframes "
+                                f"contain a target-object bbox for activity {object_type!r} "
+                                f"(person bboxes present in {counts['with_person']} frames, "
+                                f"so this is a stale-state trigger, not a missing render)"
+                            ),
+                        },
+                        "model": self.settings.vlm_model,
+                        "frames_sent": counts["total"],
+                        "latency_sec": 0.0,
+                        "pre_gate_counts": counts,
+                    }
+
+            # Honor the long-promised vlm_strip_target_frames setting:
+            # for single-burst activities we sample the activityClip to
+            # reach the configured target so the VLM gets temporal
+            # evidence rather than a single frozen instant. Done AFTER
+            # the pre-gate so supplementary raw frames don't defeat
+            # the bbox-overlay-based gate decision. Cap is 5 (matches
+            # _stitch_keyframes slice).
+            target_n = min(int(getattr(self.settings, "vlm_strip_target_frames", 5) or 5), 5)
+            if len(keyframes) < target_n:
+                keyframes = _supplement_keyframes_from_clip(
+                    activity, keyframes, target_n=target_n,
+                )
+
             crop_to_roi = object_type not in _FULL_FRAME_OBJECT_TYPES
             strip_bytes = _stitch_keyframes(keyframes, crop_to_roi=crop_to_roi)
             if not strip_bytes:
@@ -1580,6 +2266,38 @@ class VlmVerificationService:
                 "error": f"verdict not in enum: {v!r}",
                 "latency_sec": latency,
             }
+
+        # Post-VLM structured-field consistency check. When the VLM emits
+        # TRUE_POSITIVE but its own observation fields contradict (e.g.
+        # writing TP with hand_actually_on_book=false, or cell_phone TP
+        # with object_in_hand="radio_handset"), demote to UNCERTAIN with
+        # capped confidence 0.5. The structural counterpart to the
+        # prompt-level "do not default to TRUE_POSITIVE" rule.
+        consistency_override: Optional[Dict[str, Any]] = None
+        if getattr(self.settings, "vlm_consistency_check_enabled", True):
+            inconsistency = _consistency_check(parsed, object_type)
+            if inconsistency:
+                original_verdict = parsed.get("verdict")
+                try:
+                    original_conf = float(parsed.get("confidence", 0.5))
+                except (TypeError, ValueError):
+                    original_conf = 0.5
+                parsed["verdict"] = "UNCERTAIN"
+                parsed["confidence"] = min(original_conf, 0.5)
+                consistency_override = {
+                    "original_verdict": original_verdict,
+                    "original_confidence": original_conf,
+                    "reason": inconsistency,
+                }
+                parsed["consistency_override"] = consistency_override
+                logger.info(
+                    "[vlm] CONSISTENCY OVERRIDE activity type=%s at t=%s: "
+                    "%s -> UNCERTAIN (%s)",
+                    activity.get("activityType"),
+                    activity.get("activityStartTime"),
+                    original_verdict,
+                    inconsistency,
+                )
 
         return {
             "status": "OK",

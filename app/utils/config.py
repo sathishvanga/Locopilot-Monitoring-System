@@ -763,6 +763,67 @@ class Settings(BaseSettings):
     # target so the VLM gets temporal evidence even on short detections.
     # Cap is 5 (matches ``_stitch_keyframes`` slice).
     vlm_strip_target_frames: int = int(os.getenv("VLM_STRIP_TARGET_FRAMES", "5"))
+    # Pre-VLM no-subject gate: when 1, drop activity candidates whose
+    # keyframes contain no Pipeline-1 person bbox in any frame, before
+    # spending a VLM call. Catches the empty-cabin hallucination archetype
+    # observed on 2026-05-08 (run_20260508_182809) where the VLM confidently
+    # confabulated "hand on open book, pen in hand" on frames with no person
+    # at all. Skipped for ``no_person_detected`` activity type, where an
+    # empty cabin is the violation. Default 1 (enforce).
+    vlm_pre_gate_enabled: bool = bool(int(os.getenv("VLM_PRE_GATE_ENABLED", "1")))
+    # Minimum green-bbox pixel area to count as a person in the pre-VLM
+    # gate. Smaller values risk false-positive person detections (text
+    # labels, skeleton lines), larger values may miss small/distant LP
+    # bboxes. 1000px = ~32x32 — well above text label noise.
+    vlm_pre_gate_min_person_area: int = int(os.getenv("VLM_PRE_GATE_MIN_PERSON_AREA", "1000"))
+    # Post-VLM structured-field consistency check: when 1, demote a VLM
+    # ``TRUE_POSITIVE`` verdict to ``UNCERTAIN`` (capped confidence 0.5)
+    # if the activity-specific structured fields contradict the verdict
+    # (e.g. writing TP but ``hand_actually_on_book=false``, cell_phone TP
+    # but ``object_in_hand="radio_handset"``). Catches the
+    # cooperatively-filled-schema-with-wrong-verdict failure mode where
+    # the model fills observation fields correctly but emits the wrong
+    # overall label. Default 1 (enforce).
+    vlm_consistency_check_enabled: bool = bool(int(os.getenv("VLM_CONSISTENCY_CHECK_ENABLED", "1")))
+    # Wave-2 calibration scaffolding. When 1, raw VLM confidences are
+    # passed through a learned mapping (temperature scaling or isotonic
+    # regression fit on labelled ground truth) before threshold
+    # comparison. The mapping file is loaded from
+    # ``vlm_calibration_path``; when missing or malformed the calibrator
+    # is identity (no-op). Default 0 (off until ground truth exists).
+    vlm_calibration_enabled: bool = bool(int(os.getenv("VLM_CALIBRATION_ENABLED", "0")))
+    vlm_calibration_path: str = os.getenv(
+        "VLM_CALIBRATION_PATH", "/opt/poc2/app/data/vlm_calibration.json"
+    )
+    # Wave-2 self-consistency: re-query the VLM ``vlm_self_consistency_k``
+    # times when the calibrated confidence falls in the borderline band
+    # [low, high] and take the majority verdict. Costs k× latency per
+    # borderline activity; bounded so it only fires for cases the
+    # single-shot run wasn't confident about. Default off; enable once
+    # latency budget is validated.
+    vlm_self_consistency_enabled: bool = bool(int(os.getenv("VLM_SELF_CONSISTENCY_ENABLED", "0")))
+    vlm_self_consistency_k: int = int(os.getenv("VLM_SELF_CONSISTENCY_K", "3"))
+    vlm_borderline_low: float = float(os.getenv("VLM_BORDERLINE_LOW", "0.40"))
+    vlm_borderline_high: float = float(os.getenv("VLM_BORDERLINE_HIGH", "0.70"))
+    # Wave-2 disagreement queue. When 1, append a JSONL entry to
+    # ``vlm_disagreement_log_path`` whenever Pipeline-1 and the VLM
+    # produce divergent verdicts (e.g. P1 high-conf, VLM drop, or
+    # vice-versa). Captures the highest-leverage data for quarterly
+    # model improvement. Default 1 (cheap to log).
+    vlm_disagreement_log_enabled: bool = bool(int(os.getenv("VLM_DISAGREEMENT_LOG_ENABLED", "1")))
+    vlm_disagreement_log_path: str = os.getenv(
+        "VLM_DISAGREEMENT_LOG_PATH",
+        "/opt/poc2/locopilot_evidence/vlm_disagreements.jsonl",
+    )
+    # Wave-2 telemetry. When 1, append a structured JSONL line per VLM
+    # invocation to ``vlm_telemetry_log_path`` for offline analysis
+    # (verdict distribution, latency, gate-drop rate, drift detection).
+    # Default 1.
+    vlm_telemetry_log_enabled: bool = bool(int(os.getenv("VLM_TELEMETRY_LOG_ENABLED", "1")))
+    vlm_telemetry_log_path: str = os.getenv(
+        "VLM_TELEMETRY_LOG_PATH",
+        "/opt/poc2/locopilot_evidence/vlm_telemetry.jsonl",
+    )
 
     @model_validator(mode='after')
     def _validate_overlap_window(self) -> "Settings":
