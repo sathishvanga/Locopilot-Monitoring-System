@@ -275,7 +275,9 @@ async def _run_video_pipeline(
             if has_url:
                 try:
                     validate_external_url(
-                        videoUrl.strip(), settings.minio_allowed_hosts
+                        videoUrl.strip(),
+                        settings.minio_allowed_hosts,
+                        allow_private_ips=settings.minio_allow_private_ips,
                     )
                 except URLNotAllowed as e:
                     logger.warning(

@@ -87,13 +87,26 @@ def _is_blocked_ip(ip: ipaddress._BaseAddress) -> bool:
     )
 
 
-def validate_external_url(url: str, allowed_hosts: Iterable[str]) -> str:
+def validate_external_url(
+    url: str,
+    allowed_hosts: Iterable[str],
+    *,
+    allow_private_ips: bool = False,
+) -> str:
     """Validate that ``url`` is safe to fetch server-side.
 
     Args:
         url: Candidate external URL.
         allowed_hosts: Iterable of hostnames the caller deems safe (matched
             case-insensitively against ``urlparse(url).hostname``).
+        allow_private_ips: When True, allowlisted hosts that resolve into
+            RFC1918 / loopback / link-local ranges are accepted instead of
+            rejected. Required for deployments where MinIO is co-located on
+            a private network (e.g. host resolves to ``10.x.x.x``). The
+            allowlist check still runs first, so unlisted hosts cannot
+            reach the IP-resolution stage at all — this flag only relaxes
+            the second-stage check for hosts the operator has already
+            explicitly trusted via ``MINIO_ALLOWED_HOSTS``.
 
     Returns:
         The original ``url`` string when all checks pass.
@@ -138,6 +151,8 @@ def validate_external_url(url: str, allowed_hosts: Iterable[str]) -> str:
             # address is OK we still pass.
             continue
         if _is_blocked_ip(ip):
+            if allow_private_ips:
+                continue
             raise URLNotAllowed(
                 f"host {host!r} resolved to private/loopback range: {ip}"
             )

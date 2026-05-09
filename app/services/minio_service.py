@@ -108,7 +108,11 @@ class MinioService:
             # but a future caller (worker, internal job, retry helper)
             # might forget. Re-validate here so any bypass at the
             # controller layer still fails closed.
-            validate_external_url(video_url, settings.minio_allowed_hosts)
+            validate_external_url(
+                video_url,
+                settings.minio_allowed_hosts,
+                allow_private_ips=settings.minio_allow_private_ips,
+            )
 
             # Parse URL to get bucket and object key
             bucket, object_key = self.parse_minio_url(video_url)

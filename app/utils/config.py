@@ -189,6 +189,12 @@ class Settings(BaseSettings):
     # (reviewer finding H4 — empty string or malformed JSON took the
     # whole process down before pydantic could surface a useful error).
     minio_allowed_hosts: List[str] = ["mind.snikbtel.uk"]
+    # Companion to ``MINIO_ALLOWED_HOSTS``. When set, an allowlisted host
+    # that resolves to a private/loopback IP (e.g. ``gpu.mindcoinapps.com``
+    # → ``10.10.0.2`` on the GPU server's internal NIC) is accepted instead
+    # of rejected. Default off; flip on only when the MinIO endpoint is on
+    # the same private network as this service.
+    minio_allow_private_ips: bool = bool(int(os.getenv("MINIO_ALLOW_PRIVATE_IPS", "0")))
     # Hard cap on the number of bytes ``MinioService.download_video`` will
     # accept from a remote URL. A hostile (or misconfigured) server could
     # return a 100 GB stream and exhaust the GPU box's disk; the streaming
