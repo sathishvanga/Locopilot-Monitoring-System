@@ -285,6 +285,28 @@ class VideoProcessingService:
                             f"dropped={vlm_stats['dropped']} uncertain={vlm_stats['uncertain']} "
                             f"skipped_unavail={vlm_stats['skipped_unavailable']}"
                         )
+                        # Post-VLM concurrent grouping (Phase A of post-verifier
+                        # merge refactor — gated by CONCURRENT_GROUPING_AFTER_VLM).
+                        # When enabled, detection-side grouping is skipped (Task
+                        # 0002) and grouping runs here on the post-VLM survivor
+                        # set so the verifier sees raw single-type activities.
+                        if get_settings().concurrent_grouping_after_vlm:
+                            from .concurrent_activity_grouping_service import (
+                                get_concurrent_grouping_service,
+                            )
+                            pre_group_count = len(activities)
+                            activities = get_concurrent_grouping_service().group_concurrent_activities(
+                                activities, run_dir
+                            )
+                            self.activity_repository.save_activities(
+                                activities=activities,
+                                run_dir=run_dir,
+                            )
+                            logger.info(
+                                f"[GROUP] post-VLM grouping: {pre_group_count} -> "
+                                f"{len(activities)} activities (run after verifier "
+                                f"under CONCURRENT_GROUPING_AFTER_VLM=1)"
+                            )
                     except Exception as vlm_exc:
                         logger.warning(
                             f"[VLM] verifier failed unexpectedly, passing through "

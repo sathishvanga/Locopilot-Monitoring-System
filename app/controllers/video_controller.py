@@ -575,6 +575,29 @@ async def _run_video_pipeline(
                     _ActivityRepository().save_activities(
                         post_vlm_activities, os.path.dirname(activities_json_for_vlm),
                     )
+                    # Post-VLM concurrent grouping (Phase A of post-verifier
+                    # merge refactor — gated by CONCURRENT_GROUPING_AFTER_VLM).
+                    # When enabled, detection-side grouping is skipped (Task
+                    # 0002) and grouping runs here on the post-VLM survivor
+                    # set. After grouping, activityClip points at the merged
+                    # minute-NNN clip rather than per-source clips, so the
+                    # clip_files filter below operates on the post-grouped set.
+                    if get_settings().concurrent_grouping_after_vlm:
+                        from app.services.concurrent_activity_grouping_service import (
+                            get_concurrent_grouping_service,
+                        )
+                        pre_group_count = len(post_vlm_activities)
+                        post_vlm_activities = get_concurrent_grouping_service().group_concurrent_activities(
+                            post_vlm_activities, run_dir_for_vlm,
+                        )
+                        _ActivityRepository().save_activities(
+                            post_vlm_activities, os.path.dirname(activities_json_for_vlm),
+                        )
+                        logger.info(
+                            f"[GROUP] post-VLM grouping: {pre_group_count} -> "
+                            f"{len(post_vlm_activities)} activities (run after "
+                            f"verifier under CONCURRENT_GROUPING_AFTER_VLM=1)"
+                        )
                     if 'activities' in result:
                         result['activities'] = post_vlm_activities
                     if 'activities_count' in result:
@@ -582,8 +605,12 @@ async def _run_video_pipeline(
                     if 'activitiesCount' in result:
                         result['activitiesCount'] = len(post_vlm_activities)
                     # Filter clip_files to drop those tied to dropped activities,
-                    # avoiding wasted S3 uploads in enforcement mode.
-                    if vlm_stats['dropped'] > 0:
+                    # avoiding wasted S3 uploads in enforcement mode. Under
+                    # CONCURRENT_GROUPING_AFTER_VLM=1, post_vlm_activities now
+                    # references merged minute-NNN clips; the set-membership
+                    # filter still works — it just operates on the post-grouped
+                    # paths.
+                    if vlm_stats['dropped'] > 0 or get_settings().concurrent_grouping_after_vlm:
                         kept_clip_paths = {
                             a.get('activityClip') for a in post_vlm_activities
                             if a.get('activityClip')
