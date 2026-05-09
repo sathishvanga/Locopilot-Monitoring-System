@@ -13,30 +13,14 @@ from typing import Any, Dict, List, Optional
 
 from app.utils.logger import get_logger
 
-
-@dataclass
-class ActivityConfig:
-    """Configuration for an activity type.
-
-    Defines thresholds and parameters for activity detection and tracking.
-
-    Attributes:
-        min_duration: Minimum duration in seconds for an activity to be recorded.
-        required_consecutive: Number of consecutive frames required to start an activity.
-        margin: Optional pixel margin for proximity-based detection.
-        grace_frames: Number of frames to allow gaps in detection before ending activity.
-        region_margin: Optional margin for region-based detection (e.g., packing bags).
-        wrist_inside_margin: Optional margin for wrist proximity detection.
-        sustained_proximity_seconds: Optional duration for sustained proximity detection.
-    """
-
-    min_duration: float = 0.0
-    required_consecutive: int = 1
-    margin: Optional[int] = None
-    grace_frames: int = 5
-    region_margin: Optional[int] = None
-    wrist_inside_margin: Optional[int] = None
-    sustained_proximity_seconds: Optional[float] = None
+# Task 0004 (2026-05): ``ActivityConfig`` used to be redefined here as a strict
+# subset of the canonical dataclass in ``app.core.activity_registry``. Two
+# parallel definitions of the same per-activity tunables created drift risk —
+# a change to defaults in one place silently diverged from the other. We now
+# re-export the registry's ``ActivityConfig`` so this module keeps a stable
+# import surface without owning a duplicate definition. Threshold values
+# continue to be sourced from ``ACTIVITY_REGISTRY``.
+from app.core.activity_registry import ActivityConfig  # noqa: F401  (re-export)
 
 
 @dataclass

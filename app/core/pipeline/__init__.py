@@ -1,5 +1,7 @@
-"""Frame pipeline package (task 0002).
+"""Frame pipeline package.
 
-See ``app/core/frame_pipeline.py`` for the ``FrameState`` dataclass and
-``FramePipeline`` class. Concrete stages live in ``stages/``.
+Houses the two live helpers extracted from ``locopilot_monitor.py``:
+
+* ``frame_sampling`` — ``sample_video_frames`` generator.
+* ``pose_batch`` — ``detect_poses_batch`` helper.
 """

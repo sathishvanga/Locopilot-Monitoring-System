@@ -390,7 +390,6 @@ class ActivityDetectionService:
                 sample_fps=sample_fps,
                 run_dir=run_dir,
                 save_clips=save_clips,
-                trip_schedule=trip_schedule,
                 video_start_time=video_start_time,
                 camera_angle=camera_angle
             )

@@ -1,12 +1,10 @@
 """
 Unit tests for Settings._validate_flag_combinations model validator.
 
-Covers the four acceptance rules from docs/specs/architecture-review-2026-04/
+Covers the acceptance rules from docs/specs/architecture-review-2026-04/
 tasks/0005-settings-model-validator.md:
 
     (a) Referenced model files must exist on disk (when absolute).
-    (b) train_motion_rules_enabled=True requires train_motion_detection_enabled
-        (or env fallback).
     (c) pose_model == 'rtmpose' requires rtmlib importable.
     (d) Default construction succeeds when the escape hatch is set.
 
@@ -65,34 +63,6 @@ def test_default_settings_constructs(clean_env):
     """Default Settings() should succeed with skip flag set."""
     settings = Settings(_env_file=None)
     assert settings is not None
-    assert hasattr(settings, "train_motion_rules_enabled")
-
-
-def test_rules_enabled_without_detection_rejected(clean_env):
-    """
-    Enabling train motion rules while explicitly disabling detection must
-    raise — this is the silent-misconfiguration case flagged in ARCH-05.
-    """
-    clean_env.setenv("TRAIN_MOTION_DETECTION_ENABLED", "0")
-    with pytest.raises(ValidationError) as excinfo:
-        Settings(_env_file=None, train_motion_rules_enabled=True)
-    msg = str(excinfo.value)
-    assert "TRAIN_MOTION_RULES_ENABLED" in msg
-    assert "TRAIN_MOTION_DETECTION_ENABLED" in msg
-
-
-def test_rules_enabled_with_detection_truthy_ok(clean_env):
-    """Rules enabled + detection=1 in env should validate cleanly."""
-    clean_env.setenv("TRAIN_MOTION_DETECTION_ENABLED", "1")
-    settings = Settings(_env_file=None, train_motion_rules_enabled=True)
-    assert settings.train_motion_rules_enabled is True
-
-
-def test_rules_disabled_with_any_detection_ok(clean_env):
-    """Rules disabled → detection flag is irrelevant, always valid."""
-    clean_env.setenv("TRAIN_MOTION_DETECTION_ENABLED", "0")
-    settings = Settings(_env_file=None, train_motion_rules_enabled=False)
-    assert settings.train_motion_rules_enabled is False
 
 
 def test_nonexistent_yolo_weights_rejected(clean_env):

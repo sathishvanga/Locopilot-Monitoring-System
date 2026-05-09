@@ -16,12 +16,6 @@ from .activity_detection_service import ActivityDetectionService
 from .external_api_service import get_external_api_service
 from .vlm_verification_service import get_vlm_verification_service
 
-# Train motion rule engine imports
-try:
-    from .trip_data_service import get_trip_data_service
-except ImportError:
-    get_trip_data_service = None
-
 
 logger = get_logger(__name__)
 settings = get_settings()
@@ -208,72 +202,7 @@ class VideoProcessingService:
 
             logger.info(f"[OK] Video file validated: {video_path}")
 
-            # Fetch trip schedule for motion-based rule engine (if train info provided)
-            trip_schedule = None
-            logger.info(
-                f"[MOTION-RULES] Configuration check - "
-                f"train_number: {train_number}, trip_date: {trip_date}, "
-                f"rules_enabled: {settings.train_motion_rules_enabled}"
-            )
-
-            if train_number and trip_date and settings.train_motion_rules_enabled:
-                logger.info(
-                    f"[MOTION-RULES] [OK] All conditions met - fetching trip schedule "
-                    f"for train {train_number} on {trip_date}"
-                )
-                try:
-                    if get_trip_data_service is not None:
-                        trip_data_service = get_trip_data_service()
-                        # Use delay-enhanced schedule fetch if etrain integration is enabled
-                        if hasattr(trip_data_service, 'fetch_trip_schedule_with_delays') and settings.etrain_enabled:
-                            logger.info(f"[MOTION-RULES] Calling TripDataService.fetch_trip_schedule_with_delays() (etrain.info enabled)")
-                            trip_schedule = trip_data_service.fetch_trip_schedule_with_delays(
-                                train_number=train_number,
-                                journey_date=trip_date,
-                                division=division
-                            )
-                        else:
-                            logger.info(f"[MOTION-RULES] Calling TripDataService.fetch_trip_schedule()")
-                            trip_schedule = trip_data_service.fetch_trip_schedule(
-                                train_number=train_number,
-                                journey_date=trip_date,
-                                division=division
-                            )
-                        if trip_schedule:
-                            logger.info(
-                                f"[MOTION-RULES] [TRAIN] Successfully fetched trip schedule for train {train_number}: "
-                                f"{len(trip_schedule.halts)} station halts"
-                            )
-                            # Log first few halts for debugging (include delay info if available)
-                            for i, halt in enumerate(trip_schedule.halts[:3]):
-                                delay_info = f", Delay: {halt.delay_minutes}min" if hasattr(halt, 'delay_minutes') and halt.delay_minutes > 0 else ""
-                                logger.info(
-                                    f"[MOTION-RULES]   Halt {i+1}: {halt.station_name} ({halt.station_code}) - "
-                                    f"Arr: {halt.scheduled_arrival}, Dep: {halt.scheduled_departure}{delay_info}"
-                                )
-                            if len(trip_schedule.halts) > 3:
-                                logger.info(f"[MOTION-RULES]   ... and {len(trip_schedule.halts) - 3} more halts")
-                        else:
-                            logger.warning(
-                                f"[MOTION-RULES] [WARN] Could not fetch trip schedule for train {train_number} "
-                                f"on {trip_date} - no_person_detected will be suppressed (cannot distinguish station halts)"
-                            )
-                    else:
-                        logger.warning("[MOTION-RULES] [WARN] Trip data service not available - motion rules disabled")
-                except Exception as e:
-                    logger.warning(f"[MOTION-RULES] [WARN] Error fetching trip schedule: {e} - no_person_detected will be suppressed")
-            else:
-                missing = []
-                if not train_number:
-                    missing.append("train_number")
-                if not trip_date:
-                    missing.append("trip_date")
-                if not settings.train_motion_rules_enabled:
-                    missing.append("rules_enabled=False")
-                logger.info(
-                    f"[MOTION-RULES] [SKIP] Skipping motion-based rules - missing: {', '.join(missing)}. "
-                    f"All detected activities will be treated as violations."
-                )
+            # Trip-schedule motion rules removed (2026-05-09); see docs/specs/architecture-cleanup/
 
             # Create run directory ONCE at the top level
             run_dir = self.activity_repository.create_run_directory(base_name=f"run")
@@ -309,7 +238,6 @@ class VideoProcessingService:
                         sample_fps=settings.sample_fps,
                         run_dir=run_dir,  # Pass existing run_dir to avoid nested directories
                         save_clips=save_clips,
-                        trip_schedule=trip_schedule,  # Pass trip schedule for motion rules
                         video_start_time=video_start_time,  # Pass video start time for motion rules
                         camera_angle=camera_angle
                     )
@@ -324,7 +252,6 @@ class VideoProcessingService:
                         output_dir=settings.output_dir,
                         sample_fps=settings.sample_fps,
                         run_dir=run_dir,  # Pass existing run_dir
-                        trip_schedule=trip_schedule,  # Pass trip schedule for motion rules
                         video_start_time=video_start_time,  # Pass video start time for motion rules
                         camera_angle=camera_angle
                     )

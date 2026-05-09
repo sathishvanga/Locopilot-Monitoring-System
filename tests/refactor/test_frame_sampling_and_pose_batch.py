@@ -43,13 +43,6 @@ def test_pose_batch_import():
     assert callable(detect_poses_batch)
 
 
-def test_existing_pipeline_stages_still_importable():
-    """Guard that adding files under ``app/core/pipeline/`` did not break the
-    existing ``app.core.pipeline.stages`` package init / member imports."""
-    import app.core.pipeline  # noqa: F401
-    from app.core.pipeline import stages  # noqa: F401
-
-
 # ---------------------------------------------------------------------------
 # Behavioral micro-tests (no real video / model required)
 # ---------------------------------------------------------------------------

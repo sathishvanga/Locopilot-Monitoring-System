@@ -597,9 +597,6 @@ class Settings(BaseSettings):
     # ==========================================
     # Train Motion Rules Settings
     # ==========================================
-    # Enable/disable train motion-based rule engine
-    train_motion_rules_enabled: bool = bool(int(os.getenv("TRAIN_MOTION_RULES_ENABLED", "0")))
-
     # When True (default), activities listed in
     # ``app/core/gates.py:DEFAULT_SUPPRESSED_WHEN_STOPPED`` are zeroed out
     # while the train is STOPPED, so they never reach the VLM verifier or
@@ -691,10 +688,6 @@ class Settings(BaseSettings):
     # (cannot distinguish station halts from running without schedule)
     suppress_no_person_without_schedule: bool = bool(int(os.getenv("SUPPRESS_NO_PERSON_WITHOUT_SCHEDULE", "1")))
 
-    # Trip API Settings (RailRadar API)
-    trip_api_url: str = os.getenv("TRIP_API_URL", "https://api.railradar.in/api/v1/trains")
-    trip_api_timeout: int = int(os.getenv("TRIP_API_TIMEOUT", "10"))
-
     # OCR Timestamp Extraction Settings
     ocr_enabled: bool = bool(int(os.getenv("OCR_ENABLED", "0")))
     ocr_engine: str = os.getenv("OCR_ENGINE", "auto")  # 'easyocr' (recommended), 'tesseract', or 'auto'
@@ -710,15 +703,6 @@ class Settings(BaseSettings):
 
     # Halt Grace Period - allow exemptions for short time after scheduled departure
     halt_grace_period: int = int(os.getenv("HALT_GRACE_PERIOD", "120"))  # 120s after departure
-
-    # ==========================================
-    # etrain.info Delay Integration Settings
-    # ==========================================
-    # Enable/disable etrain.info delay data fetching
-    etrain_enabled: bool = bool(int(os.getenv("ETRAIN_ENABLED", "0")))
-
-    # etrain.info base URL for train live status
-    etrain_base_url: str = os.getenv("ETRAIN_BASE_URL", "https://etrain.info/train")
 
     # Cache TTL for delay data (in seconds, default 30 minutes)
     etrain_cache_ttl: int = int(os.getenv("ETRAIN_CACHE_TTL", "1800"))
@@ -801,7 +785,6 @@ class Settings(BaseSettings):
     # borderline activity; bounded so it only fires for cases the
     # single-shot run wasn't confident about. Default off; enable once
     # latency budget is validated.
-    vlm_self_consistency_enabled: bool = bool(int(os.getenv("VLM_SELF_CONSISTENCY_ENABLED", "0")))
     vlm_self_consistency_k: int = int(os.getenv("VLM_SELF_CONSISTENCY_K", "3"))
     vlm_borderline_low: float = float(os.getenv("VLM_BORDERLINE_LOW", "0.40"))
     vlm_borderline_high: float = float(os.getenv("VLM_BORDERLINE_HIGH", "0.70"))
@@ -873,10 +856,6 @@ class Settings(BaseSettings):
           (a) Absolute paths in referenced YOLO model fields must exist on
               disk (when set). Relative paths and missing fields are skipped
               so fresh clones without downloaded weights still boot.
-          (b) ``train_motion_rules_enabled=True`` requires
-              ``train_motion_detection_enabled=True`` (or the env var set to a
-              truthy value). Enabling rules without motion state is a
-              silent misconfiguration — the rules engine has no input.
           (c) ``pose_model == 'rtmpose'`` requires the ``rtmlib`` package to
               be importable.
 
@@ -914,31 +893,6 @@ class Settings(BaseSettings):
                         f"Download the model or update the setting. "
                         f"Set LOCOPILOT_SKIP_PATH_CHECKS=1 to bypass."
                     )
-
-        # (b) Flag coherence: train_motion_rules_enabled requires
-        # train_motion_detection_enabled. The latter is not a typed Settings
-        # field in this branch, so fall back to reading the env var directly
-        # while staying defensive.
-        train_motion_rules = getattr(self, 'train_motion_rules_enabled', False)
-        if train_motion_rules:
-            train_motion_detection = getattr(
-                self, 'train_motion_detection_enabled', None
-            )
-            if train_motion_detection is None:
-                env_val = os.getenv('TRAIN_MOTION_DETECTION_ENABLED')
-                if env_val is not None:
-                    train_motion_detection = env_val.strip().lower() in (
-                        "1", "true", "yes", "on"
-                    )
-            # If detection flag is explicitly False, reject. If it's None
-            # (field/env var absent), skip gracefully — assume the caller
-            # knows what they're doing.
-            if train_motion_detection is False:
-                raise ValueError(
-                    "TRAIN_MOTION_RULES_ENABLED=1 requires "
-                    "TRAIN_MOTION_DETECTION_ENABLED=1. The rule engine has "
-                    "no motion state to act on when detection is disabled."
-                )
 
         # (c) Pose backend adapter: rtmpose requires rtmlib installed.
         pose_model = getattr(self, 'pose_model', None)

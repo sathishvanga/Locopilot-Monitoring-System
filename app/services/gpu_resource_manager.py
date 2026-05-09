@@ -17,7 +17,7 @@ import os
 import threading
 import time
 from contextlib import asynccontextmanager
-from typing import Optional, Tuple, Any, Dict, List
+from typing import Optional, Tuple, Any, Dict
 
 import torch
 
@@ -120,11 +120,6 @@ class GPUResourceManager:
         self._current_batch_size: int = self._settings.inference_batch_size
         self._min_batch_size: int = 1
 
-        # CUDA streams for parallel execution
-        self._streams: List[Any] = []
-        self._stream_assignments: Dict[int, int] = {}
-        self._stream_lock = threading.Lock()
-
         logger.info(
             "Exiting GPUResourceManager.__init__",
             extra={
@@ -182,9 +177,6 @@ class GPUResourceManager:
                         device=self._device
                     )
 
-                    # Initialize CUDA streams for parallel execution
-                    self._initialize_cuda_streams()
-
                     logger.info(
                         f"GPU initialized: {self._device_name} "
                         f"({self._total_memory_mb:.0f} MB total, "
@@ -235,24 +227,6 @@ class GPUResourceManager:
                 self._gpu_available = False
                 logger.info("Exiting initialize() - fallback to CPU")
                 return False
-
-    def _initialize_cuda_streams(self) -> None:
-        """Initialize CUDA streams for parallel video processing"""
-        if not self._gpu_available:
-            return
-
-        try:
-            # Create streams for each concurrent slot
-            max_concurrent = self._settings.max_concurrent_videos
-            for i in range(max_concurrent):
-                stream = torch.cuda.Stream(device=self._device)
-                self._streams.append(stream)
-
-            logger.info(f"Created {len(self._streams)} CUDA streams for parallel execution")
-
-        except Exception as e:
-            logger.warning(f"Failed to create CUDA streams: {e}")
-            self._streams = []
 
     def load_models(self, force_reload: bool = False) -> bool:
         """
@@ -927,7 +901,6 @@ class GPUResourceManager:
             "oom_recovery_count": self._oom_recovery_count,
             "current_batch_size": self._current_batch_size,
             "model_names": ["yolo", "yolo_pose", "face_mesh"] if self._models_loaded else [],
-            "num_cuda_streams": len(self._streams),
             **memory_stats
         }
 
@@ -949,7 +922,6 @@ class GPUResourceManager:
             logger.info(f"Utilization: {stats.get('utilization_percent', 0):.1f}%")
             logger.info(f"Max Concurrent Videos: {self._settings.max_concurrent_videos}")
             logger.info(f"Inference Batch Size: {self._current_batch_size}")
-            logger.info(f"CUDA Streams: {len(self._streams)}")
         else:
             logger.info("GPU Status: Not available (CPU-only mode)")
             logger.info(f"Device: {self._device_name}")
@@ -968,63 +940,6 @@ class GPUResourceManager:
             logger.info("GPU peak memory statistics reset")
         except Exception as e:
             logger.error(f"Error resetting peak stats: {e}", exc_info=True)
-
-    # =========================================================================
-    # Stream Management Methods
-    # =========================================================================
-
-    def get_stream(self, worker_id: int) -> Optional[Any]:
-        """
-        Get CUDA stream for a specific worker.
-
-        Args:
-            worker_id: Worker identifier (0-indexed)
-
-        Returns:
-            Optional[torch.cuda.Stream]: CUDA stream or None if not available
-        """
-        if not self._streams:
-            return None
-
-        if worker_id < len(self._streams):
-            return self._streams[worker_id]
-
-        # Fallback to round-robin if worker_id exceeds stream count
-        return self._streams[worker_id % len(self._streams)]
-
-    def assign_stream(self, worker_id: int) -> Optional[int]:
-        """
-        Assign a CUDA stream to a worker.
-
-        Args:
-            worker_id: Worker identifier
-
-        Returns:
-            Optional[int]: Assigned stream index or None
-        """
-        if not self._streams:
-            return None
-
-        with self._stream_lock:
-            # Find an available stream (simple round-robin)
-            stream_idx = worker_id % len(self._streams)
-            self._stream_assignments[worker_id] = stream_idx
-            logger.debug(
-                f"Assigned stream {stream_idx} to worker {worker_id}"
-            )
-            return stream_idx
-
-    def release_stream(self, worker_id: int) -> None:
-        """
-        Release a CUDA stream assignment for a worker.
-
-        Args:
-            worker_id: Worker identifier
-        """
-        with self._stream_lock:
-            if worker_id in self._stream_assignments:
-                del self._stream_assignments[worker_id]
-                logger.debug(f"Released stream for worker {worker_id}")
 
     # =========================================================================
     # Properties
@@ -1118,10 +1033,6 @@ class GPUResourceManager:
             self._pose_model = None
             self._mp_face_mesh = None
             self._preprocessing_service = None
-
-            # Clear CUDA streams
-            self._streams = []
-            self._stream_assignments = {}
 
             # Clear GPU memory
             if self._gpu_available:
