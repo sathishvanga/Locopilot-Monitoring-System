@@ -300,10 +300,14 @@ class ActivityDetectionService:
         # MEMORY FIX: Explicit cleanup (closes MediaPipe, clears buffers, forces GC)
         monitor.cleanup()
 
-        # Group overlapping activities of different types into combined records
-        from .concurrent_activity_grouping_service import get_concurrent_grouping_service
-        concurrent_grouping_service = get_concurrent_grouping_service()
-        activities = concurrent_grouping_service.group_concurrent_activities(activities, actual_run_dir)
+        # Group overlapping activities of different types into combined records.
+        # Under CONCURRENT_GROUPING_AFTER_VLM=1 grouping is deferred until after
+        # VLM verification, so detection returns raw single-type activities.
+        if not get_settings().concurrent_grouping_after_vlm:
+            from .concurrent_activity_grouping_service import get_concurrent_grouping_service
+            concurrent_grouping_service = get_concurrent_grouping_service()
+            activities = concurrent_grouping_service.group_concurrent_activities(activities, actual_run_dir)
+        # else: grouping deferred to post-VLM
 
         # Return detected activities
         logger.info(f"Single-process detection found {len(activities)} activities")
@@ -397,10 +401,14 @@ class ActivityDetectionService:
             # MEMORY FIX: Force garbage collection after processing
             gc.collect()
 
-            # Group overlapping activities of different types into combined records
-            from .concurrent_activity_grouping_service import get_concurrent_grouping_service
-            concurrent_grouping_service = get_concurrent_grouping_service()
-            activities = concurrent_grouping_service.group_concurrent_activities(activities, run_dir)
+            # Group overlapping activities of different types into combined records.
+            # Under CONCURRENT_GROUPING_AFTER_VLM=1 grouping is deferred until after
+            # VLM verification, so detection returns raw single-type activities.
+            if not get_settings().concurrent_grouping_after_vlm:
+                from .concurrent_activity_grouping_service import get_concurrent_grouping_service
+                concurrent_grouping_service = get_concurrent_grouping_service()
+                activities = concurrent_grouping_service.group_concurrent_activities(activities, run_dir)
+            # else: grouping deferred to post-VLM
 
             logger.info(f"Multi-process detection found {len(activities)} activities "
                        f"(clips {'generated' if save_clips else 'not generated'})")

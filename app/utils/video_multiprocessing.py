@@ -1025,10 +1025,16 @@ class VideoMultiprocessingOrchestrator:
 
         all_activities.sort(key=lambda x: parse_activity_time(x.get('activityStartTime', 0)))
 
-        # Group overlapping activities of different types into combined records
-        from ..services.concurrent_activity_grouping_service import get_concurrent_grouping_service
-        concurrent_grouping_service = get_concurrent_grouping_service()
-        all_activities = concurrent_grouping_service.group_concurrent_activities(all_activities, run_dir)
+        # Group overlapping activities of different types into combined records.
+        # Under CONCURRENT_GROUPING_AFTER_VLM=1 the grouping is deferred until
+        # after VLM verification (see video_processing_service / video_controller),
+        # so the detection-side path returns raw single-type activities.
+        from ..utils.config import get_settings as _get_settings
+        if not _get_settings().concurrent_grouping_after_vlm:
+            from ..services.concurrent_activity_grouping_service import get_concurrent_grouping_service
+            concurrent_grouping_service = get_concurrent_grouping_service()
+            all_activities = concurrent_grouping_service.group_concurrent_activities(all_activities, run_dir)
+        # else: grouping deferred to post-VLM in video_processing_service / video_controller
 
         processing_time = time.time() - start_time
 
