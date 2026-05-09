@@ -202,6 +202,370 @@ class VlmVerificationService:
                 logger.debug("[vlm] error closing async client", exc_info=True)
 
     # ------------------------------------------------------------------
+    # Merged-activity sub-type helpers
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _normalise_object_type(raw: Any) -> str:
+        return (raw or "").strip().lower().replace(" ", "_") if isinstance(raw, str) else ""
+
+    def _extract_subtype_views(
+        self, activity: Dict[str, Any]
+    ) -> List[Tuple[str, Any, Dict[str, Any]]]:
+        """For a ``_isCombined`` activity, return one VLM view per distinct
+        verifiable sub-type.
+
+        Concurrent-grouping merges co-occurring detections (e.g. writing+phone
+        in the same minute bucket) into a single posted violation under one
+        primary ``objectType``. The verifier historically only checked the
+        primary type, so a real ``writing`` event would protect a co-merged
+        ``cell_phone`` FP from being filtered.
+
+        IMPORTANT — each sub-view inherits the parent's FULL ``_sourceActivities``
+        list, not a sub-type-filtered subset. Rationale: the classical
+        detector frequently mis-tags the best-evidence frame (e.g. the YOLO
+        ``cell phone`` confusion on white logbook papers tagged the most
+        clearly-writing frame as ``cell_phone``). Filtering keyframes by the
+        Pipeline-1 tag would hide that evidence from the writing-prompt VLM
+        call. Sending all keyframes lets each sub-type's prompt examine the
+        full burst — the prompts are already written to answer "did this
+        happen in any frame?", which is the correct semantic across the
+        merged window.
+
+        Returns an empty list when the activity is not combined, only one
+        distinct verifiable sub-type is present, or the parallel
+        ``objectTypes`` / ``activityTypes`` arrays are missing.
+        """
+        if not activity.get("_isCombined"):
+            return []
+        object_types = activity.get("objectTypes") or []
+        activity_types = activity.get("activityTypes") or []
+        if not object_types or len(object_types) != len(activity_types):
+            return []
+
+        # De-duplicate while preserving order; non-verifiable sub-types are
+        # skipped (they pass through unchanged at the parent level).
+        seen: set = set()
+        views: List[Tuple[str, Any, Dict[str, Any]]] = []
+        descriptions = activity.get("descriptions") or []
+        for i, raw_obj in enumerate(object_types):
+            sub_obj = self._normalise_object_type(raw_obj)
+            if not sub_obj or sub_obj in seen:
+                continue
+            if sub_obj not in self._verify_set or sub_obj not in _PROMPTS_BY_OBJECT_TYPE:
+                continue
+            sub_act_type = activity_types[i]
+            seen.add(sub_obj)
+
+            # Shallow copy: only override the singular fields (objectType /
+            # activityType / des). _sourceActivities is intentionally NOT
+            # filtered — see the docstring rationale.
+            view = dict(activity)
+            view["objectType"] = sub_obj
+            view["activityType"] = sub_act_type
+            try:
+                view["des"] = descriptions[i] if i < len(descriptions) else activity.get("des")
+            except Exception:  # noqa: BLE001
+                pass
+            views.append((sub_obj, sub_act_type, view))
+
+        # Only treat as multi-sub when at least 2 distinct verifiable
+        # sub-types exist; a single sub-type falls through to the regular
+        # single-entry path so we avoid the aggregation overhead.
+        if len(views) < 2:
+            return []
+        return views
+
+    @staticmethod
+    def _strip_subtypes_from_parent(
+        parent: Dict[str, Any], drop_object_types: set, drop_activity_types: set
+    ) -> None:
+        """Remove `drop_object_types` from the parent's parallel sub-type
+        arrays. Mutates in place.
+
+        Keeps `_sourceClips`, `_sourceActivities`, `objectTypes`,
+        `activityTypes`, `descriptions` aligned. Updates singular
+        `objectType` / `activityType` / `des` to the first surviving
+        sub-type so downstream code (which reads the singular fields)
+        still sees a coherent activity.
+
+        ``activityClip`` and ``activityImage`` are intentionally NOT
+        regenerated — the merged clip already exists on disk and the
+        partial-strip case is rare enough that re-encoding per drop would
+        cost more than the visual artefact of a slightly-too-long clip.
+        """
+        old_obj = parent.get("objectTypes") or []
+        old_act = parent.get("activityTypes") or []
+        old_desc = parent.get("descriptions") or []
+
+        keep_obj: List[Any] = []
+        keep_act: List[Any] = []
+        keep_desc: List[Any] = []
+        for i in range(min(len(old_obj), len(old_act))):
+            sub_obj_norm = (
+                VlmVerificationService._normalise_object_type(old_obj[i])
+            )
+            if sub_obj_norm in drop_object_types:
+                continue
+            keep_obj.append(old_obj[i])
+            keep_act.append(old_act[i])
+            if i < len(old_desc):
+                keep_desc.append(old_desc[i])
+
+        parent["objectTypes"] = keep_obj
+        parent["activityTypes"] = keep_act
+        parent["descriptions"] = keep_desc
+
+        # Filter _sourceActivities and _sourceClips by the dropped numeric
+        # activity types. _sourceClips is a flat list of paths whose
+        # filenames contain the activity-type slug (e.g. "_cell_phone_") —
+        # but the authoritative join key is _sourceActivities[*].clip, so we
+        # rebuild _sourceClips from the surviving _sourceActivities to keep
+        # the two lists consistent.
+        old_src = parent.get("_sourceActivities") or []
+        new_src = [s for s in old_src if s.get("activityType") not in drop_activity_types]
+        parent["_sourceActivities"] = new_src
+        if "_sourceClips" in parent:
+            parent["_sourceClips"] = [s.get("clip") for s in new_src if s.get("clip")]
+
+        # Update singular fields to the dominant survivor.
+        if keep_obj and keep_act:
+            parent["objectType"] = keep_obj[0]
+            parent["activityType"] = keep_act[0]
+            if keep_desc:
+                # Re-derive `des` from the surviving description list, joined
+                # with "; " to match how merged activities are originally
+                # written by concurrent_activity_grouping_service.
+                parent["des"] = "; ".join(str(d) for d in keep_desc)
+
+    def _aggregate_subtype_results(
+        self,
+        parent: Dict[str, Any],
+        subtype_results: List[Tuple[str, Any, Dict[str, Any]]],
+    ) -> Dict[str, Any]:
+        """Aggregate per-sub-type reviews into a single pseudo-review.
+
+        ``subtype_results`` is a list of ``(sub_object_type, sub_activity_type,
+        review)`` tuples — one per sub-type the verifier ran. The aggregate
+        feeds the existing single-result Phase-3 logic (drop / motion-override
+        / telemetry) so we don't duplicate that branch for the multi-sub case.
+
+        Drop policy:
+          - For each sub-type, mark drop if status==OK AND verdict==FALSE_POSITIVE
+            AND confidence >= drop_threshold. SKIPPED/PARSE_ERROR sub-types
+            never count as drops (fail-open).
+          - If ALL OK sub-types are drops → aggregate verdict=FALSE_POSITIVE
+            with the lowest contributing confidence, so the existing Phase-3
+            drop path drops the parent.
+          - If SOME drops → strip those sub-types from the parent in place;
+            aggregate verdict=TRUE_POSITIVE with the highest surviving
+            confidence so the parent is kept.
+          - If NO drops → aggregate verdict=TRUE_POSITIVE with the highest
+            confidence among surviving sub-types.
+
+        Motion observations are propagated by taking the FIRST sub-type whose
+        review observed a STOPPED cue (so the existing motion-override path
+        can flip motionState). If none observed STOPPED, leave empty.
+        """
+        # Collect each sub-type's verdict block; SKIPPED entries don't get a
+        # verdict but are still reported in the audit blob.
+        per_subtype_audit: Dict[str, Dict[str, Any]] = {}
+        ok_subtypes: List[Tuple[str, Any, Dict[str, Any]]] = []
+        any_skipped_unavailable = False
+        any_parse_error = False
+        latency_total = 0.0
+        frames_total = 0
+
+        for sub_obj, sub_act, review in subtype_results:
+            per_subtype_audit[sub_obj] = review
+            try:
+                latency_total += float(review.get("latency_sec") or 0.0)
+                frames_total += int(review.get("frames_sent") or 0)
+            except (TypeError, ValueError):
+                pass
+            status = review.get("status")
+            verdict_dict = review.get("verdict") or {}
+            v = (verdict_dict.get("verdict") if isinstance(verdict_dict, dict)
+                 else None)
+            try:
+                conf_log = float(verdict_dict.get("confidence") or 0.0) if isinstance(verdict_dict, dict) else 0.0
+            except (TypeError, ValueError):
+                conf_log = 0.0
+            logger.info(
+                "[vlm] SUBTYPE VERDICT: parent activity=%s sub=%s status=%s "
+                "verdict=%s conf=%.2f",
+                parent.get("activityType"), sub_obj, status, v, conf_log,
+            )
+            if status == "OK":
+                ok_subtypes.append((sub_obj, sub_act, review))
+            elif status == "SKIPPED_VLM_UNAVAILABLE":
+                any_skipped_unavailable = True
+            elif status == "PARSE_ERROR":
+                any_parse_error = True
+            elif status in ("PRE_GATE_DROP_NO_SUBJECT", "PRE_GATE_DROP_NO_OBJECT"):
+                # Treat pre-gate drops the same as a confident FP for this
+                # sub-type — they are deterministic FP signals.
+                ok_subtypes.append((sub_obj, sub_act, review))
+
+        # If nothing produced an actionable verdict, fail open.
+        if not ok_subtypes:
+            if any_skipped_unavailable:
+                status_out = "SKIPPED_VLM_UNAVAILABLE"
+            elif any_parse_error:
+                status_out = "PARSE_ERROR"
+            else:
+                status_out = "SKIPPED_NO_IMAGE"
+            return {
+                "status": status_out,
+                "verdict": None,
+                "latency_sec": round(latency_total, 3),
+                "frames_sent": frames_total,
+                "model": self.settings.vlm_model,
+                "subtype_reviews": per_subtype_audit,
+            }
+
+        # Decide which sub-types to drop.
+        threshold = float(self.settings.vlm_drop_threshold)
+        drop_object_types: set = set()
+        drop_activity_types: set = set()
+        survivor_max_conf = 0.0
+        worst_drop_conf = 1.0
+        survivor_uncertain_present = False
+        propagated_train_state: Optional[str] = None
+        propagated_motion_evidence: Optional[str] = None
+
+        for sub_obj, sub_act, review in ok_subtypes:
+            verdict_dict = review.get("verdict") or {}
+            v = verdict_dict.get("verdict")
+            try:
+                conf = float(verdict_dict.get("confidence") or 0.0)
+            except (TypeError, ValueError):
+                conf = 0.0
+            # Pre-gate drops carry confidence=1.0 verdict=FALSE_POSITIVE
+            # already, so the same predicate handles both paths.
+            is_drop = (v == "FALSE_POSITIVE" and conf >= threshold)
+            if is_drop:
+                drop_object_types.add(sub_obj)
+                drop_activity_types.add(sub_act)
+                worst_drop_conf = min(worst_drop_conf, conf)
+                logger.info(
+                    "[vlm] SUBTYPE DROP candidate: parent activity=%s sub=%s "
+                    "verdict=%s conf=%.2f reason=%r",
+                    parent.get("activityType"),
+                    sub_obj,
+                    v,
+                    conf,
+                    (verdict_dict.get("reasoning") or "")[:120],
+                )
+            else:
+                survivor_max_conf = max(survivor_max_conf, conf)
+                if v == "UNCERTAIN":
+                    survivor_uncertain_present = True
+                # Capture motion observation from a survivor for parent override.
+                if propagated_train_state is None:
+                    train_obs = (verdict_dict.get("train_appears_to_be") or "").strip().lower()
+                    if train_obs:
+                        propagated_train_state = train_obs
+                        propagated_motion_evidence = (
+                            str(verdict_dict.get("motion_evidence") or "")
+                        )
+
+        all_dropped = (len(drop_object_types) == len(ok_subtypes))
+
+        # Shadow mode: record per-sub-type verdicts for audit but never
+        # strip or drop. Pipeline-1's verdict is authoritative; the
+        # verifier is observe-only until the operator flips
+        # vlm_shadow_mode=False. Mirrors the single-result shadow-mode
+        # contract enforced by Phase-3's `should_drop` predicate.
+        if self.settings.vlm_shadow_mode:
+            agg_verdict = {
+                "verdict": "TRUE_POSITIVE",
+                "confidence": max(survivor_max_conf, worst_drop_conf if worst_drop_conf < 1.0 else 0.0),
+                "reasoning": (
+                    "shadow mode: per-sub-type verdicts recorded, no drops"
+                ),
+                "subtypes_dropped_in_enforcement": sorted(drop_object_types),
+            }
+            if propagated_train_state:
+                agg_verdict["train_appears_to_be"] = propagated_train_state
+                agg_verdict["motion_evidence"] = propagated_motion_evidence or ""
+            return {
+                "status": "OK",
+                "verdict": agg_verdict,
+                "latency_sec": round(latency_total, 3),
+                "frames_sent": frames_total,
+                "model": self.settings.vlm_model,
+                "subtype_reviews": per_subtype_audit,
+                "subtypes_dropped": [],
+                "subtypes_kept": sorted(set(s for s, _, _ in ok_subtypes)),
+            }
+
+        if all_dropped:
+            # Aggregate verdict drives the existing single-result drop path.
+            agg_verdict = {
+                "verdict": "FALSE_POSITIVE",
+                "confidence": worst_drop_conf,
+                "reasoning": (
+                    "all verifiable sub-types ({}) returned FALSE_POSITIVE "
+                    "with confidence >= {:.2f}; merged activity is fully a FP"
+                ).format(",".join(sorted(drop_object_types)), threshold),
+                "subtypes_dropped": sorted(drop_object_types),
+            }
+            if propagated_train_state:
+                agg_verdict["train_appears_to_be"] = propagated_train_state
+                agg_verdict["motion_evidence"] = propagated_motion_evidence or ""
+            return {
+                "status": "OK",
+                "verdict": agg_verdict,
+                "latency_sec": round(latency_total, 3),
+                "frames_sent": frames_total,
+                "model": self.settings.vlm_model,
+                "subtype_reviews": per_subtype_audit,
+                "subtypes_dropped": sorted(drop_object_types),
+                "subtypes_kept": [],
+            }
+
+        # Partial drop (or no drops). Strip the FP sub-types from the parent.
+        if drop_object_types:
+            self._strip_subtypes_from_parent(
+                parent, drop_object_types, drop_activity_types
+            )
+            logger.info(
+                "[vlm] SUBTYPE STRIP: parent now objectTypes=%s "
+                "activityTypes=%s (stripped: %s)",
+                parent.get("objectTypes"),
+                parent.get("activityTypes"),
+                sorted(drop_object_types),
+            )
+
+        agg_v = "UNCERTAIN" if survivor_uncertain_present else "TRUE_POSITIVE"
+        agg_verdict = {
+            "verdict": agg_v,
+            "confidence": max(survivor_max_conf, 0.0),
+            "reasoning": (
+                "merged activity verified per sub-type; survivors=[{}] dropped=[{}]"
+            ).format(
+                ",".join(sorted(set(s for s, _, _ in ok_subtypes) - drop_object_types)),
+                ",".join(sorted(drop_object_types)) or "none",
+            ),
+            "subtypes_dropped": sorted(drop_object_types),
+        }
+        if propagated_train_state:
+            agg_verdict["train_appears_to_be"] = propagated_train_state
+            agg_verdict["motion_evidence"] = propagated_motion_evidence or ""
+        return {
+            "status": "OK",
+            "verdict": agg_verdict,
+            "latency_sec": round(latency_total, 3),
+            "frames_sent": frames_total,
+            "model": self.settings.vlm_model,
+            "subtype_reviews": per_subtype_audit,
+            "subtypes_dropped": sorted(drop_object_types),
+            "subtypes_kept": sorted(
+                set(s for s, _, _ in ok_subtypes) - drop_object_types
+            ),
+        }
+
+    # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
     def is_enabled(self) -> bool:
@@ -330,16 +694,36 @@ class VlmVerificationService:
         cap = int(self.settings.vlm_max_activities_per_run or 0)
 
         # Phase 1: classify activities, preserving input order in `kept`.
-        # `to_verify` collects (index_in_kept, activity, prompt, object_type)
-        # so we can patch the result back in-place after gather() returns.
+        # `to_verify` collects (index_in_kept, activity, prompt, object_type,
+        #                       parent_kept_idx, sub_object_type, sub_act_type)
+        # for each VLM dispatch. For single-sub activities sub_object_type ==
+        # object_type and parent_kept_idx == index_in_kept; for multi-sub
+        # (concurrent-merged) activities we generate one entry per sub-type
+        # and aggregate after gather(). Aggregation keys off `subtype_groups`.
         kept: List[Dict[str, Any]] = []
-        to_verify: List[Tuple[int, Dict[str, Any], str, str]] = []
+        to_verify: List[Tuple[int, Dict[str, Any], str, str, int, str, Any]] = []
+        # Map parent_kept_idx -> ordered list of sub-types being verified for
+        # that parent. A parent appears here only when len(views) >= 2.
+        subtype_groups: Dict[int, List[Tuple[str, Any]]] = {}
         verified_count = 0
 
         for act in activities:
             try:
                 object_type = (act.get("objectType") or "").strip().lower().replace(" ", "_")
-                if object_type not in self._verify_set or object_type not in _PROMPTS_BY_OBJECT_TYPE:
+                # An activity is "verifiable" if its primary objectType OR any
+                # of its concurrent-merged sub-types match the verify set.
+                # `_extract_subtype_views` returns [] when the activity has
+                # only a single verifiable sub-type — primary path covers
+                # that case. When primary is non-verifiable but a sub-type
+                # IS verifiable (rare but possible after a future change to
+                # concurrent grouping picking the wrong primary), the
+                # sub-type path still kicks in.
+                subtype_views = self._extract_subtype_views(act)
+                primary_verifiable = (
+                    object_type in self._verify_set
+                    and object_type in _PROMPTS_BY_OBJECT_TYPE
+                )
+                if not primary_verifiable and not subtype_views:
                     stats["skipped_type"] += 1
                     kept.append(act)
                     continue
@@ -381,11 +765,26 @@ class VlmVerificationService:
                     continue
 
                 # Eligible — schedule for the VLM call.
-                prompt = _PROMPTS_BY_OBJECT_TYPE[object_type]
                 kept_idx = len(kept)
                 kept.append(act)
-                to_verify.append((kept_idx, act, prompt, object_type))
-                verified_count += 1
+                if subtype_views:
+                    # Multi-sub: one VLM call per distinct verifiable sub-type.
+                    # Each call uses a sub-view (shallow copy of `act` with
+                    # `_sourceActivities` filtered to that sub-type's clips)
+                    # so `_resolve_keyframes` sees only the right frames.
+                    subtype_groups[kept_idx] = [(s, a) for (s, a, _v) in subtype_views]
+                    for sub_obj, sub_act_type, sub_view in subtype_views:
+                        prompt = _PROMPTS_BY_OBJECT_TYPE[sub_obj]
+                        to_verify.append(
+                            (kept_idx, sub_view, prompt, sub_obj, kept_idx, sub_obj, sub_act_type)
+                        )
+                        verified_count += 1
+                else:
+                    prompt = _PROMPTS_BY_OBJECT_TYPE[object_type]
+                    to_verify.append(
+                        (kept_idx, act, prompt, object_type, kept_idx, object_type, act.get("activityType"))
+                    )
+                    verified_count += 1
             except Exception as classify_exc:  # noqa: BLE001
                 # Even classification can blow up (weird types, bad dicts).
                 # Keep the activity, mark it skipped, never lose it.
@@ -405,30 +804,55 @@ class VlmVerificationService:
         if to_verify:
             sem = asyncio.Semaphore(self._concurrency)
 
-            async def _run_one(idx: int, activity: Dict[str, Any], prompt: str,
-                               obj_type: str) -> Tuple[int, Dict[str, Any]]:
+            async def _run_one(
+                idx: int, activity: Dict[str, Any], prompt: str, obj_type: str,
+                parent_kept_idx: int, sub_obj: str, sub_act: Any,
+            ) -> Tuple[int, str, Any, Dict[str, Any]]:
                 try:
                     async with sem:
                         review = await self._verify_one_async(activity, prompt, obj_type)
-                    return idx, review
+                    return parent_kept_idx, sub_obj, sub_act, review
                 except Exception as e:  # noqa: BLE001
                     # CRITICAL: never let a single activity's failure
                     # propagate up and truncate the kept list.
                     logger.exception(
-                        "[vlm] verify_one failed for activity id=%s type=%s",
-                        activity.get("id"), activity.get("activityType"),
+                        "[vlm] verify_one failed for activity id=%s type=%s sub=%s",
+                        activity.get("id"), activity.get("activityType"), sub_obj,
                     )
-                    return idx, {
+                    return parent_kept_idx, sub_obj, sub_act, {
                         "status": "SKIPPED_VLM_UNAVAILABLE",
                         "verdict": "SKIPPED_VLM_UNAVAILABLE",
                         "reason": type(e).__name__,
                         "error": str(e)[:200],
                     }
 
-            results = await asyncio.gather(
-                *(_run_one(i, a, p, o) for (i, a, p, o) in to_verify),
+            sub_results = await asyncio.gather(
+                *(_run_one(i, a, p, o, p_idx, s_obj, s_act)
+                  for (i, a, p, o, p_idx, s_obj, s_act) in to_verify),
                 return_exceptions=False,
             )
+
+            # Aggregate sub-type results into the (kept_idx, review) shape
+            # the existing Phase-3 logic expects. For multi-sub parents,
+            # `_aggregate_subtype_results` may mutate the parent activity in
+            # `kept` to strip FP sub-types; the resulting pseudo-review then
+            # carries the aggregate verdict that drives drop / motion-override
+            # / telemetry uniformly with the single-sub path.
+            grouped: Dict[int, List[Tuple[str, Any, Dict[str, Any]]]] = {}
+            for parent_kept_idx, sub_obj, sub_act, review in sub_results:
+                grouped.setdefault(parent_kept_idx, []).append(
+                    (sub_obj, sub_act, review)
+                )
+            results: List[Tuple[int, Dict[str, Any]]] = []
+            for parent_kept_idx, items in grouped.items():
+                if parent_kept_idx in subtype_groups and len(items) >= 2:
+                    aggregate = self._aggregate_subtype_results(
+                        kept[parent_kept_idx], items
+                    )
+                    results.append((parent_kept_idx, aggregate))
+                else:
+                    # Single-sub: pass through verbatim.
+                    results.append((parent_kept_idx, items[0][2]))
 
             # Phase 3: post-process each result, mutate the activity in
             # `kept`, and update stats / drop flags.
@@ -871,15 +1295,21 @@ class VlmVerificationService:
                     ],
                 }
             ],
-            # 700 tokens covers the per-frame chain-of-thought block
-            # (`frame_observations`) added to the writing prompt without
-            # blowing the vLLM `max_model_len=3072` budget once the image
-            # strip + prompt text are accounted for (≈2300 input tokens).
-            # The old 400-token cap truncated the JSON response mid-field
-            # and dropped us into the parse-error fallback. 1024 was over
-            # the budget and the endpoint returned HTTP 400.
-            "max_tokens": 700,
+            # 400 tokens: with frame_observations removed from the writing
+            # schema, the worst-case response is ~250 tokens (verdict +
+            # ~12 structured fields + reasoning + motion_evidence). 400
+            # leaves comfortable headroom and stays well under the
+            # 3072 - 2563 = 509 vLLM budget for the 5-keyframe writing
+            # case (the tightest input). Shorter prompts (cell_phone,
+            # sleep, etc.) all fit easily.
+            "max_tokens": 400,
             "temperature": 0.0,
+            # Constrain vLLM to emit a JSON object — eliminates ```code-fence
+            # wrappers and stray prose that previously forced the tolerant
+            # `_parse_verdict` to do extraction. Truncation still produces
+            # an unparseable response, but the prompt-level reorder above
+            # ensures the verdict block appears before any token cap is hit.
+            "response_format": {"type": "json_object"},
         }
 
         url = f"{self.settings.vlm_base_url.rstrip('/')}/chat/completions"
@@ -977,6 +1407,15 @@ class VlmVerificationService:
 
         parsed = _parse_verdict(text)
         if "parse_error" in parsed:
+            logger.warning(
+                "[vlm] PARSE_ERROR for activity type=%s at t=%s object=%s: %s "
+                "| raw_text_full=%r",
+                activity.get("activityType"),
+                activity.get("activityStartTime"),
+                object_type,
+                parsed.get("parse_error"),
+                (text or "")[:1500],
+            )
             return {
                 "status": "PARSE_ERROR",
                 "verdict": parsed,

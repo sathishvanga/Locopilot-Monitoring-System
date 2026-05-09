@@ -206,63 +206,65 @@ density. Some peripheral cabin context (a sliver of door, window, or floor) is
 usually still visible at the edges — use whatever you can see; do NOT invent
 content you cannot see.
 
-================ STEP 1: PER-FRAME OBSERVATION (mandatory) ================
-For each frame in the strip, fill `frame_observations` with one entry. Do this
-BEFORE you choose a verdict. Keep each entry COMPACT — the JSON below is the
-full schema; do not add extra fields.
-  {
-    "frame": <int, 1..N>,
-    "person": "LP" | "ALP" | "both" | "neither",
-    "hand_contact": "touching_page" | "hovering_near_page" | "holding_edge"
-                  | "in_lap" | "on_control" | "not_visible",
-    "object_in_hand": "pen" | "pencil" | "nothing" | "control" | "phone"
-                    | "radio" | "paper_only" | "unclear",
-    "head": "down_to_paper" | "forward" | "to_window" | "to_controls"
-          | "to_other_person" | "unclear"
-  }
-Outside-view observations go in the GLOBAL `motion_evidence` string below
-(not per frame), to keep this block short.
+================ STEP 1: PER-FRAME OBSERVATION (mental, not emitted) ================
+Mentally examine EACH frame of the strip in turn — for each frame, identify
+the person, what their hand is doing, what (if anything) is in their hand,
+and where their head is pointing. Do this BEFORE committing to a verdict.
 
-The verdict MUST be consistent with these per-frame entries. If you write
-`hand_contact: "hovering_near_page"` for every frame, you may NOT then set
-`hand_actually_on_book: true` — that is contradictory and will be rejected.
+The structured boolean fields you DO emit (``hand_actually_on_book``,
+``pen_in_hand``, ``actively_handling_papers``, ``head_oriented_to_book``,
+etc.) summarise these observations across the strip. Each boolean must be
+true ONLY IF the condition was confirmed in at least one frame for the
+SAME person. Outside-view cues go in the ``motion_evidence`` string.
 
 ================ STEP 2: WRITING VERDICT ================
-True writing requires ALL FOUR conditions, VISIBLY CONFIRMED for the SAME person
-in at least one frame. Posture alone is NEVER sufficient.
+There are TWO valid TP paths. Either path independently confirms writing for
+the SAME person. If NEITHER path is satisfied, the verdict is FALSE_POSITIVE.
 
-  (a) An OPEN book / notepad / paper is visible (closed books do NOT count;
-      bound logbooks lying flat on the desk do not count unless the pages are
-      open and visible).
-  (b) That person's hand is in PHYSICAL CONTACT with the open page — at least
-      one frame must show `hand_contact = "touching_page"`. Hovering near,
-      holding the paper edge, resting in the lap, or extending toward the desk
-      do NOT qualify. If unsure whether it is contact or hover, choose hover —
-      hover is the safer default.
-  (c) EITHER a pen/pencil is clearly visible in that hand (held by fingertips,
-      tip toward the paper) OR a bare fingertip is unambiguously pressed onto
-      the page surface. A hand near papers without a pen and without visible
-      fingertip-on-paper is NOT writing.
-  (d) Head is tilted DOWN toward the open page (head_orientation = "down_to_paper"
-      in the same frame).
+----- PATH A (open-page writing, strict) -----
+ALL FOUR conditions visibly confirmed for the SAME person in at least one frame:
+  (A.1) An OPEN book / notepad / paper is visible flat on the desk
+  (A.2) That person's hand is in PHYSICAL CONTACT with the open page —
+        `hand_contact = "touching_page"` in at least one frame.
+  (A.3) EITHER a pen/pencil is clearly visible in that hand OR a bare
+        fingertip is unambiguously pressed onto the page surface.
+  (A.4) Head is tilted DOWN toward the open page (`head = "down_to_paper"`).
 
-If (b) AND (c) are not BOTH confirmed in at least one frame for the SAME person,
-the verdict is FALSE_POSITIVE with confidence ≥ 0.8 — the pipeline misfired.
-Do NOT default to TRUE_POSITIVE just because hands and a book share the frame.
+----- PATH B (railway logbook handling, holistic) -----
+Indian railway logbook entries are commonly made while HOLDING the bound
+logbook or its folded sheets in the hand (not laid flat on the desk). From
+the overhead camera, "touching the page" is hard to distinguish from
+"holding the page edge" — the salient cue is the PEN IN HAND. ALL of the
+following must hold across the strip (different conditions can be confirmed
+in different frames, but all must apply to the SAME person):
+  (B.1) A pen / pencil is CLEARLY VISIBLE in the person's hand in at least
+        one frame (`object_in_hand = "pen"` or `"pencil"`). This is the
+        load-bearing requirement — without a pen this path does not apply.
+  (B.2) The person is ACTIVELY HANDLING papers / a folded sheet / a logbook
+        — gripping, turning, writing-on, or steadying — across at least
+        one frame. Static papers untouched on the desk do NOT count.
+  (B.3) Head tilted DOWN toward the papers in at least one frame
+        (`head = "down_to_paper"`).
+  (B.4) The pen-bearing hand is NOT on a control lever / brake handle /
+        throttle / radio handset. Verify the hand is on or over PAPER.
+
+If neither Path A nor Path B is satisfied, return FALSE_POSITIVE with
+confidence ≥ 0.8 — the pipeline misfired. Do NOT default to TRUE_POSITIVE
+just because hands and a book share the frame.
 
 Common confounders that are NOT writing (return FALSE_POSITIVE):
-  - Hands in the lap with head bent down (idle/tired posture)
-  - A book sitting unattended on the desk while crew operates controls
+  - Hands in the lap with head bent down and NO pen visible (idle/tired posture)
+  - A book or papers sitting unattended on the desk while crew operates controls
   - One person reaches/gestures toward papers on the desk while a DIFFERENT person
     actually has the book — the proximity-fired bbox can latch onto the wrong
     person; pick the writer correctly via `which_person`, or return FALSE_POSITIVE
     if neither is genuinely writing
   - Holding a folded paper or clipboard at chest level while looking forward
+    AND no pen visible (papers without a pen is "reviewing", not "writing")
   - Holding the brake handle / throttle lever — verify the hand is on PAPER,
     not on a metal control
   - Holding a railway radio handset (brick-shaped, often with coiled cord)
-  - Hand extended toward the desk but not in contact (hovering / pointing /
-    reaching) — this is the most common FP; require visible contact
+  - Hand extended toward the desk but not in contact AND no pen visible
 
 ================ STEP 3: TRAIN MOTION OBSERVATION ================
 Independently observe whether the train is moving. Use cues OUTSIDE the cabin
@@ -308,27 +310,33 @@ ANTI-HALLUCINATION RULES for motion:
      violation OR keeps a false one — both are bad.
 
 ================ OUTPUT ================
-Reply with STRICT JSON ONLY (no prose, no code fence):
+Reply with STRICT JSON ONLY (no prose, no code fence). Emit exactly these
+keys, in this order:
 {
-  "frame_observations": [ <one entry per frame as defined in STEP 1> ],
   "verdict": "TRUE_POSITIVE" | "FALSE_POSITIVE" | "UNCERTAIN",
   "which_person": "LP" | "ALP" | "neither" | "unclear",
-  "confidence": <float 0.0 to 1.0. Set ≥ 0.8 when you are sure of your verdict
-                 (either direction). Use ≤ 0.5 only for genuine ambiguity.
-                 Confidence is your certainty in the VERDICT, not in the
-                 absence of activity>,
-  "book_visible_on_desk": <true|false>,
+  "confidence": <float 0.0 to 1.0. Set ≥ 0.8 when sure (either direction).
+                 ≤ 0.5 only for genuine ambiguity. Confidence is your
+                 certainty in the VERDICT, not in the absence of activity>,
+  "book_visible_on_desk": <true|false — Path A signal: open page on the desk>,
   "book_is_open": <true|false>,
-  "hand_actually_on_book": <true|false — must be true ONLY IF at least one
-                             frame_observations entry has hand_contact =
-                             "touching_page" for the same person named in
-                             which_person; otherwise false>,
+  "hand_actually_on_book": <true|false — Path A signal: writer's hand in
+                             physical contact with the open page in at least
+                             one frame; "hovering near" is NOT contact>,
   "head_oriented_to_book": <true|false>,
+  "pen_in_hand": <true|false — Path B signal (also satisfies Path A.3):
+                   a pen / pencil is clearly visible held by the writer's
+                   fingers in at least one frame. Load-bearing for Path B>,
+  "actively_handling_papers": <true|false — Path B signal: writer is
+                                gripping / turning / writing-on / steadying
+                                papers or a folded logbook IN HAND (not
+                                static-on-desk) in at least one frame>,
+  "tp_path": "A" | "B" | "neither" | "unclear",
   "primary_object_in_hand": "pen" | "brake_or_throttle" | "radio_handset" | "phone" | "nothing_visible" | "unclear",
   "train_appears_to_be": "running" | "stopped" | "unclear",
-  "motion_evidence": "<short string citing the SPECIFIC visual cue and frame, e.g. 'FRAME 3: open door, person on platform', 'static scenery across frames; platform visible at right', 'FRAME 2: motion blur in right window'. Use the tokens 'open door' / 'platform' / 'station' verbatim when applicable>",
-  "evidence_frame": <integer: frame number 1..N giving strongest writing evidence; 0 if single-frame input or no decisive frame>,
-  "reasoning": "<one short sentence describing what you actually see, naming the FRAME number>"
+  "motion_evidence": "<short string citing SPECIFIC visual cue + frame number, e.g. 'FRAME 3: open door, person on platform', 'static scenery across frames; platform visible at right', 'FRAME 2: motion blur in right window'. Use 'open door' / 'platform' / 'station' verbatim when applicable>",
+  "evidence_frame": <integer 1..N for strongest writing evidence; 0 if no decisive frame>,
+  "reasoning": "<one short sentence: what you see, naming the FRAME number>"
 }"""
 
 _PROMPT_EATING = """You are a railway safety auditor reviewing CCTV from a locomotive cabin.
@@ -792,30 +800,46 @@ def _consistency_check(
         return None
 
     if object_type == "writing":
-        if not parsed.get("hand_actually_on_book"):
-            return "TP claimed but hand_actually_on_book=false"
-        if not parsed.get("book_visible_on_desk"):
-            return "TP claimed but book_visible_on_desk=false"
-        # Per-frame chain-of-thought consistency. The new prompt asks the
-        # VLM to fill `frame_observations` BEFORE issuing a verdict; if it
-        # never observed `hand_contact = "touching_page"` in any frame, a
-        # TP verdict contradicts its own observations and is the exact
-        # CH2_223 failure mode (hand hovering near desk → hallucinated
-        # "hand_actually_on_book: true"). Demote rather than trust the
-        # boolean. Missing/empty `frame_observations` is treated as
-        # legacy-prompt output and skipped to keep the check fail-safe.
-        frame_obs = parsed.get("frame_observations")
-        if isinstance(frame_obs, list) and frame_obs:
-            touched = any(
-                isinstance(fo, dict)
-                and (fo.get("hand_contact") or "").strip().lower() == "touching_page"
-                for fo in frame_obs
+        # Two independent TP paths. Accept TP if EITHER path's structural
+        # fields are coherent. Demote to UNCERTAIN only when BOTH paths
+        # contradict the verdict.
+        #
+        # Path A (open-page writing): hand_actually_on_book + book_visible_on_desk.
+        # Path B (railway-logbook handling): pen_in_hand + actively_handling_papers.
+        path_a_ok = bool(
+            parsed.get("hand_actually_on_book")
+            and parsed.get("book_visible_on_desk")
+        )
+        path_b_ok = bool(
+            parsed.get("pen_in_hand")
+            and parsed.get("actively_handling_papers")
+        )
+        if not (path_a_ok or path_b_ok):
+            # Compose a precise reason naming whichever paths actually failed,
+            # so disagreement-queue audits can identify prompt-level blind
+            # spots vs. genuine VLM hallucinations.
+            reasons = []
+            if not parsed.get("hand_actually_on_book"):
+                reasons.append("hand_actually_on_book=false")
+            if not parsed.get("book_visible_on_desk"):
+                reasons.append("book_visible_on_desk=false")
+            if not parsed.get("pen_in_hand"):
+                reasons.append("pen_in_hand=false")
+            if not parsed.get("actively_handling_papers"):
+                reasons.append("actively_handling_papers=false")
+            return (
+                "TP claimed but neither Path A nor Path B holds: "
+                + ", ".join(reasons)
             )
-            if not touched:
-                return (
-                    "TP claimed but no frame_observations entry has "
-                    "hand_contact='touching_page'"
-                )
+
+        # frame_observations was removed from the writing schema in the
+        # 2026-05-09 max_tokens-truncation fix; the per-frame array was the
+        # only thing that ever truncated and forced parse_error fallbacks.
+        # The remaining structured booleans (hand_actually_on_book,
+        # pen_in_hand, actively_handling_papers, head_oriented_to_book)
+        # already carry the same per-frame signal as aggregates, and Path A
+        # / Path B above are sufficient to catch cooperatively-filled
+        # contradictory outputs without the array.
         return None
 
     if object_type == "eating_drinking":
@@ -920,21 +944,151 @@ def _has_hard_stopped_cue(motion_evidence: str) -> bool:
     return False
 
 
+_TRUNCATION_VERDICT_RE = re.compile(
+    r'"verdict"\s*:\s*"(TRUE_POSITIVE|FALSE_POSITIVE|UNCERTAIN)"'
+)
+_TRUNCATION_CONFIDENCE_RE = re.compile(r'"confidence"\s*:\s*([\d.]+)')
+_TRUNCATION_BOOL_FIELDS: tuple = (
+    "hand_actually_on_book",
+    "book_visible_on_desk",
+    "book_is_open",
+    "pen_in_hand",
+    "actively_handling_papers",
+    "head_oriented_to_book",
+    "object_at_mouth",
+    "bag_visible",
+    "hand_in_or_on_bag",
+    "posture_oriented_to_bag",
+    "eyes_closed",
+    "body_reclined",
+    "hands_still",
+    "head_motionless_across_frames",
+    "sustained_across_frames",
+    "lp_visible_anywhere",
+    "alp_visible_anywhere",
+    "partial_body_in_edge",
+    "cabin_empty_in_all_frames",
+    "duplicate_detections_likely",
+    "people_visible_only_through_window",
+    "posters_or_photos_on_wall",
+)
+_TRUNCATION_STRING_FIELDS: tuple = (
+    "which_person",
+    "primary_object_in_hand",
+    "object_in_hand",
+    "object_position",
+    "train_appears_to_be",
+    "motion_evidence",
+    "tp_path",
+    "primary_confounder",
+    "head_direction",
+    "reasoning",
+)
+_TRUNCATION_INT_FIELDS: tuple = (
+    "evidence_frame",
+    "distinct_persons_visible_in_cabin",
+)
+
+
 def _parse_verdict(raw_text: str) -> Dict[str, Any]:
-    """Best-effort JSON extraction. Tolerates ``code``-fenced output."""
+    """Best-effort JSON extraction. Handles three failure modes:
+
+    1. ``code-fence`` wrapped output (already tolerated): strip the fence.
+    2. Truncated JSON missing the closing ``}`` (common when the VLM hits
+       max_tokens mid-response): try appending closing braces and re-parse.
+    3. Severe truncation that breaks even string literals: regex-salvage the
+       verdict, confidence, and structured booleans from the partial text.
+       The ``verdict-first`` prompt schema places the load-bearing fields at
+       the top of the JSON, so salvage almost always recovers them.
+
+    The regex-salvage path returns a dict with ``_salvaged_from_truncation:
+    True`` so downstream code (consistency check, telemetry) can flag these
+    cases for prompt-tuning audit. A salvaged verdict still goes through the
+    normal verdict-enum validation in ``_verify_one_async``.
+    """
     t = (raw_text or "").strip()
     if t.startswith("```"):
         t = t.strip("`")
         if t.lower().startswith("json"):
             t = t[4:].strip()
     start = t.find("{")
-    end = t.rfind("}")
-    if start < 0 or end < 0:
+    if start < 0:
         return {"parse_error": "no_json_object", "raw_text": raw_text[:300]}
-    try:
-        return json.loads(t[start : end + 1])
-    except json.JSONDecodeError as exc:
-        return {"parse_error": f"json_decode: {exc}", "raw_text": raw_text[:300]}
+
+    # Phase 1: strict parse on the full {…} window.
+    end = t.rfind("}")
+    if end > start:
+        try:
+            return json.loads(t[start : end + 1])
+        except json.JSONDecodeError:
+            # Fall through to salvage paths below — strict parse failed,
+            # likely because the rfind picked a nested } and the outer one
+            # is missing, or there's a syntax error inside.
+            pass
+
+    # Phase 2: truncation salvage — append closing tokens and retry. We
+    # trim trailing whitespace + a dangling comma (common at the truncation
+    # point) before each attempt so the synthetic close lands on a valid
+    # token boundary. The inner tokens cover an unclosed array (``]``) and
+    # an unclosed dict-inside-array (``}]``) which are the most frequent
+    # truncation shapes.
+    body = t[start:].rstrip()
+    if body.endswith(","):
+        body = body[:-1].rstrip()
+    for closing in ("}", "]}", "}]}", '"}', '"]}'):
+        try:
+            return json.loads(body + closing)
+        except json.JSONDecodeError:
+            continue
+
+    # Phase 3: regex salvage. Extract the verdict and confidence (the only
+    # two truly load-bearing fields) plus whatever structured fields are
+    # legible. This is intentionally tolerant — partial extraction is
+    # better than dropping a real verdict because of one bad escape.
+    body_for_regex = body
+    salvaged: Dict[str, Any] = {}
+    m_verdict = _TRUNCATION_VERDICT_RE.search(body_for_regex)
+    if m_verdict:
+        salvaged["verdict"] = m_verdict.group(1)
+    m_conf = _TRUNCATION_CONFIDENCE_RE.search(body_for_regex)
+    if m_conf:
+        try:
+            salvaged["confidence"] = float(m_conf.group(1))
+        except ValueError:
+            pass
+    for field in _TRUNCATION_BOOL_FIELDS:
+        m = re.search(r'"' + field + r'"\s*:\s*(true|false)', body_for_regex)
+        if m:
+            salvaged[field] = (m.group(1) == "true")
+    for field in _TRUNCATION_STRING_FIELDS:
+        m = re.search(r'"' + field + r'"\s*:\s*"([^"\\]*)"', body_for_regex)
+        if m:
+            salvaged[field] = m.group(1)
+    for field in _TRUNCATION_INT_FIELDS:
+        m = re.search(r'"' + field + r'"\s*:\s*(-?\d+)', body_for_regex)
+        if m:
+            try:
+                salvaged[field] = int(m.group(1))
+            except ValueError:
+                pass
+
+    # Verdict alone is enough to act on; confidence falls back to 0.5
+    # (UNCERTAIN territory) when the regex can't find it.
+    if "verdict" in salvaged:
+        salvaged.setdefault("confidence", 0.5)
+        salvaged["_salvaged_from_truncation"] = True
+        logger.info(
+            "[vlm] verdict salvaged from truncated JSON: verdict=%s "
+            "confidence=%.2f fields=%d raw_len=%d",
+            salvaged.get("verdict"), salvaged.get("confidence", 0.0),
+            len(salvaged), len(raw_text or ""),
+        )
+        return salvaged
+
+    return {
+        "parse_error": "unable_to_salvage_verdict_from_truncation",
+        "raw_text": raw_text[:300],
+    }
 
 
 def _safe_motion_state(activity: Dict[str, Any], verdict_dict: Dict[str, Any]) -> str:
