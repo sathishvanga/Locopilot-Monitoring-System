@@ -2646,6 +2646,23 @@ class LocopilotActivityMonitor:
                 and _orphan_pose_count == 0
             )
 
+            # Raw-state motion veto (added after run_20260510_071453 FP at
+            # t=147s): the smoothed motion state lags physical stop by ~9s
+            # (4s vibration ring-down + 5-sample majority vote), exactly the
+            # window solo_person and no_person_detected need to fire during a
+            # station deceleration. The unsmoothed raw_state flips to STOPPED
+            # in ~5s, beneath the trigger window. Scope is intentionally
+            # narrow — only these two flags. The broader
+            # apply_train_stopped_suppression below keeps using the smoothed
+            # state for sleep / writing / packing_bags / etc., where the
+            # 4s extra stability is a feature, not a bug.
+            if (
+                self.train_motion_detector is not None
+                and getattr(self.train_motion_detector, 'last_raw_state', None) == 'STOPPED'
+            ):
+                solo_person_flag = False
+                no_person_detected_flag = False
+
             # OCR is expensive (EasyOCR on CPU, ~150ms/frame). Only start_activity
             # actually consumes this value, so defer computation until we know an
             # activity is about to fire. 5-15x fewer OCR calls in practice.

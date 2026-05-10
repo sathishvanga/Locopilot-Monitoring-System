@@ -130,6 +130,15 @@ class TrainMotionDetector:
         # Counter of frames seen since the last reset. Used by callers that
         # want to confirm "first frame after reset" semantics.
         self._frames_seen: int = 0
+        # Last unsmoothed (per-frame) raw state. Exposed so consumers that
+        # need a faster-reacting STOPPED signal than the 5-sample majority
+        # vote (e.g. solo_person / no_person_detected vetoes) can read it
+        # without rerunning the pipeline. Production analysis on the 4000-Ada
+        # cabin install showed the smoother adds ~4s of additional STOPPED
+        # lag on top of the ~4s vibration ring-down, totalling ~9s — exactly
+        # the window solo_person needs to fire spuriously during a station
+        # deceleration. The raw state cuts that to ~5s, below the trigger.
+        self.last_raw_state: Optional[str] = None
 
     def reset(self) -> None:
         """Clear all per-video state.
@@ -151,6 +160,7 @@ class TrainMotionDetector:
         self.person_bbox_history_buf.clear()
         self._vib_history.clear()
         self._frames_seen = 0
+        self.last_raw_state = None
 
     def create_interior_mask(
         self, frame_shape: Tuple[int, int], person_bboxes: List
@@ -463,6 +473,11 @@ class TrainMotionDetector:
         if self.prev_gray is None and vib["vibration_mean"] == 0:
             raw_state = "UNKNOWN"
             confidence = 0.0
+
+        # Expose unsmoothed state for fast-reaction consumers (solo_person /
+        # no_person_detected vetoes). MUST be set BEFORE get_smoothed_state so
+        # if smoothing throws the attribute still reflects this frame.
+        self.last_raw_state = raw_state
 
         # Temporal smoothing
         smoothed_state, smoothed_conf = self.get_smoothed_state(raw_state, confidence)
