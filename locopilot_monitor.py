@@ -2620,7 +2620,18 @@ class LocopilotActivityMonitor:
             # state is filtered out by ``apply_train_stopped_suppression``
             # below so brief station halts (where the ALP steps out for
             # platform checks) don't fire.
-            solo_person_flag = (_dedup_count == 1)
+            #
+            # Raw-count safety gate: the dedup filter ``YOLO_PERSON_MIN_AREA``
+            # rejects person bboxes below the cutoff to suppress chair-back /
+            # shadow phantoms, but it also rejects legitimately small or
+            # partially-clipped ALP detections (back of cab, doorway-occluded,
+            # upper-edge clipping). When that happens raw YOLO saw 2 persons
+            # but dedup keeps only 1 → solo_person FP. Require BOTH the
+            # deduplicated AND the raw count to be exactly 1 so any frame
+            # where YOLO saw a second person — even one the dedup filter
+            # later dropped — vetoes the trigger.
+            _raw_person_count = len(detections.get('person', []))
+            solo_person_flag = (_dedup_count == 1 and _raw_person_count == 1)
 
             # OCR is expensive (EasyOCR on CPU, ~150ms/frame). Only start_activity
             # actually consumes this value, so defer computation until we know an

@@ -285,8 +285,9 @@ def _stitch_keyframes(
     jpg_paths: List[Path],
     max_strip_width: int = 1500,
     crop_to_roi: bool = True,
+    stack: str = "horizontal",
 ) -> Optional[bytes]:
-    """Stitch up to 5 keyframes left-to-right into a single labelled JPEG.
+    """Stitch up to 5 keyframes into a single labelled JPEG.
 
     When ``crop_to_roi=True`` (default), each frame is cropped to the
     Pipeline-1-rendered person + object bbox union before stitching, so
@@ -297,13 +298,29 @@ def _stitch_keyframes(
     When ``crop_to_roi=False``, frames are stitched at full resolution.
     This is the right mode for activities where the WHOLE cabin matters:
     sleep posture, head-pose for mind_diversion, "is the cabin empty"
-    checks (no_person_detected), or counting people (group_detected).
+    checks (no_person_detected), or counting people (group_detected),
+    or "exactly one person" (solo_person).
 
-    The combined strip is capped at ``max_strip_width`` either way to stay
-    within vLLM's max-model-len budget. Each frame gets a ``FRAME N``
-    tag in its top-left corner so the VLM can reference it via
-    ``evidence_frame``. Single-frame input returns the original bytes
-    unchanged (no relabel, no crop) regardless of mode.
+    ``stack`` controls layout:
+      * ``"horizontal"`` (default) — left-to-right; the combined strip is
+        capped at ``max_strip_width`` so a 4-keyframe full-frame strip at
+        the camera's native 960 px wide gets downscaled to ~375 px per
+        frame (16% of original area). Fine for ROI-cropped types where
+        the cropped region is already small, *bad* for full-frame types
+        because partial bodies at the edges become unresolvable.
+      * ``"vertical"`` — top-to-bottom; the strip's *width* stays at the
+        common per-frame width (e.g. 960 px) and never hits the cap, so
+        each individual frame stays at native resolution. Used for
+        full-frame types after run_20260510_044315 showed Qwen-VL was
+        consistently missing partial-edge ALPs at the downscaled
+        375×211 per-frame slice produced by horizontal stitching.
+        Total height is bounded by ``max_strip_width`` (reused as a
+        generic max-longer-dimension cap so vLLM token budget stays
+        equivalent to horizontal mode).
+
+    Each frame gets a ``FRAME N`` tag in its top-left corner so the VLM
+    can reference it via ``evidence_frame``. Single-frame input returns
+    the original bytes unchanged regardless of mode.
     """
     if not jpg_paths:
         return None
@@ -329,24 +346,49 @@ def _stitch_keyframes(
     if not frames:
         return None
 
-    # Pad each frame to a common height so np.hstack works.
-    target_h = max(img.shape[0] for img in frames)
-    padded: List[np.ndarray] = []
-    for img in frames:
-        h = img.shape[0]
-        if h < target_h:
-            img = cv2.copyMakeBorder(img, 0, target_h - h, 0, 0,
-                                     cv2.BORDER_CONSTANT, value=(0, 0, 0))
-        padded.append(img)
-
-    strip = np.hstack(padded)
-
-    # If the combined width exceeds the budget, downscale uniformly.
-    if strip.shape[1] > max_strip_width:
-        scale = max_strip_width / float(strip.shape[1])
-        new_h = max(1, int(strip.shape[0] * scale))
-        strip = cv2.resize(strip, (max_strip_width, new_h),
-                           interpolation=cv2.INTER_AREA)
+    if stack == "vertical":
+        # Pad each frame to a common width so np.vstack works.
+        target_w = max(img.shape[1] for img in frames)
+        padded: List[np.ndarray] = []
+        for img in frames:
+            w = img.shape[1]
+            if w < target_w:
+                img = cv2.copyMakeBorder(img, 0, 0, 0, target_w - w,
+                                         cv2.BORDER_CONSTANT, value=(0, 0, 0))
+            padded.append(img)
+        strip = np.vstack(padded)
+        # Vertical-mode budget: cap the *long* (height) axis at the same
+        # ``max_strip_width`` as horizontal mode so the deployed vLLM's
+        # ``max_model_len`` token budget (currently 3072) is preserved.
+        # A naive 4-keyframe full-frame strip is 960×2160 → 654 vision
+        # tokens at Qwen2.5-VL's 28-px patch grid + 2×2 merge, which
+        # combined with the ~2000-token solo_person prompt leaves no
+        # margin for the JSON response → vLLM returns 400. Capping at
+        # 1500 px height instead yields a 666×1500 strip → ~317 vision
+        # tokens, fits comfortably, and per-frame is still 666×375
+        # (≈3× the pixels of horizontal stacking — 999k vs 315k px —
+        # which is the resolution win we set out to capture).
+        if strip.shape[0] > max_strip_width:
+            scale = max_strip_width / float(strip.shape[0])
+            new_w = max(1, int(strip.shape[1] * scale))
+            strip = cv2.resize(strip, (new_w, max_strip_width),
+                               interpolation=cv2.INTER_AREA)
+    else:
+        # Horizontal (default): pad to common height, hstack, cap width.
+        target_h = max(img.shape[0] for img in frames)
+        padded = []
+        for img in frames:
+            h = img.shape[0]
+            if h < target_h:
+                img = cv2.copyMakeBorder(img, 0, target_h - h, 0, 0,
+                                         cv2.BORDER_CONSTANT, value=(0, 0, 0))
+            padded.append(img)
+        strip = np.hstack(padded)
+        if strip.shape[1] > max_strip_width:
+            scale = max_strip_width / float(strip.shape[1])
+            new_h = max(1, int(strip.shape[0] * scale))
+            strip = cv2.resize(strip, (max_strip_width, new_h),
+                               interpolation=cv2.INTER_AREA)
 
     ok, buf = cv2.imencode(".jpg", strip, [cv2.IMWRITE_JPEG_QUALITY, 88])
     if not ok:

@@ -1249,8 +1249,15 @@ class VlmVerificationService:
                 )
 
             crop_to_roi = object_type not in _FULL_FRAME_OBJECT_TYPES
+            # Full-frame types stack vertically so each keyframe stays at
+            # the camera's native ~960px width rather than being shrunk to
+            # ~375px by the horizontal hstack + 1500px width cap. Critical
+            # for solo_person / no_person_detected where partial-edge bodies
+            # are only a few percent of the frame and disappear under the
+            # downscale (run_20260510_044315 root-cause analysis).
+            stack = "vertical" if not crop_to_roi else "horizontal"
             strip_bytes = _stitch_keyframes(
-                keyframes, crop_to_roi=crop_to_roi,
+                keyframes, crop_to_roi=crop_to_roi, stack=stack,
             )
             if not strip_bytes:
                 return {

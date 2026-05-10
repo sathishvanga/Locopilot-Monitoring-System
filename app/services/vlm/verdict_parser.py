@@ -797,10 +797,32 @@ True solo_person requires ALL of:
 If you can see TWO OR MORE people — even if one is partial / occluded / barely
 visible — in any frame, return FALSE_POSITIVE.
 
+**ACTIVELY look for partial bodies before deciding** — production analysis of
+this rule has shown the most common failure mode is missing a partially-visible
+second person. Before declaring solo_person:
+  1. Scan the UPPER edge of every frame for a clipped torso, shoulder, head,
+     or arm protruding into frame.
+  2. Scan THROUGH the open cabin doorway / passage for a second body at the
+     back of the cab, even if only legs / a uniform sleeve / a back-of-head
+     silhouette is visible.
+  3. Look BEHIND the foreground person (the LP at the controls) for a second
+     body partially occluded by the LP's body, the seat-back, or the
+     dashboard.
+  4. Look AT THE FRAME EDGES (left, right, bottom) for a leg, foot, or sleeve
+     of a second person who is mostly out-of-frame.
+If you spot ANY of the above — even with low confidence — set
+``second_person_partial_or_occluded=true`` and return UNCERTAIN (not
+TRUE_POSITIVE). Reserve TRUE_POSITIVE for cases where you are highly confident
+the cabin contains exactly one person and there is no edge / occlusion
+ambiguity anywhere in the strip.
+
 Common confounders the classical pipeline misclassifies as solo_person:
   - ALP bent over below the seat-back / dashboard line (occluded by furniture)
   - ALP standing close to the camera with only legs/feet in the lower frame edge
   - ALP turned away from camera with only the back-of-head silhouette visible
+  - **ALP standing at the BACK of the cab — partial torso / shoulder / arm
+    visible at the upper frame edge or through an open doorway** (the most
+    common FP archetype on this camera install)
   - LP and ALP standing close together — their bboxes overlap and the
     de-duplicator collapses them into a single detection
   - Heavy backlight from the windshield washing out a person who is actually there
@@ -815,14 +837,24 @@ ALSO observe whether the train is moving, using cues OUTSIDE the cabin (window/d
                open), or the outside view is clearly stationary with no motion blur
   - "unclear": window is dark, blocked, glare, or you simply cannot see enough outside
                to tell — DO NOT GUESS, return "unclear"
-solo_person is only a violation while the train is RUNNING; if you can clearly
-see the train is stopped at a station, the ALP may legitimately have stepped out
-for an inspection — lower your confidence in any TP verdict.
+solo_person is ONLY a violation while the train is RUNNING. If the train is
+stopped at a station, the ALP may legitimately have stepped out for an
+inspection / point check / platform interaction, and a single-occupant cabin
+is expected behaviour — NOT a violation. Be especially careful here: when the
+keyframe strip is small or low-resolution, "motion blur in window" can be a
+hallucination — only report ``running`` when you can name a SPECIFIC
+running-cue (poles flashing past, track streaking, scenery clearly translating
+across consecutive frames). When in doubt, return ``unclear``.
 
-**HARD RULE on the verdict (no exceptions):**
+**HARD RULES on the verdict (no exceptions):**
   - If ``distinct_persons_visible_in_strip >= 2`` in any frame → FALSE_POSITIVE
+  - If ``train_appears_to_be != "running"`` (i.e. stopped or unclear) →
+    UNCERTAIN, regardless of person count. Do NOT return TRUE_POSITIVE for a
+    one-person cabin unless you can confirm the train is genuinely running
+    via specific outside-the-cabin cues. This rule overrides the person-count
+    rule below.
   - If ``distinct_persons_visible_in_strip == 1`` consistently across the strip
-    AND the LP is the visible person AND the train appears to be running →
+    AND the LP is the visible person AND the train is confirmed RUNNING →
     TRUE_POSITIVE
   - If ``distinct_persons_visible_in_strip == 1`` BUT you suspect a second person
     is occluded / edge-clipped / merged-by-dedup → UNCERTAIN
@@ -1001,6 +1033,28 @@ def _consistency_check(
             return f"TP claimed but distinct_persons_visible_in_strip={n_int} (≥2)"
         if parsed.get("alp_visible"):
             return "TP claimed but alp_visible=true"
+        # Tightened 2026-05-10 after run_20260510_042945 produced 6 FP
+        # solo_person events where Qwen-VL missed partially-clipped ALPs at
+        # the upper frame edge. The model is now asked to set
+        # ``second_person_partial_or_occluded=true`` whenever it has ANY
+        # uncertainty about a second body. If it does, the Pipeline-1 raw-
+        # count gate already vetoed this case in 99% of frames; in the rare
+        # case both layers agree there's just one person AND the model still
+        # marked partial-occlusion, we'd rather demote to UNCERTAIN than
+        # ship the violation.
+        if parsed.get("second_person_partial_or_occluded"):
+            return "TP claimed but second_person_partial_or_occluded=true"
+        # Motion-state gate (added 2026-05-10): solo_person is only a
+        # violation while the train is RUNNING. If the model itself reports
+        # ``train_appears_to_be`` as anything other than "running" — i.e.
+        # "stopped" or "unclear" — the structural rule demotes any
+        # cooperative TP. This is the post-VLM enforcement of the prompt's
+        # HARD RULE 2 (see ``_PROMPT_SOLO_PERSON``). Catches cases where
+        # the VLM honestly reports stopped/unclear but still emits TP
+        # because the person-count rule alone would have allowed it.
+        motion = (parsed.get("train_appears_to_be") or "").lower()
+        if motion not in ("running",):
+            return f"TP claimed but train_appears_to_be={motion!r} (not 'running')"
         return None
 
     return None
