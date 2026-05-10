@@ -601,6 +601,45 @@ class Settings(BaseSettings):
     activity_packing_wrist_inside_margin: int = int(os.getenv("ACTIVITY_PACKING_WRIST_INSIDE_MARGIN", "80"))
 
     # ==========================================
+    # Per-activity enable/disable flags
+    # ==========================================
+    # One boolean per activity in ``app/core/activity_registry.py``. Default
+    # is ``True`` (back-compat: all activities run as before). Set the env
+    # var to ``0`` to disable that activity end-to-end:
+    #   * ``MultiPersonActivityRunner`` skips the detector dispatch (CPU/GPU
+    #     savings).
+    #   * ``LocopilotActivityMonitor.start_activity`` early-returns so no
+    #     evidence clip / image / activities.json entry is produced.
+    # The single accessor is :meth:`is_activity_enabled` below — keep callers
+    # going through it so a future re-implementation (allowlist string,
+    # registry field, etc.) only touches one place.
+    activity_microsleep_enabled: bool = bool(int(os.getenv("ACTIVITY_MICROSLEEP_ENABLED", "1")))
+    activity_sleep_enabled: bool = bool(int(os.getenv("ACTIVITY_SLEEP_ENABLED", "1")))
+    activity_cell_phone_enabled: bool = bool(int(os.getenv("ACTIVITY_CELL_PHONE_ENABLED", "1")))
+    activity_writing_enabled: bool = bool(int(os.getenv("ACTIVITY_WRITING_ENABLED", "1")))
+    activity_packing_bags_enabled: bool = bool(int(os.getenv("ACTIVITY_PACKING_BAGS_ENABLED", "1")))
+    activity_group_detected_enabled: bool = bool(int(os.getenv("ACTIVITY_GROUP_DETECTED_ENABLED", "1")))
+    activity_lp_hand_gesture_enabled: bool = bool(int(os.getenv("ACTIVITY_LP_HAND_GESTURE_ENABLED", "1")))
+    activity_alp_hand_gesture_enabled: bool = bool(int(os.getenv("ACTIVITY_ALP_HAND_GESTURE_ENABLED", "1")))
+    activity_mind_diversion_enabled: bool = bool(int(os.getenv("ACTIVITY_MIND_DIVERSION_ENABLED", "1")))
+    activity_no_person_detected_enabled: bool = bool(int(os.getenv("ACTIVITY_NO_PERSON_DETECTED_ENABLED", "1")))
+    activity_alp_not_standing_enabled: bool = bool(int(os.getenv("ACTIVITY_ALP_NOT_STANDING_ENABLED", "1")))
+    activity_eating_drinking_enabled: bool = bool(int(os.getenv("ACTIVITY_EATING_DRINKING_ENABLED", "1")))
+    activity_solo_person_enabled: bool = bool(int(os.getenv("ACTIVITY_SOLO_PERSON_ENABLED", "1")))
+
+    def is_activity_enabled(self, activity_name: str) -> bool:
+        """Return True iff ``activity_name`` is enabled for detection + emit.
+
+        Unknown activity names default to ``True`` (fail-open) so adding a
+        new key to ``ACTIVITY_REGISTRY`` without a matching settings flag
+        does not silently disable it.
+        """
+        flag = getattr(self, f"activity_{activity_name}_enabled", None)
+        if flag is None:
+            return True
+        return bool(flag)
+
+    # ==========================================
     # Train Motion Rules Settings
     # ==========================================
     # When True (default), activities listed in
@@ -643,10 +682,13 @@ class Settings(BaseSettings):
     train_motion_running_threshold: float = float(os.getenv("TRAIN_MOTION_RUNNING_THRESHOLD", "0.45"))
     train_motion_temporal_window: int = int(os.getenv("TRAIN_MOTION_TEMPORAL_WINDOW", "5"))
     train_motion_stopped_group_threshold: int = int(os.getenv("TRAIN_MOTION_STOPPED_GROUP_THRESHOLD", "5"))
-    # Threshold for group_detected. Default 5 (i.e. >5 → 6+ persons required).
-    # Revised 2026-04-22: spec changed from "more than 2" to "more than 5" —
-    # 3-person supervisor visits are expected and should no longer trigger.
-    train_motion_running_group_threshold: int = int(os.getenv("TRAIN_MOTION_RUNNING_GROUP_THRESHOLD", "5"))
+    # Threshold for group_detected. Default 2 (i.e. >2 → 3+ persons required).
+    # Revised 2026-05-10: spec reverted to "more than 2" — any third person in
+    # the running cab is flagged. Set TRAIN_MOTION_RUNNING_GROUP_THRESHOLD=5
+    # to restore the prior "more than 5" behavior. The complementary
+    # ``train_motion_stopped_group_threshold`` (default 5) still relaxes the
+    # rule at stations so brief 3-5 person handovers don't trigger.
+    train_motion_running_group_threshold: int = int(os.getenv("TRAIN_MOTION_RUNNING_GROUP_THRESHOLD", "2"))
     train_motion_window_flow_threshold: float = float(os.getenv("TRAIN_MOTION_WINDOW_FLOW_THRESHOLD", "2.0"))
     train_motion_weight_vibration: float = float(os.getenv("TRAIN_MOTION_WEIGHT_VIBRATION", "0.5"))
     train_motion_weight_window: float = float(os.getenv("TRAIN_MOTION_WEIGHT_WINDOW", "0.3"))

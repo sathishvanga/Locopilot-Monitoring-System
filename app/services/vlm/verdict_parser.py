@@ -762,10 +762,92 @@ Reply with STRICT JSON ONLY (no prose, no code fence):
 }"""
 
 
+_PROMPT_SOLO_PERSON = """You are a railway safety auditor reviewing CCTV from a locomotive cabin.
+Camera angle: overhead, looking down/across the cab. The cabin must always carry
+TWO crew members while the train is running: the Loco Pilot (LP) at the controls
+and the Assistant Loco Pilot (ALP), typically standing or seated nearby. Exactly
+ONE person in a running cab is the violation we are verifying.
+
+The image you receive may be a HORIZONTAL STRIP of 1-5 keyframes from the SAME burst,
+ordered LEFT-TO-RIGHT in time. Each frame is labelled "FRAME 1", "FRAME 2", ...
+in the top-left corner. Examine ALL frames before deciding — solo_person is a
+SUSTAINED state, not a single-frame loss of detection. If a second person appears
+in ANY frame of the strip, the cabin is NOT a solo-occupied cabin and you should
+return FALSE_POSITIVE. Note in `evidence_frame` which frame number provides the
+strongest evidence (1-N). If only one frame is shown or no frame is decisive,
+return 0.
+
+A classical CV pipeline flagged this strip as "SOLO PERSON" — exactly one person
+in the cab. The pipeline OVER-FIRES on this — when YOLO loses recall on the
+second crew member (occlusion, pose, dark frames, dedup IoU collapsing two
+overlapping bboxes into one) the count drops to 1 even though both crew members
+are physically present. **Do NOT trust the classical flag. Count the real people
+yourself across the strip.**
+
+True solo_person requires ALL of:
+  (a) Exactly ONE distinct, real person physically present INSIDE the cabin
+      in EVERY frame of the strip — never two
+  (b) The single person is the LP at the controls (not an unrelated supervisor
+      or worker; if the LP is missing too, this is no_person_detected, not
+      solo_person)
+  (c) No partial body parts (legs, arm, head) of a SECOND person are peeking
+      from frame edges, behind the seat-back, or below the dashboard line in
+      any frame
+
+If you can see TWO OR MORE people — even if one is partial / occluded / barely
+visible — in any frame, return FALSE_POSITIVE.
+
+Common confounders the classical pipeline misclassifies as solo_person:
+  - ALP bent over below the seat-back / dashboard line (occluded by furniture)
+  - ALP standing close to the camera with only legs/feet in the lower frame edge
+  - ALP turned away from camera with only the back-of-head silhouette visible
+  - LP and ALP standing close together — their bboxes overlap and the
+    de-duplicator collapses them into a single detection
+  - Heavy backlight from the windshield washing out a person who is actually there
+  - IR / dark frames where the second person's contrast is too low for YOLO
+  - A jacket / uniform on the seat-back mistaken for a person being absent
+
+ALSO observe whether the train is moving, using cues OUTSIDE the cabin (window/door):
+  - "running": visible motion blur in the outside window, scenery/track streaking past,
+               telephone poles or trees flashing by
+  - "stopped": platform infrastructure visible, station signs, people walking on a
+               platform, the cabin door is OPEN (trains do not run with the door
+               open), or the outside view is clearly stationary with no motion blur
+  - "unclear": window is dark, blocked, glare, or you simply cannot see enough outside
+               to tell — DO NOT GUESS, return "unclear"
+solo_person is only a violation while the train is RUNNING; if you can clearly
+see the train is stopped at a station, the ALP may legitimately have stepped out
+for an inspection — lower your confidence in any TP verdict.
+
+**HARD RULE on the verdict (no exceptions):**
+  - If ``distinct_persons_visible_in_strip >= 2`` in any frame → FALSE_POSITIVE
+  - If ``distinct_persons_visible_in_strip == 1`` consistently across the strip
+    AND the LP is the visible person AND the train appears to be running →
+    TRUE_POSITIVE
+  - If ``distinct_persons_visible_in_strip == 1`` BUT you suspect a second person
+    is occluded / edge-clipped / merged-by-dedup → UNCERTAIN
+
+Reply with STRICT JSON ONLY (no prose, no code fence):
+{
+  "verdict": "TRUE_POSITIVE" | "FALSE_POSITIVE" | "UNCERTAIN",
+  "confidence": <float 0.0 to 1.0 — your certainty in the VERDICT ITSELF; ≥0.80 when sure, ≤0.5 only when genuinely unsure>,
+  "distinct_persons_visible_in_strip": <integer: max distinct persons seen in any single frame, 0 if cabin is empty>,
+  "lp_visible": <true|false>,
+  "alp_visible": <true|false>,
+  "second_person_partial_or_occluded": <true|false>,
+  "primary_confounder": "occluded_by_seat" | "edge_clipped" | "dedup_merge" | "backlight" | "ir_dark_frame" | "jacket_on_seat" | "none" | "unclear",
+  "train_appears_to_be": "running" | "stopped" | "unclear",
+  "motion_evidence": "<short string: the visual cue you used, e.g. 'platform visible', 'motion blur in window', 'no outside visible'>",
+  "evidence_frame": <integer: frame number 1..N giving strongest evidence; 0 if single-frame input or no decisive frame>,
+  "reasoning": "<one short sentence describing what you actually see, naming the FRAME number>"
+}"""
+
+
 # Activity description fragments → prompt key. The verifier matches on the
 # activity's `objectType` field (writing/eating_drinking/packing_bags/cell_phone/
-# sleep/mind_diversion/no_person_detected/group_detected) rather than on the
-# numeric type code, so future numeric-code shuffles don't break this mapping.
+# sleep/mind_diversion/no_person_detected/group_detected/solo_person) rather
+# than on the numeric type code, so future numeric-code shuffles don't break
+# this mapping.
 _PROMPTS_BY_OBJECT_TYPE: Dict[str, str] = {
     "writing": _PROMPT_WRITING,
     "eating_drinking": _PROMPT_EATING,
@@ -775,6 +857,7 @@ _PROMPTS_BY_OBJECT_TYPE: Dict[str, str] = {
     "mind_diversion": _PROMPT_MIND_DIVERSION,
     "no_person_detected": _PROMPT_NO_PERSON,
     "group_detected": _PROMPT_GROUP,
+    "solo_person": _PROMPT_SOLO_PERSON,
 }
 
 
@@ -902,6 +985,22 @@ def _consistency_check(
             return "TP claimed but lp_visible_anywhere or alp_visible_anywhere is true"
         if not parsed.get("cabin_empty_in_all_frames"):
             return "TP claimed but cabin_empty_in_all_frames=false"
+        return None
+
+    if object_type == "solo_person":
+        n = parsed.get("distinct_persons_visible_in_strip", 0)
+        try:
+            n_int = int(n)
+        except (TypeError, ValueError):
+            n_int = 0
+        # The whole point of solo_person verification: if the VLM saw two or
+        # more distinct people in any frame, the Pipeline-1 trigger is a FP
+        # (YOLO recall drop, dedup merge, occlusion). Demote any TP that
+        # contradicts its own count.
+        if n_int >= 2:
+            return f"TP claimed but distinct_persons_visible_in_strip={n_int} (≥2)"
+        if parsed.get("alp_visible"):
+            return "TP claimed but alp_visible=true"
         return None
 
     return None

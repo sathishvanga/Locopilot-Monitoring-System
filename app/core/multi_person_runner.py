@@ -14,7 +14,22 @@ import cv2
 import math
 import numpy as np
 
+from app.core.activity_registry import is_activity_enabled
 from app.core.utils.geometry import calculate_iou, bbox_overlap_with_margin
+
+
+def _zero_disabled(person_activities: Dict[str, bool]) -> None:
+    """Final-defense gate: zero any per-person activity flag whose name is
+    disabled via ``ACTIVITY_<NAME>_ENABLED=0``.
+
+    Mutates the dict in place. Called immediately before a ``person_activities``
+    entry is committed to ``persons_data`` so disabled activities never leak
+    into aggregation, evidence, or ``activities.json`` even if a detector
+    branch above forgot to gate itself.
+    """
+    for name in list(person_activities.keys()):
+        if not is_activity_enabled(name):
+            person_activities[name] = False
 
 
 class MultiPersonActivityRunner:
@@ -249,7 +264,10 @@ class MultiPersonActivityRunner:
                     }
 
                     # --- Object-based eating/drinking (cup directly overlaps person bbox) ---
-                    if getattr(monitor.settings, 'eating_drinking_detection_enabled', True):
+                    if (
+                        is_activity_enabled('eating_drinking')
+                        and getattr(monitor.settings, 'eating_drinking_detection_enabled', True)
+                    ):
                         cup_bottle_bboxes = []
                         cup_conf_threshold = getattr(monitor.settings, 'eating_drinking_cup_confidence', 0.25)
                         for roi_det in detections.get('roi_detections', []):
@@ -356,6 +374,7 @@ class MultiPersonActivityRunner:
                                     f"with stable bbox (change={bbox_change:.3f}) - flagging sleep"
                                 )
 
+                    _zero_disabled(no_pose_activities)
                     persons_data[person_idx] = {
                         'pose_landmarks': None,
                         'role': person_data.get('role', 'UNKNOWN'),
@@ -471,7 +490,8 @@ class MultiPersonActivityRunner:
                 # 3. CELL PHONE DETECTION (check if hand near phone in THIS person's region)
                 # MOVED BEFORE HAND GESTURE: Need to detect this first for context-aware filtering
                 _cell_phone_fired = False
-                if len(person_cell_phones) > 0:
+                _cell_phone_enabled = is_activity_enabled('cell_phone')
+                if _cell_phone_enabled and len(person_cell_phones) > 0:
                     # DEBUG: Log when cell phones are detected
                     if monitor.consecutive_detections.get('cell_phone', 0) == 0:
                         monitor.logger.info(f"[DEBUG CELL PHONE] {len(person_cell_phones)} phone(s) detected in frame")
@@ -515,7 +535,7 @@ class MultiPersonActivityRunner:
                 # < 20% of bbox height — tight enough that hand-on-forehead
                 # or hand-on-chin won't match.
                 _pose_fallback_enabled = getattr(monitor.settings, 'cell_phone_pose_fallback_enabled', True) if monitor.settings else True
-                if _pose_fallback_enabled and not _cell_phone_fired:
+                if _cell_phone_enabled and _pose_fallback_enabled and not _cell_phone_fired:
                     try:
                         _bbox_h = max(1, bbox[3] - bbox[1])
                         # Distance ratio tightened 2026-04-20 from 0.20 → 0.15
@@ -573,7 +593,11 @@ class MultiPersonActivityRunner:
 
                 # 3b. EATING/DRINKING DETECTION (cup/bottle near face = mind diversion)
                 eating_drinking_detected = False
-                if getattr(monitor.settings, 'eating_drinking_detection_enabled', True) and not person_activities.get('mind_diversion', False):
+                if (
+                    is_activity_enabled('eating_drinking')
+                    and getattr(monitor.settings, 'eating_drinking_detection_enabled', True)
+                    and not person_activities.get('mind_diversion', False)
+                ):
                     # Check if cup/bottle detected in ROI near this person
                     cup_bottle_bboxes = []
                     cup_conf_threshold = getattr(monitor.settings, 'eating_drinking_cup_confidence', 0.25)
@@ -668,7 +692,7 @@ class MultiPersonActivityRunner:
                 #   both wrists BELOW shoulders (wrist_y > shoulder_y + 40 px)
                 #   both wrists in lower-2/3 of person bbox (avoid raised-hand FPs)
                 writing_detected_raw = False
-                if True:  # no role filter — LP can write too (TV22.6, TV22.8)
+                if is_activity_enabled('writing'):  # no role filter — LP can write too (TV22.6, TV22.8)
                     right_hand = monitor.get_keypoint(translated_landmarks, 'right_wrist')
                     left_hand = monitor.get_keypoint(translated_landmarks, 'left_wrist')
                     rv = right_hand.visibility
@@ -874,7 +898,7 @@ class MultiPersonActivityRunner:
                 # MOVED BEFORE HAND GESTURE: Need to detect this first for context-aware filtering
                 # FP-FIX: Filter out static backpacks (cabin fixtures) before detection
                 active_backpacks = monitor._update_static_backpack_tracking(detections['backpack'])
-                if len(active_backpacks) > 0:
+                if is_activity_enabled('packing_bags') and len(active_backpacks) > 0:
                     right_hand = monitor.get_keypoint(translated_landmarks, 'right_wrist')
                     left_hand = monitor.get_keypoint(translated_landmarks, 'left_wrist')
 
@@ -1073,22 +1097,28 @@ class MultiPersonActivityRunner:
                 # 6. HAND GESTURE DETECTION (LP/ALP)
                 # CRITICAL: This runs AFTER packing/writing/phone detection for context-aware filtering
                 # Pass person_activities, backpack detections, person_idx, and timestamp for full suppression
-                single_person_roles = {person_idx: person_data}
-                lp_gesture, alp_gesture, gesture_debug = monitor.detect_hand_gesture(
-                    translated_landmarks,
-                    frame.shape,
-                    single_person_roles,
-                    yolo_person_boxes=None,
-                    person_activities=person_activities,
-                    backpack_detections=detections.get('backpack', []),
-                    person_idx=person_idx,
-                    current_timestamp=timestamp_sec,
-                    frame_number=frame_number
-                )
-                person_debug_info['gesture_debug'] = gesture_debug
+                _lp_gesture_enabled = is_activity_enabled('lp_hand_gesture')
+                _alp_gesture_enabled = is_activity_enabled('alp_hand_gesture')
+                if _lp_gesture_enabled or _alp_gesture_enabled:
+                    single_person_roles = {person_idx: person_data}
+                    lp_gesture, alp_gesture, gesture_debug = monitor.detect_hand_gesture(
+                        translated_landmarks,
+                        frame.shape,
+                        single_person_roles,
+                        yolo_person_boxes=None,
+                        person_activities=person_activities,
+                        backpack_detections=detections.get('backpack', []),
+                        person_idx=person_idx,
+                        current_timestamp=timestamp_sec,
+                        frame_number=frame_number
+                    )
+                    person_debug_info['gesture_debug'] = gesture_debug
 
-                person_activities['lp_hand_gesture'] = lp_gesture
-                person_activities['alp_hand_gesture'] = alp_gesture
+                    person_activities['lp_hand_gesture'] = lp_gesture if _lp_gesture_enabled else False
+                    person_activities['alp_hand_gesture'] = alp_gesture if _alp_gesture_enabled else False
+                else:
+                    person_activities['lp_hand_gesture'] = False
+                    person_activities['alp_hand_gesture'] = False
 
                 # Track hand raise timestamps for temporal coordination window
                 if person_activities['lp_hand_gesture']:
@@ -1102,6 +1132,7 @@ class MultiPersonActivityRunner:
                     monitor.recent_person_activities[person_idx]['alp_hand_raise'] = timestamp_sec
 
                 # Store this person's data
+                _zero_disabled(person_activities)
                 persons_data[person_idx] = {
                     'pose_landmarks': translated_landmarks,
                     'role': person_data.get('role', 'UNKNOWN'),

@@ -40,6 +40,11 @@ DEFAULT_SUPPRESSED_WHEN_STOPPED: FrozenSet[str] = frozenset({
     'alp_hand_gesture',
     'mind_diversion',
     'eating_drinking',
+    # Single-person rule is "violation while train is RUNNING". At stations
+    # the ALP routinely steps out for inspections / point checks, so the
+    # cabin can legitimately have one person — suppress here so we don't
+    # flood activities.json with station-context FPs.
+    'solo_person',
 })
 
 

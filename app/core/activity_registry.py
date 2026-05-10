@@ -168,8 +168,8 @@ def _build_activity_registry() -> Dict[str, ActivityConfig]:
         ),
         'group_detected': ActivityConfig(
             type_code=7,
-            description='More than 5 people (group) detected',
-            evidence_rule='more_than_5_deduplicated_persons',
+            description='More than 2 people (group) detected',
+            evidence_rule='more_than_2_deduplicated_persons',
             triggering_role=None,
             min_duration=0.0,
             required_consecutive=3,
@@ -238,6 +238,20 @@ def _build_activity_registry() -> Dict[str, ActivityConfig]:
             margin=None,
             grace_frames=5,
         ),
+        'solo_person': ActivityConfig(
+            type_code=14,
+            description='Only one person in cabin while train running',
+            evidence_rule='exactly_one_deduplicated_person_while_running',
+            triggering_role=None,
+            # Mirror no_person_detected timing: 10s sustained at 0.5 fps
+            # (5 consecutive samples) so brief ALP-turning-away-from-camera
+            # frames don't fire. Suppressed while train is STOPPED — see
+            # ``DEFAULT_SUPPRESSED_WHEN_STOPPED`` in ``app/core/gates.py``.
+            min_duration=10.0,
+            required_consecutive=5,
+            margin=None,
+            grace_frames=3,
+        ),
     }
 
 
@@ -258,8 +272,30 @@ def rebuild_activity_registry() -> Dict[str, ActivityConfig]:
     return ACTIVITY_REGISTRY
 
 
+def is_activity_enabled(activity_name: str) -> bool:
+    """Return True iff ``activity_name`` is enabled by the operator.
+
+    Thin wrapper around ``Settings.is_activity_enabled`` so callers can
+    import the gate from the same module that owns ``ACTIVITY_REGISTRY``
+    without having to plumb a settings object through every call site.
+
+    Falls back to ``True`` when settings cannot be resolved (partial test
+    envs) — fail-open matches the registry's "all activities run by
+    default" contract.
+    """
+
+    if get_settings is None:
+        return True
+    try:
+        settings = get_settings()
+    except Exception:
+        return True
+    return settings.is_activity_enabled(activity_name)
+
+
 __all__ = [
     "ActivityConfig",
     "ACTIVITY_REGISTRY",
     "rebuild_activity_registry",
+    "is_activity_enabled",
 ]

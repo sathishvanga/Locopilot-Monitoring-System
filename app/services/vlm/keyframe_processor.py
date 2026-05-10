@@ -24,23 +24,27 @@ logger = get_logger(__name__)
 # Activity types that need FULL-FRAME context (rather than the hand+book ROI
 # crop used for writing/eating/packing/cell_phone). Sleep needs body posture,
 # mind_diversion needs head pose vs window, no_person checks cabin emptiness,
-# group_detected counts distinct people — all benefit from the whole scene.
+# group_detected counts distinct people, solo_person needs to scan the whole
+# cab for an occluded ALP — all benefit from the whole scene.
 _FULL_FRAME_OBJECT_TYPES: frozenset = frozenset({
     "sleep",
     "mind_diversion",
     "no_person_detected",
     "group_detected",
+    "solo_person",
 })
 
 
 # Activity types where the pre-VLM no-subject gate must NOT fire because
-# "no person visible" is either the violation itself (no_person_detected)
-# or operationally ambiguous (group_detected expects multiple persons but
-# Pipeline-1 may render zero bboxes when its own count disagrees with the
-# rendered set). For these types, the VLM is the right adjudicator.
+# the person count in the rendered keyframe is either the violation itself
+# (no_person_detected, solo_person) or operationally ambiguous
+# (group_detected expects multiple persons but Pipeline-1 may render zero
+# bboxes when its own count disagrees with the rendered set). For these
+# types, the VLM is the right adjudicator.
 _PRE_GATE_SKIP_OBJECT_TYPES: frozenset = frozenset({
     "no_person_detected",
     "group_detected",
+    "solo_person",
 })
 
 

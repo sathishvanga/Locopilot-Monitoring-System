@@ -26,7 +26,11 @@ from app.core.multi_person_runner import MultiPersonActivityRunner
 from app.core.tracking import PersonTracker
 from app.core.visualization import FrameAnnotator
 from app.core.activity_tracker import ActivityTracker
-from app.core.activity_registry import ACTIVITY_REGISTRY, ActivityConfig
+from app.core.activity_registry import (
+    ACTIVITY_REGISTRY,
+    ActivityConfig,
+    is_activity_enabled,
+)
 from app.core.gates import apply_train_stopped_suppression
 from app.core.evidence_manager import EvidenceManager
 
@@ -1867,6 +1871,12 @@ class LocopilotActivityMonitor:
             triggering_person_idx: Index of the person who actually raised the activity
                 flag (F1 fix). None for aggregate activities (group_detected, no_person_detected).
         """
+        # Per-activity enable gate. When the operator has set
+        # ``ACTIVITY_<NAME>_ENABLED=0`` we must not start tracking — otherwise
+        # the activity would still produce evidence clips, image frames, and
+        # an entry in ``activities.json`` once ``end_activity`` fires.
+        if not is_activity_enabled(activity_name):
+            return
         if not self.activities[activity_name]['active']:
             self.activities[activity_name]['active'] = True
             self.activities[activity_name]['start_time'] = timestamp
@@ -2603,7 +2613,14 @@ class LocopilotActivityMonitor:
             alp_not_coordinating = False
 
             # Detect when no person is in frame
-            no_person_detected_flag = (len(detections.get('deduplicated_person', [])) == 0)
+            _dedup_count = len(detections.get('deduplicated_person', []))
+            no_person_detected_flag = (_dedup_count == 0)
+            # Solo-person rule: a running train must always carry both LP and
+            # ALP. Exactly one deduplicated person is the violation. STOPPED
+            # state is filtered out by ``apply_train_stopped_suppression``
+            # below so brief station halts (where the ALP steps out for
+            # platform checks) don't fire.
+            solo_person_flag = (_dedup_count == 1)
 
             # OCR is expensive (EasyOCR on CPU, ~150ms/frame). Only start_activity
             # actually consumes this value, so defer computation until we know an
@@ -2645,6 +2662,7 @@ class LocopilotActivityMonitor:
                     'alp_hand_gesture_detected': alp_hand_gesture_detected,
                     'mind_diversion_detected': mind_diversion_detected,
                     'eating_drinking_detected': eating_drinking_detected,
+                    'solo_person_detected': solo_person_flag,
                 }
                 # Settings-driven override (HEAD): operators can narrow which
                 # activity types are suppressed when STOPPED via
@@ -2678,7 +2696,11 @@ class LocopilotActivityMonitor:
                 alp_hand_gesture_detected = _train_stopped_aggregated['alp_hand_gesture_detected']
                 mind_diversion_detected = _train_stopped_aggregated['mind_diversion_detected']
                 eating_drinking_detected = _train_stopped_aggregated['eating_drinking_detected']
-                # group_detected: raise threshold to >5 when stopped
+                solo_person_flag = _train_stopped_aggregated['solo_person_detected']
+                # group_detected: relax threshold while STOPPED (running default
+                # is >2 people; at stations 3-5 person handovers are expected
+                # so we re-clear the flag unless the count exceeds the stopped
+                # threshold, default >5).
                 if group_detected_flag:
                     person_count = len(detections.get('deduplicated_person', []))
                     if person_count <= self.train_motion_stopped_group_threshold:
@@ -2720,7 +2742,8 @@ class LocopilotActivityMonitor:
                 'mind_diversion': mind_diversion_detected,
                 'eating_drinking': eating_drinking_detected,
                 'no_person_detected': no_person_detected_flag,
-                'alp_not_standing': False
+                'alp_not_standing': False,
+                'solo_person': solo_person_flag,
             }
 
             # 3.5. Suppress no_person_detected when trip schedule is unavailable
