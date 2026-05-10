@@ -2630,8 +2630,21 @@ class LocopilotActivityMonitor:
             # deduplicated AND the raw count to be exactly 1 so any frame
             # where YOLO saw a second person — even one the dedup filter
             # later dropped — vetoes the trigger.
+            #
+            # Orphan-pose safety net (added after run_20260510_071453 FP at
+            # t=927s): YOLO-pose can detect partial-body keypoints for a
+            # second person whose torso failed YOLO-person's confidence/area
+            # gate. When raw YOLO-pose emits more pose detections than the
+            # role matcher could pair to person bboxes, the unmatched poses
+            # ("orphans") indicate a second crew member is partially in
+            # frame. Suppress solo_person whenever any orphan pose exists.
             _raw_person_count = len(detections.get('person', []))
-            solo_person_flag = (_dedup_count == 1 and _raw_person_count == 1)
+            _orphan_pose_count = aggregated.get('orphan_pose_count', 0)
+            solo_person_flag = (
+                _dedup_count == 1
+                and _raw_person_count == 1
+                and _orphan_pose_count == 0
+            )
 
             # OCR is expensive (EasyOCR on CPU, ~150ms/frame). Only start_activity
             # actually consumes this value, so defer computation until we know an

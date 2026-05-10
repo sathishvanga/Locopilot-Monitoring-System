@@ -810,6 +810,15 @@ second person. Before declaring solo_person:
      dashboard.
   4. Look AT THE FRAME EDGES (left, right, bottom) for a leg, foot, or sleeve
      of a second person who is mostly out-of-frame.
+  5. **HAND/ARM AT EDGE RULE (hard):** if you see a disembodied hand,
+     forearm, sleeve cuff, finger, or hand-held object (papers, pen, radio,
+     cup) entering the frame at any edge or hovering near the control panel
+     WITHOUT a visible torso/head attached to it, that hand belongs to a
+     SECOND person whose body is outside the camera's field of view. Set
+     ``second_person_partial_or_occluded=true``. Do not require the second
+     person's full body to be visible — overhead cabin cameras frequently
+     clip the LP's torso when the LP leans into the controls, leaving only a
+     reaching arm in frame.
 If you spot ANY of the above — even with low confidence — set
 ``second_person_partial_or_occluded=true`` and return UNCERTAIN (not
 TRUE_POSITIVE). Reserve TRUE_POSITIVE for cases where you are highly confident
@@ -845,6 +854,24 @@ keyframe strip is small or low-resolution, "motion blur in window" can be a
 hallucination — only report ``running`` when you can name a SPECIFIC
 running-cue (poles flashing past, track streaking, scenery clearly translating
 across consecutive frames). When in doubt, return ``unclear``.
+
+**DOOR-OPEN PRECEDENCE RULE (hard, no exceptions):** Trains do NOT run with a
+cabin door open. If you see ANY of the following in ANY frame of the strip,
+the train is STOPPED — set ``train_appears_to_be="stopped"`` REGARDLESS of
+what you think you see in the side window:
+  - Cabin door visibly ajar / open / partially open
+  - Daylight or outdoor brightness flooding through a doorway
+  - A person standing or walking on a platform / on the ground / on track
+    ballast visible through an open doorway
+  - Feet, legs, or a partial body of someone outside the cabin visible at
+    floor level through a doorway
+  - Platform edge, station signage, ballast, or rails visible at close range
+    through an open door
+Window-blur observations are UNRELIABLE when a door is open in the same strip
+— low-res JPEG compression and the camera's own micro-vibration regularly
+produce apparent "motion blur" in side windows even at standstill. The door
+state is the authoritative cue. If door state and window state disagree, the
+door wins.
 
 **HARD RULES on the verdict (no exceptions):**
   - If ``distinct_persons_visible_in_strip >= 2`` in any frame → FALSE_POSITIVE

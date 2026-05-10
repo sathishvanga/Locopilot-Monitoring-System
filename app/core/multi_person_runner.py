@@ -1157,6 +1157,20 @@ class MultiPersonActivityRunner:
                 del monitor.no_pose_sleep_tracking[person_idx]
 
         # ============ AGGREGATE RESULTS ACROSS ALL PERSONS ============
+        # Solo-person safety net: count YOLO-pose detections that did NOT match
+        # any person bbox. When YOLO-person dedup drops a small/partial second
+        # body but YOLO-pose still emitted keypoints for it, ``orphan_pose_count``
+        # is non-zero and the monitor's solo_person trigger vetoes the flag.
+        # Catches the FP archetype where a second crew member's reaching
+        # arm/torso is barely visible at the upper frame edge (camera-position
+        # dependent).
+        try:
+            _raw_pose_count = len(yolo_pose_results) if yolo_pose_results else 0
+            _matched_pose_count = len(matched_poses) if matched_poses else 0
+            _orphan_pose_count = max(0, _raw_pose_count - _matched_pose_count)
+        except Exception:
+            _orphan_pose_count = 0
+
         aggregated = {
             'mind_diversion_detected': False,
             'sleep_detected': False,
@@ -1167,6 +1181,7 @@ class MultiPersonActivityRunner:
             'lp_hand_gesture_detected': False,
             'alp_hand_gesture_detected': False,
             'eating_drinking_detected': False,
+            'orphan_pose_count': _orphan_pose_count,
             'performing_person': -1,
             'performing_persons': [],  # List of person indices who performed activities
             # F1 (2026-04-06): per-activity triggering-person map so evidence
