@@ -55,6 +55,7 @@ from .keyframe_processor import (  # noqa: F401
     _PRE_GATE_SKIP_OBJECT_TYPES,
     _OBJECT_REQUIRED_TYPES,
 )
+from .motion_classifier import classify_motion  # noqa: F401
 from .vlm_client import _CircuitBreaker  # noqa: F401
 from .verdict_parser import (  # noqa: F401
     _Calibrator,
@@ -1247,6 +1248,66 @@ class VlmVerificationService:
                 keyframes = _supplement_keyframes_from_clip(
                     activity, keyframes, target_n=target_n,
                 )
+
+            # Window-region motion check (added 2026-05-10 after manual
+            # review of run_20260510_08* showed 5/6 posted writing TPs were
+            # actually train-stationary FPs). Pipeline-1's vibration motion
+            # is fooled by diesel idle at this trainset; the VLM is also
+            # unreliable because writing/eating/etc activities crop the
+            # keyframes to the person+object ROI before sending — the
+            # window (the only motion cue) is removed from the VLM input.
+            #
+            # Compute pixel-diff in the cabin's window ROI directly from
+            # the uncropped keyframes we already have. If the window is
+            # static across the burst, mark the activity FALSE_POSITIVE
+            # without spending a VLM call. Per-camera ROI lookup uses
+            # OCR on the in-frame text overlay (cached per source video
+            # so OCR runs once, not per activity).
+            #
+            # Scoped to ROI-cropped types only (writing/eating/packing/
+            # cell_phone) — for full-frame types like solo_person the VLM
+            # already sees the window and can read motion itself.
+            if object_type not in _FULL_FRAME_OBJECT_TYPES:
+                video_filename = activity.get("filename") or ""
+                motion_result = classify_motion(video_filename, keyframes)
+                if motion_result is not None and motion_result.get("stopped"):
+                    logger.info(
+                        "[vlm] WINDOW-MOTION DROP activity type=%s at t=%s "
+                        "(camera=%s window_diff=%.2f below threshold=%.2f, "
+                        "%d keyframe pairs)",
+                        activity.get("activityType"),
+                        activity.get("activityStartTime"),
+                        motion_result["camera_id"],
+                        motion_result["score"],
+                        motion_result["threshold"],
+                        motion_result["n_pairs"],
+                    )
+                    return {
+                        "status": "WINDOW_MOTION_DROP_STOPPED",
+                        "verdict": {
+                            "verdict": "FALSE_POSITIVE",
+                            "confidence": 0.85,
+                            "train_appears_to_be": "stopped",
+                            "motion_evidence": (
+                                f"window_roi_diff={motion_result['score']:.2f} "
+                                f"< {motion_result['threshold']:.2f} "
+                                f"(camera {motion_result['camera_id']})"
+                            ),
+                            "reasoning": (
+                                f"Window-region pixel-diff motion check: median "
+                                f"diff {motion_result['score']:.2f} across "
+                                f"{motion_result['n_pairs']} keyframe pairs is "
+                                f"below the running threshold "
+                                f"{motion_result['threshold']:.2f} — train is "
+                                f"stationary, so this 'while running' rule "
+                                f"should not fire."
+                            ),
+                        },
+                        "model": "motion_classifier_v1",
+                        "frames_sent": motion_result["n_frames"],
+                        "latency_sec": motion_result["latency_sec"],
+                        "motion_classifier": motion_result,
+                    }
 
             crop_to_roi = object_type not in _FULL_FRAME_OBJECT_TYPES
             # Full-frame types stack vertically so each keyframe stays at

@@ -73,6 +73,12 @@ app/
       keyframe_processor.py       Keyframe resolve / supplement / stitch / bbox count
       image_encoder.py            ROI detect, crop, base64 encode
       verdict_parser.py           JSON parse, calibration, motion-state logic
+      motion_classifier.py        2026-05-10: OCR-based camera detection +
+                                  per-camera window-ROI frame-diff motion check.
+                                  Runs BEFORE the VLM call to drop train-stationary
+                                  writing/eating FPs that vibration-detector and
+                                  VLM-text both miss. See "Window-region motion
+                                  classifier" section below.
     concurrent_activity_grouping_service.py
   core/
     activity_registry.py        Single source of truth for activity types,
@@ -366,6 +372,138 @@ sudo systemctl restart locopilot.service
 # Stop vLLM (verifier auto fail-opens)
 sudo systemctl stop locopilot-vlm.service
 ```
+
+---
+
+## Window-region motion classifier (Pipeline-2 pre-VLM)
+
+`app/services/vlm/motion_classifier.py` — added 2026-05-10 after manual
+review of a 12-video batch (`run_20260510_103222`..`104537`) showed 5 of
+6 posted writing violations were train-stationary FPs.
+
+### Why it exists
+
+Two upstream gates are unreliable for stop-state detection on this
+trainset:
+
+1. **Pipeline-1 vibration motion** is fooled by diesel idle. The user's
+   own deep-research note documents this: RUNNING vib median 4.77,
+   STOPPED vib median 2.01 — bimodal but the diesel idle keeps
+   STOPPED-state vibration above the running threshold. So
+   `motionState=RUNNING` ships even when the train is at a station.
+
+2. **VLM motion verdict** is unreliable for ROI-cropped activities
+   (writing/eating/packing/cell_phone). The keyframe stitcher crops to
+   the person+object bbox before sending — the cabin window (the only
+   motion cue) is REMOVED from the VLM input. Qwen2.5-VL-7B-AWQ then
+   confabulates a stock phrase ("FRAME 3: motion blur in right window")
+   for nearly every activity regardless of state — observed identical
+   verbatim string across 6 different scenes.
+
+The motion classifier runs BEFORE the VLM call, on the *uncropped*
+keyframes the verifier already loaded. If the cabin's window region is
+static across the keyframe burst, the activity is dropped as a
+FALSE_POSITIVE without spending a VLM call.
+
+### How it works
+
+1. **Camera detection (OCR, once per source video, cached):** EasyOCR
+   on the bottom-right text overlay. The CCTV stamps `CAB 1 ALP camera 3`
+   or `CAB 1 LP camera 2` at ~y=560-590. EasyOCR introduces character
+   substitutions (`CAB`→`CAU`, `ALP`→`ALR`, `camera`→`amera` or `era`),
+   so the regex matches loosely on the trailing digit:
+   - "amera 3" / "ALR" / "ALP" → `ALP_CAM3`
+   - "amera 2" / bare "LP" (not part of "ALP") → `LP_CAM2`
+
+   First call OCRs every keyframe in the burst until one matches (LP
+   body sometimes occludes the overlay on a single frame). Subsequent
+   activities for the same source video are O(1) cache lookup.
+
+2. **Window ROI per camera:**
+   ```python
+   CAMERA_WINDOW_ROIS = {
+       "ALP_CAM3": (850, 0, 960, 400),  # upper-right grille
+       "LP_CAM2":  (0,   0, 200, 400),  # upper-left window
+   }
+   ```
+
+3. **Motion score:** mean abs pixel diff in the ROI between consecutive
+   keyframes, taken as the median across all consecutive pairs (5
+   keyframes → 4 pairs → 1 score).
+
+4. **Decision:** `score < MOTION_DIFF_STOPPED_THRESHOLD` (10.0) →
+   synthetic FALSE_POSITIVE verdict with `confidence=0.85`,
+   `train_appears_to_be="stopped"`, log line:
+   ```
+   [vlm] WINDOW-MOTION DROP activity type=5 at t=665.00
+   (camera=ALP_CAM3 window_diff=6.60 below threshold=10.00, 4 keyframe pairs)
+   ```
+
+### Threshold tuning provenance
+
+Tuned on a 7-clip batch (1 TP `vid11_527s` + 6 stationary FPs across
+`run_20260510_084423` through `run_20260510_085654`):
+
+| Activity (window-ROI median diff) | GT | score |
+|---|---|---|
+| vid01 @ 415s | FP_stopped | 3.24 |
+| vid04 @ 965s | FP_stopped | 7.33 |
+| vid06a @ 653s | FP_stopped | 25.15 (people-on-platform outlier) |
+| vid06b @ 665s | FP_stopped | 6.60 |
+| vid06c @ 725s | FP_stopped | 7.55 |
+| vid07 @ 1257s | FP_stopped | 0.86 |
+| **vid11 @ 527s** | **TP_running** | **13.15** |
+
+Threshold of 10.0 catches 5 of 6 FPs cleanly; vid06a's 25.15 isn't caught
+but Pipeline-1 already flagged it `motionState=STOPPED`, so the existing
+API motion filter at the boundary excludes it. Net: all 6 FPs suppressed
+end-to-end while preserving the only TP.
+
+### Scope and fall-open behaviour
+
+- Only runs for `object_type not in _FULL_FRAME_OBJECT_TYPES`, i.e.
+  writing/eating/packing/cell_phone/sleep/mind_diversion. For full-frame
+  types (solo_person/no_person/group_detected) the VLM already sees the
+  window in the un-cropped strip and can read motion textually — no
+  override needed.
+- `classify_motion()` returns `None` (and verifier proceeds with the
+  normal VLM call) when:
+  - OCR can't identify the camera (pattern not matched on any keyframe)
+  - Fewer than 2 keyframes are available
+  - cv2 fails to read a keyframe
+  This makes the gate fail-open: a broken classifier never adds FPs,
+  it only fails to subtract them.
+
+### Operations
+
+```bash
+# See classifier decisions
+grep 'WINDOW-MOTION' /opt/poc2/logs/LocopilotMonitoring.log | tail -20
+
+# Inspect a specific activity's classifier output
+jq '.[] | select(.activityStartTime=="665.00") | .vlm_review' \
+  /opt/poc2/locopilot_evidence/run_<id>/activities.json
+
+# Disable temporarily by removing the classify_motion call in
+# app/services/vlm/service.py around line ~1245 — there is no env flag
+# for this yet (intentionally; a future ARCH task should add
+# VLM_WINDOW_MOTION_ENABLED if rollback discipline becomes important).
+```
+
+### Limitations and what's NOT solved
+
+- **Door-open + people-on-platform scenes** (vid06a archetype): people
+  motion through the door inflates the window-ROI diff above threshold,
+  so the classifier doesn't fire. Caught only by Pipeline-1's separate
+  vibration verdict + the API-boundary motion filter.
+- **New camera install:** if a different cabin uses cameras other than
+  ALP cam 3 / LP cam 2, the camera detection returns `None` and no
+  override happens. Add the camera + ROI to `CAMERA_WINDOW_ROIS` and
+  the regex to `_ALP_TOKENS` / `_LP_TOKENS`.
+- **Threshold tuned on a 7-clip sample.** A larger labelled corpus
+  could justify either raising or lowering it; the current value sits
+  in the middle of a genuine but tight gap (TP=13.15 vs FP_max=7.55)
+  and may need adjustment as more labelled data arrives.
 
 ---
 
