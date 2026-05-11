@@ -65,7 +65,6 @@ app/
     s3_upload_service.py        Evidence uploads (clips + jpegs)
     minio_service.py
     external_api_service.py     POST cvvr/cvvrTripViolations/addUpdateBulk
-    ocr_timestamp_service.py    Reads time overlay from CCTV frames
     vlm_verification_service.py 12-line back-compat shim. Real code lives in vlm/ below.
     vlm/                        Pipeline-2 verifier package (split out 2026-05-09):
       service.py                  VlmVerificationService orchestrator + telemetry

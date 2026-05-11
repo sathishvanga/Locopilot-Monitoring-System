@@ -122,37 +122,3 @@ class TripSchedule(BaseModel):
         }
 
 
-class OCRTimestampResult(BaseModel):
-    """
-    Model for OCR timestamp extraction result
-
-    Contains the extracted timestamp and metadata about the extraction.
-    """
-    success: bool = Field(default=False, description="Whether extraction succeeded")
-    timestamp: Optional[str] = Field(None, description="Extracted timestamp in HH:MM:SS format")
-    raw_text: Optional[str] = Field(None, description="Raw OCR text before parsing")
-    confidence: float = Field(default=0.0, description="OCR confidence score (0-1)")
-
-    # Extraction metadata
-    roi_position: str = Field(default="top-right", description="ROI position used")
-    roi_coords: Optional[tuple] = Field(None, description="ROI coordinates (x, y, width, height)")
-    extraction_time_ms: float = Field(default=0.0, description="Time taken for extraction in milliseconds")
-
-    # Error info
-    error_message: Optional[str] = Field(None, description="Error message if extraction failed")
-
-    class Config:
-        json_schema_extra = {
-            "example": {
-                "success": True,
-                "timestamp": "14:30:45",
-                "raw_text": "14:30:45",
-                "confidence": 0.95,
-                "roi_position": "top-right",
-                "roi_coords": (1720, 10, 200, 50),
-                "extraction_time_ms": 45.2,
-                "error_message": None
-            }
-        }
-
-

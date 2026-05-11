@@ -736,15 +736,6 @@ class Settings(BaseSettings):
     # (cannot distinguish station halts from running without schedule)
     suppress_no_person_without_schedule: bool = bool(int(os.getenv("SUPPRESS_NO_PERSON_WITHOUT_SCHEDULE", "1")))
 
-    # OCR Timestamp Extraction Settings
-    ocr_enabled: bool = bool(int(os.getenv("OCR_ENABLED", "0")))
-    ocr_engine: str = os.getenv("OCR_ENGINE", "auto")  # 'easyocr' (recommended), 'tesseract', or 'auto'
-    ocr_roi_position: str = os.getenv("OCR_ROI_POSITION", "top-left")  # top-right, top-left, bottom-right, bottom-left
-    ocr_roi_x: int = int(os.getenv("OCR_ROI_X", "10"))  # X offset from edge
-    ocr_roi_y: int = int(os.getenv("OCR_ROI_Y", "10"))  # Y offset from edge
-    ocr_roi_width: int = int(os.getenv("OCR_ROI_WIDTH", "200"))  # ROI width
-    ocr_roi_height: int = int(os.getenv("OCR_ROI_HEIGHT", "50"))  # ROI height
-
     # Pre-Arrival ALP Alertness Settings
     pre_arrival_window_start: int = int(os.getenv("PRE_ARRIVAL_WINDOW_START", "60"))  # 60s before arrival
     pre_arrival_window_end: int = int(os.getenv("PRE_ARRIVAL_WINDOW_END", "30"))  # 30s before arrival

@@ -108,7 +108,6 @@ if script_dir not in sys.path:
 try:
     from app.services.image_preprocessing_service import ImagePreprocessingService
     from app.utils.config import get_settings
-    from app.services.ocr_timestamp_service import OCRTimestampService, get_ocr_timestamp_service
     from app.models.trip_models import TripSchedule
 except ImportError:
     # Fallback: try importing as module
@@ -142,8 +141,6 @@ except ImportError:
         ImagePreprocessingService = None
         get_settings = None
 
-    OCRTimestampService = None
-    get_ocr_timestamp_service = None
     TripSchedule = None
 
 # Activity registry is built at import time inside ``app/core/activity_registry``.
@@ -512,9 +509,8 @@ class LocopilotActivityMonitor:
         # This ensures all activity names stay in sync across dicts.
 
         # Activity tracking with temporal filtering
-        # Each activity tracks OCR timestamps (ocr_start_time, ocr_end_time) for embedded frame timestamps
         self.activities = {
-            name: {'active': False, 'start_time': None, 'ocr_start_time': None, 'frames': [], 'duration': 0}
+            name: {'active': False, 'start_time': None, 'frames': [], 'duration': 0}
             for name in ACTIVITY_REGISTRY
         }
 
@@ -712,17 +708,6 @@ class LocopilotActivityMonitor:
         self.trip_schedule = None  # Will be set via set_trip_schedule()
         self.suppress_no_person_without_schedule = getattr(self.settings, 'suppress_no_person_without_schedule', True) if self.settings else True
 
-        # OCR timestamp service
-        if get_ocr_timestamp_service is not None:
-            try:
-                self.ocr_service = get_ocr_timestamp_service()
-                self.logger.info("OCRTimestampService initialized successfully")
-            except Exception as e:
-                self.logger.warning(f"Failed to initialize OCRTimestampService: {e}")
-                self.ocr_service = None
-        else:
-            self.ocr_service = None
-
         # ---------------------------------------------------------------------------
         # Initialize extracted detector modules
         # These provide modular detection logic extracted from this monitor class.
@@ -854,28 +839,6 @@ class LocopilotActivityMonitor:
                 "Trip schedule not available - no_person_detected will be suppressed "
                 "(cannot distinguish station halts from running without schedule)"
             )
-
-    def _extract_ocr_timestamp(self, frame):
-        """
-        Extract timestamp from video frame using OCR.
-
-        Args:
-            frame: Video frame (numpy array)
-
-        Returns:
-            Extracted timestamp string (HH:MM:SS) or None
-        """
-        if self.ocr_service is None:
-            return None
-
-        try:
-            result = self.ocr_service.extract_timestamp(frame)
-            if result.success:
-                return result.timestamp
-            return None
-        except Exception as e:
-            self.logger.debug(f"OCR extraction failed: {e}")
-            return None
 
     def get_keypoint(self, landmarks: Any, keypoint_name: str) -> Any:
         """Get a keypoint from landmarks by name (works with both YOLO and MediaPipe formats).
@@ -1858,7 +1821,7 @@ class LocopilotActivityMonitor:
             logger=self.logger,
         )
 
-    def start_activity(self, activity_name: str, timestamp: float, fps: float, frame_count: int, person_roles: Optional[Dict[int, Dict[str, Any]]] = None, ocr_timestamp: Optional[str] = None, triggering_person_idx: Optional[int] = None) -> None:
+    def start_activity(self, activity_name: str, timestamp: float, fps: float, frame_count: int, person_roles: Optional[Dict[int, Dict[str, Any]]] = None, triggering_person_idx: Optional[int] = None) -> None:
         """Start tracking an activity
 
         Args:
@@ -1867,43 +1830,25 @@ class LocopilotActivityMonitor:
             fps: Frames per second
             frame_count: Frame count when activity started
             person_roles: Dictionary of person roles (optional)
-            ocr_timestamp: OCR-extracted timestamp from frame (HH:MM:SS format, optional)
             triggering_person_idx: Index of the person who actually raised the activity
                 flag (F1 fix). None for aggregate activities (group_detected, no_person_detected).
         """
-        # Per-activity enable gate. When the operator has set
-        # ``ACTIVITY_<NAME>_ENABLED=0`` we must not start tracking — otherwise
-        # the activity would still produce evidence clips, image frames, and
-        # an entry in ``activities.json`` once ``end_activity`` fires.
         if not is_activity_enabled(activity_name):
             return
         if not self.activities[activity_name]['active']:
             self.activities[activity_name]['active'] = True
             self.activities[activity_name]['start_time'] = timestamp
-
-            # OCR timestamp (disabled)
-            ocr_ts = ocr_timestamp if ocr_timestamp else None
-            self.activities[activity_name]['ocr_start_time'] = ocr_ts
             self.activities[activity_name]['start_frame_count'] = frame_count
             self.activities[activity_name]['last_frame_count'] = frame_count
-            # CR-005: Store frame indices instead of frame copies to reduce memory usage
             self.activities[activity_name]['frames'] = list(self.frame_idx_buffer)
             self.activities[activity_name]['duration'] = 0
             self.activities[activity_name]['person_roles'] = person_roles if person_roles else {}
-            # F1 (2026-04-06): remember which person raised this flag so evidence
-            # attribution can pick the correct crew member (ALP vs LP).
             self.activities[activity_name]['triggering_person_idx'] = triggering_person_idx
-
-            # Track actual detection timestamps for precise clip duration
             self.activities[activity_name]['first_detection_time'] = timestamp
             self.activities[activity_name]['last_detection_time'] = timestamp
             self.activities[activity_name]['motion_state'] = self.current_motion_state
 
-            # Log with OCR timestamp if available
-            if ocr_ts:
-                self.logger.info(f"[{timestamp}] Activity started: {activity_name} (Frame timestamp: {ocr_ts})")
-            else:
-                self.logger.info(f"[{timestamp}] Activity started: {activity_name}")
+            self.logger.info(f"[{timestamp}] Activity started: {activity_name}")
     
     def _cleanup_stale_person_tracking(self, active_person_indices):
         """CR-012: Remove entries from per-person tracking dicts for persons no longer detected.
@@ -1936,24 +1881,11 @@ class LocopilotActivityMonitor:
                               f"{self._video_fps:.2f} fps, {self._video_duration_seconds:.1f}s duration")
         return self._video_total_frames, self._video_fps, self._video_duration_seconds
 
-    def end_activity(self, activity_name: str, timestamp: float, fps: float, frame_count: int, people_count: int = 1, save_clips: bool = True, ocr_timestamp: Optional[str] = None) -> None:
+    def end_activity(self, activity_name: str, timestamp: float, fps: float, frame_count: int, people_count: int = 1, save_clips: bool = True) -> None:
         """End tracking an activity and optionally save evidence (only if meets minimum duration)"""
         if self.activities[activity_name]['active']:
             activity = self.activities[activity_name]
             activity['active'] = False
-
-            # For end timestamp, we calculate from start + duration instead of OCR
-            # This is more reliable because _current_frame may point to a later frame
-            # (OCR on end frame often gives wrong timestamps due to frame timing issues)
-            ocr_ts = None  # Will be calculated from start + duration below
-            if ocr_timestamp:
-                # Only use provided timestamp if explicitly passed
-                ocr_ts = ocr_timestamp
-                self.logger.info(f"[OCR END] Using provided timestamp: {ocr_ts}")
-            else:
-                self.logger.info(f"[OCR END] Will calculate from start + duration (more reliable)")
-
-            activity['ocr_end_time'] = ocr_ts
 
             start_frame = activity.get('start_frame_count', frame_count)
 
@@ -2009,20 +1941,6 @@ class LocopilotActivityMonitor:
 
             self.logger.info(f"  Precise clip: {first_detection_seconds:.2f}s - {last_detection_seconds:.2f}s (activity: {actual_activity_duration:.2f}s, buffer: +/-{buffer_before}s)")
 
-            # Calculate OCR timestamps if available
-            ocr_start_time_str = activity.get('ocr_start_time')
-            ocr_end_time_str = activity.get('ocr_end_time')
-
-            # If we have OCR start but not end, calculate end from duration
-            if ocr_start_time_str and not ocr_end_time_str:
-                ocr_start_seconds = time_to_seconds(ocr_start_time_str)
-                ocr_end_seconds = ocr_start_seconds + actual_clip_duration
-                hours = int(ocr_end_seconds // 3600)
-                minutes = int((ocr_end_seconds % 3600) // 60)
-                seconds = int(ocr_end_seconds % 60)
-                ocr_end_time_str = f"{hours:02d}:{minutes:02d}:{seconds:02d}"
-                activity['ocr_end_time'] = ocr_end_time_str
-            
             # Generate filenames with composite naming: {video}_{activity}_frame{number}_{counter}
             video_filename = os.path.basename(self.video_path)
             video_name_without_ext = os.path.splitext(video_filename)[0]
@@ -2124,24 +2042,8 @@ class LocopilotActivityMonitor:
                     # If role not in crew_members, default to LP
                     performing_role = 'LP'
             
-            # Create JSON data in the required format
-            # Store FULL PATHS for clips and images
-            # Use OCR timestamps (embedded frame timestamps) when available, fallback to video playback time
-            ocr_start = activity.get('ocr_start_time')
-            ocr_end = activity.get('ocr_end_time')
-
-            # Determine which timestamps to use for startTime/endTime
-            # Priority: OCR timestamps (actual frame time) > Video playback timestamps
-            if ocr_start and ocr_end:
-                # Use OCR timestamps directly (HH:MM:SS format)
-                final_start_time = ocr_start
-                final_end_time = ocr_end
-                self.logger.info(f"  Using OCR timestamps: {final_start_time} - {final_end_time}")
-            else:
-                # Fallback to video playback timestamps (seconds format)
-                final_start_time = f"{activity_start_seconds:.2f}"
-                final_end_time = f"{activity_end_seconds:.2f}"
-                self.logger.info(f"  Using video timestamps (OCR failed): {final_start_time}s - {final_end_time}s (ocr_start={ocr_start}, ocr_end={ocr_end})")
+            final_start_time = f"{activity_start_seconds:.2f}"
+            final_end_time = f"{activity_end_seconds:.2f}"
 
             # Task 0001: pull reporting metadata from the single-source registry.
             activity_cfg = ACTIVITY_REGISTRY[activity_name]
@@ -2663,16 +2565,6 @@ class LocopilotActivityMonitor:
                 solo_person_flag = False
                 no_person_detected_flag = False
 
-            # OCR is expensive (EasyOCR on CPU, ~150ms/frame). Only start_activity
-            # actually consumes this value, so defer computation until we know an
-            # activity is about to fire. 5-15x fewer OCR calls in practice.
-            _ocr_cache = [False, None]  # [computed, value]
-            def _lazy_ocr():
-                if not _ocr_cache[0]:
-                    _ocr_cache[1] = self._extract_ocr_timestamp(frame)
-                    _ocr_cache[0] = True
-                return _ocr_cache[1]
-
             # GATE: Suppress activities when train is STOPPED (vibration-based motion detection)
             # Per spec: microsleep and cell_phone MUST trigger in both stationary and moving states.
             # Other motion-dependent activities remain suppressed at station stops.
@@ -2818,7 +2710,7 @@ class LocopilotActivityMonitor:
                         if not self.activities[activity_name]['active']:
                             self.start_activity(
                                 activity_name, timestamp, fps, frame_idx,
-                                person_roles=person_roles, ocr_timestamp=_lazy_ocr(),
+                                person_roles=person_roles,
                                 triggering_person_idx=triggering_person_idx,
                             )
 
@@ -2850,8 +2742,6 @@ class LocopilotActivityMonitor:
                         else:
                             # Grace period exceeded - end activity and reset counters
                             if self.activities[activity_name]['active']:
-                                # No ocr_timestamp: current frame is post-grace-period, not when activity ended.
-                                # end_activity computes ocr_end from ocr_start + duration instead (more accurate).
                                 if save_clips:
                                     self.end_activity(activity_name, timestamp, fps, frame_idx, people_count)
                                 else:
@@ -2988,8 +2878,6 @@ class LocopilotActivityMonitor:
                 del frame
 
         # End any remaining active activities
-        # No ocr_timestamp: video ended, no specific end frame to OCR.
-        # end_activity computes ocr_end from ocr_start + duration instead.
         final_timestamp = str(timedelta(seconds=timestamp_sec))
         for activity_name in self.activities:
             if self.activities[activity_name]['active']:
@@ -3163,8 +3051,6 @@ class LocopilotActivityMonitor:
             return self.all_activities
 
         # End any remaining active activities
-        # No ocr_timestamp: video range ended, no specific end frame to OCR.
-        # end_activity computes ocr_end from ocr_start + duration instead.
         final_timestamp = str(timedelta(seconds=timestamp_sec))
         for activity_name in self.activities:
             if self.activities[activity_name]['active']:

@@ -36,6 +36,37 @@ logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
+# Singleton EasyOCR reader for camera-overlay detection. Used to live in the
+# old OCRTimestampService; inlined here when that service was deleted so we
+# don't load the model twice.
+# ---------------------------------------------------------------------------
+_easyocr_reader = None
+_easyocr_reader_lock = threading.Lock()
+
+
+def _get_easyocr_reader():
+    global _easyocr_reader
+    if _easyocr_reader is None:
+        with _easyocr_reader_lock:
+            if _easyocr_reader is None:
+                try:
+                    import easyocr
+                except ImportError:
+                    logger.warning(
+                        "[motion_classifier] easyocr not installed; "
+                        "camera detection disabled"
+                    )
+                    return None
+                logger.info(
+                    "[motion_classifier] Initializing EasyOCR reader "
+                    "(this may take a moment)..."
+                )
+                _easyocr_reader = easyocr.Reader(['en'], gpu=False, verbose=False)
+                logger.info("[motion_classifier] EasyOCR reader initialized")
+    return _easyocr_reader
+
+
+# ---------------------------------------------------------------------------
 # Per-camera window ROI table.
 #
 # ROI coordinates are (x1, y1, x2, y2) in the camera's native 1280x720 frame.
@@ -130,11 +161,7 @@ def detect_camera_id(jpg_path: Path) -> Optional[str]:
     roi = img[y0:h, x0:w]
 
     try:
-        # Reuse the singleton EasyOCR reader from the timestamp service so
-        # we don't double-allocate the model in worker memory.
-        from app.services.ocr_timestamp_service import OCRTimestampService
-
-        reader = OCRTimestampService._get_easyocr_reader()
+        reader = _get_easyocr_reader()
         if reader is None:
             return None
         # detail=0 returns just the text strings, fast-paragraph option

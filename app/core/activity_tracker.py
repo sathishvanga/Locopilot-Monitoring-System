@@ -30,8 +30,6 @@ class ActivityState:
     Attributes:
         active: Whether the activity is currently active.
         start_time: Timestamp string when activity started (HH:MM:SS.microseconds).
-        ocr_start_time: OCR-extracted timestamp from frame (HH:MM:SS format).
-        ocr_end_time: OCR-extracted end timestamp (HH:MM:SS format).
         start_frame_count: Frame count when activity started.
         last_frame_count: Last frame count where activity was detected.
         frames: List of frame indices during the activity.
@@ -43,8 +41,6 @@ class ActivityState:
 
     active: bool = False
     start_time: Optional[str] = None
-    ocr_start_time: Optional[str] = None
-    ocr_end_time: Optional[str] = None
     start_frame_count: int = 0
     last_frame_count: int = 0
     frames: List[int] = field(default_factory=list)
@@ -58,8 +54,6 @@ class ActivityState:
         return {
             'active': self.active,
             'start_time': self.start_time,
-            'ocr_start_time': self.ocr_start_time,
-            'ocr_end_time': self.ocr_end_time,
             'start_frame_count': self.start_frame_count,
             'last_frame_count': self.last_frame_count,
             'frames': self.frames,
@@ -75,8 +69,6 @@ class ActivityState:
         return cls(
             active=data.get('active', False),
             start_time=data.get('start_time'),
-            ocr_start_time=data.get('ocr_start_time'),
-            ocr_end_time=data.get('ocr_end_time'),
             start_frame_count=data.get('start_frame_count', 0),
             last_frame_count=data.get('last_frame_count', 0),
             frames=data.get('frames', []),
@@ -128,7 +120,6 @@ class ActivityTracker:
             name: {
                 'active': False,
                 'start_time': None,
-                'ocr_start_time': None,
                 'frames': [],
                 'duration': 0
             }
@@ -181,7 +172,6 @@ class ActivityTracker:
         fps: float,
         frame_count: int,
         person_roles: Optional[Dict[int, Dict[str, Any]]] = None,
-        ocr_timestamp: Optional[str] = None,
         frame_idx_buffer: Optional[List[int]] = None
     ) -> None:
         """Start tracking a new activity.
@@ -192,7 +182,6 @@ class ActivityTracker:
             fps: Frames per second of the video.
             frame_count: Frame count when activity started.
             person_roles: Optional dictionary of person roles.
-            ocr_timestamp: Optional OCR-extracted timestamp from frame (HH:MM:SS format).
             frame_idx_buffer: Optional list of frame indices to store as activity frames.
         """
         if activity_name not in self.activities:
@@ -204,14 +193,9 @@ class ActivityTracker:
         if not activity['active']:
             activity['active'] = True
             activity['start_time'] = timestamp
-
-            # OCR timestamp handling
-            ocr_ts = ocr_timestamp if ocr_timestamp else None
-            activity['ocr_start_time'] = ocr_ts
             activity['start_frame_count'] = frame_count
             activity['last_frame_count'] = frame_count
 
-            # Store frame indices if provided
             if frame_idx_buffer is not None:
                 activity['frames'] = list(frame_idx_buffer)
             else:
@@ -220,17 +204,10 @@ class ActivityTracker:
             activity['duration'] = 0
             activity['person_roles'] = person_roles if person_roles else {}
 
-            # Track actual detection timestamps for precise clip duration
             activity['first_detection_time'] = timestamp
             activity['last_detection_time'] = timestamp
 
-            # Log with OCR timestamp if available
-            if ocr_ts:
-                self.logger.info(
-                    f"[{timestamp}] Activity started: {activity_name} (Frame timestamp: {ocr_ts})"
-                )
-            else:
-                self.logger.info(f"[{timestamp}] Activity started: {activity_name}")
+            self.logger.info(f"[{timestamp}] Activity started: {activity_name}")
 
     def end_activity(
         self,
@@ -239,7 +216,6 @@ class ActivityTracker:
         fps: float,
         frame_count: int,
         people_count: int = 1,
-        ocr_timestamp: Optional[str] = None,
         sample_fps: Optional[float] = None
     ) -> Optional[Dict[str, Any]]:
         """End tracking an activity and create a record if it meets minimum duration.
@@ -253,7 +229,6 @@ class ActivityTracker:
             fps: Frames per second of the video.
             frame_count: Frame count when activity ended.
             people_count: Number of people involved. Defaults to 1.
-            ocr_timestamp: Optional OCR-extracted end timestamp.
             sample_fps: Sample FPS used for frame capture. Defaults to self.fps.
 
         Returns:
@@ -270,17 +245,6 @@ class ActivityTracker:
 
         activity['active'] = False
 
-        # Handle OCR end timestamp
-        ocr_ts = None
-        if ocr_timestamp:
-            ocr_ts = ocr_timestamp
-            self.logger.info(f"[OCR END] Using provided timestamp: {ocr_ts}")
-        else:
-            self.logger.info("[OCR END] Will calculate from start + duration (more reliable)")
-
-        activity['ocr_end_time'] = ocr_ts
-
-        # Calculate duration based on captured frames
         effective_fps = sample_fps if sample_fps is not None else self.fps
         total_clip_frames = len(activity['frames'])
         actual_clip_duration = total_clip_frames / effective_fps if effective_fps > 0 else 0
@@ -307,28 +271,12 @@ class ActivityTracker:
         last_detection_seconds = self._time_to_seconds(last_detection)
         actual_activity_duration = last_detection_seconds - first_detection_seconds
 
-        # Calculate OCR end time if we have start but not end
-        ocr_start_time_str = activity.get('ocr_start_time')
-        ocr_end_time_str = activity.get('ocr_end_time')
-
-        if ocr_start_time_str and not ocr_end_time_str:
-            ocr_start_seconds = self._time_to_seconds(ocr_start_time_str)
-            ocr_end_seconds = ocr_start_seconds + actual_clip_duration
-            hours = int(ocr_end_seconds // 3600)
-            minutes = int((ocr_end_seconds % 3600) // 60)
-            seconds = int(ocr_end_seconds % 60)
-            ocr_end_time_str = f"{hours:02d}:{minutes:02d}:{seconds:02d}"
-            activity['ocr_end_time'] = ocr_end_time_str
-
-        # Create activity record
         start_frame = activity.get('start_frame_count', frame_count)
 
         activity_record = {
             'activity_name': activity_name,
             'start_time': activity['start_time'],
             'end_time': timestamp,
-            'ocr_start_time': activity.get('ocr_start_time'),
-            'ocr_end_time': activity.get('ocr_end_time'),
             'start_frame': start_frame,
             'end_frame': frame_count,
             'duration': actual_clip_duration,
@@ -535,7 +483,6 @@ class ActivityTracker:
             self.activities[activity_name] = {
                 'active': False,
                 'start_time': None,
-                'ocr_start_time': None,
                 'frames': [],
                 'duration': 0
             }
