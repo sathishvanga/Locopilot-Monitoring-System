@@ -566,7 +566,9 @@ async def _run_video_pipeline(
                     with open(activities_json_for_vlm, 'r', encoding='utf-8') as f:
                         pre_vlm_activities = _json.load(f)
                     pre_count = len(pre_vlm_activities)
-                    post_vlm_activities, vlm_stats = vlm_service.verify_activities(pre_vlm_activities)
+                    post_vlm_activities, vlm_stats = vlm_service.verify_activities(
+                        pre_vlm_activities, camera_angle=camera_angle,
+                    )
                     # Route the rewrite through ActivityRepository so it uses
                     # the canonical atomic + locked + numpy-aware writer.
                     from app.repositories.activity_repository import (

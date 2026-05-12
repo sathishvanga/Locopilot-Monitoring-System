@@ -857,6 +857,33 @@ class Settings(BaseSettings):
     # now-dead fanout code.
     concurrent_grouping_after_vlm: bool = bool(int(os.getenv("CONCURRENT_GROUPING_AFTER_VLM", "0")))
 
+    # Speedometer-region motion classifier (Pipeline-2 pre-VLM, sibling of
+    # the window-region motion classifier). Uses pixel-diff inside the
+    # analog speedometer ROI across keyframes — when the train is
+    # stationary the needle does not move so the diff is small. Per-camera
+    # ROI is selected by the camera_angle plumbed from /analyze
+    # (1=LP, 2=ALP). Defaults in
+    # app/services/vlm/speedometer_classifier.py::DEFAULT_ROIS; override
+    # via env if the dashboard layout differs on a new fleet. Default 0
+    # = disabled (opt-in until ALP labelled corpus arrives).
+    speedometer_classifier_enabled: bool = bool(int(os.getenv("SPEEDOMETER_CLASSIFIER_ENABLED", "0")))
+    speedometer_stopped_threshold: float = float(os.getenv("SPEEDOMETER_STOPPED_THRESHOLD", "5.0"))
+    speedometer_drop_confidence: float = float(os.getenv("SPEEDOMETER_DROP_CONFIDENCE", "0.85"))
+    speedometer_roi_lp: str = os.getenv("SPEEDOMETER_ROI_LP", "")   # 'x1,y1,x2,y2'
+    speedometer_roi_alp: str = os.getenv("SPEEDOMETER_ROI_ALP", "")
+
+    # Window-region motion classifier ROIs. Historically the window
+    # classifier used EasyOCR on the in-frame text overlay (CAB N LP/ALP
+    # camera M) to pick its ROI; that fails silently on newer CCTV stamps
+    # like 'IPCamera 03', leaving the gate effectively off. Now the
+    # classifier prefers the cameraAngle plumbed from /analyze; the OCR
+    # path stays as a fallback only when cameraAngle is unknown. Override
+    # the per-camera ROI here when a new fleet's window is in a different
+    # location (defaults in
+    # app/services/vlm/motion_classifier.py::_ROI_BY_CAMERA_ANGLE).
+    window_motion_roi_lp: str = os.getenv("WINDOW_MOTION_ROI_LP", "")
+    window_motion_roi_alp: str = os.getenv("WINDOW_MOTION_ROI_ALP", "")
+
     @model_validator(mode='after')
     def _validate_overlap_window(self) -> "Settings":
         """Ensure ``mp_overlap_seconds`` covers the longest temporal-state window.

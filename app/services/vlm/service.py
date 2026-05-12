@@ -55,7 +55,14 @@ from .keyframe_processor import (  # noqa: F401
     _PRE_GATE_SKIP_OBJECT_TYPES,
     _OBJECT_REQUIRED_TYPES,
 )
-from .motion_classifier import classify_motion  # noqa: F401
+from .motion_classifier import (  # noqa: F401
+    classify_motion,
+    parse_roi_overrides_from_settings as _window_roi_overrides,
+)
+from .speedometer_classifier import (  # noqa: F401
+    classify_motion as classify_speedometer_motion,
+    parse_roi_overrides_from_settings as _speedometer_roi_overrides,
+)
 from .vlm_client import _CircuitBreaker  # noqa: F401
 from .verdict_parser import (  # noqa: F401
     _Calibrator,
@@ -573,9 +580,16 @@ class VlmVerificationService:
         return bool(self.settings.vlm_verification_enabled)
 
     def verify_activities(
-        self, activities: List[Dict[str, Any]]
+        self,
+        activities: List[Dict[str, Any]],
+        camera_angle: Optional[int] = None,
     ) -> Tuple[List[Dict[str, Any]], Dict[str, int]]:
         """Verify a batch of activities and return the post-filter list.
+
+        ``camera_angle`` (1=LP, 2=ALP) is plumbed from the ``/analyze``
+        endpoint and used by the speedometer motion classifier to pick
+        the right per-camera ROI. ``None`` skips that classifier entirely
+        (legacy callers without the field stay unaffected).
 
         Synchronous wrapper around :meth:`verify_activities_async`.  Both
         existing call-sites (``video_processing_service.process_video``
@@ -602,7 +616,9 @@ class VlmVerificationService:
         """
         async def _run() -> Tuple[List[Dict[str, Any]], Dict[str, int]]:
             try:
-                return await self.verify_activities_async(activities)
+                return await self.verify_activities_async(
+                    activities, camera_angle=camera_angle,
+                )
             finally:
                 # Close any clients pinned to this loop before the loop
                 # tears down — avoids "unclosed client" warnings.
@@ -640,7 +656,9 @@ class VlmVerificationService:
         return out
 
     async def verify_activities_async(
-        self, activities: List[Dict[str, Any]]
+        self,
+        activities: List[Dict[str, Any]],
+        camera_angle: Optional[int] = None,
     ) -> Tuple[List[Dict[str, Any]], Dict[str, int]]:
         """Async core of :meth:`verify_activities`.
 
@@ -811,7 +829,10 @@ class VlmVerificationService:
             ) -> Tuple[int, str, Any, Dict[str, Any]]:
                 try:
                     async with sem:
-                        review = await self._verify_one_async(activity, prompt, obj_type)
+                        review = await self._verify_one_async(
+                            activity, prompt, obj_type,
+                            camera_angle=camera_angle,
+                        )
                     return parent_kept_idx, sub_obj, sub_act, review
                 except Exception as e:  # noqa: BLE001
                     # CRITICAL: never let a single activity's failure
@@ -1122,6 +1143,7 @@ class VlmVerificationService:
         activity: Dict[str, Any],
         prompt: str,
         object_type: str = "",
+        camera_angle: Optional[int] = None,
     ) -> Dict[str, Any]:
         """Async per-activity verifier.
 
@@ -1267,9 +1289,75 @@ class VlmVerificationService:
             # Scoped to ROI-cropped types only (writing/eating/packing/
             # cell_phone) — for full-frame types like solo_person the VLM
             # already sees the window and can read motion itself.
+            # Speedometer-region motion classifier (sibling of the window
+            # classifier below). Uses camera_angle plumbed from /analyze
+            # to pick the LP/ALP speedometer ROI, then pixel-diffs across
+            # the keyframes. Runs FIRST because:
+            #   - it's the cheaper of the two checks (no OCR needed)
+            #   - it sidesteps the window classifier's failure mode where
+            #     a non-matching camera-overlay regex returns None.
+            # Fail-open: any missing input → returns None → fall through.
+            if (
+                object_type not in _FULL_FRAME_OBJECT_TYPES
+                and getattr(self.settings, "speedometer_classifier_enabled", False)
+                and camera_angle in (1, 2)
+            ):
+                speedo_result = classify_speedometer_motion(
+                    keyframes,
+                    camera_angle=camera_angle,
+                    threshold=float(getattr(
+                        self.settings, "speedometer_stopped_threshold", 5.0,
+                    )),
+                    roi_overrides=_speedometer_roi_overrides(self.settings),
+                )
+                if speedo_result is not None and speedo_result.get("stopped"):
+                    logger.info(
+                        "[vlm] SPEEDOMETER-MOTION DROP activity type=%s at t=%s "
+                        "(camera_angle=%s speedo_diff=%.2f below threshold=%.2f, "
+                        "%d keyframe pairs)",
+                        activity.get("activityType"),
+                        activity.get("activityStartTime"),
+                        speedo_result["camera_angle"],
+                        speedo_result["score"],
+                        speedo_result["threshold"],
+                        speedo_result["n_pairs"],
+                    )
+                    drop_conf = float(getattr(
+                        self.settings, "speedometer_drop_confidence", 0.85,
+                    ))
+                    return {
+                        "status": "SPEEDOMETER_MOTION_DROP_STOPPED",
+                        "verdict": {
+                            "verdict": "FALSE_POSITIVE",
+                            "confidence": drop_conf,
+                            "train_appears_to_be": "stopped",
+                            "motion_evidence": (
+                                f"speedometer_roi_diff={speedo_result['score']:.2f} "
+                                f"< {speedo_result['threshold']:.2f} "
+                                f"(camera_angle {speedo_result['camera_angle']})"
+                            ),
+                            "reasoning": (
+                                f"Speedometer-region pixel-diff motion check: "
+                                f"median diff {speedo_result['score']:.2f} "
+                                f"across {speedo_result['n_pairs']} keyframe "
+                                f"pairs is below the running threshold "
+                                f"{speedo_result['threshold']:.2f} — needle is "
+                                f"static, so train is stationary."
+                            ),
+                        },
+                        "model": "speedometer_classifier_v1",
+                        "frames_sent": speedo_result["n_frames"],
+                        "latency_sec": speedo_result["latency_sec"],
+                        "speedometer_classifier": speedo_result,
+                    }
+
             if object_type not in _FULL_FRAME_OBJECT_TYPES:
                 video_filename = activity.get("filename") or ""
-                motion_result = classify_motion(video_filename, keyframes)
+                motion_result = classify_motion(
+                    video_filename, keyframes,
+                    camera_angle=camera_angle,
+                    roi_overrides=_window_roi_overrides(self.settings),
+                )
                 if motion_result is not None and motion_result.get("stopped"):
                     logger.info(
                         "[vlm] WINDOW-MOTION DROP activity type=%s at t=%s "

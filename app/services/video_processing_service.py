@@ -272,7 +272,9 @@ class VideoProcessingService:
                 if vlm_service.is_enabled():
                     try:
                         pre_count = len(activities)
-                        activities, vlm_stats = vlm_service.verify_activities(activities)
+                        activities, vlm_stats = vlm_service.verify_activities(
+                            activities, camera_angle=camera_angle,
+                        )
                         # Re-save activities through the repository so the
                         # post-VLM rewrite uses the same atomic + locked +
                         # numpy-aware writer as Pipeline-1 (Task 0002).

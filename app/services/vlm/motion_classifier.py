@@ -23,6 +23,7 @@ filename, so subsequent activities for the same video pay no OCR cost.
 from __future__ import annotations
 
 import logging
+import os
 import re
 import threading
 import time
@@ -79,6 +80,16 @@ CAMERA_WINDOW_ROIS: Dict[str, Tuple[int, int, int, int]] = {
     "ALP_CAM3": (850, 0, 960, 400),
     # LP camera 2 (CAB 1): window on the upper-left
     "LP_CAM2": (0, 0, 200, 400),
+}
+
+# Direct ``cameraAngle`` (from /analyze) -> ROI lookup. Used when the
+# caller already knows which side it is, bypassing OCR entirely. The
+# OCR path stays as a fallback for legacy callers / when cameraAngle is
+# unknown. Values mirror CAMERA_WINDOW_ROIS so a fleet retuning of one
+# table propagates to the other.
+_ROI_BY_CAMERA_ANGLE: Dict[int, Tuple[int, int, int, int]] = {
+    1: CAMERA_WINDOW_ROIS["LP_CAM2"],   # 1 = LP  (ch03)
+    2: CAMERA_WINDOW_ROIS["ALP_CAM3"],  # 2 = ALP (ch02)
 }
 
 
@@ -233,13 +244,18 @@ def _window_roi_diff(prev_gray: np.ndarray, curr_gray: np.ndarray,
 def compute_window_motion_score(
     jpg_paths,
     camera_id: str,
+    roi_override: Optional[Tuple[int, int, int, int]] = None,
 ) -> Optional[Dict[str, float]]:
     """Compute median window-ROI pixel diff across consecutive keyframes.
+
+    ``camera_id`` is used to look up the ROI in :data:`CAMERA_WINDOW_ROIS`
+    when ``roi_override`` is not supplied. Pass ``roi_override`` from the
+    cameraAngle-direct path so OCR-derived ``camera_id`` is bypassable.
 
     Returns a dict ``{score, threshold, stopped, n_frames, latency_sec}``
     or ``None`` if the camera is unknown / inputs are insufficient.
     """
-    roi = CAMERA_WINDOW_ROIS.get(camera_id)
+    roi = roi_override if roi_override is not None else CAMERA_WINDOW_ROIS.get(camera_id)
     if roi is None or len(jpg_paths) < 2:
         return None
 
@@ -270,11 +286,49 @@ def compute_window_motion_score(
     }
 
 
+def _parse_roi(text: str) -> Optional[Tuple[int, int, int, int]]:
+    try:
+        parts = [int(v.strip()) for v in text.split(",")]
+        return (parts[0], parts[1], parts[2], parts[3]) if len(parts) == 4 else None
+    except Exception:
+        return None
+
+
+def parse_roi_overrides_from_settings(
+    settings,
+) -> Optional[Dict[int, Tuple[int, int, int, int]]]:
+    """Read per-camera ROI overrides for the window classifier.
+
+    Reads ``window_motion_roi_lp`` and ``window_motion_roi_alp`` from a
+    pydantic Settings object. Returns ``None`` if neither is set.
+    """
+    overrides: Dict[int, Tuple[int, int, int, int]] = {}
+    lp = _parse_roi(getattr(settings, "window_motion_roi_lp", "") or "")
+    alp = _parse_roi(getattr(settings, "window_motion_roi_alp", "") or "")
+    if lp:
+        overrides[1] = lp
+    if alp:
+        overrides[2] = alp
+    return overrides or None
+
+
 def classify_motion(
     video_filename: str,
     keyframes,
+    camera_angle: Optional[int] = None,
+    roi_overrides: Optional[Dict[int, Tuple[int, int, int, int]]] = None,
 ) -> Optional[Dict[str, float]]:
     """Top-level entry: detect camera + compute window-motion score.
+
+    Resolution order for the ROI:
+
+      1. ``camera_angle`` (1=LP, 2=ALP) if provided — direct lookup from
+         the /analyze endpoint, bypasses OCR entirely. ``roi_overrides``
+         can swap out the default per-angle ROI without code edits.
+      2. EasyOCR on the in-frame text overlay (legacy path). Used only
+         when ``camera_angle`` is missing — keeps backwards compat with
+         old code paths and old recordings whose overlay still matches
+         the historical regex.
 
     Returns the same dict as :func:`compute_window_motion_score`, or
     ``None`` when classification cannot be made (no camera / no frames).
@@ -282,7 +336,29 @@ def classify_motion(
     with the existing VLM pipeline.
     """
     if not keyframes:
+        logger.info("[motion_classifier] called with empty keyframes; returning None")
         return None
+
+    logger.info(
+        "[motion_classifier] enter video=%s n_frames=%d camera_angle=%s",
+        os.path.basename(video_filename or ""), len(keyframes), camera_angle,
+    )
+
+    # Path 1: cameraAngle from /analyze. No OCR.
+    if camera_angle in (1, 2):
+        roi = None
+        if roi_overrides and camera_angle in roi_overrides:
+            roi = roi_overrides[camera_angle]
+        else:
+            roi = _ROI_BY_CAMERA_ANGLE.get(camera_angle)
+        if roi is None:
+            return None
+        cam_id_label = "LP_CAM2" if camera_angle == 1 else "ALP_CAM3"
+        return compute_window_motion_score(
+            keyframes, cam_id_label, roi_override=roi,
+        )
+
+    # Path 2: OCR fallback (legacy callers without camera_angle).
     cam_id = detect_camera_for_video(video_filename, keyframes)
     if cam_id is None:
         return None
