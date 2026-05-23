@@ -83,7 +83,7 @@ class Settings(BaseSettings):
     
     # Multiprocessing settings
     enable_multiprocessing: bool = bool(int(os.getenv("ENABLE_MULTIPROCESSING", "1")))
-    # ✅ 15s chunks ensure hand gesture coordination detection works correctly
+    # 15s chunks ensure hand gesture coordination detection works correctly
     # Coordination window is 10s, so 15s chunks capture full coordination sequences
     # Tradeoff: fewer chunks (~118 for 30-min video) but reliable coordination detection
     mp_chunk_duration: float = 15.0  # Chunk duration in seconds (optimized for coordination detection)
@@ -162,11 +162,48 @@ class Settings(BaseSettings):
     host_url: str = os.getenv("HOST_URL", "https://celebxmedia.info")  # URL for building fileUrl
 
     # MinIO settings for video downloads
+    # SECURITY: Defaults are intentionally empty strings ("fail-closed"). Real
+    # credentials must be supplied via the MINIO_ACCESS_KEY / MINIO_SECRET_KEY
+    # environment variables (typically loaded from .env / .env.production).
+    # The ``_validate_minio_credentials_in_production`` model_validator below
+    # enforces that both values are non-empty whenever ENVIRONMENT=production
+    # so a misconfigured deploy fails fast at startup instead of silently
+    # falling back to a hardcoded literal.
     minio_endpoint: str = os.getenv("MINIO_ENDPOINT", "mind.snikbtel.uk:9000")
-    minio_access_key: str = os.getenv("MINIO_ACCESS_KEY", "admin")
-    minio_secret_key: str = os.getenv("MINIO_SECRET_KEY", "login123")
+    minio_access_key: str = os.getenv("MINIO_ACCESS_KEY", "")
+    minio_secret_key: str = os.getenv("MINIO_SECRET_KEY", "")
     minio_secure: bool = bool(int(os.getenv("MINIO_SECURE", "1")))
     minio_bucket: str = os.getenv("MINIO_BUCKET", "cvss")
+
+    # Task 0008 — SSRF defense for the ``videoUrl`` form field on
+    # ``/api/video/analyze``. Hostnames in this allowlist are the ONLY
+    # hosts that ``validate_external_url`` will accept; everything else
+    # (including cloud-metadata IPs, RFC1918, localhost) is rejected
+    # with 400. ``MINIO_ALLOWED_HOSTS`` may be set as either a JSON
+    # array string (``'["mind.snikbtel.uk", "backup.example.com"]'``) or
+    # a plain comma-separated host list
+    # (``mind.snikbtel.uk,backup.example.com``). Parsing happens in
+    # ``parse_minio_allowed_hosts`` below; bad input fails fast at
+    # startup with a clear error rather than crashing at class-definition
+    # time as it did when this was inlined as ``json.loads(os.getenv(...))``
+    # (reviewer finding H4 — empty string or malformed JSON took the
+    # whole process down before pydantic could surface a useful error).
+    minio_allowed_hosts: List[str] = ["mind.snikbtel.uk"]
+    # Companion to ``MINIO_ALLOWED_HOSTS``. When set, an allowlisted host
+    # that resolves to a private/loopback IP (e.g. ``gpu.mindcoinapps.com``
+    # → ``10.10.0.2`` on the GPU server's internal NIC) is accepted instead
+    # of rejected. Default off; flip on only when the MinIO endpoint is on
+    # the same private network as this service.
+    minio_allow_private_ips: bool = bool(int(os.getenv("MINIO_ALLOW_PRIVATE_IPS", "0")))
+    # Hard cap on the number of bytes ``MinioService.download_video`` will
+    # accept from a remote URL. A hostile (or misconfigured) server could
+    # return a 100 GB stream and exhaust the GPU box's disk; the streaming
+    # downloader aborts and unlinks the partial file once this cap is
+    # exceeded. Default 5 GiB matches ``max_upload_size`` for parity
+    # between the upload and URL-download paths.
+    max_external_download_bytes: int = int(
+        os.getenv("MAX_EXTERNAL_DOWNLOAD_BYTES", str(5 * 1024 ** 3))
+    )
     
     # Image preprocessing settings (for MediaPipe detection enhancement)
     enable_image_preprocessing: bool = bool(int(os.getenv("ENABLE_IMAGE_PREPROCESSING", "1")))  # Enable by default
@@ -177,6 +214,48 @@ class Settings(BaseSettings):
     adaptive_preprocessing: bool = bool(int(os.getenv("ADAPTIVE_PREPROCESSING", "1")))  # Use quality metrics
     clahe_clip_limit: float = float(os.getenv("CLAHE_CLIP_LIMIT", "1.5"))  # REDUCED from 2.0 (less aggressive CLAHE)
     
+    # Parse ``MINIO_ALLOWED_HOSTS`` (Task 0008, reviewer finding H4).
+    # ``pydantic-settings`` will pass the raw env string through here
+    # ``mode='before'``; we accept JSON arrays first, fall back to
+    # comma-split, and raise a clear ``ValueError`` if both fail so a
+    # bad config surfaces at startup with a useful message rather than
+    # crashing at class-definition with an unrelated ``json.JSONDecodeError``.
+    @field_validator('minio_allowed_hosts', mode='before')
+    @classmethod
+    def parse_minio_allowed_hosts(cls, v):
+        """Parse the allowlist from env (JSON list, comma-split, or default)."""
+        # Field default (None / unset / already a Python list).
+        if v is None:
+            return ["mind.snikbtel.uk"]
+        if isinstance(v, list):
+            return [str(h).strip() for h in v if str(h).strip()]
+        if not isinstance(v, str):
+            raise ValueError(
+                "MINIO_ALLOWED_HOSTS must be JSON list or comma-separated host list"
+            )
+        s = v.strip()
+        if not s:
+            return ["mind.snikbtel.uk"]
+        # Try JSON first (the documented form).
+        try:
+            parsed = json.loads(s)
+        except (json.JSONDecodeError, ValueError):
+            parsed = None
+        if isinstance(parsed, list):
+            cleaned = [str(h).strip() for h in parsed if str(h).strip()]
+            if not cleaned:
+                raise ValueError(
+                    "MINIO_ALLOWED_HOSTS must be JSON list or comma-separated host list"
+                )
+            return cleaned
+        # JSON failed (or returned a non-list). Fall back to comma-split.
+        cleaned = [h.strip() for h in s.split(",") if h.strip()]
+        if cleaned:
+            return cleaned
+        raise ValueError(
+            "MINIO_ALLOWED_HOSTS must be JSON list or comma-separated host list"
+        )
+
     # Parse tile grid size from environment variable (JSON array string)
     @field_validator('clahe_tile_grid_size', mode='before')
     @classmethod
@@ -448,6 +527,30 @@ class Settings(BaseSettings):
     # ==========================================
     writing_min_duration: float = float(os.getenv("WRITING_MIN_DURATION", "1.0"))
     writing_required_consecutive: int = int(os.getenv("WRITING_REQUIRED_CONSECUTIVE", "2"))
+    # Relaxed-rule slack: when one wrist is inside the book bbox, the other
+    # wrist may be up to this many pixels from the nearest bbox edge and still
+    # count as "writing". Calibrated 2026-05-06 from TV22 GT diagnostic logs
+    # showing 4-44 px gaps on the off-hand during real writing posture.
+    # Set to 0 to fall back to the original strict "BOTH wrists inside" rule.
+    writing_other_wrist_max_dist: int = int(os.getenv("WRITING_OTHER_WRIST_MAX_DIST", "50"))
+    # Lower bound on pose-keypoint visibility for the dual-wrist rule. The pose
+    # model can return high-confidence (>0.95) right-wrist + near-zero (~0.03)
+    # left-wrist on real writing frames where the writing hand occludes the
+    # other one. Lower this from 0.5 to 0.3 so frames with one moderate-vis
+    # wrist still enter the rule.
+    writing_min_wrist_visibility: float = float(os.getenv("WRITING_MIN_WRIST_VIS", "0.3"))
+    # Single-wrist fallback: when only one wrist clears 0.5 visibility, fire
+    # writing if that wrist is fully inside the book bbox. Captures occluded-
+    # wrist GTs (TV22.5 4:47, TV22.7 9:32) without the edge-distance slack
+    # used in the dual-wrist relaxed path. Set to 0 to disable.
+    writing_allow_single_wrist: bool = bool(int(os.getenv("WRITING_ALLOW_SINGLE_WRIST", "1")))
+    # Log-book ROI mask: only fire writing if the book bbox centre falls inside
+    # this normalised rectangle. Drops control-panel-device-misclassified-as-
+    # book FPs and books detected in the upper window/door area. Format:
+    # ``WRITING_BOOK_ROI=x1,y1,x2,y2`` (each in [0,1]). Empty (default)
+    # disables the mask. For the TV22 overhead camera, the desk-and-lap zone
+    # is roughly ``0.15,0.30,0.75,0.95``.
+    writing_book_roi: str = os.getenv("WRITING_BOOK_ROI", "")
     book_posture_min_duration: float = float(os.getenv("BOOK_POSTURE_MIN_DURATION", "2.0"))
     book_posture_required_consecutive: int = int(os.getenv("BOOK_POSTURE_REQUIRED_CONSECUTIVE", "2"))
 
@@ -498,11 +601,47 @@ class Settings(BaseSettings):
     activity_packing_wrist_inside_margin: int = int(os.getenv("ACTIVITY_PACKING_WRIST_INSIDE_MARGIN", "80"))
 
     # ==========================================
+    # Per-activity enable/disable flags
+    # ==========================================
+    # One boolean per activity in ``app/core/activity_registry.py``. Default
+    # is ``True`` (back-compat: all activities run as before). Set the env
+    # var to ``0`` to disable that activity end-to-end:
+    #   * ``MultiPersonActivityRunner`` skips the detector dispatch (CPU/GPU
+    #     savings).
+    #   * ``LocopilotActivityMonitor.start_activity`` early-returns so no
+    #     evidence clip / image / activities.json entry is produced.
+    # The single accessor is :meth:`is_activity_enabled` below — keep callers
+    # going through it so a future re-implementation (allowlist string,
+    # registry field, etc.) only touches one place.
+    activity_microsleep_enabled: bool = bool(int(os.getenv("ACTIVITY_MICROSLEEP_ENABLED", "1")))
+    activity_sleep_enabled: bool = bool(int(os.getenv("ACTIVITY_SLEEP_ENABLED", "1")))
+    activity_cell_phone_enabled: bool = bool(int(os.getenv("ACTIVITY_CELL_PHONE_ENABLED", "1")))
+    activity_writing_enabled: bool = bool(int(os.getenv("ACTIVITY_WRITING_ENABLED", "1")))
+    activity_packing_bags_enabled: bool = bool(int(os.getenv("ACTIVITY_PACKING_BAGS_ENABLED", "1")))
+    activity_group_detected_enabled: bool = bool(int(os.getenv("ACTIVITY_GROUP_DETECTED_ENABLED", "1")))
+    activity_lp_hand_gesture_enabled: bool = bool(int(os.getenv("ACTIVITY_LP_HAND_GESTURE_ENABLED", "1")))
+    activity_alp_hand_gesture_enabled: bool = bool(int(os.getenv("ACTIVITY_ALP_HAND_GESTURE_ENABLED", "1")))
+    activity_mind_diversion_enabled: bool = bool(int(os.getenv("ACTIVITY_MIND_DIVERSION_ENABLED", "1")))
+    activity_no_person_detected_enabled: bool = bool(int(os.getenv("ACTIVITY_NO_PERSON_DETECTED_ENABLED", "1")))
+    activity_alp_not_standing_enabled: bool = bool(int(os.getenv("ACTIVITY_ALP_NOT_STANDING_ENABLED", "1")))
+    activity_eating_drinking_enabled: bool = bool(int(os.getenv("ACTIVITY_EATING_DRINKING_ENABLED", "1")))
+    activity_solo_person_enabled: bool = bool(int(os.getenv("ACTIVITY_SOLO_PERSON_ENABLED", "1")))
+
+    def is_activity_enabled(self, activity_name: str) -> bool:
+        """Return True iff ``activity_name`` is enabled for detection + emit.
+
+        Unknown activity names default to ``True`` (fail-open) so adding a
+        new key to ``ACTIVITY_REGISTRY`` without a matching settings flag
+        does not silently disable it.
+        """
+        flag = getattr(self, f"activity_{activity_name}_enabled", None)
+        if flag is None:
+            return True
+        return bool(flag)
+
+    # ==========================================
     # Train Motion Rules Settings
     # ==========================================
-    # Enable/disable train motion-based rule engine
-    train_motion_rules_enabled: bool = bool(int(os.getenv("TRAIN_MOTION_RULES_ENABLED", "0")))
-
     # When True (default), activities listed in
     # ``app/core/gates.py:DEFAULT_SUPPRESSED_WHEN_STOPPED`` are zeroed out
     # while the train is STOPPED, so they never reach the VLM verifier or
@@ -512,6 +651,27 @@ class Settings(BaseSettings):
     # payload, so downstream consumers can distinguish station-context
     # events from running-train violations.
     train_motion_suppress_when_stopped: bool = bool(int(os.getenv("TRAIN_MOTION_SUPPRESS_WHEN_STOPPED", "1")))
+    # Comma-separated activity ``objectType`` names that bypass the downstream
+    # STOPPED motion filter when posting to the external API. Per CLAUDE.md:
+    # "microsleep + cell_phone are never suppressed (safety-critical even at
+    # stations)". Pipeline-1's ``apply_train_stopped_suppression`` already
+    # leaves these active, but the API-post motion filter (in
+    # ``video_processing_service.py`` and ``video_controller.py``) used to
+    # strip ALL STOPPED activities — including these — silently. This setting
+    # restores the spec'd behaviour. Names are normalised (lowercase, spaces
+    # to underscores), so both "cell_phone" and "cell phone" match.
+    motion_filter_bypass_types: str = os.getenv(
+        "MOTION_FILTER_BYPASS_TYPES", "cell_phone,microsleep"
+    )
+    # Comma-separated override of the activities suppressed when train is STOPPED.
+    # Empty (default) means use ``DEFAULT_SUPPRESSED_WHEN_STOPPED`` from
+    # ``app/core/gates.py`` (sleep, writing, packing_bags, lp_hand_gesture,
+    # alp_hand_gesture, mind_diversion, eating_drinking). Set to a smaller list
+    # to let some activities through even at stations — e.g.
+    # ``TRAIN_MOTION_STOPPED_SUPPRESS_LIST=sleep,packing_bags,lp_hand_gesture,alp_hand_gesture,mind_diversion,eating_drinking``
+    # excludes ``writing`` so log-book writing is reported regardless of motion
+    # state. Names must match registry keys exactly.
+    train_motion_stopped_suppress_list: str = os.getenv("TRAIN_MOTION_STOPPED_SUPPRESS_LIST", "")
 
     # Train Motion Detection (vibration-based)
     train_motion_detection_enabled: bool = bool(int(os.getenv("TRAIN_MOTION_DETECTION_ENABLED", "0")))
@@ -522,10 +682,13 @@ class Settings(BaseSettings):
     train_motion_running_threshold: float = float(os.getenv("TRAIN_MOTION_RUNNING_THRESHOLD", "0.45"))
     train_motion_temporal_window: int = int(os.getenv("TRAIN_MOTION_TEMPORAL_WINDOW", "5"))
     train_motion_stopped_group_threshold: int = int(os.getenv("TRAIN_MOTION_STOPPED_GROUP_THRESHOLD", "5"))
-    # Threshold for group_detected. Default 5 (i.e. >5 → 6+ persons required).
-    # Revised 2026-04-22: spec changed from "more than 2" to "more than 5" —
-    # 3-person supervisor visits are expected and should no longer trigger.
-    train_motion_running_group_threshold: int = int(os.getenv("TRAIN_MOTION_RUNNING_GROUP_THRESHOLD", "5"))
+    # Threshold for group_detected. Default 2 (i.e. >2 → 3+ persons required).
+    # Revised 2026-05-10: spec reverted to "more than 2" — any third person in
+    # the running cab is flagged. Set TRAIN_MOTION_RUNNING_GROUP_THRESHOLD=5
+    # to restore the prior "more than 5" behavior. The complementary
+    # ``train_motion_stopped_group_threshold`` (default 5) still relaxes the
+    # rule at stations so brief 3-5 person handovers don't trigger.
+    train_motion_running_group_threshold: int = int(os.getenv("TRAIN_MOTION_RUNNING_GROUP_THRESHOLD", "2"))
     train_motion_window_flow_threshold: float = float(os.getenv("TRAIN_MOTION_WINDOW_FLOW_THRESHOLD", "2.0"))
     train_motion_weight_vibration: float = float(os.getenv("TRAIN_MOTION_WEIGHT_VIBRATION", "0.5"))
     train_motion_weight_window: float = float(os.getenv("TRAIN_MOTION_WEIGHT_WINDOW", "0.3"))
@@ -550,23 +713,28 @@ class Settings(BaseSettings):
     # person crosses many pixels per sample, so 1-frame prev-mask isn't enough.
     # Default 2 (union last 2 frames + current). Set to 0 to use current only.
     train_motion_person_bbox_history: int = int(os.getenv("TRAIN_MOTION_PERSON_BBOX_HISTORY", "2"))
+    # Cold-start guard for the multiprocessing chunk-boundary case. Each worker
+    # creates a fresh TrainMotionDetector with empty state buffers, so the
+    # first few frames of every chunk lack the temporal smoothing that catches
+    # 1-2 frame vibration spikes from person motion (writing/packing seated).
+    # When True (default) and the rolling vib history is shorter than
+    # vibration_median_window, we require the side-window optical-flow signal
+    # to be elevated before committing RAW=RUNNING; otherwise we demote to
+    # STOPPED. Trade-off: ~5-10s of false-STOPPED at the start of a video that
+    # actually opens with the train running, in exchange for eliminating
+    # station-context FPs that leak past the gate at chunk boundaries.
+    train_motion_cold_start_require_window_flow: bool = bool(int(
+        os.getenv("TRAIN_MOTION_COLD_START_REQUIRE_WINDOW_FLOW", "1")
+    ))
+    # How many frames at the start of each per-worker detector instance the
+    # cold-start guard applies to. At sample_fps=0.5 each frame is 2s, so the
+    # default 5 covers the first 10s — enough to pass the chunk-overlap region
+    # (5s) plus a margin for the temporal smoother to acquire history.
+    train_motion_cold_start_frames: int = int(os.getenv("TRAIN_MOTION_COLD_START_FRAMES", "5"))
 
     # Suppress no_person_detected when trip schedule is unavailable
     # (cannot distinguish station halts from running without schedule)
     suppress_no_person_without_schedule: bool = bool(int(os.getenv("SUPPRESS_NO_PERSON_WITHOUT_SCHEDULE", "1")))
-
-    # Trip API Settings (RailRadar API)
-    trip_api_url: str = os.getenv("TRIP_API_URL", "https://api.railradar.in/api/v1/trains")
-    trip_api_timeout: int = int(os.getenv("TRIP_API_TIMEOUT", "10"))
-
-    # OCR Timestamp Extraction Settings
-    ocr_enabled: bool = bool(int(os.getenv("OCR_ENABLED", "0")))
-    ocr_engine: str = os.getenv("OCR_ENGINE", "auto")  # 'easyocr' (recommended), 'tesseract', or 'auto'
-    ocr_roi_position: str = os.getenv("OCR_ROI_POSITION", "top-left")  # top-right, top-left, bottom-right, bottom-left
-    ocr_roi_x: int = int(os.getenv("OCR_ROI_X", "10"))  # X offset from edge
-    ocr_roi_y: int = int(os.getenv("OCR_ROI_Y", "10"))  # Y offset from edge
-    ocr_roi_width: int = int(os.getenv("OCR_ROI_WIDTH", "200"))  # ROI width
-    ocr_roi_height: int = int(os.getenv("OCR_ROI_HEIGHT", "50"))  # ROI height
 
     # Pre-Arrival ALP Alertness Settings
     pre_arrival_window_start: int = int(os.getenv("PRE_ARRIVAL_WINDOW_START", "60"))  # 60s before arrival
@@ -574,15 +742,6 @@ class Settings(BaseSettings):
 
     # Halt Grace Period - allow exemptions for short time after scheduled departure
     halt_grace_period: int = int(os.getenv("HALT_GRACE_PERIOD", "120"))  # 120s after departure
-
-    # ==========================================
-    # etrain.info Delay Integration Settings
-    # ==========================================
-    # Enable/disable etrain.info delay data fetching
-    etrain_enabled: bool = bool(int(os.getenv("ETRAIN_ENABLED", "0")))
-
-    # etrain.info base URL for train live status
-    etrain_base_url: str = os.getenv("ETRAIN_BASE_URL", "https://etrain.info/train")
 
     # Cache TTL for delay data (in seconds, default 30 minutes)
     etrain_cache_ttl: int = int(os.getenv("ETRAIN_CACHE_TTL", "1800"))
@@ -592,25 +751,138 @@ class Settings(BaseSettings):
     # ==========================================
     # Post-Pipeline-1 verification using a vision-language model (Qwen2.5-VL).
     # The verifier sees the activity keyframe + an activity-specific prompt and
-    # returns TRUE_POSITIVE / FALSE_POSITIVE / UNCERTAIN. In shadow mode the
-    # verdict is recorded on the activity but no activities are dropped; in
-    # enforcement mode FALSE_POSITIVE @ confidence>=threshold are filtered out.
-    # Designed to fail-open: if the vLLM endpoint is unreachable, the
-    # Pipeline-1 verdict passes through unchanged.
+    # returns TRUE_POSITIVE / FALSE_POSITIVE / UNCERTAIN. Activities with
+    # FALSE_POSITIVE @ confidence>=VLM_DROP_THRESHOLD are filtered out before
+    # S3 upload + external API push. To disable enforcement without disabling
+    # the verifier, set VLM_DROP_THRESHOLD=2.0 (impossible threshold, keeps
+    # vlm_review annotations on every activity). Designed to fail-open: if the
+    # vLLM endpoint is unreachable, the Pipeline-1 verdict passes through.
     vlm_verification_enabled: bool = bool(int(os.getenv("VLM_VERIFICATION_ENABLED", "0")))
     vlm_base_url: str = os.getenv("VLM_BASE_URL", "http://localhost:8001/v1")
     vlm_model: str = os.getenv("VLM_MODEL", "Qwen/Qwen2.5-VL-7B-Instruct-AWQ")
     # Comma-separated activity names (matches ACTIVITY_REGISTRY keys) to verify.
     # Activities not listed are passed through unchanged.
     vlm_verify_activities: str = os.getenv("VLM_VERIFY_ACTIVITIES", "writing,eating_drinking")
-    # Minimum VLM confidence required to drop a Pipeline-1 detection (enforcement mode only).
+    # Minimum VLM confidence required to drop a Pipeline-1 detection. Set to a
+    # value > 1.0 to disable dropping while still recording verdicts.
     vlm_drop_threshold: float = float(os.getenv("VLM_DROP_THRESHOLD", "0.80"))
-    # 1 = log verdicts but never drop (safe default); 0 = drop FPs above threshold.
-    vlm_shadow_mode: bool = bool(int(os.getenv("VLM_SHADOW_MODE", "1")))
     # HTTP timeout per VLM call. Verifier is fail-open on timeout.
     vlm_timeout_seconds: float = float(os.getenv("VLM_TIMEOUT_SECONDS", "8.0"))
     # Max activities verified per request. 0 = no cap.
     vlm_max_activities_per_run: int = int(os.getenv("VLM_MAX_ACTIVITIES_PER_RUN", "0"))
+    # When 1, the VLM's `train_appears_to_be` observation can override Pipeline-1's
+    # motionState=RUNNING → STOPPED if the VLM reports a hard visual stopped cue
+    # (cabin door open, platform/station visible). Downstream STOPPED-filter then
+    # drops the activity from the external API post. RUNNING-direction overrides
+    # are NOT applied (those would require deferring gates.apply_train_stopped_
+    # suppression; tracked separately as Direction B). Default 0 (opt-in).
+    vlm_motion_override_enabled: bool = bool(int(os.getenv("VLM_MOTION_OVERRIDE_ENABLED", "0")))
+    # When 1, the verifier records VLM verdicts on every activity but never drops
+    # any detection (observe-only / shadow-mode rollout). Default 0 = enforcement.
+    vlm_shadow_mode: bool = bool(int(os.getenv("VLM_SHADOW_MODE", "0")))
+    # Target number of frames per VLM verification strip. Single-burst
+    # activities have ``_resolve_keyframes`` return 1 frame; the verifier
+    # supplements with frames sampled from ``activityClip`` to reach this
+    # target so the VLM gets temporal evidence even on short detections.
+    # Cap is 5 (matches ``_stitch_keyframes`` slice).
+    vlm_strip_target_frames: int = int(os.getenv("VLM_STRIP_TARGET_FRAMES", "5"))
+    # Pre-VLM no-subject gate: when 1, drop activity candidates whose
+    # keyframes contain no Pipeline-1 person bbox in any frame, before
+    # spending a VLM call. Catches the empty-cabin hallucination archetype
+    # observed on 2026-05-08 (run_20260508_182809) where the VLM confidently
+    # confabulated "hand on open book, pen in hand" on frames with no person
+    # at all. Skipped for ``no_person_detected`` activity type, where an
+    # empty cabin is the violation. Default 1 (enforce).
+    vlm_pre_gate_enabled: bool = bool(int(os.getenv("VLM_PRE_GATE_ENABLED", "1")))
+    # Minimum green-bbox pixel area to count as a person in the pre-VLM
+    # gate. Smaller values risk false-positive person detections (text
+    # labels, skeleton lines), larger values may miss small/distant LP
+    # bboxes. 1000px = ~32x32 — well above text label noise.
+    vlm_pre_gate_min_person_area: int = int(os.getenv("VLM_PRE_GATE_MIN_PERSON_AREA", "1000"))
+    # Post-VLM structured-field consistency check: when 1, demote a VLM
+    # ``TRUE_POSITIVE`` verdict to ``UNCERTAIN`` (capped confidence 0.5)
+    # if the activity-specific structured fields contradict the verdict
+    # (e.g. writing TP but ``hand_actually_on_book=false``, cell_phone TP
+    # but ``object_in_hand="radio_handset"``). Catches the
+    # cooperatively-filled-schema-with-wrong-verdict failure mode where
+    # the model fills observation fields correctly but emits the wrong
+    # overall label. Default 1 (enforce).
+    vlm_consistency_check_enabled: bool = bool(int(os.getenv("VLM_CONSISTENCY_CHECK_ENABLED", "1")))
+    # Wave-2 calibration scaffolding. When 1, raw VLM confidences are
+    # passed through a learned mapping (temperature scaling or isotonic
+    # regression fit on labelled ground truth) before threshold
+    # comparison. The mapping file is loaded from
+    # ``vlm_calibration_path``; when missing or malformed the calibrator
+    # is identity (no-op). Default 0 (off until ground truth exists).
+    vlm_calibration_enabled: bool = bool(int(os.getenv("VLM_CALIBRATION_ENABLED", "0")))
+    vlm_calibration_path: str = os.getenv(
+        "VLM_CALIBRATION_PATH", "/opt/poc2/app/data/vlm_calibration.json"
+    )
+    # Wave-2 self-consistency: re-query the VLM ``vlm_self_consistency_k``
+    # times when the calibrated confidence falls in the borderline band
+    # [low, high] and take the majority verdict. Costs k× latency per
+    # borderline activity; bounded so it only fires for cases the
+    # single-shot run wasn't confident about. Default off; enable once
+    # latency budget is validated.
+    vlm_self_consistency_k: int = int(os.getenv("VLM_SELF_CONSISTENCY_K", "3"))
+    vlm_borderline_low: float = float(os.getenv("VLM_BORDERLINE_LOW", "0.40"))
+    vlm_borderline_high: float = float(os.getenv("VLM_BORDERLINE_HIGH", "0.70"))
+    # Wave-2 disagreement queue. When 1, append a JSONL entry to
+    # ``vlm_disagreement_log_path`` whenever Pipeline-1 and the VLM
+    # produce divergent verdicts (e.g. P1 high-conf, VLM drop, or
+    # vice-versa). Captures the highest-leverage data for quarterly
+    # model improvement. Default 1 (cheap to log).
+    vlm_disagreement_log_enabled: bool = bool(int(os.getenv("VLM_DISAGREEMENT_LOG_ENABLED", "1")))
+    vlm_disagreement_log_path: str = os.getenv(
+        "VLM_DISAGREEMENT_LOG_PATH",
+        "/opt/poc2/locopilot_evidence/vlm_disagreements.jsonl",
+    )
+    # Wave-2 telemetry. When 1, append a structured JSONL line per VLM
+    # invocation to ``vlm_telemetry_log_path`` for offline analysis
+    # (verdict distribution, latency, gate-drop rate, drift detection).
+    # Default 1.
+    vlm_telemetry_log_enabled: bool = bool(int(os.getenv("VLM_TELEMETRY_LOG_ENABLED", "1")))
+    vlm_telemetry_log_path: str = os.getenv(
+        "VLM_TELEMETRY_LOG_PATH",
+        "/opt/poc2/locopilot_evidence/vlm_telemetry.jsonl",
+    )
+    # When 1, ``concurrent_activity_grouping_service.group_concurrent_activities``
+    # runs AFTER VLM verification rather than before. The verifier therefore
+    # sees raw single-type activities and never has to un-merge a combined
+    # record (the per-sub-type fanout in ``vlm/service.py`` becomes a no-op).
+    # Grouping then runs on the post-VLM survivor set, so merged clips only
+    # include sub-clips that survived verification. Default 0 = legacy
+    # pre-VLM grouping. Production opts in via ``.env.production`` after
+    # smoke tests pass on the GPU box. Phase B (separate task) deletes the
+    # now-dead fanout code.
+    concurrent_grouping_after_vlm: bool = bool(int(os.getenv("CONCURRENT_GROUPING_AFTER_VLM", "0")))
+
+    # Speedometer-region motion classifier (Pipeline-2 pre-VLM, sibling of
+    # the window-region motion classifier). Uses pixel-diff inside the
+    # analog speedometer ROI across keyframes — when the train is
+    # stationary the needle does not move so the diff is small. Per-camera
+    # ROI is selected by the camera_angle plumbed from /analyze
+    # (1=LP, 2=ALP). Defaults in
+    # app/services/vlm/speedometer_classifier.py::DEFAULT_ROIS; override
+    # via env if the dashboard layout differs on a new fleet. Default 0
+    # = disabled (opt-in until ALP labelled corpus arrives).
+    speedometer_classifier_enabled: bool = bool(int(os.getenv("SPEEDOMETER_CLASSIFIER_ENABLED", "0")))
+    speedometer_stopped_threshold: float = float(os.getenv("SPEEDOMETER_STOPPED_THRESHOLD", "5.0"))
+    speedometer_drop_confidence: float = float(os.getenv("SPEEDOMETER_DROP_CONFIDENCE", "0.85"))
+    speedometer_roi_lp: str = os.getenv("SPEEDOMETER_ROI_LP", "")   # 'x1,y1,x2,y2'
+    speedometer_roi_alp: str = os.getenv("SPEEDOMETER_ROI_ALP", "")
+
+    # Window-region motion classifier ROIs. Historically the window
+    # classifier used EasyOCR on the in-frame text overlay (CAB N LP/ALP
+    # camera M) to pick its ROI; that fails silently on newer CCTV stamps
+    # like 'IPCamera 03', leaving the gate effectively off. Now the
+    # classifier prefers the cameraAngle plumbed from /analyze; the OCR
+    # path stays as a fallback only when cameraAngle is unknown. Override
+    # the per-camera ROI here when a new fleet's window is in a different
+    # location (defaults in
+    # app/services/vlm/motion_classifier.py::_ROI_BY_CAMERA_ANGLE).
+    window_motion_roi_lp: str = os.getenv("WINDOW_MOTION_ROI_LP", "")
+    window_motion_roi_alp: str = os.getenv("WINDOW_MOTION_ROI_ALP", "")
 
     @model_validator(mode='after')
     def _validate_overlap_window(self) -> "Settings":
@@ -660,10 +932,6 @@ class Settings(BaseSettings):
           (a) Absolute paths in referenced YOLO model fields must exist on
               disk (when set). Relative paths and missing fields are skipped
               so fresh clones without downloaded weights still boot.
-          (b) ``train_motion_rules_enabled=True`` requires
-              ``train_motion_detection_enabled=True`` (or the env var set to a
-              truthy value). Enabling rules without motion state is a
-              silent misconfiguration — the rules engine has no input.
           (c) ``pose_model == 'rtmpose'`` requires the ``rtmlib`` package to
               be importable.
 
@@ -702,31 +970,6 @@ class Settings(BaseSettings):
                         f"Set LOCOPILOT_SKIP_PATH_CHECKS=1 to bypass."
                     )
 
-        # (b) Flag coherence: train_motion_rules_enabled requires
-        # train_motion_detection_enabled. The latter is not a typed Settings
-        # field in this branch, so fall back to reading the env var directly
-        # while staying defensive.
-        train_motion_rules = getattr(self, 'train_motion_rules_enabled', False)
-        if train_motion_rules:
-            train_motion_detection = getattr(
-                self, 'train_motion_detection_enabled', None
-            )
-            if train_motion_detection is None:
-                env_val = os.getenv('TRAIN_MOTION_DETECTION_ENABLED')
-                if env_val is not None:
-                    train_motion_detection = env_val.strip().lower() in (
-                        "1", "true", "yes", "on"
-                    )
-            # If detection flag is explicitly False, reject. If it's None
-            # (field/env var absent), skip gracefully — assume the caller
-            # knows what they're doing.
-            if train_motion_detection is False:
-                raise ValueError(
-                    "TRAIN_MOTION_RULES_ENABLED=1 requires "
-                    "TRAIN_MOTION_DETECTION_ENABLED=1. The rule engine has "
-                    "no motion state to act on when detection is disabled."
-                )
-
         # (c) Pose backend adapter: rtmpose requires rtmlib installed.
         pose_model = getattr(self, 'pose_model', None)
         if pose_model == 'rtmpose':
@@ -739,6 +982,47 @@ class Settings(BaseSettings):
                     "(or onnxruntime-gpu for CUDA)."
                 ) from e
 
+        return self
+
+    # ==========================================================================
+    # Fail-closed secrets validator (task 0005 — rotate-secrets-scrub-source)
+    # ==========================================================================
+    # The MinIO credentials are intentionally defaulted to empty strings in
+    # this file. Previously they fell back to hardcoded production literals
+    # which leaked through every fresh checkout and made an accidental
+    # dev->prod credential mismatch invisible. By failing
+    # fast at startup whenever ENVIRONMENT=production with empty credentials,
+    # we guarantee the operator either supplies real values via the env file
+    # or sees a clear error instead of a silent permission failure deep in
+    # the MinIO client.
+    @model_validator(mode='after')
+    def _validate_minio_credentials_in_production(self) -> 'Settings':
+        """
+        Require MinIO credentials when running in production.
+
+        Raises:
+            ValueError: When ``environment`` is ``"production"`` and either
+                ``minio_access_key`` or ``minio_secret_key`` is empty/blank.
+        """
+        env_name = (getattr(self, 'environment', '') or '').strip().lower()
+        if env_name != 'production':
+            return self
+
+        access_key = (self.minio_access_key or '').strip()
+        secret_key = (self.minio_secret_key or '').strip()
+        missing = []
+        if not access_key:
+            missing.append('MINIO_ACCESS_KEY')
+        if not secret_key:
+            missing.append('MINIO_SECRET_KEY')
+        if missing:
+            raise ValueError(
+                "Production environment requires "
+                f"{' and '.join(missing)} to be set to non-empty values. "
+                "Refusing to start with empty MinIO credentials. "
+                "Populate them in .env.production (never commit real "
+                "credentials) or in the systemd EnvironmentFile."
+            )
         return self
 
 

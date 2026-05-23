@@ -6,27 +6,15 @@ This repository manages reading and writing activity data to JSON files.
 
 import json
 import os
-import numpy as np
 from typing import List, Dict, Any, Optional, Union
 from pathlib import Path
 
 from ..utils.logger import get_logger
+from ..utils.json_utils import atomic_write_json
 from ..models.activity_models import ActivityModel
 
 
 logger = get_logger(__name__)
-
-
-class NumpyEncoder(json.JSONEncoder):
-    """JSON encoder that handles numpy types."""
-    def default(self, obj):
-        if isinstance(obj, (np.integer,)):
-            return int(obj)
-        if isinstance(obj, (np.floating,)):
-            return float(obj)
-        if isinstance(obj, np.ndarray):
-            return obj.tolist()
-        return super().default(obj)
 
 
 def parse_time_to_seconds(time_value: Union[str, int, float, None]) -> float:
@@ -109,20 +97,23 @@ class ActivityRepository:
         try:
             # Ensure run directory exists
             os.makedirs(run_dir, exist_ok=True)
-            
+
             # Create activities.json path
             activities_json_path = os.path.join(run_dir, "activities.json")
-            
-            # Write activities to JSON file with proper formatting
-            with open(activities_json_path, 'w', encoding='utf-8') as f:
-                json.dump(activities, f, indent=2, ensure_ascii=False, cls=NumpyEncoder)
-            
+
+            # Crash-safe + cross-process-safe write: locks on
+            # ``<path>.lock``, writes to a sibling temp file, fsyncs,
+            # then atomically ``os.replace``s into place. This is the
+            # single canonical writer for activities.json — see
+            # ``app/utils/json_utils.py``.
+            atomic_write_json(activities_json_path, activities, indent=2)
+
             logger.info(
                 f"Successfully saved {len(activities)} activities to {activities_json_path}"
             )
-            
+
             return activities_json_path
-            
+
         except Exception as e:
             logger.error(f"Failed to save activities: {e}", exc_info=True)
             raise IOError(f"Failed to save activities.json: {str(e)}") from e

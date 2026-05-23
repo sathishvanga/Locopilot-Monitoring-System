@@ -9,6 +9,13 @@ from datetime import datetime
 import cv2
 import numpy as np
 
+from app.utils.json_utils import atomic_write_json
+# NOTE: ``ActivityRepository`` is imported lazily inside ``save_activities_json``
+# below to avoid a circular import: this module is loaded as part of
+# ``app.core`` package init, and ``activity_repository`` -> ``activity_models``
+# -> ``app.core.activity_registry`` would re-enter ``app.core.__init__`` while
+# this module is still being loaded.
+
 
 class EvidenceManager:
     """Manages evidence artifacts: clips, images, JSON reports.
@@ -390,6 +397,19 @@ class EvidenceManager:
     ) -> str:
         """Save activities to JSON file.
 
+        Routes through the canonical ``atomic_write_json`` helper so that
+        every writer of ``activities.json`` shares the same encoder and
+        the same crash-safe + cross-process-locked write protocol. Prior
+        to Task 0002 this method had its own ad-hoc encoder (missing
+        ``np.bool_``) and a non-atomic ``open(..., 'w')`` write that
+        could leave a half-truncated file on a crash.
+
+        For the default filename (``activities.json``) we go through
+        :class:`ActivityRepository` to keep its logging behaviour. For
+        other filenames we still want the same atomic+locked write but
+        the repository is not the right fit, so we call the underlying
+        helper directly.
+
         Args:
             activities: List of activity dictionaries
             filename: Output filename (default: activities.json)
@@ -399,12 +419,12 @@ class EvidenceManager:
         """
         json_path = os.path.join(self.run_dir, filename)
 
-        with open(json_path, 'w') as f:
-            json.dump(
-                activities, f, indent=2,
-                default=lambda o: float(o) if isinstance(o, np.floating)
-                else int(o) if isinstance(o, np.integer) else o
-            )
+        if filename == "activities.json":
+            # Lazy import to break circular dep (see module-level NOTE).
+            from app.repositories.activity_repository import ActivityRepository
+            ActivityRepository().save_activities(activities, self.run_dir)
+        else:
+            atomic_write_json(json_path, activities, indent=2)
 
         self.logger.info(f"Activities JSON saved: {json_path}")
         return json_path

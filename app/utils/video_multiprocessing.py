@@ -23,6 +23,7 @@ import atexit
 from .multiprocessing_config import MultiprocessingConfig
 from .logger import get_logger
 from .config import get_settings
+from .json_utils import NumpyEncoder
 
 
 logger = get_logger(__name__)
@@ -31,19 +32,9 @@ logger = get_logger(__name__)
 # to prevent caching before environment variables are fully loaded.
 # Do not use a module-level settings variable.
 
-
-class NumpyEncoder(json.JSONEncoder):
-    """JSON encoder that handles numpy types."""
-    def default(self, obj):
-        if isinstance(obj, (np.integer,)):
-            return int(obj)
-        if isinstance(obj, (np.floating,)):
-            return float(obj)
-        if isinstance(obj, (np.bool_,)):
-            return bool(obj)
-        if isinstance(obj, np.ndarray):
-            return obj.tolist()
-        return super().default(obj)
+# NumpyEncoder is imported from app.utils.json_utils (the single canonical
+# encoder). Earlier this module shipped its own copy that was missing
+# np.bool_ in the repository copy; consolidating fixes that drift.
 
 
 # Global variables for worker processes (initialized once per worker)
@@ -541,7 +532,6 @@ def process_frame_range(
     output_dir: str,
     run_dir: str = None,
     save_clips: bool = True,
-    trip_schedule_dict: Dict[str, Any] = None,
     video_start_time: str = None,
     camera_angle: int = 1,
     overlap_seconds: float = 0.0
@@ -574,7 +564,6 @@ def process_frame_range(
         output_dir: Output directory (base directory)
         run_dir: Run directory for saving clips (if None, no clips saved)
         save_clips: Whether to save clips and images (default: True)
-        trip_schedule_dict: Serialized TripSchedule dict for motion rules (optional)
         video_start_time: Video recording start time in HH:MM:SS format (optional)
         camera_angle: Camera angle for LP/ALP role assignment (default: 1)
         overlap_seconds: Overlap duration in seconds (passed for logging; the
@@ -660,15 +649,6 @@ def process_frame_range(
 
         # Set camera angle for LP/ALP role assignment
         monitor.camera_angle = camera_angle
-
-        # Reconstruct trip_schedule from dict if provided
-        if trip_schedule_dict is not None and hasattr(monitor, 'set_trip_schedule'):
-            try:
-                from app.models.trip_models import TripSchedule
-                trip_schedule = TripSchedule(**trip_schedule_dict)
-                monitor.set_trip_schedule(trip_schedule)
-            except Exception as e:
-                logger.warning(f"Worker {worker_id} could not reconstruct trip_schedule: {e}")
 
         # Set video start time for motion rules (when OCR unavailable)
         if video_start_time and hasattr(monitor, 'set_video_start_time'):
@@ -880,7 +860,6 @@ class VideoMultiprocessingOrchestrator:
         sample_fps: float = 1.0,
         run_dir: str = None,
         save_clips: bool = True,
-        trip_schedule = None,
         video_start_time: str = None,
         camera_angle: int = 1
     ) -> List[Dict[str, Any]]:
@@ -901,8 +880,6 @@ class VideoMultiprocessingOrchestrator:
             sample_fps: Sampling rate
             run_dir: Run directory for output
             save_clips: Whether to save video clips and images (default: True)
-            trip_schedule: TripSchedule object for motion-based rules (optional)
-                           Note: Serialized to dict for multiprocessing workers
             video_start_time: Video recording start time in HH:MM:SS format (optional)
             camera_angle: Camera angle for LP/ALP role assignment (1 = LP Side, 2 = ALP Side)
 
@@ -946,14 +923,6 @@ class VideoMultiprocessingOrchestrator:
         logger.info(f"Submitting {len(frame_ranges)} tasks to process pool "
                    f"(expected {total_expected_frames} sampled frames, save_clips={save_clips})")
 
-        # Serialize trip_schedule for multiprocessing (Pydantic models can't be pickled directly)
-        trip_schedule_dict = None
-        if trip_schedule is not None:
-            try:
-                trip_schedule_dict = trip_schedule.model_dump() if hasattr(trip_schedule, 'model_dump') else trip_schedule.dict()
-            except Exception as e:
-                logger.warning(f"Could not serialize trip_schedule for multiprocessing: {e}")
-
         # Submit tasks to pool
         futures: Dict[Future, FrameRange] = {}
 
@@ -971,7 +940,6 @@ class VideoMultiprocessingOrchestrator:
                 output_dir=self.output_dir,
                 run_dir=run_dir,  # Pass run_dir for clip saving
                 save_clips=save_clips,
-                trip_schedule_dict=trip_schedule_dict,  # Pass serialized schedule
                 video_start_time=video_start_time,  # Pass video start time for motion rules
                 camera_angle=camera_angle,
                 overlap_seconds=overlap_seconds,  # C-02: pass for logging
@@ -1057,10 +1025,16 @@ class VideoMultiprocessingOrchestrator:
 
         all_activities.sort(key=lambda x: parse_activity_time(x.get('activityStartTime', 0)))
 
-        # Group overlapping activities of different types into combined records
-        from ..services.concurrent_activity_grouping_service import get_concurrent_grouping_service
-        concurrent_grouping_service = get_concurrent_grouping_service()
-        all_activities = concurrent_grouping_service.group_concurrent_activities(all_activities, run_dir)
+        # Group overlapping activities of different types into combined records.
+        # Under CONCURRENT_GROUPING_AFTER_VLM=1 the grouping is deferred until
+        # after VLM verification (see video_processing_service / video_controller),
+        # so the detection-side path returns raw single-type activities.
+        from ..utils.config import get_settings as _get_settings
+        if not _get_settings().concurrent_grouping_after_vlm:
+            from ..services.concurrent_activity_grouping_service import get_concurrent_grouping_service
+            concurrent_grouping_service = get_concurrent_grouping_service()
+            all_activities = concurrent_grouping_service.group_concurrent_activities(all_activities, run_dir)
+        # else: grouping deferred to post-VLM in video_processing_service / video_controller
 
         processing_time = time.time() - start_time
 
@@ -1073,12 +1047,15 @@ class VideoMultiprocessingOrchestrator:
         clips_dir = os.path.join(run_dir, "clips")
         os.makedirs(clips_dir, exist_ok=True)
 
-        # Save merged activities to main run directory
+        # Save merged activities to main run directory.
+        # Route through ActivityRepository so every writer in the codebase
+        # uses the same atomic + locked write protocol (Task 0002).
         if len(all_activities) > 0:
-            activities_json_path = os.path.join(run_dir, "activities.json")
             try:
-                with open(activities_json_path, 'w') as f:
-                    json.dump(all_activities, f, indent=2, cls=NumpyEncoder)
+                from ..repositories.activity_repository import ActivityRepository
+                activities_json_path = ActivityRepository().save_activities(
+                    all_activities, run_dir
+                )
                 logger.info(f"Saved {len(all_activities)} activities to {activities_json_path}")
             except Exception as e:
                 logger.error(f"Failed to save activities.json: {e}")

@@ -168,8 +168,8 @@ def _build_activity_registry() -> Dict[str, ActivityConfig]:
         ),
         'group_detected': ActivityConfig(
             type_code=7,
-            description='More than 5 people (group) detected',
-            evidence_rule='more_than_5_deduplicated_persons',
+            description='More than 2 people (group) detected',
+            evidence_rule='more_than_2_deduplicated_persons',
             triggering_role=None,
             min_duration=0.0,
             required_consecutive=3,
@@ -215,8 +215,15 @@ def _build_activity_registry() -> Dict[str, ActivityConfig]:
             triggering_role=None,
             # F4 (2026-04-06): consecutive 3->5, min_duration 5->10 to
             # suppress intermittent YOLO recall drops on non-canonical poses.
-            min_duration=10.0,
-            required_consecutive=5,
+            # 2026-05-10: bumped 5->10 / 10->20 after run_20260510_071453
+            # FP analysis. The vibration-based motion detector is fooled by
+            # diesel idle (high-amplitude vibration even at standstill at
+            # this station), so brief 10s windows can trigger during real
+            # station halts. Real no-person events sustained ≥20s remain
+            # detectable; transient YOLO recall drops + idle vibration no
+            # longer combine into a violation.
+            min_duration=20.0,
+            required_consecutive=10,
             margin=None,
             grace_frames=3,
         ),
@@ -238,6 +245,25 @@ def _build_activity_registry() -> Dict[str, ActivityConfig]:
             margin=None,
             grace_frames=5,
         ),
+        'solo_person': ActivityConfig(
+            type_code=14,
+            description='Only one person in cabin while train running',
+            evidence_rule='exactly_one_deduplicated_person_while_running',
+            triggering_role=None,
+            # 2026-05-10: bumped 5->10 / 10->20 after run_20260510_071453
+            # FP analysis. The vibration-based motion detector is fooled by
+            # diesel idle (high-amplitude vibration even at standstill at
+            # this station), so the 10s window matched the diesel-idle FP
+            # exactly. Real solo events (ALP off the cab) last 30s+ in
+            # practice — boarding/inspection takes time — so the 20s
+            # threshold doesn't sacrifice recall on genuine violations.
+            # Suppressed while train is STOPPED — see
+            # ``DEFAULT_SUPPRESSED_WHEN_STOPPED`` in ``app/core/gates.py``.
+            min_duration=20.0,
+            required_consecutive=10,
+            margin=None,
+            grace_frames=3,
+        ),
     }
 
 
@@ -258,8 +284,30 @@ def rebuild_activity_registry() -> Dict[str, ActivityConfig]:
     return ACTIVITY_REGISTRY
 
 
+def is_activity_enabled(activity_name: str) -> bool:
+    """Return True iff ``activity_name`` is enabled by the operator.
+
+    Thin wrapper around ``Settings.is_activity_enabled`` so callers can
+    import the gate from the same module that owns ``ACTIVITY_REGISTRY``
+    without having to plumb a settings object through every call site.
+
+    Falls back to ``True`` when settings cannot be resolved (partial test
+    envs) — fail-open matches the registry's "all activities run by
+    default" contract.
+    """
+
+    if get_settings is None:
+        return True
+    try:
+        settings = get_settings()
+    except Exception:
+        return True
+    return settings.is_activity_enabled(activity_name)
+
+
 __all__ = [
     "ActivityConfig",
     "ACTIVITY_REGISTRY",
     "rebuild_activity_registry",
+    "is_activity_enabled",
 ]

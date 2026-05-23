@@ -28,6 +28,7 @@ from .middleware import LoggingMiddleware
 from .utils.logger import setup_logging, get_logger
 from .utils.config import get_settings
 from .utils.video_multiprocessing import shutdown_shared_pool
+from .services.dlq import drain_dlq
 from .services.gpu_resource_manager import get_gpu_resource_manager
 from .services.job_manager import job_manager
 from .services.video_processing_service import VideoProcessingService
@@ -37,7 +38,7 @@ from .models.job_models import Job
 # Initialize settings and logging
 settings = get_settings()
 setup_logging(level=settings.log_level)
-logger = get_logger(__name__)
+logger = get_logger("app.main")
 
 
 def print_startup_banner(gpu_manager=None):
@@ -79,7 +80,16 @@ def print_startup_banner(gpu_manager=None):
 |  GPU Status:  http://{settings.host}:{settings.port}/api/gpu/status{' ' * (31 - len(str(settings.port)))} |
 +==================================================================+
 """
-    print(banner)
+    logger.info(banner)
+
+
+# Module-level singleton VideoProcessingService instance for the queue
+# worker path. The class is itself stateless (its dependencies are
+# singletons), so a single instance is fine and avoids constructing one
+# per job. Task 0010 will introduce a proper ``get_video_processing_service``
+# accessor; until then this inline-once construction matches the spec
+# guidance in tasks/0003.
+_video_processing_service_for_jobs: VideoProcessingService = VideoProcessingService()
 
 
 async def process_video_job(job: Job) -> dict:
@@ -88,7 +98,15 @@ async def process_video_job(job: Job) -> dict:
 
     This function is called by job queue workers to process submitted jobs.
     It wraps the synchronous video processing in an executor to avoid
-    blocking the event loop.
+    blocking the event loop, and gates the work behind
+    ``GPUResourceManager.acquire_gpu_slot()`` so the three queue workers
+    (started in :func:`lifespan`) cannot run more than
+    ``MAX_CONCURRENT_VIDEOS`` videos against the GPU concurrently.
+
+    Without that gate, three workers + a synchronous /process-and-upload
+    request could all hit the 20 GB RTX 4000 Ada at once and OOM
+    (Pipeline-1 ~8 GB peak + vLLM ~10 GB resident only leaves ~3 GB
+    headroom — see CLAUDE.md "One-worker rule").
 
     Args:
         job: Job instance with video_path and config
@@ -108,24 +126,33 @@ async def process_video_job(job: Job) -> dict:
     use_mp = config.get("use_multiprocessing", settings.enable_multiprocessing)
     save_clips = config.get("save_clips", False)
 
-    # Create video processing service instance
-    video_service = VideoProcessingService()
+    gpu_manager = get_gpu_resource_manager()
 
-    # Run synchronous processing in thread pool to not block event loop
-    result = await asyncio.get_running_loop().run_in_executor(
-        None,
-        lambda: video_service.process_video(
-            video_path=job.video_path,
-            trip_id=trip_id,
-            crew_members=crew_members,
-            crew_name=lp_crew_name,
-            crew_id=lp_crew_id,
-            crew_role=1,
-            use_mock_detection=use_mock,
-            use_multiprocessing=use_mp,
-            save_clips=save_clips
+    # Hold a GPU slot for the duration of heavy processing. The queue
+    # worker bypasses ``try_enqueue`` (the job_manager queue is the
+    # admission gate for this path), so we use ``increment_active``
+    # directly rather than ``mark_enqueued_started`` — the latter
+    # decrements ``_pending_count`` which would corrupt the controller
+    # path's admission accounting if a controller request were also in
+    # flight. ``acquire_gpu_slot``'s finally still does the matching
+    # decrement on exit (single counter authority for the - side).
+    async with gpu_manager.acquire_gpu_slot():
+        gpu_manager.increment_active()
+        # Run synchronous processing in thread pool to not block event loop
+        result = await asyncio.get_running_loop().run_in_executor(
+            None,
+            lambda: _video_processing_service_for_jobs.process_video(
+                video_path=job.video_path,
+                trip_id=trip_id,
+                crew_members=crew_members,
+                crew_name=lp_crew_name,
+                crew_id=lp_crew_id,
+                crew_role=1,
+                use_mock_detection=use_mock,
+                use_multiprocessing=use_mp,
+                save_clips=save_clips
+            )
         )
-    )
 
     logger.info(
         f"Job {job.id} completed - activities: {result.get('activitiesCount', 0)}, "
@@ -150,11 +177,12 @@ async def lifespan(app: FastAPI):
     # This sets up CUDA device, memory fraction, and semaphore for concurrency control
     gpu_manager.initialize()
 
-    # Startup - Console banner for user visibility (with GPU info)
+    # Startup banner (now routed through the canonical logger so it goes
+    # through the redaction filter and respects the file-only handler config).
     print_startup_banner(gpu_manager)
-    print("[OK] Application started successfully!")
-    print(f"[LOG] Logs are being written to: {settings.log_dir}/LocopilotMonitoring.log")
-    print("-" * 68)
+    logger.info("[OK] Application started successfully!")
+    logger.info(f"[LOG] Logs are being written to: {settings.log_dir}/LocopilotMonitoring.log")
+    logger.info("-" * 68)
 
     # Log GPU startup statistics
     gpu_manager.log_startup_stats()
@@ -180,24 +208,52 @@ async def lifespan(app: FastAPI):
         num_workers = settings.max_concurrent_videos
         logger.info(f"Starting job queue workers (num_workers={num_workers})")
         await job_manager.start_workers(process_video_job)
-        print(f"[QUEUE] Job queue started with {num_workers} workers")
+        logger.info(f"[QUEUE] Job queue started with {num_workers} workers")
         logger.info(f"Job queue workers started successfully")
     except Exception as e:
         logger.error(f"Failed to start job queue workers: {e}", exc_info=True)
-        print(f"[WARNING] Job queue workers failed to start: {e}")
+        logger.warning(f"[WARNING] Job queue workers failed to start: {e}")
+
+    # Schedule a one-shot DLQ re-drain in the background so any external-API
+    # failures from the previous run get replayed on this boot. The task is
+    # fire-and-forget — DLQ writes survive restarts so a crash here is
+    # recoverable on the next boot.
+    async def _drain_dlq_on_startup() -> None:
+        try:
+            stats = await asyncio.get_running_loop().run_in_executor(None, drain_dlq)
+            if stats and stats.get("drained"):
+                logger.info(
+                    f"[dlq] Startup drain finished drained={stats['drained']} "
+                    f"succeeded={stats['succeeded']} failed={stats['failed']}"
+                )
+        except Exception as e:
+            logger.warning(f"[dlq] Startup drain task failed: {e}", exc_info=True)
+
+    try:
+        app.state.dlq_drain_task = asyncio.create_task(_drain_dlq_on_startup())
+        logger.info("[dlq] Startup re-drain task scheduled")
+    except Exception as e:
+        logger.warning(f"[dlq] Failed to schedule startup re-drain task: {e}")
 
     yield
 
     # Shutdown
-    print("\n[STOP] Shutting down application...")
-    logger.info("Shutting down application...")
+    logger.info("[STOP] Shutting down application...")
+
+    # Cancel the DLQ drain task if it's still in flight on shutdown.
+    drain_task = getattr(app.state, "dlq_drain_task", None)
+    if drain_task is not None and not drain_task.done():
+        drain_task.cancel()
+        try:
+            await drain_task
+        except (asyncio.CancelledError, Exception):
+            pass
 
     # Stop job queue workers
     try:
         logger.info("Stopping job queue workers...")
         await job_manager.stop_workers()
-        logger.info("Job queue workers stopped")
-        print("[OK] Job queue workers stopped")
+        logger.info("[OK] Job queue workers stopped")
     except Exception as e:
         logger.warning(
             f"Error while stopping job queue workers: {e}",
@@ -207,8 +263,7 @@ async def lifespan(app: FastAPI):
     # Shutdown GPU Resource Manager (clears memory, releases models)
     try:
         gpu_manager.shutdown()
-        logger.info("GPU Resource Manager shut down")
-        print("[OK] GPU Resource Manager shut down")
+        logger.info("[OK] GPU Resource Manager shut down")
     except Exception as e:
         logger.warning(f"Error shutting down GPU manager: {e}", exc_info=True)
 
@@ -222,8 +277,7 @@ async def lifespan(app: FastAPI):
             exc_info=True,
         )
 
-    logger.info("Shutdown complete")
-    print("[OK] Shutdown complete. Goodbye!")
+    logger.info("[OK] Shutdown complete. Goodbye!")
 
 
 # Create FastAPI application
@@ -297,21 +351,43 @@ def _sanitize_validation_errors(errors: list) -> list:
     return sanitized
 
 
+def _scrub_validation_errors_for_log(errors: list) -> list:
+    """
+    Strip the ``input`` key (and ``ctx.input``) from validation errors before
+    they are written to the log. Pydantic includes the raw rejected value in
+    every error dict by default — for malformed Authorization-style fields
+    that means a bearer token would otherwise land in the log file (task 0010).
+    """
+    scrubbed = []
+    for err in errors:
+        copy = {k: v for k, v in err.items() if k != "input"}
+        ctx = copy.get("ctx")
+        if isinstance(ctx, dict) and "input" in ctx:
+            copy["ctx"] = {k: v for k, v in ctx.items() if k != "input"}
+        scrubbed.append(copy)
+    return scrubbed
+
+
 @app.exception_handler(StarletteHTTPException)
 async def http_exception_handler(request: Request, exc: StarletteHTTPException):
-    """Handle HTTP exceptions with production-safe error messages (M-22)"""
+    """Handle HTTP exceptions with production-safe error messages (M-22, task 0010).
+
+    For 5xx responses we return a single opaque body — ``{"detail":
+    "internal_error"}`` — so we never echo a controller-side ``str(e)``
+    fragment back to the caller. The full exception is already on the
+    server side via ``logger.exception`` at the original raise site; the
+    response is intentionally minimal.
+    """
     logger.warning(f"HTTP {exc.status_code}: {exc.detail}")
 
-    # For server errors (5xx), avoid leaking internal details in production.
-    # Controller code often raises HTTPException(500, detail=str(e)) which
-    # can expose file paths, database errors, or stack trace fragments.
-    if exc.status_code >= 500 and not settings.debug:
+    # For server errors (5xx), return a fixed opaque body so we never leak
+    # an internal exception message via ``str(e)``-style detail. Debug mode
+    # is intentionally NOT given a free pass here — the leak would still
+    # occur if DEBUG were ever set in production by mistake.
+    if exc.status_code >= 500:
         return JSONResponse(
             status_code=exc.status_code,
-            content={
-                "status": "error",
-                "message": "Internal server error",
-            }
+            content={"detail": "internal_error"}
         )
 
     # For client errors (4xx) and debug mode, return the detail as-is
@@ -337,8 +413,14 @@ async def http_exception_handler(request: Request, exc: StarletteHTTPException):
 
 @app.exception_handler(RequestValidationError)
 async def validation_exception_handler(request: Request, exc: RequestValidationError):
-    """Handle request validation errors with sanitized output (M-22)"""
-    logger.warning(f"Validation error: {exc.errors()}")
+    """Handle request validation errors with sanitized output (M-22, task 0010).
+
+    The default ``exc.errors()`` payload includes the raw rejected ``input``
+    value for every failing field; for an Authorization-shaped header that
+    embeds the bearer in the log line. We always strip ``input`` from the
+    logged version, regardless of debug mode.
+    """
+    logger.warning(f"Validation error: {_scrub_validation_errors_for_log(exc.errors())}")
 
     # In production, sanitize validation errors to remove internal context
     # (e.g. raw input values that may contain sensitive data).
@@ -359,29 +441,17 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
 
 @app.exception_handler(Exception)
 async def general_exception_handler(request: Request, exc: Exception):
-    """Handle unexpected exceptions without leaking internals (M-22)"""
+    """Handle unexpected exceptions without leaking internals (M-22, task 0010).
+
+    The full exception is logged with traceback. The response body is the
+    same opaque ``{"detail": "internal_error"}`` shape used by the 5xx
+    HTTP exception handler so all server errors look the same to the caller.
+    """
     error_msg = str(exc) if exc else "Unknown error"
     logger.error(f"Unexpected error: {error_msg}", exc_info=True)
-
-    # Return generic message to clients to avoid leaking internal details
-    # (file paths, database details, stack traces) in production.
-    # In debug mode, include the actual error for local development convenience.
-    if settings.debug:
-        return JSONResponse(
-            status_code=500,
-            content={
-                "status": "error",
-                "message": f"Internal server error: {error_msg}",
-                "error": error_msg,
-                "detail": error_msg,
-            }
-        )
     return JSONResponse(
         status_code=500,
-        content={
-            "status": "error",
-            "message": "Internal server error",
-        }
+        content={"detail": "internal_error"}
     )
 
 

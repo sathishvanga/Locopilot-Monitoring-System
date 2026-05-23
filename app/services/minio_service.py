@@ -17,6 +17,7 @@ from minio.error import S3Error
 
 from ..utils.logger import get_logger
 from ..utils.config import get_settings
+from ..utils.url_safety import URLNotAllowed, validate_external_url
 
 
 logger = get_logger(__name__)
@@ -102,6 +103,17 @@ class MinioService:
             S3Error: If download fails
         """
         try:
+            # Task 0008 / reviewer M1 — defense in depth. The controller
+            # already calls ``validate_external_url`` before invoking us,
+            # but a future caller (worker, internal job, retry helper)
+            # might forget. Re-validate here so any bypass at the
+            # controller layer still fails closed.
+            validate_external_url(
+                video_url,
+                settings.minio_allowed_hosts,
+                allow_private_ips=settings.minio_allow_private_ips,
+            )
+
             # Parse URL to get bucket and object key
             bucket, object_key = self.parse_minio_url(video_url)
 
@@ -120,8 +132,45 @@ class MinioService:
 
             logger.info(f"Downloading video from MinIO - bucket: {bucket}, key: {object_key}")
 
-            # Download file
-            self.client.fget_object(bucket, object_key, local_path)
+            # Task 0008: stream the object and enforce a hard byte cap. A
+            # hostile or misconfigured remote could otherwise return a
+            # multi-hundred-GB stream and exhaust local disk. We use
+            # ``get_object`` (streaming response) instead of
+            # ``fget_object`` (atomic write) so we can abort mid-stream.
+            max_bytes = settings.max_external_download_bytes
+            total = 0
+            chunk_size = 8 * 1024 * 1024  # 8 MiB
+            response = None
+            try:
+                response = self.client.get_object(bucket, object_key)
+                with open(local_path, "wb") as out_f:
+                    while True:
+                        chunk = response.read(chunk_size)
+                        if not chunk:
+                            break
+                        total += len(chunk)
+                        if max_bytes and total > max_bytes:
+                            # Truncate the partial download before raising
+                            # so we don't leave a half-written file
+                            # masquerading as a valid video.
+                            out_f.close()
+                            try:
+                                os.unlink(local_path)
+                            except OSError:
+                                pass
+                            raise URLNotAllowed(
+                                f"download exceeded max bytes "
+                                f"({total} > {max_bytes}) for "
+                                f"{bucket}/{object_key}"
+                            )
+                        out_f.write(chunk)
+            finally:
+                if response is not None:
+                    try:
+                        response.close()
+                        response.release_conn()
+                    except Exception:  # pragma: no cover - defensive
+                        pass
 
             # Verify download
             if not os.path.exists(local_path):

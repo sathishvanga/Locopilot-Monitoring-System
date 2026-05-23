@@ -10,13 +10,13 @@ This module encapsulates all YOLO-related operations including:
 Extracted from locopilot_monitor.py for modularity and reusability.
 """
 
-import logging
-import os
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
 import cv2
 import numpy as np
+
+from app.utils.logger import get_logger
 
 # YOLO Keypoint indices (COCO format) - shared across detection methods
 YOLO_KEYPOINT_INDICES = {
@@ -43,28 +43,6 @@ YOLO_KEYPOINT_INDICES = {
 YOLO_HEAD_INDICES = [0, 1, 2, 3, 4]  # nose, left_eye, right_eye, left_ear, right_ear
 YOLO_BODY_INDICES = [5, 6, 7, 8, 11, 12]  # left/right shoulders, elbows, hips
 YOLO_MIN_KEYPOINTS = 13  # Minimum landmarks required (indices 0-12)
-
-
-def _setup_module_logger(name: str, level: int = logging.DEBUG) -> logging.Logger:
-    """Setup a file-only logger for the module."""
-    log_dir = os.getenv("LOG_DIR", "logs")
-    os.makedirs(log_dir, exist_ok=True)
-
-    logger = logging.getLogger(name)
-    logger.setLevel(level)
-
-    if not logger.handlers:
-        file_handler = logging.FileHandler(os.path.join(log_dir, "LocopilotMonitoring.log"))
-        file_handler.setLevel(logging.DEBUG)
-
-        formatter = logging.Formatter(
-            '%(asctime)s,%(msecs)03d [N/A] [N/A] [N/A] [N/A] [%(levelname)s] [%(name)s] [N/A N/A] %(message)s',
-            datefmt='%Y-%m-%d %H:%M:%S'
-        )
-        file_handler.setFormatter(formatter)
-        logger.addHandler(file_handler)
-
-    return logger
 
 
 class YOLOHandler:
@@ -109,7 +87,7 @@ class YOLOHandler:
             preprocessing_service: Optional ImagePreprocessingService for dark/IR frames
             settings: Optional settings object for configuration thresholds
         """
-        self.logger = _setup_module_logger('YOLOHandler')
+        self.logger = get_logger('YOLOHandler')
         self.device = device
         self.imgsz = imgsz
         self.settings = settings
@@ -855,7 +833,8 @@ class YOLOHandler:
                 for _ in batch_frames:
                     all_detections.append({
                         'person': [], 'cell_phone': [], 'book': [],
-                        'backpack': [], 'roi_detections': [], 'roi_boxes': []
+                        'backpack': [], 'cup_bottle': [],
+                        'roi_detections': [], 'roi_boxes': []
                     })
                 continue
 
@@ -865,6 +844,7 @@ class YOLOHandler:
                     'cell_phone': [],
                     'book': [],
                     'backpack': [],
+                    'cup_bottle': [],
                     'roi_detections': [],
                     'roi_boxes': [],
                     # Per-frame raw (class, conf) list for diagnostic logging.
@@ -905,16 +885,42 @@ class YOLOHandler:
                             pending_books.append(xyxy)
                         elif class_name == 'cell phone' and conf > self.cell_phone_confidence:
                             detections['cell_phone'].append(xyxy)
+                        # Cup/bottle detection for eating/drinking — mirrors the
+                        # single-frame ``detect_objects`` handler so multiprocess
+                        # runs produce the same ``cup_bottle`` signal as serial
+                        # runs (deterministic two-pass contract; see CLAUDE.md).
+                        elif class_name in ['cup', 'bottle']:
+                            floor_conf = (
+                                getattr(
+                                    self.settings,
+                                    'eating_drinking_cup_floor_confidence',
+                                    0.20,
+                                )
+                                if self.settings else 0.20
+                            )
+                            if conf > floor_conf:
+                                detections['cup_bottle'].append(xyxy)
 
-                # Process pending books
+                # Process pending books — use the configurable
+                # ``book_person_margin`` so multiprocess and serial paths agree
+                # on what counts as "near a person" (deterministic two-pass).
+                # Also call ``validate_object_aspect_ratio('book')`` to mirror
+                # the single-frame ``detect_objects`` handler at lines 306-313;
+                # without it, batch-path runs admit improbable book aspect
+                # ratios that the serial path would have rejected — a parity
+                # gap in the same spirit as the cup_bottle fix.
                 for book_xyxy in pending_books:
                     if len(person_boxes) > 0:
                         for person_box in person_boxes:
-                            if self._boxes_overlap_or_near(book_xyxy, person_box, margin=200):
-                                detections['book'].append(book_xyxy)
+                            if self._boxes_overlap_or_near(
+                                book_xyxy, person_box, margin=self.book_person_margin
+                            ):
+                                if self.validate_object_aspect_ratio(book_xyxy, 'book'):
+                                    detections['book'].append(book_xyxy)
                                 break
                     else:
-                        detections['book'].append(book_xyxy)
+                        if self.validate_object_aspect_ratio(book_xyxy, 'book'):
+                            detections['book'].append(book_xyxy)
 
                 all_detections.append(detections)
 

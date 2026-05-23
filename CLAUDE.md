@@ -21,7 +21,7 @@ Pipeline 1 — classical CV (the original detector)
         → Temporal filtering (consecutive frames + grace periods)
         → activities.json + evidence clips/frames
 
-Pipeline 2 — VLM verification layer (added 2026-04-26, shadow-mode default)
+Pipeline 2 — VLM verification layer (added 2026-04-26)
    For each confirmed activity in {writing, eating_drinking, packing_bags}
    send the keyframe + activity-specific prompt to Qwen2.5-VL-7B-AWQ
    served by vLLM on :8001. Verdict (TP/FP/UNCERTAIN) + reasoning attached
@@ -31,16 +31,20 @@ Then: S3 upload → external mindcoinapps API → response
 ```
 
 Pipeline 1 remains the source of truth for what counts as a violation.
-Pipeline 2 only filters (drops in enforcement mode, annotates in shadow mode);
-it never adds violations. Verifier is fail-open — if vLLM is down, Pipeline-1
-verdicts pass through unchanged.
+Pipeline 2 only filters (drops FALSE_POSITIVE @ confidence>=VLM_DROP_THRESHOLD
+and annotates every verified activity with `vlm_review`); it never adds
+violations. Verifier is fail-open — if vLLM is down, Pipeline-1 verdicts
+pass through unchanged.
 
 ---
 
 ## Repository layout
 
 ```
-locopilot_monitor.py            Core ~5200-line frame processor (LocopilotActivityMonitor)
+locopilot_monitor.py            Core ~3200-line frame processor (LocopilotActivityMonitor).
+                                The 1,200-line process_all_persons_activities was extracted
+                                to app/core/multi_person_runner.py in the 2026-05-09 cleanup;
+                                the monolith now delegates to it via a one-line shim.
 gunicorn_config.py              Workers pinned to 1 (per-process GPU singleton, see C-1)
 deploy-gpu.sh                   rsync + restart on the GPU box
 start_server.sh                 Local dev launcher
@@ -61,18 +65,37 @@ app/
     s3_upload_service.py        Evidence uploads (clips + jpegs)
     minio_service.py
     external_api_service.py     POST cvvr/cvvrTripViolations/addUpdateBulk
-    ocr_timestamp_service.py    Reads time overlay from CCTV frames
-    trip_data_service.py
-    etrain_delay_service.py     etrain.info live status (for arrival window)
-    vlm_verification_service.py NEW: Pipeline-2 verifier (Qwen2.5-VL via vLLM)
+    vlm_verification_service.py 12-line back-compat shim. Real code lives in vlm/ below.
+    vlm/                        Pipeline-2 verifier package (split out 2026-05-09):
+      service.py                  VlmVerificationService orchestrator + telemetry
+      vlm_client.py               HTTP client + circuit breaker
+      keyframe_processor.py       Keyframe resolve / supplement / stitch / bbox count
+      image_encoder.py            ROI detect, crop, base64 encode
+      verdict_parser.py           JSON parse, calibration, motion-state logic
+      motion_classifier.py        2026-05-10: OCR-based camera detection +
+                                  per-camera window-ROI frame-diff motion check.
+                                  Runs BEFORE the VLM call to drop train-stationary
+                                  writing/eating FPs that vibration-detector and
+                                  VLM-text both miss. See "Window-region motion
+                                  classifier" section below.
     concurrent_activity_grouping_service.py
   core/
     activity_registry.py        Single source of truth for activity types,
                                 consecutive-frame requirements, margins, evidence rules
+    activity_tracker.py         Re-exports ActivityConfig from activity_registry.py.
+    multi_person_runner.py      MultiPersonActivityRunner — extracted 2026-05-09 from
+                                LocopilotActivityMonitor.process_all_persons_activities.
+                                Per-frame multi-person detector dispatch.
     gates.py                    apply_train_stopped_suppression (single place that enforces
                                 "writing/sleep/etc. only count while train is RUNNING")
     detectors/
-      sleep_detector.py         EAR + reclined posture + head-tilt + state machine
+      sleep_detector.py         12-line back-compat shim. Real code in sleep/ below.
+      sleep/                    Sleep detector package (split out 2026-05-09):
+        detector.py               SleepDetector class + detect_pose_based_sleep
+        pose_geometry.py          Head tilt / wrist distance / movement score helpers
+        state_machine.py          DROWSY state machine
+        ir_fallback.py            IR forward-lean fallback
+        haar_eye_closure.py       Haar-cascade eye-closure fallback
       gesture_detector.py       Raise-hold-lower trajectory + RTMW hand-shape (optional)
       object_detector.py        YOLO wrapper, zone suppression, SAHI (opt-in)
       train_motion_detector.py  Vibration-based RUNNING/STOPPED/UNCERTAIN
@@ -165,13 +188,21 @@ groups that matter most. See `.env.example` for the full list with comments.
 ### Train-motion gate
 | Flag | Default | Purpose |
 |---|---|---|
-| `TRAIN_MOTION_RULES_ENABLED` | `1` (prod) | Engine that suppresses non-safety-critical activities while STOPPED |
-| `TRAIN_MOTION_DETECTION_ENABLED` | `1` (prod) | Required by the rules engine; vibration + window-flow detector |
+| `TRAIN_MOTION_DETECTION_ENABLED` | `1` (prod) | Vibration + window-flow detector that emits RUNNING/STOPPED/UNCERTAIN |
 | `TRAIN_MOTION_RUNNING_GROUP_THRESHOLD` | `5` | `>5` people in cab → `group_detected` (3-person supervisor visits OK) |
 
 When STOPPED: sleep, writing, packing_bags, lp/alp_hand_gesture, mind_diversion,
 eating_drinking are all suppressed. microsleep + cell_phone remain active
 (safety-critical even at stations).
+
+The schedule-aware "rules engine" that fetched live train schedules from
+RailRadar + etrain.info to distinguish scheduled-halt vs unscheduled-stop
+windows was deleted in the 2026-05-09 architecture cleanup (it was confirmed
+not customer-facing — `no_person_detected` is internal passthrough state, not
+a posted violation). Suppression now applies on every STOPPED period from the
+vibration detector. Stale env vars `TRAIN_MOTION_RULES_ENABLED`, `ETRAIN_*`,
+`TRIP_API_*` in `.env.production` are silently ignored (`extra="ignore"` in
+pydantic Settings).
 
 ### VLM verifier (Pipeline-2)
 | Flag | Default | Purpose |
@@ -180,15 +211,13 @@ eating_drinking are all suppressed. microsleep + cell_phone remain active
 | `VLM_BASE_URL` | `http://localhost:8001/v1` | vLLM endpoint |
 | `VLM_MODEL` | `Qwen/Qwen2.5-VL-7B-Instruct-AWQ` | |
 | `VLM_VERIFY_ACTIVITIES` | `writing,eating_drinking` | Allowlist; non-listed activities pass through |
-| `VLM_DROP_THRESHOLD` | `0.80` | Min confidence to drop a FALSE_POSITIVE in enforcement mode |
-| `VLM_SHADOW_MODE` | `1` | `1`=annotate only; `0`=drop FPs above threshold |
+| `VLM_DROP_THRESHOLD` | `0.80` | Min confidence to drop a FALSE_POSITIVE. Set >1.0 to record verdicts without dropping |
 | `VLM_TIMEOUT_SECONDS` | `8.0` (15 in prod) | Per-call HTTP timeout; on timeout the activity passes through |
 | `VLM_MAX_ACTIVITIES_PER_RUN` | `0` | Cap (0=no cap) |
 
 ### Other
 - `MEDIA_API_KEY` — gates `/api/jobs/{run_id}/media` and `/api/status`. Currently unset → "rollout mode" warnings in log.
 - `CVVR_API_ENABLED` — toggles posting to mindcoinapps.
-- `ETRAIN_ENABLED` — fetch live train status from etrain.info.
 
 ---
 
@@ -275,7 +304,7 @@ End-to-end live (`run_20260426_085645`, 5-activity TV22_10 trip):
 
 ```
 [vlm] verification stats: verified=5 kept=5 dropped=0 uncertain=0
-      skipped_unavailable=0 parse_errors=0 shadow=True
+      skipped_unavailable=0 parse_errors=0
 ```
 
 Latencies: cold first call ~13 s (Marlin kernel JIT), steady-state 1.6-2.0 s
@@ -322,8 +351,9 @@ packing_bags, cell_phone are wired. To add a new activity:
 ```
 
 ### Rollout state (current production)
-Shadow mode enabled. Compare verdicts vs ground truth for ~1 week, then
-flip `VLM_SHADOW_MODE=0` on writing first. See `deploy/README-vlm.md`.
+Enforcement enabled (`VLM_DROP_THRESHOLD=0.80`) for writing, eating_drinking,
+and packing_bags. To roll back to observe-only without disabling the
+verifier, raise `VLM_DROP_THRESHOLD` above 1.0. See `deploy/README-vlm.md`.
 
 ### Operations
 ```bash
@@ -341,6 +371,138 @@ sudo systemctl restart locopilot.service
 # Stop vLLM (verifier auto fail-opens)
 sudo systemctl stop locopilot-vlm.service
 ```
+
+---
+
+## Window-region motion classifier (Pipeline-2 pre-VLM)
+
+`app/services/vlm/motion_classifier.py` — added 2026-05-10 after manual
+review of a 12-video batch (`run_20260510_103222`..`104537`) showed 5 of
+6 posted writing violations were train-stationary FPs.
+
+### Why it exists
+
+Two upstream gates are unreliable for stop-state detection on this
+trainset:
+
+1. **Pipeline-1 vibration motion** is fooled by diesel idle. The user's
+   own deep-research note documents this: RUNNING vib median 4.77,
+   STOPPED vib median 2.01 — bimodal but the diesel idle keeps
+   STOPPED-state vibration above the running threshold. So
+   `motionState=RUNNING` ships even when the train is at a station.
+
+2. **VLM motion verdict** is unreliable for ROI-cropped activities
+   (writing/eating/packing/cell_phone). The keyframe stitcher crops to
+   the person+object bbox before sending — the cabin window (the only
+   motion cue) is REMOVED from the VLM input. Qwen2.5-VL-7B-AWQ then
+   confabulates a stock phrase ("FRAME 3: motion blur in right window")
+   for nearly every activity regardless of state — observed identical
+   verbatim string across 6 different scenes.
+
+The motion classifier runs BEFORE the VLM call, on the *uncropped*
+keyframes the verifier already loaded. If the cabin's window region is
+static across the keyframe burst, the activity is dropped as a
+FALSE_POSITIVE without spending a VLM call.
+
+### How it works
+
+1. **Camera detection (OCR, once per source video, cached):** EasyOCR
+   on the bottom-right text overlay. The CCTV stamps `CAB 1 ALP camera 3`
+   or `CAB 1 LP camera 2` at ~y=560-590. EasyOCR introduces character
+   substitutions (`CAB`→`CAU`, `ALP`→`ALR`, `camera`→`amera` or `era`),
+   so the regex matches loosely on the trailing digit:
+   - "amera 3" / "ALR" / "ALP" → `ALP_CAM3`
+   - "amera 2" / bare "LP" (not part of "ALP") → `LP_CAM2`
+
+   First call OCRs every keyframe in the burst until one matches (LP
+   body sometimes occludes the overlay on a single frame). Subsequent
+   activities for the same source video are O(1) cache lookup.
+
+2. **Window ROI per camera:**
+   ```python
+   CAMERA_WINDOW_ROIS = {
+       "ALP_CAM3": (850, 0, 960, 400),  # upper-right grille
+       "LP_CAM2":  (0,   0, 200, 400),  # upper-left window
+   }
+   ```
+
+3. **Motion score:** mean abs pixel diff in the ROI between consecutive
+   keyframes, taken as the median across all consecutive pairs (5
+   keyframes → 4 pairs → 1 score).
+
+4. **Decision:** `score < MOTION_DIFF_STOPPED_THRESHOLD` (10.0) →
+   synthetic FALSE_POSITIVE verdict with `confidence=0.85`,
+   `train_appears_to_be="stopped"`, log line:
+   ```
+   [vlm] WINDOW-MOTION DROP activity type=5 at t=665.00
+   (camera=ALP_CAM3 window_diff=6.60 below threshold=10.00, 4 keyframe pairs)
+   ```
+
+### Threshold tuning provenance
+
+Tuned on a 7-clip batch (1 TP `vid11_527s` + 6 stationary FPs across
+`run_20260510_084423` through `run_20260510_085654`):
+
+| Activity (window-ROI median diff) | GT | score |
+|---|---|---|
+| vid01 @ 415s | FP_stopped | 3.24 |
+| vid04 @ 965s | FP_stopped | 7.33 |
+| vid06a @ 653s | FP_stopped | 25.15 (people-on-platform outlier) |
+| vid06b @ 665s | FP_stopped | 6.60 |
+| vid06c @ 725s | FP_stopped | 7.55 |
+| vid07 @ 1257s | FP_stopped | 0.86 |
+| **vid11 @ 527s** | **TP_running** | **13.15** |
+
+Threshold of 10.0 catches 5 of 6 FPs cleanly; vid06a's 25.15 isn't caught
+but Pipeline-1 already flagged it `motionState=STOPPED`, so the existing
+API motion filter at the boundary excludes it. Net: all 6 FPs suppressed
+end-to-end while preserving the only TP.
+
+### Scope and fall-open behaviour
+
+- Only runs for `object_type not in _FULL_FRAME_OBJECT_TYPES`, i.e.
+  writing/eating/packing/cell_phone/sleep/mind_diversion. For full-frame
+  types (solo_person/no_person/group_detected) the VLM already sees the
+  window in the un-cropped strip and can read motion textually — no
+  override needed.
+- `classify_motion()` returns `None` (and verifier proceeds with the
+  normal VLM call) when:
+  - OCR can't identify the camera (pattern not matched on any keyframe)
+  - Fewer than 2 keyframes are available
+  - cv2 fails to read a keyframe
+  This makes the gate fail-open: a broken classifier never adds FPs,
+  it only fails to subtract them.
+
+### Operations
+
+```bash
+# See classifier decisions
+grep 'WINDOW-MOTION' /opt/poc2/logs/LocopilotMonitoring.log | tail -20
+
+# Inspect a specific activity's classifier output
+jq '.[] | select(.activityStartTime=="665.00") | .vlm_review' \
+  /opt/poc2/locopilot_evidence/run_<id>/activities.json
+
+# Disable temporarily by removing the classify_motion call in
+# app/services/vlm/service.py around line ~1245 — there is no env flag
+# for this yet (intentionally; a future ARCH task should add
+# VLM_WINDOW_MOTION_ENABLED if rollback discipline becomes important).
+```
+
+### Limitations and what's NOT solved
+
+- **Door-open + people-on-platform scenes** (vid06a archetype): people
+  motion through the door inflates the window-ROI diff above threshold,
+  so the classifier doesn't fire. Caught only by Pipeline-1's separate
+  vibration verdict + the API-boundary motion filter.
+- **New camera install:** if a different cabin uses cameras other than
+  ALP cam 3 / LP cam 2, the camera detection returns `None` and no
+  override happens. Add the camera + ROI to `CAMERA_WINDOW_ROIS` and
+  the regex to `_ALP_TOKENS` / `_LP_TOKENS`.
+- **Threshold tuned on a 7-clip sample.** A larger labelled corpus
+  could justify either raising or lowering it; the current value sits
+  in the middle of a genuine but tight gap (TP=13.15 vs FP_max=7.55)
+  and may need adjustment as more labelled data arrives.
 
 ---
 
@@ -441,8 +603,8 @@ jq '.[] | {t: .activityStartTime, type: .activityType, vlm: .vlm_review.verdict}
 - **Singleton services**: external_api, vlm_verification, gpu_resource_manager,
   job_manager all use thread-safe double-checked-locking singleton init.
 - **Env var validators**: pydantic `@model_validator(mode='after')` catches
-  incoherent flag combinations at startup (e.g. TRAIN_MOTION_RULES_ENABLED=1
-  needs TRAIN_MOTION_DETECTION_ENABLED=1).
+  incoherent flag combinations at startup (e.g. POSE_MODEL=rtmpose needs
+  rtmlib importable; absolute YOLO weight paths must exist).
 - **No emojis in commits or code** unless explicitly asked; logs use
   bracketed prefixes (`[vlm]`, `[OK]`, `[ERROR]`) for grep-ability.
 - **Don't bump gunicorn workers** above 1 without redesigning
@@ -468,3 +630,6 @@ jq '.[] | {t: .activityStartTime, type: .activityType, vlm: .vlm_review.verdict}
 - `tests/ground_truth/README.md` — GT format + scoring conventions
 - `.env.example` — every settable flag with comments
 - `tasks/code-review-critical-fixes.md` — historical critical-fix log (C-1, C-9, etc.)
+- `docs/specs/architecture-cleanup/PLAN.md` — 2026-05-09 three-wave cleanup
+  (god-class splits, dormant-pipeline deletion, MultiPersonRunner extraction);
+  task specs in `docs/specs/architecture-cleanup/tasks/0001..0008-*.md`.

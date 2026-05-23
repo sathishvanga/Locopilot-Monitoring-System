@@ -9,9 +9,17 @@ set -e
 SERVER_IP="103.116.80.162"
 SERVER_PORT="3781"
 SERVER_USER="admin1"
-SERVER_PASS='9o\P`3#W(9}K'
+# SECURITY: the deploy password is read from the LOCOPILOT_DEPLOY_PASS env
+# var. The bash ``${VAR:?msg}`` expansion exits the script with a clear
+# error if the variable is unset or empty. Set it in your shell before
+# running this script, e.g.:
+#     export LOCOPILOT_DEPLOY_PASS='...'
+#     ./deploy-gpu.sh
+# Never commit the literal password to source.
+SERVER_PASS="${LOCOPILOT_DEPLOY_PASS:?set this env var (export LOCOPILOT_DEPLOY_PASS=...)}"
 # Base64-encode password to safely pass through SSH command strings
-# (password contains backtick which breaks double-quoted shell expansions)
+# (password may contain shell metacharacters that break double-quoted
+# expansions).
 PASS_B64=$(printf '%s' "$SERVER_PASS" | base64)
 REMOTE_PATH="/opt/poc2"
 
@@ -105,9 +113,27 @@ sshpass -p "$SERVER_PASS" ssh -p "$SERVER_PORT" -o StrictHostKeyChecking=no \
 
 echo ""
 echo -e "${YELLOW}[4/6] Installing Python dependencies...${NC}"
+# Per task 0009: production installs are hash-locked. Prefer requirements.lock
+# when populated; fall back to requirements.txt only if the lock is still the
+# placeholder. The PyTorch CUDA 12.1 wheel index is required so torch picks the
+# GPU wheel and not the silent CPU fallback.
 sshpass -p "$SERVER_PASS" ssh -p "$SERVER_PORT" -o StrictHostKeyChecking=no \
     "$SERVER_USER@$SERVER_IP" \
-    "cd $REMOTE_PATH && source venv/bin/activate && pip install -r requirements.txt -q"
+    "cd $REMOTE_PATH && source venv/bin/activate && \
+     if [ -f requirements.lock ] && ! grep -q PLACEHOLDER requirements.lock; then \
+         echo '[deploy] installing from requirements.lock (--require-hashes)' && \
+         pip install --require-hashes --no-deps \
+             --extra-index-url https://download.pytorch.org/whl/cu121 \
+             -r requirements.lock && \
+         echo '[deploy] verifying torch sees the GPU...' && \
+         (python -c \"import torch; assert torch.cuda.is_available(), 'CUDA not available — wrong torch wheel?'\" || { \
+              echo '[deploy] FATAL: torch installed but CUDA not visible. Aborting.'; \
+              exit 1; \
+          }); \
+     else \
+         echo '[deploy] WARNING: requirements.lock not populated, falling back to requirements.txt' && \
+         pip install -r requirements.txt -q; \
+     fi"
 
 echo ""
 echo -e "${YELLOW}[5/6] Updating systemd service and restarting...${NC}"

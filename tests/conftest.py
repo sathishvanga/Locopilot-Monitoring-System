@@ -1,147 +1,168 @@
-"""Shared pytest fixtures for the Locopilot Monitoring System test suite.
+"""Shared pytest fixtures and helpers for the Locopilot test suite.
 
-Fixtures defined here are available to every test under ``tests/``.
+The 0001 and 0006 review-fix agents wrote tests that import three names
+from ``tests.conftest`` — ``minimal_settings``, ``stub_logger``, and the
+helper ``build_alert_pose``. This file supplies them so those tests
+can run without a live config / log dir / pose model.
 
-Design goals:
-- Zero network / GPU / model-weight requirements.
-- Detectors are already constructible in isolation (they accept ``settings``
-  and ``logger``) so fixtures focus on providing pure-Python stand-ins for
-  pose landmarks and detection dicts.
-- Callers can parametrize pose fakes to simulate alert / drowsy / head-up
-  postures without loading MediaPipe or YOLO.
+Path-checking and disk side-effects are stubbed out so collection is
+hermetic on a developer machine: ``LOCOPILOT_SKIP_PATH_CHECKS=1`` and
+``LOG_DIR=/tmp/locopilot_test_logs`` are set BEFORE any ``app.*`` import.
 """
+
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
-from typing import List, Optional
+import os
+import sys
+from pathlib import Path
+from typing import List
 
-import pytest
+# ---------------------------------------------------------------------------
+# Hermetic environment — must run BEFORE importing anything from ``app``.
+# ---------------------------------------------------------------------------
+os.environ.setdefault("LOCOPILOT_SKIP_PATH_CHECKS", "1")
+os.environ.setdefault("ENVIRONMENT", "development")
+os.environ.setdefault("LOG_DIR", "/tmp/locopilot_test_logs")
+Path(os.environ["LOG_DIR"]).mkdir(parents=True, exist_ok=True)
+
+# Ensure the repo root is on sys.path when pytest is invoked from any cwd.
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+import numpy as np  # noqa: E402
+import pytest  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
-# Settings / logger fixtures
+# Settings & logger fixtures
 # ---------------------------------------------------------------------------
 
 @pytest.fixture
 def minimal_settings():
-    """Return a ``Settings`` instance with defaults and no .env file.
+    """A default-constructed Settings instance, safe for unit tests.
 
-    Tests should prefer these pristine defaults over ``get_settings()`` so
-    that env-var leakage between tests is impossible.  The ``_env_file=None``
-    argument is the documented pydantic-settings escape hatch for disabling
-    .env auto-loading.
+    Detectors call ``getattr(settings, '...', default)`` for every
+    threshold, so the project's normal Settings object is sufficient
+    — no extra stubbing required.
     """
-    from app.utils.config import Settings
-    return Settings(_env_file=None)
+    from app.utils.config import get_settings
+    return get_settings()
 
 
 @pytest.fixture
 def stub_logger():
-    """Return a plain ``logging.Logger`` for passing to detector constructors.
+    """A no-op logger that swallows every record.
 
-    Kept minimal — no handlers attached.  Detectors only use ``.debug`` /
-    ``.warning`` which are safe no-ops with the default logging config.
+    Used by detectors that take ``logger=`` in their constructor. The
+    project logger writes to disk; we don't want test runs creating
+    rotation-handle files in /tmp on every invocation.
     """
-    return logging.getLogger("locopilot.tests")
+    logger = logging.getLogger("locopilot.tests.stub")
+    logger.setLevel(logging.CRITICAL + 1)  # silence everything
+    logger.handlers.clear()
+    logger.addHandler(logging.NullHandler())
+    logger.propagate = False
+    return logger
 
 
 # ---------------------------------------------------------------------------
-# Fake pose landmark helpers
+# Synthetic pose builder
 # ---------------------------------------------------------------------------
 
-@dataclass
-class FakeLandmark:
-    """Minimal stand-in for a YOLO/MediaPipe keypoint.
-
-    Exposes ``x``, ``y``, ``z``, ``visibility`` — the four attributes that
-    every detector in ``app/core/detectors`` accesses.  Coordinates are
-    normalized to the ``[0.0, 1.0]`` frame-relative range, matching the YOLO
-    pose adapter contract.
-    """
-
-    x: float
-    y: float
-    z: float = 0.0
-    visibility: float = 0.95
+# YOLO 17-keypoint COCO layout — index → name (canonical):
+#   0 nose, 1 left_eye, 2 right_eye, 3 left_ear, 4 right_ear,
+#   5 left_shoulder, 6 right_shoulder, 7 left_elbow, 8 right_elbow,
+#   9 left_wrist, 10 right_wrist, 11 left_hip, 12 right_hip,
+#   13 left_knee, 14 right_knee, 15 left_ankle, 16 right_ankle
 
 
-class FakePoseLandmarks:
-    """Object-style wrapper exposing ``.landmark`` like ``YoloPoseLandmarks``.
+class _Landmark:
+    __slots__ = ("x", "y", "z", "visibility")
 
-    Accepts an indexed list of 17 :class:`FakeLandmark` instances in the
-    standard COCO keypoint order used by the YOLO pose adapter.  Detectors
-    call ``landmarks.landmark[i]`` or pass the wrapper to the shared
-    ``get_keypoint`` utility, both of which work against this shape.
-    """
+    def __init__(self, x: float, y: float, z: float = 0.0, visibility: float = 1.0):
+        self.x = x
+        self.y = y
+        self.z = z
+        self.visibility = visibility
 
-    def __init__(self, landmark_list: List[FakeLandmark]):
-        self.landmark = landmark_list
+    def __repr__(self) -> str:  # for test diagnostics
+        return f"_Landmark(x={self.x:.3f}, y={self.y:.3f}, vis={self.visibility:.2f})"
+
+
+class _PoseLandmarks:
+    """MediaPipe-compatible container — exposes ``.landmark[i]``."""
+
+    __slots__ = ("landmark",)
+
+    def __init__(self, landmarks: List[_Landmark]):
+        self.landmark = landmarks
 
 
 def build_alert_pose(
-    *,
     nose_y: float = 0.30,
     shoulder_y: float = 0.45,
-    hip_y: float = 0.75,
-    wrist_y: float = 0.60,
-    visibility: float = 0.95,
-) -> FakePoseLandmarks:
-    """Construct a well-formed upright-pilot pose used as the baseline.
+    visibility: float = 1.0,
+) -> _PoseLandmarks:
+    """Synthetic 17-keypoint alert pose for sleep / gesture / writing tests.
 
-    Landmark layout (COCO17):
-        0 nose, 1/2 eyes, 3/4 ears, 5/6 shoulders, 7/8 elbows,
-        9/10 wrists, 11/12 hips, 13/14 knees, 15/16 ankles.
-
-    All keypoints get identical visibility.  X coordinates are chosen so
-    left/right pairs straddle the frame midline — detectors that compute
-    shoulder midpoints, torso height, etc. then work normally.
+    All x coordinates fall in [0, 1] (normalized YOLO/MediaPipe space).
+    Defaults place the nose above the shoulder line so detectors see an
+    "upright, alert" pose. Tests override ``nose_y`` and ``shoulder_y``
+    to drive specific head-tilt / posture math (see e.g.
+    ``tests/detectors/test_sleep_detector.py`` for the wrap-around
+    regression test).
     """
-    eye_y = nose_y + 0.005
-    ear_y = nose_y + 0.01
-    elbow_y = (shoulder_y + wrist_y) / 2.0
-    knee_y = (hip_y + 0.92) / 2.0
-    return FakePoseLandmarks([
-        FakeLandmark(x=0.50, y=nose_y, visibility=visibility),       # 0 nose
-        FakeLandmark(x=0.47, y=eye_y, visibility=visibility),        # 1 left_eye
-        FakeLandmark(x=0.53, y=eye_y, visibility=visibility),        # 2 right_eye
-        FakeLandmark(x=0.45, y=ear_y, visibility=visibility),        # 3 left_ear
-        FakeLandmark(x=0.55, y=ear_y, visibility=visibility),        # 4 right_ear
-        FakeLandmark(x=0.40, y=shoulder_y, visibility=visibility),   # 5 left_shoulder
-        FakeLandmark(x=0.60, y=shoulder_y, visibility=visibility),   # 6 right_shoulder
-        FakeLandmark(x=0.38, y=elbow_y, visibility=visibility),      # 7 left_elbow
-        FakeLandmark(x=0.62, y=elbow_y, visibility=visibility),      # 8 right_elbow
-        FakeLandmark(x=0.36, y=wrist_y, visibility=visibility),      # 9 left_wrist
-        FakeLandmark(x=0.64, y=wrist_y, visibility=visibility),      # 10 right_wrist
-        FakeLandmark(x=0.44, y=hip_y, visibility=visibility),        # 11 left_hip
-        FakeLandmark(x=0.56, y=hip_y, visibility=visibility),        # 12 right_hip
-        FakeLandmark(x=0.43, y=knee_y, visibility=visibility),       # 13 left_knee
-        FakeLandmark(x=0.57, y=knee_y, visibility=visibility),       # 14 right_knee
-        FakeLandmark(x=0.42, y=0.95, visibility=visibility),         # 15 left_ankle
-        FakeLandmark(x=0.58, y=0.95, visibility=visibility),         # 16 right_ankle
+    # Heuristic geometry — close to a real overhead-cabin alert pose,
+    # without being so symmetric that detectors short-circuit on
+    # degenerate landmarks.
+    layout = [
+        (0.50, nose_y),         # 0  nose
+        (0.48, nose_y - 0.02),  # 1  left_eye
+        (0.52, nose_y - 0.02),  # 2  right_eye
+        (0.46, nose_y - 0.01),  # 3  left_ear
+        (0.54, nose_y - 0.01),  # 4  right_ear
+        (0.42, shoulder_y),     # 5  left_shoulder
+        (0.58, shoulder_y),     # 6  right_shoulder
+        (0.40, shoulder_y + 0.10),  # 7  left_elbow
+        (0.60, shoulder_y + 0.10),  # 8  right_elbow
+        (0.42, shoulder_y + 0.18),  # 9  left_wrist
+        (0.58, shoulder_y + 0.18),  # 10 right_wrist
+        (0.45, shoulder_y + 0.25),  # 11 left_hip
+        (0.55, shoulder_y + 0.25),  # 12 right_hip
+        (0.45, shoulder_y + 0.40),  # 13 left_knee
+        (0.55, shoulder_y + 0.40),  # 14 right_knee
+        (0.45, shoulder_y + 0.55),  # 15 left_ankle
+        (0.55, shoulder_y + 0.55),  # 16 right_ankle
+    ]
+    return _PoseLandmarks([
+        _Landmark(x=x, y=y, visibility=visibility) for (x, y) in layout
     ])
 
 
+# ---------------------------------------------------------------------------
+# stub_yolo_keypoints — factory fixture for post-reset frame tests
+# ---------------------------------------------------------------------------
+
 @pytest.fixture
 def stub_yolo_keypoints():
-    """Return a factory that builds alert/drowsy/head-up poses on demand.
+    """Factory that returns a synthetic 17-keypoint pose for detector tests.
 
-    Example usage::
+    Same underlying geometry as ``build_alert_pose`` but exposed as a
+    callable so tests can vary the head/shoulder positions per call:
 
-        def test_something(stub_yolo_keypoints):
-            alert = stub_yolo_keypoints()               # baseline
-            drowsy = stub_yolo_keypoints(nose_y=0.55)   # head dropped
-
-    Every invocation returns a fresh :class:`FakePoseLandmarks` instance so
-    detectors cannot accidentally mutate shared state.
+        pose_a = stub_yolo_keypoints()           # default alert pose
+        pose_b = stub_yolo_keypoints(nose_y=0.55)  # head-down pose
     """
-    def _make(**overrides) -> FakePoseLandmarks:
-        return build_alert_pose(**overrides)
+    def _build(nose_y: float = 0.30, shoulder_y: float = 0.45,
+               visibility: float = 1.0) -> _PoseLandmarks:
+        return build_alert_pose(
+            nose_y=nose_y, shoulder_y=shoulder_y, visibility=visibility
+        )
+    return _build
 
-    return _make
 
-
-@pytest.fixture
-def alert_pose() -> FakePoseLandmarks:
-    """Return a single pristine alert-posture pose — convenience wrapper."""
-    return build_alert_pose()
+# Re-export under the names the tests import.
+__all__ = ["minimal_settings", "stub_logger", "build_alert_pose",
+           "stub_yolo_keypoints"]

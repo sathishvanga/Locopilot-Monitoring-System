@@ -59,6 +59,30 @@ class TrainMotionDetector:
         self.person_bbox_history = max(0, int(
             getattr(settings, 'train_motion_person_bbox_history', 2)
         ))
+        # Cold-start guard: at the start of each chunk (per-worker fresh
+        # detector) the temporal smoother has no history, so a single noisy
+        # frame (person moving while seated, bag set down, door opening at a
+        # station) can produce vib_mean spikes >> vibration_high and commit
+        # RAW=RUNNING. While the detector has fewer than cold_start_frames
+        # vibration samples in its buffer, demote RAW=RUNNING to STOPPED
+        # unless the side-window optical flow is also elevated — a genuinely
+        # running train shows scenery streaming, a station-stop with cab
+        # activity does not.
+        self.cold_start_require_window_flow = bool(
+            getattr(settings, 'train_motion_cold_start_require_window_flow', True)
+        )
+        # Independent of vibration_median_window so the median smoother can
+        # stay narrow (its default is 1, no-op) while the cold-start guard
+        # still covers the first ~10s of a chunk at sample_fps=0.5.
+        self.cold_start_frames = max(0, int(
+            getattr(settings, 'train_motion_cold_start_frames', 5)
+        ))
+        # Counter of how many frames this detector has seen vibration data for
+        # (i.e. after prev_gray was set on frame 0). Used by the cold-start
+        # guard instead of len(_vib_history) so the guard works even when
+        # vibration_median_window=1 (no-op smoother) collapses the buffer to
+        # a single entry after frame 1.
+        self._frames_seen = 0
         self.stability_block_size = 16
         self.confidence_threshold = 0.6
 
@@ -103,6 +127,40 @@ class TrainMotionDetector:
         # Rolling buffer of recent trimmed vibration_mean values, used to compute
         # a median-smoothed vibration_mean before scoring.
         self._vib_history: deque = deque(maxlen=self.vibration_median_window)
+        # Counter of frames seen since the last reset. Used by callers that
+        # want to confirm "first frame after reset" semantics.
+        self._frames_seen: int = 0
+        # Last unsmoothed (per-frame) raw state. Exposed so consumers that
+        # need a faster-reacting STOPPED signal than the 5-sample majority
+        # vote (e.g. solo_person / no_person_detected vetoes) can read it
+        # without rerunning the pipeline. Production analysis on the 4000-Ada
+        # cabin install showed the smoother adds ~4s of additional STOPPED
+        # lag on top of the ~4s vibration ring-down, totalling ~9s — exactly
+        # the window solo_person needs to fire spuriously during a station
+        # deceleration. The raw state cuts that to ~5s, below the trigger.
+        self.last_raw_state: Optional[str] = None
+
+    def reset(self) -> None:
+        """Clear all per-video state.
+
+        MUST be called between videos so the first frame of video B is not
+        diffed against the last frame of video A (which would otherwise emit
+        a phantom RUNNING signal at the start of every subsequent video).
+
+        This clears every stateful attribute populated by the per-frame
+        helpers (``compute_vibration``, ``compute_window_flow``,
+        ``compute_stability``, ``get_smoothed_state`` and the
+        person-bbox-history accumulator). Configuration / threshold
+        attributes are left untouched.
+        """
+        self.prev_gray = None
+        self.prev_gray_window = None
+        self.state_history.clear()
+        self._prev_block_vars = None
+        self.person_bbox_history_buf.clear()
+        self._vib_history.clear()
+        self._frames_seen = 0
+        self.last_raw_state = None
 
     def create_interior_mask(
         self, frame_shape: Tuple[int, int], person_bboxes: List
@@ -391,9 +449,22 @@ class TrainMotionDetector:
         )
 
         # Decision
+        cold_start = (
+            self.cold_start_require_window_flow
+            and self._frames_seen < self.cold_start_frames
+        )
+        self._frames_seen += 1
         if combined_score >= self.running_threshold:
-            raw_state = "RUNNING"
-            confidence = min(1.0, combined_score / self.running_threshold)
+            if cold_start and win["window_score"] <= 0.0:
+                # Vibration alone during cold start can be person motion, not
+                # the train. Demote to STOPPED so the gate stays effective at
+                # chunk boundaries; the smoother will recover RUNNING quickly
+                # once real scenery flow appears.
+                raw_state = "STOPPED"
+                confidence = 0.5
+            else:
+                raw_state = "RUNNING"
+                confidence = min(1.0, combined_score / self.running_threshold)
         else:
             raw_state = "STOPPED"
             confidence = min(1.0, (self.running_threshold - combined_score) / self.running_threshold)
@@ -402,6 +473,11 @@ class TrainMotionDetector:
         if self.prev_gray is None and vib["vibration_mean"] == 0:
             raw_state = "UNKNOWN"
             confidence = 0.0
+
+        # Expose unsmoothed state for fast-reaction consumers (solo_person /
+        # no_person_detected vetoes). MUST be set BEFORE get_smoothed_state so
+        # if smoothing throws the attribute still reflects this frame.
+        self.last_raw_state = raw_state
 
         # Temporal smoothing
         smoothed_state, smoothed_conf = self.get_smoothed_state(raw_state, confidence)
@@ -424,9 +500,12 @@ class TrainMotionDetector:
             "raw_confidence": confidence,
             "smoothed_state": smoothed_state,
             "smoothed_confidence": smoothed_conf,
+            "cold_start": cold_start,
         }
 
         if self.person_bbox_history > 0:
             self.person_bbox_history_buf.append(list(person_bboxes))
+
+        self._frames_seen += 1
 
         return smoothed_state, smoothed_conf, diagnostics

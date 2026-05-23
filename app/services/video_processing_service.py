@@ -16,12 +16,6 @@ from .activity_detection_service import ActivityDetectionService
 from .external_api_service import get_external_api_service
 from .vlm_verification_service import get_vlm_verification_service
 
-# Train motion rule engine imports
-try:
-    from .trip_data_service import get_trip_data_service
-except ImportError:
-    get_trip_data_service = None
-
 
 logger = get_logger(__name__)
 settings = get_settings()
@@ -208,72 +202,7 @@ class VideoProcessingService:
 
             logger.info(f"[OK] Video file validated: {video_path}")
 
-            # Fetch trip schedule for motion-based rule engine (if train info provided)
-            trip_schedule = None
-            logger.info(
-                f"[MOTION-RULES] Configuration check - "
-                f"train_number: {train_number}, trip_date: {trip_date}, "
-                f"rules_enabled: {settings.train_motion_rules_enabled}"
-            )
-
-            if train_number and trip_date and settings.train_motion_rules_enabled:
-                logger.info(
-                    f"[MOTION-RULES] [OK] All conditions met - fetching trip schedule "
-                    f"for train {train_number} on {trip_date}"
-                )
-                try:
-                    if get_trip_data_service is not None:
-                        trip_data_service = get_trip_data_service()
-                        # Use delay-enhanced schedule fetch if etrain integration is enabled
-                        if hasattr(trip_data_service, 'fetch_trip_schedule_with_delays') and settings.etrain_enabled:
-                            logger.info(f"[MOTION-RULES] Calling TripDataService.fetch_trip_schedule_with_delays() (etrain.info enabled)")
-                            trip_schedule = trip_data_service.fetch_trip_schedule_with_delays(
-                                train_number=train_number,
-                                journey_date=trip_date,
-                                division=division
-                            )
-                        else:
-                            logger.info(f"[MOTION-RULES] Calling TripDataService.fetch_trip_schedule()")
-                            trip_schedule = trip_data_service.fetch_trip_schedule(
-                                train_number=train_number,
-                                journey_date=trip_date,
-                                division=division
-                            )
-                        if trip_schedule:
-                            logger.info(
-                                f"[MOTION-RULES] 🚂 Successfully fetched trip schedule for train {train_number}: "
-                                f"{len(trip_schedule.halts)} station halts"
-                            )
-                            # Log first few halts for debugging (include delay info if available)
-                            for i, halt in enumerate(trip_schedule.halts[:3]):
-                                delay_info = f", Delay: {halt.delay_minutes}min" if hasattr(halt, 'delay_minutes') and halt.delay_minutes > 0 else ""
-                                logger.info(
-                                    f"[MOTION-RULES]   Halt {i+1}: {halt.station_name} ({halt.station_code}) - "
-                                    f"Arr: {halt.scheduled_arrival}, Dep: {halt.scheduled_departure}{delay_info}"
-                                )
-                            if len(trip_schedule.halts) > 3:
-                                logger.info(f"[MOTION-RULES]   ... and {len(trip_schedule.halts) - 3} more halts")
-                        else:
-                            logger.warning(
-                                f"[MOTION-RULES] [WARN] Could not fetch trip schedule for train {train_number} "
-                                f"on {trip_date} - no_person_detected will be suppressed (cannot distinguish station halts)"
-                            )
-                    else:
-                        logger.warning("[MOTION-RULES] [WARN] Trip data service not available - motion rules disabled")
-                except Exception as e:
-                    logger.warning(f"[MOTION-RULES] [WARN] Error fetching trip schedule: {e} - no_person_detected will be suppressed")
-            else:
-                missing = []
-                if not train_number:
-                    missing.append("train_number")
-                if not trip_date:
-                    missing.append("trip_date")
-                if not settings.train_motion_rules_enabled:
-                    missing.append("rules_enabled=False")
-                logger.info(
-                    f"[MOTION-RULES] [SKIP] Skipping motion-based rules - missing: {', '.join(missing)}. "
-                    f"All detected activities will be treated as violations."
-                )
+            # Trip-schedule motion rules removed (2026-05-09); see docs/specs/architecture-cleanup/
 
             # Create run directory ONCE at the top level
             run_dir = self.activity_repository.create_run_directory(base_name=f"run")
@@ -309,7 +238,6 @@ class VideoProcessingService:
                         sample_fps=settings.sample_fps,
                         run_dir=run_dir,  # Pass existing run_dir to avoid nested directories
                         save_clips=save_clips,
-                        trip_schedule=trip_schedule,  # Pass trip schedule for motion rules
                         video_start_time=video_start_time,  # Pass video start time for motion rules
                         camera_angle=camera_angle
                     )
@@ -324,7 +252,6 @@ class VideoProcessingService:
                         output_dir=settings.output_dir,
                         sample_fps=settings.sample_fps,
                         run_dir=run_dir,  # Pass existing run_dir
-                        trip_schedule=trip_schedule,  # Pass trip schedule for motion rules
                         video_start_time=video_start_time,  # Pass video start time for motion rules
                         camera_angle=camera_angle
                     )
@@ -345,16 +272,43 @@ class VideoProcessingService:
                 if vlm_service.is_enabled():
                     try:
                         pre_count = len(activities)
-                        activities, vlm_stats = vlm_service.verify_activities(activities)
-                        import json as _json
-                        with open(activities_json_path, 'w', encoding='utf-8') as _f:
-                            _json.dump(activities, _f, indent=2, ensure_ascii=False, default=str)
+                        activities, vlm_stats = vlm_service.verify_activities(
+                            activities, camera_angle=camera_angle,
+                        )
+                        # Re-save activities through the repository so the
+                        # post-VLM rewrite uses the same atomic + locked +
+                        # numpy-aware writer as Pipeline-1 (Task 0002).
+                        self.activity_repository.save_activities(
+                            activities=activities,
+                            run_dir=run_dir,
+                        )
                         logger.info(
                             f"[VLM] verified pre={pre_count} post={len(activities)} "
                             f"dropped={vlm_stats['dropped']} uncertain={vlm_stats['uncertain']} "
-                            f"skipped_unavail={vlm_stats['skipped_unavailable']} "
-                            f"shadow={vlm_service.settings.vlm_shadow_mode}"
+                            f"skipped_unavail={vlm_stats['skipped_unavailable']}"
                         )
+                        # Post-VLM concurrent grouping (Phase A of post-verifier
+                        # merge refactor — gated by CONCURRENT_GROUPING_AFTER_VLM).
+                        # When enabled, detection-side grouping is skipped (Task
+                        # 0002) and grouping runs here on the post-VLM survivor
+                        # set so the verifier sees raw single-type activities.
+                        if get_settings().concurrent_grouping_after_vlm:
+                            from .concurrent_activity_grouping_service import (
+                                get_concurrent_grouping_service,
+                            )
+                            pre_group_count = len(activities)
+                            activities = get_concurrent_grouping_service().group_concurrent_activities(
+                                activities, run_dir
+                            )
+                            self.activity_repository.save_activities(
+                                activities=activities,
+                                run_dir=run_dir,
+                            )
+                            logger.info(
+                                f"[GROUP] post-VLM grouping: {pre_group_count} -> "
+                                f"{len(activities)} activities (run after verifier "
+                                f"under CONCURRENT_GROUPING_AFTER_VLM=1)"
+                            )
                     except Exception as vlm_exc:
                         logger.warning(
                             f"[VLM] verifier failed unexpectedly, passing through "
@@ -373,23 +327,43 @@ class VideoProcessingService:
                     # Extract run_id from run_dir for constructing job_id
                     run_id = os.path.basename(run_dir)
                     
-                    # Filter out STOPPED activities (only post RUNNING and UNCERTAIN)
-                    postable_activities = [
-                        a for a in activities
-                        if a.get('motionState', 'UNKNOWN') != 'STOPPED'
-                    ]
+                    # Filter out STOPPED activities (only post RUNNING and UNCERTAIN),
+                    # EXCEPT safety-critical types whitelisted via
+                    # ``MOTION_FILTER_BYPASS_TYPES`` (defaults to cell_phone +
+                    # microsleep). Per spec, those violations matter regardless
+                    # of train motion state and must reach the external API.
+                    _bypass_raw = getattr(settings, 'motion_filter_bypass_types', '') or ''
+                    _bypass = {
+                        s.strip().lower().replace(' ', '_')
+                        for s in _bypass_raw.split(',') if s.strip()
+                    }
+                    def _postable(a):
+                        if (a.get('motionState') or 'UNKNOWN').upper() != 'STOPPED':
+                            return True
+                        ot = (a.get('objectType') or '').strip().lower().replace(' ', '_')
+                        return ot in _bypass
+                    postable_activities = [a for a in activities if _postable(a)]
+                    _bypassed = sum(
+                        1 for a in activities
+                        if (a.get('motionState') or '').upper() == 'STOPPED' and _postable(a)
+                    )
+                    _excluded = len(activities) - len(postable_activities)
                     logger.info(
                         f"[API] Motion filter: {len(postable_activities)}/{len(activities)} "
-                        f"activities to post (excluded {len(activities) - len(postable_activities)} STOPPED)"
+                        f"activities to post (excluded {_excluded} STOPPED, "
+                        f"bypassed {_bypassed} safety-critical STOPPED)"
                     )
 
-                    # Post to external API
+                    # Post to external API. ``run_dir`` is forwarded so a
+                    # retries-exhausted payload lands in
+                    # ``<run_dir>/_failed_external_api/`` per spec 0004.
                     api_result = external_api_service.post_cvvr_results(
                         trip_id=trip_id,
                         events=postable_activities,
                         job_id=run_id,
                         host_url=settings.host_url,
-                        division=division
+                        division=division,
+                        run_dir=run_dir,
                     )
                     
                     if api_result.get("success"):

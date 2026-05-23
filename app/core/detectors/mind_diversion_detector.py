@@ -13,34 +13,12 @@ The detector accounts for camera placement (behind-right of crew) where
 negative yaw indicates looking toward the track (legitimate work).
 """
 import logging
-import os
 from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 
 from app.core.utils.pose_utils import get_keypoint as _canonical_get_keypoint
-
-
-def _setup_module_logger(name: str, level: int = logging.DEBUG) -> logging.Logger:
-    """Setup a file-only logger for the module."""
-    log_dir = os.getenv("LOG_DIR", "logs")
-    os.makedirs(log_dir, exist_ok=True)
-
-    logger = logging.getLogger(name)
-    logger.setLevel(level)
-
-    if not logger.handlers:
-        file_handler = logging.FileHandler(os.path.join(log_dir, "LocopilotMonitoring.log"))
-        file_handler.setLevel(logging.DEBUG)
-
-        formatter = logging.Formatter(
-            '%(asctime)s,%(msecs)03d [N/A] [N/A] [N/A] [N/A] [%(levelname)s] [%(name)s] [N/A N/A] %(message)s',
-            datefmt='%Y-%m-%d %H:%M:%S'
-        )
-        file_handler.setFormatter(formatter)
-        logger.addHandler(file_handler)
-
-    return logger
+from app.utils.logger import get_logger
 
 
 class MindDiversionDetector:
@@ -75,7 +53,7 @@ class MindDiversionDetector:
                      If None, default values are used.
             logger: Optional logger instance. If None, creates a file-only logger.
         """
-        self.logger = logger or _setup_module_logger('MindDiversionDetector')
+        self.logger = logger or get_logger('MindDiversionDetector')
         self.settings = settings
 
         # Yaw/Pitch thresholds (from settings or defaults)
@@ -638,3 +616,30 @@ class MindDiversionDetector:
             self._recent_person_activities.pop(person_idx, None)
         else:
             self._recent_person_activities.clear()
+
+    def reset(self) -> None:
+        """Clear all per-video state.
+
+        Wipes ``_recent_person_activities``, the only state-holding dict on
+        this detector, so the next video begins with no carryover writing
+        grace-period entries from the previous video.
+        """
+        self._recent_person_activities.clear()
+
+    def on_suppressed(self, person_idx: Optional[int], activity_name: str) -> None:
+        """Hook invoked when an activity for a person is suppressed by the
+        train-stopped gate.
+
+        For ``mind_diversion`` we drop the per-person writing-grace cache
+        entry so a writing event suppressed during the STOPPED window does
+        not extend its grace period into the resume window.
+
+        Args:
+            person_idx: Per-person index whose state should be cleared.
+            activity_name: Suppressed activity key (only acts on
+                ``'mind_diversion'`` and ``'writing'``).
+        """
+        if person_idx is None:
+            return
+        if activity_name in ('mind_diversion', 'writing'):
+            self._recent_person_activities.pop(person_idx, None)

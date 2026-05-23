@@ -31,6 +31,7 @@ _REGISTRY_TO_ENUM_NAME: Dict[str, str] = {
     'no_person_detected': 'NO_PERSON_DETECTED',
     'alp_not_standing': 'ALP_NOT_STANDING_PRE_ARRIVAL',
     'eating_drinking': 'EATING_DRINKING',
+    'solo_person': 'SOLO_PERSON',
 }
 
 

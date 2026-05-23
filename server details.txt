@@ -50,3 +50,4 @@ Useful Commands (GPU Server):
 
 
 /Users/satishvanga/Documents/poc/all_activities.mp4
+CH2_* = ALP side (2), CH3_* = LP side (1)

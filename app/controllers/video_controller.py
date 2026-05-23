@@ -75,6 +75,7 @@ from ..services.vlm_verification_service import get_vlm_verification_service
 from ..services.gpu_resource_manager import get_gpu_resource_manager
 from ..utils.logger import get_logger
 from ..utils.config import get_settings
+from ..utils.url_safety import validate_external_url, URLNotAllowed
 
 
 logger = get_logger(__name__)
@@ -98,6 +99,37 @@ _RUN_ID_RE = re.compile(r"^run_\d{8}_\d{6}$")
 # dependency still allows the request through in that case (rollout mode);
 # we just don't want to spam the log on every request.
 _media_api_key_missing_warned = False
+
+
+async def enforce_max_upload_size(request: Request) -> None:
+    """Task 0008: reject oversize uploads BEFORE any Form/File body parsing.
+
+    FastAPI resolves ``File(...)`` / ``Form(...)`` parameters by reading the
+    multipart body — by the time the handler body runs, bytes have already
+    been buffered. This dependency runs FIRST (declared on the route via
+    ``dependencies=[...]``), reads only the ``Content-Length`` header, and
+    short-circuits with HTTP 413 when it advertises a body larger than
+    ``settings.max_upload_size``. Lying / chunked clients that omit the
+    header still get caught by the post-stream ``validate_video_file`` check
+    in the handler.
+    """
+    raw = request.headers.get("content-length")
+    if not raw:
+        return
+    try:
+        advertised_len = int(raw)
+    except (TypeError, ValueError):
+        return
+    if advertised_len > settings.max_upload_size:
+        max_size_mb = settings.max_upload_size / (1024 * 1024)
+        logger.warning(
+            f"[SECURITY] Upload rejected: Content-Length {advertised_len} "
+            f"exceeds max_upload_size {settings.max_upload_size}"
+        )
+        raise HTTPException(
+            status_code=413,
+            detail=f"upload exceeds max size {max_size_mb:.0f} MB",
+        )
 
 
 async def require_api_key(
@@ -129,6 +161,679 @@ async def require_api_key(
 
     if x_api_key is None or not hmac.compare_digest(str(x_api_key), str(expected)):
         raise HTTPException(status_code=401, detail="invalid_or_missing_api_key")
+
+
+async def _run_video_pipeline(
+    *,
+    request: Optional[Request],
+    background_tasks: Optional[BackgroundTasks],
+    video: Optional[UploadFile],
+    videoUrl: Optional[str],
+    tripId: Optional[str],
+    division: Optional[str],
+    lpCrewName: Optional[str],
+    lpCrewId: Optional[str],
+    alpCrewName: Optional[str],
+    alpCrewId: Optional[str],
+    trainNumber: Optional[str],
+    tripDate: Optional[str],
+    videoStartTime: Optional[str],
+    useMockDetection: Optional[bool],
+    useMultiprocessing: Optional[bool],
+    saveClips: Optional[bool],
+    cameraAngle: Optional[int],
+    upload_to_external_api: bool,
+    subFolderName: Optional[str] = None,
+    authToken: Optional[str] = None,
+):
+    """Shared video-processing pipeline (Task 0003).
+
+    Owns input validation, GPU admission, executor dispatch, and response
+    build for both ``/api/video/analyze`` (``upload_to_external_api=False``)
+    and ``/api/v1/video/process-and-upload`` (``upload_to_external_api=True``).
+
+    The two endpoints diverge in:
+      * Input source: analyze accepts JSON-or-form + optional MinIO
+        ``videoUrl``; process-and-upload is form-only with a chunked
+        upload-size guard and a required file.
+      * Post-processing: analyze transforms activities into the violations
+        response; process-and-upload runs VLM verification, S3-uploads
+        evidence clips, rewrites activities.json with S3 URLs, and POSTs to
+        the external CVVR API.
+
+    These differences are gated on ``upload_to_external_api``. The route
+    handlers stay as thin wrappers so FastAPI's path/decorator/response_model
+    contract is preserved.
+    """
+    video_path = None
+    video_filename = None
+    # Initialize admission-gate flags *outside* the try so the finally
+    # block can rely on them existing in every code path (including
+    # exceptions raised before ``try_enqueue`` runs).
+    admitted = False
+    slot_acquired = False
+    gpu_resource_manager = get_gpu_resource_manager()
+
+    try:
+        # --- Input parsing --------------------------------------------------
+        if upload_to_external_api:
+            logger.info(f"[OK] Process and upload request for trip: {tripId}, train: {trainNumber}, date: {tripDate}")
+        else:
+            # If JSON body was sent on the analyze route, override form fields.
+            if "application/json" in request.headers.get("content-type", ""):
+                try:
+                    body = await request.json()
+                    tripId = body.get("tripId", tripId)
+                    videoUrl = body.get("videoUrl", videoUrl)
+                    division = body.get("division", division)
+                    lpCrewName = body.get("lpCrewName", lpCrewName)
+                    lpCrewId = body.get("lpCrewId", lpCrewId)
+                    alpCrewName = body.get("alpCrewName", alpCrewName)
+                    alpCrewId = body.get("alpCrewId", alpCrewId)
+                    trainNumber = body.get("trainNumber", trainNumber)
+                    tripDate = body.get("tripDate", tripDate)
+                    videoStartTime = body.get("videoStartTime", videoStartTime)
+                    useMockDetection = body.get("useMockDetection", useMockDetection)
+                    useMultiprocessing = body.get("useMultiprocessing", useMultiprocessing)
+                    saveClips = body.get("saveClips", saveClips)
+                    cameraAngle = body.get("cameraAngle", cameraAngle)
+                    logger.info(f"[OK] Received JSON request body for trip: {tripId}")
+                except Exception as e:
+                    logger.warning(f"[WARN] Failed to parse JSON body: {e}")
+                    raise HTTPException(status_code=400, detail=f"Invalid JSON body: {str(e)}")
+
+        # --- Sanitize tripId + crew identifiers (shared) --------------------
+        tripId = sanitize_identifier(tripId, "tripId", required=True)
+        if lpCrewId:
+            lpCrewId = sanitize_identifier(lpCrewId, "lpCrewId", required=False, max_length=64)
+        if alpCrewId:
+            alpCrewId = sanitize_identifier(alpCrewId, "alpCrewId", required=False, max_length=64)
+
+        # --- Video presence + extension checks ------------------------------
+        has_url = False
+        if not upload_to_external_api:
+            logger.info(f"[OK] Received video processing request for trip: {tripId}, division: {division}, train: {trainNumber}, date: {tripDate}")
+
+            has_video = video is not None and video.filename
+            has_url = (
+                videoUrl is not None
+                and videoUrl.strip()
+                and videoUrl.strip().lower().startswith(('http://', 'https://'))
+            )
+
+            if not has_video and not has_url:
+                logger.warning(f"[WARN] Invalid request: Neither video file nor videoUrl provided")
+                raise HTTPException(
+                    status_code=400,
+                    detail="Either 'video' file or 'videoUrl' must be provided"
+                )
+
+            # Task 0008: SSRF defense. Reject any videoUrl that targets a host
+            # outside the configured allowlist or resolves to a private/loopback
+            # range (cloud metadata IPs, RFC1918, localhost). Done BEFORE the
+            # admission gate so we don't burn a queue slot on a hostile URL.
+            if has_url:
+                try:
+                    validate_external_url(
+                        videoUrl.strip(),
+                        settings.minio_allowed_hosts,
+                        allow_private_ips=settings.minio_allow_private_ips,
+                    )
+                except URLNotAllowed as e:
+                    logger.warning(
+                        f"[SECURITY] videoUrl rejected for trip {tripId}: {e}"
+                    )
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"videoUrl rejected: {e}",
+                    )
+        else:
+            # process-and-upload: file is required, no videoUrl branch.
+            filename = video.filename if video is not None else None
+            if not filename:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Invalid video file - filename is empty"
+                )
+            file_ext = os.path.splitext(filename)[1].lower()
+            if file_ext not in settings.allowed_video_extensions:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Invalid file extension {file_ext}. Allowed: {', '.join(settings.allowed_video_extensions)}"
+                )
+
+        # --- Concurrency admission gate (shared) ----------------------------
+        # GPU is saturated at 1 concurrent video on this hardware; additional
+        # jobs must queue, not run in parallel (else they fight for VRAM/CUDA
+        # and total throughput stays flat while risking OOM). Admit up to
+        # ``max_concurrent_videos + job_queue_max_size`` requests — active
+        # plus waiting. Reject past that point with 503 so clients retry
+        # later instead of piling up unbounded work.
+        admitted, queue_position = gpu_resource_manager.try_enqueue()
+        if not admitted:
+            tag = "(process-and-upload) " if upload_to_external_api else ""
+            logger.warning(
+                f"[QUEUE FULL] Rejecting trip {tripId} {tag}"
+                f"system full (max {settings.max_concurrent_videos} active + "
+                f"{settings.job_queue_max_size} queued)"
+            )
+            raise HTTPException(
+                status_code=503,
+                detail=(
+                    "Server busy: maximum concurrent + queued jobs reached. "
+                    "Retry after the current jobs finish."
+                ),
+            )
+        if queue_position > settings.max_concurrent_videos:
+            tag = " (process-and-upload)" if upload_to_external_api else ""
+            logger.info(
+                f"[QUEUE] Trip {tripId} admitted{tag}; waiting at position {queue_position}"
+            )
+        # ``slot_acquired`` flips to True inside ``acquire_gpu_slot()`` once
+        # we are past the pending → active migration; the finally block
+        # uses it to decide whether the pending counter still needs rollback.
+
+        # --- Build crew_members dict (shared) -------------------------------
+        crew_members: Dict[str, Dict[str, str]] = {}
+        if lpCrewName and lpCrewId and lpCrewName.strip() and lpCrewId.strip():
+            crew_members['LP'] = {'name': lpCrewName.strip(), 'id': lpCrewId.strip(), 'role': 'LP'}
+            if not upload_to_external_api:
+                logger.info(f"LP Crew: {lpCrewName} ({lpCrewId})")
+        if alpCrewName and alpCrewId and alpCrewName.strip() and alpCrewId.strip():
+            crew_members['ALP'] = {'name': alpCrewName.strip(), 'id': alpCrewId.strip(), 'role': 'ALP'}
+            if not upload_to_external_api:
+                logger.info(f"ALP Crew: {alpCrewName} ({alpCrewId})")
+
+        # --- Acquire video bytes / save to disk -----------------------------
+        if not upload_to_external_api and has_url:
+            # Download video from MinIO
+            logger.info(f"[OK] Downloading video from MinIO: {videoUrl}")
+            try:
+                minio_svc = get_minio_service()
+                if not minio_svc.check_object_exists(videoUrl):
+                    logger.error(f"[ERROR] Video not found in MinIO: {videoUrl}")
+                    raise HTTPException(
+                        status_code=404,
+                        detail=f"Video not found in MinIO storage. Please verify the URL: {videoUrl}"
+                    )
+                video_path = minio_svc.download_video(videoUrl, tripId)
+                video_filename = os.path.basename(video_path)
+                file_size = os.path.getsize(video_path)
+                logger.info(f"[OK] Downloaded video: {video_filename} ({file_size / (1024*1024):.2f} MB)")
+            except Exception as e:
+                logger.error(f"[ERROR] Failed to download video from MinIO: {e}")
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Failed to download video from MinIO: {str(e)}"
+                )
+        elif not upload_to_external_api:
+            # Read video content from upload (one-shot read)
+            video_content = await video.read()
+            file_size = len(video_content)
+            video_filename = video.filename
+            logger.info(f"[OK] Uploaded video: {video_filename} ({file_size / (1024*1024):.2f} MB)")
+
+            is_valid, error_message = video_processing_service.validate_video_file(
+                filename=video_filename, file_size=file_size,
+            )
+            if not is_valid:
+                logger.warning(f"[WARN] Video validation failed: {error_message}")
+                raise HTTPException(status_code=400, detail=error_message)
+
+            video_path = await video_processing_service.save_uploaded_video(
+                file_content=video_content, filename=video_filename, trip_id=tripId,
+            )
+        else:
+            # process-and-upload: chunked-read with mid-stream size cap.
+            #
+            # Task 0008 / reviewer H3 — chunked-encoding bypass.
+            # ``enforce_max_upload_size`` only inspects ``Content-Length``, so a
+            # client sending ``Transfer-Encoding: chunked`` (or omitting the
+            # length header entirely) skips the pre-stream cap. To close that
+            # gap we must read the body in chunks and abort once we cross
+            # ``max_upload_size`` rather than calling ``.read()`` unconditionally
+            # (which would buffer an unbounded body before we noticed).
+            max_size = settings.max_upload_size
+            chunk_size = 1024 * 1024  # 1 MiB
+            chunks: list[bytes] = []
+            file_size = 0
+            video_filename = filename
+            while True:
+                chunk = await video.read(chunk_size)
+                if not chunk:
+                    break
+                file_size += len(chunk)
+                if max_size and file_size > max_size:
+                    max_size_mb = max_size / (1024 * 1024)
+                    logger.warning(
+                        f"[SECURITY] Upload rejected mid-stream for trip {tripId}: "
+                        f"body exceeded max_upload_size {max_size} (chunked / "
+                        f"missing Content-Length bypass)"
+                    )
+                    raise HTTPException(
+                        status_code=413,
+                        detail=f"upload exceeds max size {max_size_mb:.0f} MB",
+                    )
+                chunks.append(chunk)
+            video_bytes = b"".join(chunks)
+
+            # Task 0008: full size + extension validation post-stream.
+            is_valid, error_message = video_processing_service.validate_video_file(
+                filename=filename, file_size=file_size,
+            )
+            if not is_valid:
+                # ``validate_video_file`` returns the same "File too large"
+                # message for any size > max_upload_size; map that to 413 to
+                # match the pre-stream check, while extension / empty-file
+                # failures stay 400.
+                status_code = 413 if file_size > settings.max_upload_size else 400
+                logger.warning(f"[WARN] Video validation failed for trip {tripId}: {error_message}")
+                raise HTTPException(status_code=status_code, detail=error_message)
+
+            video_path = await video_processing_service.save_uploaded_video(
+                video_bytes, filename, tripId,
+            )
+            logger.info(f"[OK] Video saved: {video_path}")
+
+        # --- Determine multiprocessing setting + log ------------------------
+        # Priority: request parameter > config setting > default (False)
+        use_mp = useMultiprocessing if useMultiprocessing is not None else settings.enable_multiprocessing
+        if upload_to_external_api:
+            logger.info(
+                f"[START] Starting video processing for trip: {tripId} - "
+                f"Multiprocessing: {use_mp}, Mock: {useMockDetection}, SaveClips: {saveClips}"
+            )
+        else:
+            logger.info(
+                f"[CONFIG] Processing configuration - "
+                f"Multiprocessing: {use_mp}, SaveClips: {saveClips}, Mock: {useMockDetection}"
+            )
+
+        # cameraAngle: only used by analyze; process-and-upload path uses
+        # the default LP role inside process_video.
+        camera_angle = cameraAngle if cameraAngle in (1, 2) else 1
+
+        # --- Heavy work: GPU slot + executor dispatch (shared shape) --------
+        loop = asyncio.get_running_loop()
+        # Hold a GPU slot for the duration of heavy processing. Waiters block
+        # here (respecting the semaphore) until a slot frees. ``_pending_count``
+        # flips to ``_active_count`` inside the context manager.
+        async with gpu_resource_manager.acquire_gpu_slot():
+            gpu_resource_manager.mark_enqueued_started()
+            slot_acquired = True
+
+            if upload_to_external_api:
+                # Controller runs its own VLM hook + posts to external API
+                # after S3 uploads, so skip both inside the service.
+                process_kwargs = dict(
+                    crew_members=crew_members,
+                    crew_name=list(crew_members.values())[0]['name'] if crew_members else "Unknown",
+                    crew_id=list(crew_members.values())[0]['id'] if crew_members else "N/A",
+                    skip_external_api=True,
+                    skip_vlm_verification=True,
+                )
+            else:
+                process_kwargs = dict(
+                    crew_members=crew_members,
+                    crew_name=lpCrewName if lpCrewName else "Unknown",
+                    crew_id=lpCrewId if lpCrewId else "N/A",
+                    division=division,
+                    camera_angle=camera_angle,
+                )
+
+            result = await loop.run_in_executor(
+                None,
+                functools.partial(
+                    video_processing_service.process_video,
+                    video_path=video_path,
+                    trip_id=tripId,
+                    crew_role=1,  # LP role
+                    use_mock_detection=useMockDetection,
+                    use_multiprocessing=use_mp,
+                    save_clips=saveClips,
+                    train_number=trainNumber,
+                    trip_date=tripDate,
+                    video_start_time=videoStartTime,
+                    **process_kwargs,
+                ),
+            )
+
+        # ------------------------------------------------------------------
+        # Post-processing: differs between the two endpoints.
+        # ------------------------------------------------------------------
+        if not upload_to_external_api:
+            # /api/video/analyze: schedule cleanup, transform activities to
+            # the response-format violations, return VideoProcessingResponse.
+            if background_tasks is not None:
+                background_tasks.add_task(
+                    video_processing_service.cleanup_uploaded_video, video_path,
+                )
+
+            external_api_service = get_external_api_service()
+            activities = result.get('activities', [])
+            run_directory = result.get('runDirectory', '')
+            run_id = os.path.basename(run_directory) if run_directory else ''
+            host_url = settings.host_url
+
+            # Ensure activityClip has full path for URL building.
+            clips_dir = os.path.join(run_directory, 'clips') if run_directory else ''
+            for activity in activities:
+                clip_name = activity.get('activityClip', '')
+                if clip_name and not os.path.isabs(clip_name) and clips_dir:
+                    activity['activityClip'] = os.path.join(clips_dir, clip_name)
+
+            violations = external_api_service._transform_events_to_violations(
+                trip_id=tripId, events=activities, job_id=run_id, host_url=host_url,
+            )
+
+            result['violations'] = violations
+            result.pop('activities', None)
+
+            logger.info(
+                f"[OK] Successfully processed video for trip {tripId} - "
+                f"Violations: {result.get('activitiesCount', 0)}, "
+                f"Time: {result.get('processingTime', 0):.2f}s"
+            )
+
+            return VideoProcessingResponse(**result)
+
+        # /api/v1/video/process-and-upload: VLM verification, S3 upload of
+        # evidence clips, activities.json rewrite, external API POST.
+        logger.info(
+            f"[OK] Processing complete - "
+            f"Run: {result.get('runId', result.get('run_id', 'N/A'))}, "
+            f"Activities: {result.get('activitiesCount', result.get('activities_count', 0))}, "
+            f"Clips: {len(result.get('clipFiles', result.get('clip_files', [])))}"
+        )
+
+        # Step 2b: VLM verification (Pipeline-2 false-positive filter).
+        # Runs while local clip/image paths in activities.json are still valid
+        # (before S3 swap below). Attaches vlm_review to each verified activity
+        # and drops FALSE_POSITIVE @ confidence>=VLM_DROP_THRESHOLD before S3
+        # upload + API push. Fail-open: VLM endpoint down → activities pass
+        # through unchanged.
+        vlm_service = get_vlm_verification_service()
+        if vlm_service.is_enabled():
+            run_dir_for_vlm = (
+                result.get('runDirectory') or result.get('run_dir') or result.get('runDir') or ''
+            )
+            activities_json_for_vlm = result.get('activitiesJsonPath') or (
+                os.path.join(run_dir_for_vlm, 'activities.json') if run_dir_for_vlm else ''
+            )
+            if activities_json_for_vlm and os.path.exists(activities_json_for_vlm):
+                try:
+                    import json as _json
+                    with open(activities_json_for_vlm, 'r', encoding='utf-8') as f:
+                        pre_vlm_activities = _json.load(f)
+                    pre_count = len(pre_vlm_activities)
+                    post_vlm_activities, vlm_stats = vlm_service.verify_activities(
+                        pre_vlm_activities, camera_angle=camera_angle,
+                    )
+                    # Route the rewrite through ActivityRepository so it uses
+                    # the canonical atomic + locked + numpy-aware writer.
+                    from app.repositories.activity_repository import (
+                        ActivityRepository as _ActivityRepository,
+                    )
+                    _ActivityRepository().save_activities(
+                        post_vlm_activities, os.path.dirname(activities_json_for_vlm),
+                    )
+                    # Post-VLM concurrent grouping (Phase A of post-verifier
+                    # merge refactor — gated by CONCURRENT_GROUPING_AFTER_VLM).
+                    # When enabled, detection-side grouping is skipped (Task
+                    # 0002) and grouping runs here on the post-VLM survivor
+                    # set. After grouping, activityClip points at the merged
+                    # minute-NNN clip rather than per-source clips, so the
+                    # clip_files filter below operates on the post-grouped set.
+                    if get_settings().concurrent_grouping_after_vlm:
+                        from app.services.concurrent_activity_grouping_service import (
+                            get_concurrent_grouping_service,
+                        )
+                        pre_group_count = len(post_vlm_activities)
+                        post_vlm_activities = get_concurrent_grouping_service().group_concurrent_activities(
+                            post_vlm_activities, run_dir_for_vlm,
+                        )
+                        _ActivityRepository().save_activities(
+                            post_vlm_activities, os.path.dirname(activities_json_for_vlm),
+                        )
+                        logger.info(
+                            f"[GROUP] post-VLM grouping: {pre_group_count} -> "
+                            f"{len(post_vlm_activities)} activities (run after "
+                            f"verifier under CONCURRENT_GROUPING_AFTER_VLM=1)"
+                        )
+                    if 'activities' in result:
+                        result['activities'] = post_vlm_activities
+                    if 'activities_count' in result:
+                        result['activities_count'] = len(post_vlm_activities)
+                    if 'activitiesCount' in result:
+                        result['activitiesCount'] = len(post_vlm_activities)
+                    # Filter clip_files to drop those tied to dropped activities,
+                    # avoiding wasted S3 uploads in enforcement mode. Under
+                    # CONCURRENT_GROUPING_AFTER_VLM=1, post_vlm_activities now
+                    # references merged minute-NNN clips; the set-membership
+                    # filter still works — it just operates on the post-grouped
+                    # paths.
+                    if vlm_stats['dropped'] > 0 or get_settings().concurrent_grouping_after_vlm:
+                        kept_clip_paths = {
+                            a.get('activityClip') for a in post_vlm_activities
+                            if a.get('activityClip')
+                        }
+                        for clip_key in ('clip_files', 'clipFiles'):
+                            if clip_key in result and isinstance(result[clip_key], list):
+                                result[clip_key] = [
+                                    p for p in result[clip_key] if p in kept_clip_paths
+                                ]
+                    logger.info(
+                        f"[VLM] verified pre={pre_count} post={len(post_vlm_activities)} "
+                        f"dropped={vlm_stats['dropped']} uncertain={vlm_stats['uncertain']} "
+                        f"skipped_unavail={vlm_stats['skipped_unavailable']}"
+                    )
+                except Exception as vlm_exc:  # pragma: no cover — fail-open at top level
+                    logger.error(
+                        f"[VLM] verifier failed unexpectedly, passing through "
+                        f"Pipeline-1 results: {vlm_exc}",
+                        exc_info=True,
+                    )
+            else:
+                logger.warning(
+                    f"[VLM] enabled but activities.json missing at "
+                    f"{activities_json_for_vlm!r}; skipping verifier"
+                )
+
+        # Step 3: Upload evidence files (clips + images) to S3
+        # Note: Original video is NOT uploaded - only evidence clips are uploaded.
+        clip_files = result.get('clip_files', [])
+        evidence_urls = []
+        upload_errors = []
+        s3_file_mapping: Dict[str, str] = {}
+
+        if clip_files:
+            logger.info(f"[UPLOAD] Uploading {len(clip_files)} evidence files (clips + images) to S3")
+            all_files_to_upload = []
+            for clip_file in clip_files:
+                all_files_to_upload.append(clip_file)
+                image_file = clip_file.replace('_clip.mp4', '_activity.jpg')
+                if os.path.exists(image_file):
+                    all_files_to_upload.append(image_file)
+            logger.info(f"[UPLOAD] Total files to upload: {len(all_files_to_upload)} (clips + images)")
+
+            clips_success, file_urls, clip_errors = s3_upload_service.upload_multiple_files(
+                file_paths=all_files_to_upload, subfolder=subFolderName, auth_token=authToken,
+            )
+
+            for local_path, s3_url in zip(all_files_to_upload, file_urls):
+                s3_file_mapping[local_path] = s3_url
+
+            evidence_urls = [url for url in file_urls if '_clip.mp4' in url]
+            upload_errors = clip_errors
+
+            if not clips_success:
+                logger.warning(f"Some files failed to upload: {clip_errors}")
+
+            logger.info(f"[OK] Uploaded {len(file_urls)}/{len(all_files_to_upload)} files to S3")
+
+        # Step 3 (continued): Update activities.json with S3 URLs.
+        logger.info("[UPDATE] Updating activities.json with S3 URLs")
+        run_dir = result.get('run_dir', result.get('runDir', ''))
+        run_id = result.get('run_id', result.get('runId', ''))
+        activities_count = result.get('activities_count', result.get('activitiesCount', 0))
+        activities = result.get('activities', [])
+
+        if run_dir and os.path.exists(run_dir):
+            activities_json_path = os.path.join(run_dir, 'activities.json')
+            if os.path.exists(activities_json_path):
+                import json
+                try:
+                    with open(activities_json_path, 'r', encoding='utf-8') as f:
+                        activities = json.load(f)
+                    logger.info(f"[OK] Loaded {len(activities)} activities from {activities_json_path}")
+
+                    updated_activities = []
+                    for activity in activities:
+                        if 'activityClip' in activity and activity['activityClip']:
+                            local_clip_path = activity['activityClip']
+                            if local_clip_path in s3_file_mapping:
+                                activity['activityClip'] = s3_file_mapping[local_clip_path]
+                                logger.debug(f"Updated clip URL: {local_clip_path} -> {s3_file_mapping[local_clip_path]}")
+                        if 'activityImage' in activity and activity['activityImage']:
+                            local_image_path = activity['activityImage']
+                            if local_image_path in s3_file_mapping:
+                                activity['activityImage'] = s3_file_mapping[local_image_path]
+                                logger.debug(f"Updated image URL: {local_image_path} -> {s3_file_mapping[local_image_path]}")
+                        updated_activities.append(activity)
+
+                    # Save through the canonical atomic + locked writer.
+                    from app.repositories.activity_repository import (
+                        ActivityRepository as _ActivityRepository,
+                    )
+                    _ActivityRepository().save_activities(
+                        updated_activities, os.path.dirname(activities_json_path),
+                    )
+                    activities = updated_activities
+                    logger.info(f"[OK] Updated {len(updated_activities)} activities with S3 URLs")
+                except Exception as e:
+                    logger.error(f"[ERROR] Failed to update activities.json: {e}", exc_info=True)
+            else:
+                logger.warning(f"[WARN] Activities JSON file not found: {activities_json_path}")
+        else:
+            logger.warning(f"[WARN] Run directory not found: {run_dir}")
+
+        # Step 4: Post results to external API with evidence clip S3 URLs.
+        external_api_result = None
+        logger.info(f"[CHECK] Checking conditions for external API call: activities={len(activities) if activities else 0}")
+
+        if activities:
+            try:
+                logger.info(f"[API] Posting results to external API with S3 URLs for trip: {tripId}")
+                external_api_service = get_external_api_service()
+
+                # Filter out STOPPED activities (only post RUNNING and UNCERTAIN),
+                # EXCEPT safety-critical types whitelisted via
+                # ``MOTION_FILTER_BYPASS_TYPES`` (defaults to cell_phone +
+                # microsleep). Per spec, those violations matter regardless of
+                # train motion state and must reach the external API.
+                _bypass_raw = getattr(settings, 'motion_filter_bypass_types', '') or ''
+                _bypass = {
+                    s.strip().lower().replace(' ', '_')
+                    for s in _bypass_raw.split(',') if s.strip()
+                }
+                def _postable(a):
+                    if (a.get('motionState') or 'UNKNOWN').upper() != 'STOPPED':
+                        return True
+                    ot = (a.get('objectType') or '').strip().lower().replace(' ', '_')
+                    return ot in _bypass
+                postable_activities = [a for a in activities if _postable(a)]
+                _bypassed = sum(
+                    1 for a in activities
+                    if (a.get('motionState') or '').upper() == 'STOPPED' and _postable(a)
+                )
+                _excluded = len(activities) - len(postable_activities)
+                logger.info(
+                    f"[API] Motion filter: {len(postable_activities)}/{len(activities)} "
+                    f"activities to post (excluded {_excluded} STOPPED, "
+                    f"bypassed {_bypassed} safety-critical STOPPED)"
+                )
+
+                external_api_result = external_api_service.post_cvvr_results(
+                    trip_id=tripId,
+                    events=postable_activities,
+                    job_id=run_id,
+                    video_s3_url=None,  # No original video URL - we don't upload original video
+                    division=division,
+                    run_dir=run_dir,  # Per-run DLQ scoping per spec 0004
+                )
+
+                if external_api_result.get("success"):
+                    logger.info(
+                        f"[OK] [external_api] Posted {external_api_result.get('violations_count', 0)} "
+                        f"violations with S3 URLs to external API for trip {tripId}"
+                    )
+                else:
+                    logger.warning(
+                        f"[WARN] [external_api] Failed to post to external API: {external_api_result.get('message')}"
+                    )
+            except Exception as e:
+                logger.error(f"[ERROR] [external_api] Exception while posting to external API: {e}", exc_info=True)
+                external_api_result = {
+                    "success": False,
+                    "message": f"Exception: {str(e)}",
+                    "posted": False
+                }
+
+        response_data = {
+            "status": "success",
+            "message": "Video processed and uploaded successfully",
+            "data": {
+                "tripId": tripId,
+                "run_id": run_id,
+                "run_dir": run_dir,
+                "activities_count": activities_count,
+                "processing_time_seconds": result.get('processingTime', result.get('processing_time', 0)),
+                "video_url": None,  # Original video is not uploaded to S3
+                "evidence_clips": evidence_urls,
+                "clips_uploaded": len(evidence_urls),
+                "total_clips": len(clip_files),
+                "upload_errors": upload_errors if upload_errors else None,
+                "activities": activities,
+                "external_api_result": external_api_result,
+            }
+        }
+
+        logger.info(f"[OK] Complete workflow finished for trip: {tripId}")
+        return JSONResponse(content=response_data)
+
+    except HTTPException:
+        raise
+
+    except Exception:
+        # task 0010: keep the full traceback + tripId on the server side via
+        # logger.exception, but NEVER let str(e) escape into the response
+        # body — exception messages frequently embed file paths, query
+        # fragments, and (worst case) request-derived secrets.
+        if upload_to_external_api:
+            video_basename = os.path.basename(video_path) if video_path else None
+            logger.exception(
+                "Process-and-upload failed for trip=%s video=%s",
+                tripId, video_basename,
+            )
+        else:
+            logger.exception("[ERROR] Video processing failed for trip %s", tripId)
+            # Cleanup on error (analyze path only — process-and-upload doesn't
+            # cleanup either, to match pre-refactor behaviour).
+            if video_path:
+                video_processing_service.cleanup_uploaded_video(video_path)
+        raise HTTPException(status_code=500, detail="internal_error")
+
+    finally:
+        # Release the pending counter if we admitted the request but never
+        # made it inside ``acquire_gpu_slot()`` (e.g. MinIO download failed
+        # or the upload save raised). When the slot was acquired,
+        # ``mark_enqueued_started()`` already decremented pending — nothing
+        # to roll back.
+        if admitted and not slot_acquired:
+            try:
+                gpu_resource_manager.release_enqueue_on_error()
+            except Exception as _release_err:
+                logger.warning(f"Failed to release pending slot on error: {_release_err}")
 
 
 @router.post(
@@ -194,270 +899,26 @@ async def process_video(
     Accepts both multipart/form-data and application/json content types.
     Use JSON when sending only a videoUrl (no file upload needed).
     """
-    video_path = None
-    video_filename = None
-
-    try:
-        # If JSON body was sent, override form fields with JSON values
-        content_type = request.headers.get("content-type", "")
-        if "application/json" in content_type:
-            try:
-                body = await request.json()
-                tripId = body.get("tripId", tripId)
-                videoUrl = body.get("videoUrl", videoUrl)
-                division = body.get("division", division)
-                lpCrewName = body.get("lpCrewName", lpCrewName)
-                lpCrewId = body.get("lpCrewId", lpCrewId)
-                alpCrewName = body.get("alpCrewName", alpCrewName)
-                alpCrewId = body.get("alpCrewId", alpCrewId)
-                trainNumber = body.get("trainNumber", trainNumber)
-                tripDate = body.get("tripDate", tripDate)
-                videoStartTime = body.get("videoStartTime", videoStartTime)
-                useMockDetection = body.get("useMockDetection", useMockDetection)
-                useMultiprocessing = body.get("useMultiprocessing", useMultiprocessing)
-                saveClips = body.get("saveClips", saveClips)
-                cameraAngle = body.get("cameraAngle", cameraAngle)
-                logger.info(f"[OK] Received JSON request body for trip: {tripId}")
-            except Exception as e:
-                logger.warning(f"[WARN] Failed to parse JSON body: {e}")
-                raise HTTPException(status_code=400, detail=f"Invalid JSON body: {str(e)}")
-
-        # Validate and sanitize tripId
-        tripId = sanitize_identifier(tripId, "tripId", required=True)
-
-        # Sanitize optional crew identifiers (if provided)
-        if lpCrewId:
-            lpCrewId = sanitize_identifier(lpCrewId, "lpCrewId", required=False, max_length=64)
-        if alpCrewId:
-            alpCrewId = sanitize_identifier(alpCrewId, "alpCrewId", required=False, max_length=64)
-
-        logger.info(f"[OK] Received video processing request for trip: {tripId}, division: {division}, train: {trainNumber}, date: {tripDate}")
-
-        # Validate that either video OR videoUrl is provided (not both, not neither)
-        has_video = video is not None and video.filename
-        # Validate URL: must be non-empty and look like a valid URL (starts with http/https)
-        has_url = (
-            videoUrl is not None
-            and videoUrl.strip()
-            and videoUrl.strip().lower().startswith(('http://', 'https://'))
-        )
-
-        if not has_video and not has_url:
-            logger.warning(f"[WARN] Invalid request: Neither video file nor videoUrl provided")
-            raise HTTPException(
-                status_code=400,
-                detail="Either 'video' file or 'videoUrl' must be provided"
-            )
-
-        # --- Concurrency admission gate -----------------------------------
-        # GPU is saturated at 1 concurrent video on this hardware; additional
-        # jobs must queue, not run in parallel (else they fight for VRAM/CUDA
-        # and total throughput stays flat while risking OOM). Admit up to
-        # ``max_concurrent_videos + job_queue_max_size`` requests — active
-        # plus waiting. Reject past that point with 503 so clients retry
-        # later instead of piling up unbounded work.
-        gpu_resource_manager = get_gpu_resource_manager()
-        admitted, queue_position = gpu_resource_manager.try_enqueue()
-        if not admitted:
-            logger.warning(
-                f"[QUEUE FULL] Rejecting trip {tripId}: "
-                f"system full (max {settings.max_concurrent_videos} active + "
-                f"{settings.job_queue_max_size} queued)"
-            )
-            raise HTTPException(
-                status_code=503,
-                detail=(
-                    "Server busy: maximum concurrent + queued jobs reached. "
-                    "Retry after the current jobs finish."
-                ),
-            )
-        if queue_position > 0:
-            logger.info(
-                f"[QUEUE] Trip {tripId} admitted; waiting at position {queue_position}"
-            )
-        # Track whether the slot was acquired so the finally block knows
-        # whether the pending counter still needs rollback (admitted but
-        # never entered acquire_gpu_slot due to an earlier error).
-        slot_acquired = False
-        # -----------------------------------------------------------------
-
-        # Build crew members dictionary
-        crew_members = {}
-
-        # Add LP crew if provided
-        if lpCrewName and lpCrewId:
-            if lpCrewName.strip() and lpCrewId.strip():
-                crew_members['LP'] = {
-                    'name': lpCrewName.strip(),
-                    'id': lpCrewId.strip(),
-                    'role': 'LP'
-                }
-                logger.info(f"LP Crew: {lpCrewName} ({lpCrewId})")
-
-        # Add ALP crew if provided
-        if alpCrewName and alpCrewId:
-            if alpCrewName.strip() and alpCrewId.strip():
-                crew_members['ALP'] = {
-                    'name': alpCrewName.strip(),
-                    'id': alpCrewId.strip(),
-                    'role': 'ALP'
-                }
-                logger.info(f"ALP Crew: {alpCrewName} ({alpCrewId})")
-
-        # Get video either from upload or MinIO URL
-        if has_url:
-            # Download video from MinIO
-            logger.info(f"[OK] Downloading video from MinIO: {videoUrl}")
-            try:
-                minio_svc = get_minio_service()
-                # Check if the object exists before attempting download
-                if not minio_svc.check_object_exists(videoUrl):
-                    logger.error(f"[ERROR] Video not found in MinIO: {videoUrl}")
-                    raise HTTPException(
-                        status_code=404,
-                        detail=f"Video not found in MinIO storage. Please verify the URL: {videoUrl}"
-                    )
-                video_path = minio_svc.download_video(videoUrl, tripId)
-                video_filename = os.path.basename(video_path)
-                file_size = os.path.getsize(video_path)
-                logger.info(f"[OK] Downloaded video: {video_filename} ({file_size / (1024*1024):.2f} MB)")
-            except Exception as e:
-                logger.error(f"[ERROR] Failed to download video from MinIO: {e}")
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"Failed to download video from MinIO: {str(e)}"
-                )
-        else:
-            # Read video content from upload
-            video_content = await video.read()
-            file_size = len(video_content)
-            video_filename = video.filename
-
-            logger.info(f"[OK] Uploaded video: {video_filename} ({file_size / (1024*1024):.2f} MB)")
-
-            # Validate video file
-            is_valid, error_message = video_processing_service.validate_video_file(
-                filename=video_filename,
-                file_size=file_size
-            )
-
-            if not is_valid:
-                logger.warning(f"[WARN] Video validation failed: {error_message}")
-                raise HTTPException(status_code=400, detail=error_message)
-
-            # Save uploaded video
-            video_path = await video_processing_service.save_uploaded_video(
-                file_content=video_content,
-                filename=video_filename,
-                trip_id=tripId
-            )
-        
-        # Determine multiprocessing setting
-        # Priority: request parameter > config setting > default (False)
-        use_mp = useMultiprocessing if useMultiprocessing is not None else settings.enable_multiprocessing
-        
-        logger.info(
-            f"[CONFIG] Processing configuration - "
-            f"Multiprocessing: {use_mp}, SaveClips: {saveClips}, Mock: {useMockDetection}"
-        )
-        
-        # Process video in a thread executor to avoid blocking the async event loop
-        # Validate cameraAngle (must be 1 or 2)
-        camera_angle = cameraAngle if cameraAngle in (1, 2) else 1
-
-        loop = asyncio.get_running_loop()
-        # Hold a GPU slot for the duration of heavy processing. Waiters block
-        # here (respecting the semaphore) until a slot frees. ``_pending_count``
-        # flips to ``_active_count`` inside the context manager.
-        async with gpu_resource_manager.acquire_gpu_slot():
-            gpu_resource_manager.mark_enqueued_started()
-            slot_acquired = True
-            result = await loop.run_in_executor(
-                None,
-                functools.partial(
-                    video_processing_service.process_video,
-                    video_path=video_path,
-                    trip_id=tripId,
-                    crew_members=crew_members,  # Pass crew members dict
-                    crew_name=lpCrewName if lpCrewName else "Unknown",  # Default if not provided
-                    crew_id=lpCrewId if lpCrewId else "N/A",  # Default if not provided
-                    crew_role=1,  # LP role
-                    use_mock_detection=useMockDetection,
-                    use_multiprocessing=use_mp,
-                    save_clips=saveClips,
-                    division=division,
-                    train_number=trainNumber,
-                    trip_date=tripDate,
-                    video_start_time=videoStartTime,
-                    camera_angle=camera_angle,
-                )
-            )
-
-        # Schedule cleanup of uploaded video after processing (production mode)
-        background_tasks.add_task(
-            video_processing_service.cleanup_uploaded_video,
-            video_path
-        )
-
-        # Transform activities to violations format (same format as external API POST)
-        external_api_service = get_external_api_service()
-        activities = result.get('activities', [])
-        run_directory = result.get('runDirectory', '')
-        run_id = os.path.basename(run_directory) if run_directory else ''
-        host_url = settings.host_url
-
-        # Ensure activityClip has full path for URL building
-        clips_dir = os.path.join(run_directory, 'clips') if run_directory else ''
-        for activity in activities:
-            clip_name = activity.get('activityClip', '')
-            if clip_name and not os.path.isabs(clip_name) and clips_dir:
-                activity['activityClip'] = os.path.join(clips_dir, clip_name)
-
-        violations = external_api_service._transform_events_to_violations(
-            trip_id=tripId,
-            events=activities,
-            job_id=run_id,
-            host_url=host_url
-        )
-
-        # Replace activities with violations in result
-        result['violations'] = violations
-        result.pop('activities', None)
-
-        logger.info(
-            f"[OK] Successfully processed video for trip {tripId} - "
-            f"Violations: {result.get('activitiesCount', 0)}, "
-            f"Time: {result.get('processingTime', 0):.2f}s"
-        )
-
-        return VideoProcessingResponse(**result)
-        
-    except HTTPException:
-        # Re-raise HTTP exceptions
-        raise
-        
-    except Exception as e:
-        logger.error(f"[ERROR] Video processing failed for trip {tripId}: {e}", exc_info=True)
-        
-        # Cleanup on error
-        if video_path:
-            video_processing_service.cleanup_uploaded_video(video_path)
-        
-        # Return error response
-        raise HTTPException(
-            status_code=500,
-            detail=f"Failed to process video: {str(e)}"
-        )
-    finally:
-        # Release the pending counter if we admitted the request but never
-        # made it inside ``acquire_gpu_slot()`` (e.g. MinIO download failed
-        # or the upload save raised). If the slot was acquired, the semaphore
-        # context manager already accounted for the active count.
-        if 'admitted' in locals() and admitted and not locals().get('slot_acquired', False):
-            try:
-                gpu_resource_manager.release_enqueue_on_error()
-            except Exception as _release_err:
-                logger.warning(f"Failed to release pending slot on error: {_release_err}")
+    return await _run_video_pipeline(
+        request=request,
+        background_tasks=background_tasks,
+        video=video,
+        videoUrl=videoUrl,
+        tripId=tripId,
+        division=division,
+        lpCrewName=lpCrewName,
+        lpCrewId=lpCrewId,
+        alpCrewName=alpCrewName,
+        alpCrewId=alpCrewId,
+        trainNumber=trainNumber,
+        tripDate=tripDate,
+        videoStartTime=videoStartTime,
+        useMockDetection=useMockDetection,
+        useMultiprocessing=useMultiprocessing,
+        saveClips=saveClips,
+        cameraAngle=cameraAngle,
+        upload_to_external_api=False,
+    )
 
 
 @router.get(
@@ -482,26 +943,24 @@ async def get_processing_status(run_id: str):
         import os
 
         run_dir = os.path.join(settings.output_dir, run_id)
-        
+
         if not os.path.exists(run_dir):
             raise HTTPException(
                 status_code=404,
                 detail=f"Run not found: {run_id}"
             )
-        
+
         status = video_processing_service.get_processing_status(run_dir)
-        
+
         return JSONResponse(content=status)
-        
+
     except HTTPException:
         raise
-        
-    except Exception as e:
-        logger.error(f"Failed to get status: {e}", exc_info=True)
-        raise HTTPException(
-            status_code=500,
-            detail=f"Failed to get status: {str(e)}"
-        )
+
+    except Exception:
+        # task 0010: log full traceback for diagnosis; opaque body for the caller.
+        logger.exception("Failed to get status for run_id=%s", run_id)
+        raise HTTPException(status_code=500, detail="internal_error")
 
 
 @router.get(
@@ -512,11 +971,11 @@ async def get_processing_status(run_id: str):
 async def health_check():
     """
     Health check endpoint
-    
+
     Returns service status and configuration.
     """
     import multiprocessing as mp
-    
+
     return {
         "status": "healthy",
         "service": "video-processing",
@@ -627,13 +1086,16 @@ async def get_run_media(run_id: str, filename: str, request: Request) -> Respons
     3. Upload evidence clips to S3 (original video is NOT uploaded)
     4. Post results to external API with evidence clip S3 URLs
     5. Return S3 URLs and processing results
-    
+
     Note: Original video is processed locally only and not uploaded to S3.
     Only evidence clips are uploaded to S3.
-    """
+    """,
+    # Task 0008: enforce ``Content-Length <= max_upload_size`` BEFORE
+    # FastAPI parses the multipart body. ``Depends`` resolves the size
+    # check before the ``File(...)``/``Form(...)`` body reads kick in.
+    dependencies=[Depends(enforce_max_upload_size)],
 )
 async def process_and_upload_video(
-    background_tasks: BackgroundTasks,
     video_file: UploadFile = File(..., description="Video file to process"),
     tripId: str = Form(..., description="Unique trip identifier"),
     division: Optional[str] = Form(default=None, description="Division identifier"),
@@ -652,379 +1114,32 @@ async def process_and_upload_video(
 ):
     """
     Process video and upload everything to S3
-    
+
     This is the preferred endpoint for the desktop application as it handles
     the complete workflow in one request.
     """
-    video_path = None
-
-    try:
-        logger.info(f"[OK] Process and upload request for trip: {tripId}, train: {trainNumber}, date: {tripDate}")
-
-        # Validate and sanitize tripId
-        tripId = sanitize_identifier(tripId, "tripId", required=True)
-
-        # Sanitize optional crew identifiers (if provided)
-        if lpCrewId:
-            lpCrewId = sanitize_identifier(lpCrewId, "lpCrewId", required=False, max_length=64)
-        if alpCrewId:
-            alpCrewId = sanitize_identifier(alpCrewId, "alpCrewId", required=False, max_length=64)
-        
-        # Build crew members dictionary
-        crew_members = {}
-        
-        if lpCrewName and lpCrewId:
-            if lpCrewName.strip() and lpCrewId.strip():
-                crew_members['LP'] = {
-                    'name': lpCrewName.strip(),
-                    'id': lpCrewId.strip(),
-                    'role': 'LP'
-                }
-        
-        if alpCrewName and alpCrewId:
-            if alpCrewName.strip() and alpCrewId.strip():
-                crew_members['ALP'] = {
-                    'name': alpCrewName.strip(),
-                    'id': alpCrewId.strip(),
-                    'role': 'ALP'
-                }
-        
-        # Validate video file
-        filename = video_file.filename
-        if not filename:
-            raise HTTPException(
-                status_code=400,
-                detail="Invalid video file - filename is empty"
-            )
-        
-        # Check file extension
-        file_ext = os.path.splitext(filename)[1].lower()
-        if file_ext not in settings.allowed_video_extensions:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Invalid file extension {file_ext}. Allowed: {', '.join(settings.allowed_video_extensions)}"
-            )
-        
-        # Save uploaded video
-        video_path = await video_processing_service.save_uploaded_video(
-            video_file.file.read(),
-            filename,
-            tripId
-        )
-        
-        logger.info(f"[OK] Video saved: {video_path}")
-        
-        # Determine multiprocessing setting
-        use_mp = useMultiprocessing if useMultiprocessing is not None else settings.enable_multiprocessing
-
-        # Process video (activity detection) in a thread executor to avoid blocking the async event loop
-        logger.info(
-            f"[START] Starting video processing for trip: {tripId} - "
-            f"Multiprocessing: {use_mp}, Mock: {useMockDetection}, SaveClips: {saveClips}"
-        )
-
-        loop = asyncio.get_running_loop()
-        result = await loop.run_in_executor(
-            None,
-            functools.partial(
-                video_processing_service.process_video,
-                video_path=video_path,
-                trip_id=tripId,
-                crew_members=crew_members,
-                crew_name=list(crew_members.values())[0]['name'] if crew_members else "Unknown",
-                crew_id=list(crew_members.values())[0]['id'] if crew_members else "N/A",
-                crew_role=1,  # LP role
-                use_mock_detection=useMockDetection,
-                use_multiprocessing=use_mp,
-                save_clips=saveClips,
-                skip_external_api=True,  # Skip here - will call after S3 uploads with correct S3 URLs
-                skip_vlm_verification=True,  # Controller runs its own VLM hook below (also filters clip_files)
-                train_number=trainNumber,
-                trip_date=tripDate,
-                video_start_time=videoStartTime,
-            )
-        )
-        
-        logger.info(
-            f"[OK] Processing complete - "
-            f"Run: {result.get('runId', result.get('run_id', 'N/A'))}, "
-            f"Activities: {result.get('activitiesCount', result.get('activities_count', 0))}, "
-            f"Clips: {len(result.get('clipFiles', result.get('clip_files', [])))}"
-        )
-
-        # Step 2b: VLM verification (Pipeline-2 false-positive filter).
-        # Runs while local clip/image paths in activities.json are still valid
-        # (before S3 swap below). In shadow mode (default) attaches vlm_review
-        # to each activity but never drops; in enforcement mode FALSE_POSITIVE
-        # @ confidence>=threshold are filtered out before S3 upload + API push.
-        # Fail-open: VLM endpoint down → activities pass through unchanged.
-        vlm_service = get_vlm_verification_service()
-        if vlm_service.is_enabled():
-            # process_video returns the key as `runDirectory` (camelCase) and
-            # also surfaces `activitiesJsonPath` directly. Support all common
-            # variants so a future rename of one key doesn't silently disable
-            # the verifier (and matches the existing lookup at the S3 step).
-            run_dir_for_vlm = (
-                result.get('runDirectory')
-                or result.get('run_dir')
-                or result.get('runDir')
-                or ''
-            )
-            activities_json_for_vlm = result.get('activitiesJsonPath') or (
-                os.path.join(run_dir_for_vlm, 'activities.json')
-                if run_dir_for_vlm else ''
-            )
-            if activities_json_for_vlm and os.path.exists(activities_json_for_vlm):
-                try:
-                    import json as _json
-                    with open(activities_json_for_vlm, 'r', encoding='utf-8') as f:
-                        pre_vlm_activities = _json.load(f)
-                    pre_count = len(pre_vlm_activities)
-                    post_vlm_activities, vlm_stats = vlm_service.verify_activities(
-                        pre_vlm_activities
-                    )
-                    # default=str defends against numpy scalars (float32 etc.)
-                    # that may have leaked into Pipeline-1 outputs — we never
-                    # want the verifier to be the thing that breaks JSON write.
-                    with open(activities_json_for_vlm, 'w', encoding='utf-8') as f:
-                        _json.dump(
-                            post_vlm_activities, f,
-                            indent=2, ensure_ascii=False, default=str,
-                        )
-                    # Keep result['activities'] in sync so downstream S3/API
-                    # blocks see the post-verifier list.
-                    if 'activities' in result:
-                        result['activities'] = post_vlm_activities
-                    if 'activities_count' in result:
-                        result['activities_count'] = len(post_vlm_activities)
-                    if 'activitiesCount' in result:
-                        result['activitiesCount'] = len(post_vlm_activities)
-                    # Filter clip_files to drop those tied to dropped activities,
-                    # avoiding wasted S3 uploads in enforcement mode.
-                    if vlm_stats['dropped'] > 0:
-                        kept_clip_paths = {
-                            a.get('activityClip') for a in post_vlm_activities
-                            if a.get('activityClip')
-                        }
-                        for clip_key in ('clip_files', 'clipFiles'):
-                            if clip_key in result and isinstance(result[clip_key], list):
-                                result[clip_key] = [
-                                    p for p in result[clip_key] if p in kept_clip_paths
-                                ]
-                    logger.info(
-                        f"[VLM] verified pre={pre_count} post={len(post_vlm_activities)} "
-                        f"dropped={vlm_stats['dropped']} uncertain={vlm_stats['uncertain']} "
-                        f"skipped_unavail={vlm_stats['skipped_unavailable']} "
-                        f"shadow={vlm_service.settings.vlm_shadow_mode}"
-                    )
-                except Exception as vlm_exc:  # pragma: no cover — fail-open at top level
-                    logger.error(
-                        f"[VLM] verifier failed unexpectedly, passing through "
-                        f"Pipeline-1 results: {vlm_exc}",
-                        exc_info=True,
-                    )
-            else:
-                logger.warning(
-                    f"[VLM] enabled but activities.json missing at "
-                    f"{activities_json_for_vlm!r}; skipping verifier"
-                )
-
-        # Step 3: Upload evidence files (clips + images) to S3
-        # Note: Original video is NOT uploaded - only evidence clips are uploaded
-        video_s3_url = None  # No original video URL since we don't upload it
-        clip_files = result.get('clip_files', [])
-        evidence_urls = []
-        upload_errors = []
-        s3_file_mapping = {}  # Map local paths to S3 URLs
-        
-        if clip_files:
-            logger.info(f"[UPLOAD] Uploading {len(clip_files)} evidence files (clips + images) to S3")
-            
-            # Collect all files to upload (clips + their corresponding images)
-            all_files_to_upload = []
-            for clip_file in clip_files:
-                all_files_to_upload.append(clip_file)
-                
-                # Find corresponding image file
-                image_file = clip_file.replace('_clip.mp4', '_activity.jpg')
-                if os.path.exists(image_file):
-                    all_files_to_upload.append(image_file)
-            
-            logger.info(f"[UPLOAD] Total files to upload: {len(all_files_to_upload)} (clips + images)")
-            
-            # Upload all files
-            clips_success, file_urls, clip_errors = s3_upload_service.upload_multiple_files(
-                file_paths=all_files_to_upload,
-                subfolder=subFolderName,
-                auth_token=authToken
-            )
-            
-            # Create mapping from local path to S3 URL
-            for local_path, s3_url in zip(all_files_to_upload, file_urls):
-                s3_file_mapping[local_path] = s3_url
-            
-            evidence_urls = [url for url in file_urls if '_clip.mp4' in url]
-            upload_errors = clip_errors
-            
-            if not clips_success:
-                logger.warning(f"Some files failed to upload: {clip_errors}")
-            
-            logger.info(f"[OK] Uploaded {len(file_urls)}/{len(all_files_to_upload)} files to S3")
-        
-        # Step 3 (continued): Update activities.json with S3 URLs
-        logger.info("[UPDATE] Updating activities.json with S3 URLs")
-        
-        # Extract values from result dictionary
-        run_dir = result.get('run_dir', result.get('runDir', ''))
-        run_id = result.get('run_id', result.get('runId', ''))
-        activities_count = result.get('activities_count', result.get('activitiesCount', 0))
-        
-        # Initialize activities list - try to get from result first, then from file
-        activities = result.get('activities', [])
-        
-        if run_dir and os.path.exists(run_dir):
-            activities_json_path = os.path.join(run_dir, 'activities.json')
-            
-            if os.path.exists(activities_json_path):
-                import json
-                
-                try:
-                    # Read existing activities
-                    with open(activities_json_path, 'r', encoding='utf-8') as f:
-                        activities = json.load(f)
-                    
-                    logger.info(f"[OK] Loaded {len(activities)} activities from {activities_json_path}")
-                    
-                    # Update each activity with S3 URLs
-                    updated_activities = []
-                    for activity in activities:
-                        # Update activityClip with S3 URL
-                        if 'activityClip' in activity and activity['activityClip']:
-                            local_clip_path = activity['activityClip']
-                            if local_clip_path in s3_file_mapping:
-                                activity['activityClip'] = s3_file_mapping[local_clip_path]
-                                logger.debug(f"Updated clip URL: {local_clip_path} -> {s3_file_mapping[local_clip_path]}")
-                        
-                        # Update activityImage with S3 URL
-                        if 'activityImage' in activity and activity['activityImage']:
-                            local_image_path = activity['activityImage']
-                            if local_image_path in s3_file_mapping:
-                                activity['activityImage'] = s3_file_mapping[local_image_path]
-                                logger.debug(f"Updated image URL: {local_image_path} -> {s3_file_mapping[local_image_path]}")
-                        
-                        updated_activities.append(activity)
-                    
-                    # Save updated activities.json with S3 URLs
-                    with open(activities_json_path, 'w', encoding='utf-8') as f:
-                        json.dump(updated_activities, f, indent=2, ensure_ascii=False)
-                    
-                    # Update activities for response
-                    activities = updated_activities
-                    
-                    logger.info(f"[OK] Updated {len(updated_activities)} activities with S3 URLs")
-                except Exception as e:
-                    logger.error(f"[ERROR] Failed to update activities.json: {e}", exc_info=True)
-            else:
-                logger.warning(f"[WARN] Activities JSON file not found: {activities_json_path}")
-        else:
-            logger.warning(f"[WARN] Run directory not found: {run_dir}")
-        
-        # Step 4: Post results to external API with evidence clip S3 URLs
-        # Note: We don't upload original video, so video_s3_url is None
-        # The external API will use evidence clip URLs from activities
-        external_api_result = None
-        logger.info(f"[CHECK] Checking conditions for external API call: activities={len(activities) if activities else 0}")
-        
-        if activities:
-            try:
-                logger.info(f"[API] Posting results to external API with S3 URLs for trip: {tripId}")
-                external_api_service = get_external_api_service()
-                
-                # Filter out STOPPED activities (only post RUNNING and UNCERTAIN)
-                postable_activities = [
-                    a for a in activities
-                    if a.get('motionState', 'UNKNOWN') != 'STOPPED'
-                ]
-                logger.info(
-                    f"[API] Motion filter: {len(postable_activities)}/{len(activities)} "
-                    f"activities to post (excluded {len(activities) - len(postable_activities)} STOPPED)"
-                )
-
-                external_api_result = external_api_service.post_cvvr_results(
-                    trip_id=tripId,
-                    events=postable_activities,  # Exclude STOPPED activities
-                    job_id=run_id,
-                    video_s3_url=None,  # No original video URL - we don't upload original video
-                    division=division
-                )
-                
-                if external_api_result.get("success"):
-                    logger.info(
-                        f"[OK] [external_api] Posted {external_api_result.get('violations_count', 0)} "
-                        f"violations with S3 URLs to external API for trip {tripId}"
-                    )
-                else:
-                    logger.warning(
-                        f"[WARN] [external_api] Failed to post to external API: {external_api_result.get('message')}"
-                    )
-            except Exception as e:
-                logger.error(f"[ERROR] [external_api] Exception while posting to external API: {e}", exc_info=True)
-                external_api_result = {
-                    "success": False,
-                    "message": f"Exception: {str(e)}",
-                    "posted": False
-                }
-        
-        # Prepare response
-        response_data = {
-            "status": "success",
-            "message": "Video processed and uploaded successfully",
-            "data": {
-                "tripId": tripId,
-                "run_id": run_id,
-                "run_dir": run_dir,
-                "activities_count": activities_count,
-                "processing_time_seconds": result.get('processingTime', result.get('processing_time', 0)),
-                "video_url": None,  # Original video is not uploaded to S3
-                "evidence_clips": evidence_urls,
-                "clips_uploaded": len(evidence_urls),
-                "total_clips": len(clip_files),
-                "upload_errors": upload_errors if upload_errors else None,
-                "activities": activities,  # ← Include updated activities with S3 URLs
-                "external_api_result": external_api_result  # Include external API posting result
-            }
-        }
-        
-        logger.info(f"[OK] Complete workflow finished for trip: {tripId}")
-        
-        return JSONResponse(content=response_data)
-        
-    except HTTPException:
-        raise
-        
-    except Exception as e:
-        # Include more context in error message
-        error_detail = f"Processing failed for trip {tripId}"
-        if video_path:
-            error_detail += f" (video: {os.path.basename(video_path)})"
-        error_detail += f": {str(e)}"
-        
-        logger.error(f"Process and upload failed: {error_detail}", exc_info=True)
-        raise HTTPException(
-            status_code=500,
-            detail=error_detail
-        )
-    
-    finally:
-        # Optional: Clean up uploaded video file
-        # Uncomment if you want to delete the original after upload
-        # if video_path and os.path.exists(video_path):
-        #     try:
-        #         os.remove(video_path)
-        #         logger.info(f"Cleaned up uploaded video: {video_path}")
-        #     except Exception as e:
-        #         logger.warning(f"Failed to clean up video: {e}")
-        pass
+    return await _run_video_pipeline(
+        request=None,
+        background_tasks=None,
+        video=video_file,
+        videoUrl=None,
+        tripId=tripId,
+        division=division,
+        lpCrewName=lpCrewName,
+        lpCrewId=lpCrewId,
+        alpCrewName=alpCrewName,
+        alpCrewId=alpCrewId,
+        trainNumber=trainNumber,
+        tripDate=tripDate,
+        videoStartTime=videoStartTime,
+        useMockDetection=useMockDetection,
+        useMultiprocessing=useMultiprocessing,
+        saveClips=saveClips,
+        cameraAngle=None,
+        upload_to_external_api=True,
+        subFolderName=subFolderName,
+        authToken=authToken,
+    )
 
 
 # =============================================================================

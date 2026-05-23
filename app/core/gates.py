@@ -17,7 +17,17 @@ remain safety-critical even when the train is at rest at a station.
 
 from __future__ import annotations
 
-from typing import Any, Dict, FrozenSet, Iterable, MutableMapping, Optional
+from typing import (
+    Any,
+    Callable,
+    FrozenSet,
+    Iterable,
+    List,
+    Mapping,
+    MutableMapping,
+    Optional,
+    Tuple,
+)
 
 
 # Activities that must be suppressed while the train is stopped.
@@ -30,13 +40,45 @@ DEFAULT_SUPPRESSED_WHEN_STOPPED: FrozenSet[str] = frozenset({
     'alp_hand_gesture',
     'mind_diversion',
     'eating_drinking',
+    # Single-person rule is "violation while train is RUNNING". At stations
+    # the ALP routinely steps out for inspections / point checks, so the
+    # cabin can legitimately have one person — suppress here so we don't
+    # flood activities.json with station-context FPs.
+    'solo_person',
 })
+
+
+# Type alias for the per-detector reset hook.
+# Detectors expose ``on_suppressed(person_idx, activity_name)`` to clear
+# any internal counters / timestamps tied to the suppressed activity.
+SuppressionHook = Callable[[Optional[Any], str], None]
+
+
+# Mapping of suppressed activity names to the detector keys that own them.
+# When the train-stopped gate fires for an activity, every detector listed
+# here gets its ``on_suppressed`` hook called. Multiple detectors may want
+# the notification (e.g. ``writing`` clears ``mind_diversion`` grace cache)
+# so values are lists, not single names.
+ACTIVITY_TO_DETECTOR_HOOKS: Mapping[str, List[str]] = {
+    'sleep': ['sleep'],
+    'writing': ['mind_diversion'],
+    'packing_bags': ['activity'],
+    'lp_hand_gesture': ['gesture'],
+    'alp_hand_gesture': ['gesture'],
+    'mind_diversion': ['mind_diversion'],
+    # eating_drinking has no per-detector counter to clear today; the
+    # aggregated/per-person flag flip is sufficient.
+}
 
 
 def apply_train_stopped_suppression(
     aggregated: MutableMapping[str, bool],
     persons_data: MutableMapping[Any, MutableMapping[str, Any]],
     suppressed: Optional[Iterable[str]] = None,
+    detectors: Optional[Mapping[str, Any]] = None,
+    previously_suppressed: Optional[
+        MutableMapping[Tuple[Any, str], bool]
+    ] = None,
 ) -> None:
     """Zero out suppressed activities in both aggregated + per-person dicts.
 
@@ -56,9 +98,32 @@ def apply_train_stopped_suppression(
             suppressed activity found in that sub-dict is set to ``False``.
         suppressed: Optional override of the suppressed activity names.
             Defaults to :data:`DEFAULT_SUPPRESSED_WHEN_STOPPED`.
+        detectors: Optional mapping of detector key -> detector instance
+            (e.g. ``{'sleep': sleep_detector, 'gesture': gesture_detector,
+            ...}``). When provided, every detector that defines an
+            ``on_suppressed(person_idx, activity_name)`` method has it
+            invoked for each (person, suppressed-activity) pair whose
+            activity flag was actually zeroed by this call. This prevents
+            internal state machines (sleep duration timers, gesture
+            last-raise timestamps, packing direction-change counters,
+            mind-diversion writing grace cache) from maturing while the
+            activity is suppressed and producing instant false-positives
+            on train resume.
+        previously_suppressed: Optional mutable mapping of
+            ``(person_idx, activity_name) -> True`` tracking which
+            (person, activity) pairs already had their ``on_suppressed``
+            hook fired in the current STOPPED window. When provided, the
+            gate consults+updates this map so each hook fires at most once
+            per ``True -> False`` flag flip per STOPPED window — even
+            though the underlying detectors may continue to compute the
+            activity as positive on every frame the train is stopped. The
+            caller is responsible for resetting (clearing) this map when
+            the train transitions out of STOPPED so a subsequent stop
+            starts fresh. When omitted, hooks fire on every call where the
+            flag flipped from True to False (the original semantics).
 
     Returns:
-        None. Both mappings are mutated in place.
+        None. Both mappings (and any detector state) are mutated in place.
     """
     suppressed_set: FrozenSet[str] = (
         frozenset(suppressed) if suppressed is not None
@@ -76,17 +141,47 @@ def apply_train_stopped_suppression(
             aggregated[act] = False
 
     # 2. Per-person activity dicts. Leave unrelated keys (microsleep,
-    #    cell_phone, debug fields) untouched.
-    for _pidx, pdata in persons_data.items():
+    #    cell_phone, debug fields) untouched. While iterating, fan out to
+    #    each detector's ``on_suppressed`` hook so internal counters get
+    #    cleared in lockstep with the public flag flip.
+    for pidx, pdata in persons_data.items():
         pactivities = pdata.get('activities')
         if not isinstance(pactivities, dict):
             continue
         for act in suppressed_set:
-            if act in pactivities:
-                pactivities[act] = False
+            if act not in pactivities:
+                continue
+            # Only fire hooks when the flag was actually positive — there's
+            # no counter to roll back when the activity was already False.
+            had_positive = bool(pactivities.get(act))
+            pactivities[act] = False
+            if not (had_positive and detectors):
+                continue
+            # When the caller is tracking already-fired (person, activity)
+            # pairs across consecutive STOPPED frames, skip hook fan-out
+            # if this pair already fired in the current STOPPED window.
+            # The detector state was already cleared on the first
+            # True -> False flip; firing again is wasted work.
+            if previously_suppressed is not None:
+                key = (pidx, act)
+                if previously_suppressed.get(key):
+                    continue
+                previously_suppressed[key] = True
+            for detector_key in ACTIVITY_TO_DETECTOR_HOOKS.get(act, ()):
+                detector = detectors.get(detector_key)
+                hook = getattr(detector, 'on_suppressed', None)
+                if callable(hook):
+                    try:
+                        hook(pidx, act)
+                    except Exception:
+                        # Hook failures must never break the gate. The
+                        # public flag flip already happened above.
+                        continue
 
 
 __all__ = [
+    'ACTIVITY_TO_DETECTOR_HOOKS',
     'DEFAULT_SUPPRESSED_WHEN_STOPPED',
+    'SuppressionHook',
     'apply_train_stopped_suppression',
 ]

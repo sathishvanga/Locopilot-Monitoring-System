@@ -19,6 +19,7 @@ python-multipart>=0.0.6  # For file upload support
 pydantic>=2.5.0
 pydantic-settings>=2.1.0
 requests>=2.31.0  # For external API calls
+httpx>=0.27,<0.29  # Async HTTP client for VLM verifier (Pipeline-2)
 minio>=7.2.0  # MinIO client for video downloads
 
 # Additional dependencies (auto-installed with above packages)
@@ -34,6 +35,9 @@ scipy>=1.12.0
 # Train motion rule engine dependencies
 pytesseract>=0.3.10  # OCR for timestamp extraction from video frames
 cachetools>=5.3.0    # TTL caching for trip schedule data
+
+# Atomic + locked activities.json writes (Task 0002)
+portalocker>=2.8.2,<3
 
 # Note: mediapipe requires numpy<2, which is incompatible with opencv-python>=4.12
 # Using opencv-contrib-python instead, which includes all opencv-python features
