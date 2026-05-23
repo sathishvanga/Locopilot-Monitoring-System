@@ -536,13 +536,19 @@ class GestureDetector:
         if alp_gesture:
             self.update_session('ALP', True, timestamp)
 
-        # Check if both raised hands within coordination window
+        # Check if both raised hands within coordination window.
+        # Each side independently within window of `now` is not enough — two
+        # raises 9.9 s apart could both satisfy "<=5s ago" if `now` sits in
+        # between, but they aren't coordinated with each other. We additionally
+        # require |lp_time - alp_time| <= coordination_window so the pair
+        # itself is co-occurring, not just both recent.
         def both_within_window(lp_time: Optional[float], alp_time: Optional[float]) -> bool:
             if lp_time is None or alp_time is None:
                 return False
             lp_recent = (timestamp - lp_time) <= self.coordination_window
             alp_recent = (timestamp - alp_time) <= self.coordination_window
-            return lp_recent and alp_recent
+            pair_close = abs(lp_time - alp_time) <= self.coordination_window
+            return lp_recent and alp_recent and pair_close
 
         lp_not_coordinating = False
         alp_not_coordinating = False

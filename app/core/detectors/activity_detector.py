@@ -39,6 +39,7 @@ class ActivityDetector:
     DEFAULT_WRITING_MARGIN = 180
     DEFAULT_PACKING_MARGIN = 100
     DEFAULT_PACKING_REGION_MARGIN = 150
+    DEFAULT_PACKING_WRIST_INSIDE_MARGIN = 40
 
     def __init__(self, settings: Optional[Any] = None, get_keypoint_func: Optional[Any] = None):
         """Initialize the activity detector.
@@ -91,6 +92,9 @@ class ActivityDetector:
             self.packing_region_margin = getattr(
                 self.settings, 'activity_packing_region_margin', self.DEFAULT_PACKING_REGION_MARGIN
             )
+            self.packing_wrist_inside_margin = getattr(
+                self.settings, 'activity_packing_wrist_inside_margin', self.DEFAULT_PACKING_WRIST_INSIDE_MARGIN
+            )
         else:
             self.writing_wrist_distance = self.DEFAULT_WRITING_WRIST_DISTANCE
             self.relaxed_wrist_distance = self.DEFAULT_RELAXED_WRIST_DISTANCE
@@ -101,6 +105,7 @@ class ActivityDetector:
             self.writing_margin = self.DEFAULT_WRITING_MARGIN
             self.packing_margin = self.DEFAULT_PACKING_MARGIN
             self.packing_region_margin = self.DEFAULT_PACKING_REGION_MARGIN
+            self.packing_wrist_inside_margin = self.DEFAULT_PACKING_WRIST_INSIDE_MARGIN
 
     def get_keypoint(self, landmarks: Any, keypoint_name: str) -> Any:
         """Get a keypoint from landmarks by name.
@@ -689,12 +694,15 @@ class ActivityDetector:
 
             evidence['bag_in_region'] = True
 
-            # Method 1: Wrist inside backpack bbox
+            # Method 1: Wrist inside backpack bbox. Uses the configured
+            # packing_wrist_inside_margin (env ACTIVITY_PACKING_WRIST_INSIDE_MARGIN,
+            # default 40). Previously hardcoded to 40 here, ignoring the
+            # setting — fixed 2026-05-20.
             right_inside, right_dist = self.is_wrist_inside_backpack(
-                right_hand_coords, backpack_bbox, margin=40
+                right_hand_coords, backpack_bbox, margin=self.packing_wrist_inside_margin
             )
             left_inside, left_dist = self.is_wrist_inside_backpack(
-                left_hand_coords, backpack_bbox, margin=40
+                left_hand_coords, backpack_bbox, margin=self.packing_wrist_inside_margin
             )
 
             evidence['wrist_check'] = {

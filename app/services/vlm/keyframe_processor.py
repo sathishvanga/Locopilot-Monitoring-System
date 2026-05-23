@@ -28,6 +28,7 @@ logger = get_logger(__name__)
 # cab for an occluded ALP — all benefit from the whole scene.
 _FULL_FRAME_OBJECT_TYPES: frozenset = frozenset({
     "sleep",
+    "microsleep",
     "mind_diversion",
     "no_person_detected",
     "group_detected",

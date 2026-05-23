@@ -575,6 +575,65 @@ Reply with STRICT JSON ONLY (no prose, no code fence):
   "reasoning": "<one short sentence describing what you actually see, naming the FRAME number>"
 }"""
 
+_PROMPT_MICROSLEEP = """You are a railway safety auditor reviewing CCTV from a locomotive cabin.
+Camera angle: overhead, looking down/across the cab. The frame may contain up to 2 persons:
+- Loco Pilot (LP): the larger, foreground person, usually seated at the controls
+- Assistant Loco Pilot (ALP): the second person, often standing or in the back seat
+
+The image you receive may be a HORIZONTAL STRIP of 1-5 keyframes from the SAME activity
+burst, ordered LEFT-TO-RIGHT in time. Each frame is labelled "FRAME 1", "FRAME 2", ...
+in the top-left corner. Examine ALL frames before deciding. Note in `evidence_frame`
+which frame number provides the strongest evidence (1-N). If only one frame is shown
+or no frame is decisive, return 0.
+
+A classical CV pipeline flagged this strip as "MICROSLEEP" — eyes closed for >=5 seconds
+on one of the persons. The pipeline does NOT specify which person. The pipeline cannot
+distinguish "eyes closed because sleeping" from "head bowed because writing/reading"
+from the overhead angle, so YOU are the only check between this and a posted violation.
+
+True microsleep requires:
+  (a) Eyes are clearly CLOSED across multiple frames (not a single-frame blink)
+  (b) Hands are NOT engaged with a pen, paper, logbook, or controls — they are
+      idle in the lap, on the armrest, or hanging at the side
+  (c) NO writing implement (pen, pencil) is visible in either hand
+  (d) NO open book/paper/logbook is visible in front of the person's head
+  (e) Posture is slumped or head-tilted (not the upright forward-leaning posture
+      of someone writing)
+
+If (a) is missing OR (b)-(c)-(d) are all violated (i.e. the person is clearly engaged
+with paperwork), return FALSE_POSITIVE — this is a writing scene mis-flagged as
+microsleep. Microsleep + writing in the same posture is the #1 FP for this detector.
+
+Common confounders the classical pipeline misclassifies as microsleep:
+  - Head bent down for writing or reading the logbook — pen visible, paper visible,
+    hand-on-page. THIS IS THE DOMINANT FP. Return FALSE_POSITIVE confidently.
+  - Looking down at gauges, controls, or a phone — head is down but eyes likely open
+  - LP wearing a cap that shadows the eyes — eyes may appear closed when they're not
+  - Brief blink visible in only one frame
+
+ALSO observe whether the train is moving, using cues OUTSIDE the cabin (window/door):
+  - "running": visible motion blur in the outside window, scenery/track streaking past
+  - "stopped": platform infrastructure visible, station signs, cabin door OPEN
+  - "unclear": window is dark, blocked, glare — DO NOT GUESS, return "unclear"
+Microsleep is a violation regardless of motion state — do NOT use motion to decide
+the verdict, only report what you observe.
+
+Reply with STRICT JSON ONLY (no prose, no code fence):
+{
+  "verdict": "TRUE_POSITIVE" | "FALSE_POSITIVE" | "UNCERTAIN",
+  "which_person": "LP" | "ALP" | "neither" | "unclear",
+  "confidence": <float 0.0 to 1.0 — your certainty in the VERDICT ITSELF; >=0.80 when sure, <=0.5 only when genuinely unsure>,
+  "eyes_closed": <true|false>,
+  "pen_in_hand": <true|false>,
+  "book_or_paper_visible_at_head": <true|false>,
+  "hands_engaged_with_paperwork": <true|false>,
+  "posture_slumped_or_reclined": <true|false>,
+  "primary_confounder": "writing_pose" | "reading" | "cap_shadow" | "control_op" | "blink_only" | "none" | "unclear",
+  "train_appears_to_be": "running" | "stopped" | "unclear",
+  "evidence_frame": <integer: frame number 1..N giving strongest evidence; 0 if single-frame input or no decisive frame>,
+  "reasoning": "<one short sentence describing what you actually see, naming the FRAME number>"
+}"""
+
 _PROMPT_MIND_DIVERSION = """You are a railway safety auditor reviewing CCTV from a locomotive cabin.
 Camera angle: overhead, looking down/across the cab. The frame may contain up to 2 persons:
 - Loco Pilot (LP): the larger, foreground person, usually seated at the controls
@@ -913,6 +972,7 @@ _PROMPTS_BY_OBJECT_TYPE: Dict[str, str] = {
     "packing_bags": _PROMPT_PACKING,
     "cell_phone": _PROMPT_CELL_PHONE,
     "sleep": _PROMPT_SLEEP,
+    "microsleep": _PROMPT_MICROSLEEP,
     "mind_diversion": _PROMPT_MIND_DIVERSION,
     "no_person_detected": _PROMPT_NO_PERSON,
     "group_detected": _PROMPT_GROUP,
@@ -942,12 +1002,19 @@ def _consistency_check(
         return None
 
     if object_type == "writing":
-        # Two independent TP paths. Accept TP if EITHER path's structural
-        # fields are coherent. Demote to UNCERTAIN only when BOTH paths
+        # Three independent TP paths. Accept TP if ANY path's structural
+        # fields are coherent. Demote to UNCERTAIN only when ALL paths
         # contradict the verdict.
         #
-        # Path A (open-page writing): hand_actually_on_book + book_visible_on_desk.
+        # Path A (open-page on desk): hand_actually_on_book + book_visible_on_desk.
         # Path B (railway-logbook handling): pen_in_hand + actively_handling_papers.
+        # Path C (book-on-lap / hand-obscured archetype): pen_in_hand +
+        #   head_oriented_to_book. Added after 2026-05-20 50-video test review
+        #   showed real writing TPs (v06 NZB-AD, v21 Cabin_34) being dropped
+        #   because the hand was obscured by the book itself — VLM marked
+        #   hand_actually_on_book=false, killing Path A; pen visible but not
+        #   actively handling separate papers, killing Path B; but pen + head
+        #   orientation are independently strong evidence.
         path_a_ok = bool(
             parsed.get("hand_actually_on_book")
             and parsed.get("book_visible_on_desk")
@@ -956,7 +1023,11 @@ def _consistency_check(
             parsed.get("pen_in_hand")
             and parsed.get("actively_handling_papers")
         )
-        if not (path_a_ok or path_b_ok):
+        path_c_ok = bool(
+            parsed.get("pen_in_hand")
+            and parsed.get("head_oriented_to_book")
+        )
+        if not (path_a_ok or path_b_ok or path_c_ok):
             # Compose a precise reason naming whichever paths actually failed,
             # so disagreement-queue audits can identify prompt-level blind
             # spots vs. genuine VLM hallucinations.
@@ -969,9 +1040,10 @@ def _consistency_check(
                 reasons.append("pen_in_hand=false")
             if not parsed.get("actively_handling_papers"):
                 reasons.append("actively_handling_papers=false")
+            if not parsed.get("head_oriented_to_book"):
+                reasons.append("head_oriented_to_book=false")
             return (
-                "TP claimed but neither Path A nor Path B holds: "
-                + ", ".join(reasons)
+                "TP claimed but no Path (A/B/C) holds: " + ", ".join(reasons)
             )
 
         # frame_observations was removed from the writing schema in the
@@ -1000,8 +1072,12 @@ def _consistency_check(
         return None
 
     if object_type == "cell_phone":
-        obj = (parsed.get("object_in_hand") or "").lower()
-        if obj != "smartphone":
+        obj = (parsed.get("object_in_hand") or "").lower().strip()
+        # Accept synonyms — Qwen2.5-VL-AWQ occasionally emits "phone" /
+        # "mobile_phone" / "cell_phone" instead of the canonical "smartphone".
+        # All four refer to the same artifact in this domain.
+        _smartphone_synonyms = {"smartphone", "phone", "cell_phone", "mobile_phone", "mobile"}
+        if obj not in _smartphone_synonyms:
             return f"TP claimed but object_in_hand={obj!r} (not smartphone)"
         return None
 
@@ -1017,6 +1093,24 @@ def _consistency_check(
         )
         if criteria_met < 2:
             return f"TP claimed but only {criteria_met}/4 sleep criteria met"
+        return None
+
+    if object_type == "microsleep":
+        # Microsleep + writing-pose is the dominant FP — head-bowed-with-pen
+        # looks identical to head-bowed-eyes-closed from the overhead angle.
+        # Demote TP unless eyes are explicitly closed AND there is no paperwork
+        # engagement signal in any of the three structured fields.
+        if not parsed.get("eyes_closed"):
+            return "TP claimed but eyes_closed=false"
+        if parsed.get("pen_in_hand"):
+            return "TP claimed but pen_in_hand=true (writing pose, not microsleep)"
+        if parsed.get("hands_engaged_with_paperwork"):
+            return "TP claimed but hands_engaged_with_paperwork=true"
+        if parsed.get("book_or_paper_visible_at_head"):
+            # Allow when the person is clearly slumped/reclined despite paper
+            # being on the desk (paper-on-desk + slumped is still microsleep).
+            if not parsed.get("posture_slumped_or_reclined"):
+                return "TP claimed but book_or_paper_visible_at_head=true and posture not slumped"
         return None
 
     if object_type == "mind_diversion":

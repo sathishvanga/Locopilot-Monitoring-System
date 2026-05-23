@@ -2575,9 +2575,28 @@ class LocopilotActivityMonitor:
             # place. Previously only the flat locals were zeroed, leaving
             # persons_data with stale positives that were still visible to
             # annotation and debug overlays.
+            # UNCERTAIN-with-no-running-signal is treated as STOPPED for
+            # suppression purposes. The smoothed state is UNCERTAIN when
+            # neither RUNNING nor STOPPED hits the 60% majority in the
+            # temporal window, but the unsmoothed per-frame state usually
+            # has the right answer. If the per-frame raw state is STOPPED
+            # and the smoother is just UNCERTAIN, treat as STOPPED so we
+            # don't ship sleep/writing/packing FPs during the smoother's
+            # ~9s ring-down window (CLAUDE.md "UNCERTAIN defaults to
+            # permissive" gap). Microsleep + cell_phone bypass this gate
+            # via MOTION_FILTER_BYPASS_TYPES, so safety-critical floor is
+            # preserved.
+            _motion_suppress = self.current_motion_state == "STOPPED"
+            if (
+                not _motion_suppress
+                and self.current_motion_state == "UNCERTAIN"
+                and self.train_motion_detector is not None
+                and getattr(self.train_motion_detector, 'last_raw_state', None) == 'STOPPED'
+            ):
+                _motion_suppress = True
             if (
                 self.train_motion_detector is not None
-                and self.current_motion_state == "STOPPED"
+                and _motion_suppress
                 and getattr(self.settings, 'train_motion_suppress_when_stopped', True)
             ):
                 # Build a flat aggregated dict keyed by the canonical activity

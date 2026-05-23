@@ -56,10 +56,14 @@ class MindDiversionDetector:
         self.logger = logger or get_logger('MindDiversionDetector')
         self.settings = settings
 
-        # Yaw/Pitch thresholds (from settings or defaults)
+        # Yaw/Pitch thresholds (from settings or defaults).
+        # pitch_down default lowered 45 -> 30 on 2026-05-20 after audit found
+        # the previous default was dead code: pitch_angle is np.clip(..., -45, 45)
+        # so the comparison `pitch_angle > pitch_down=45` could never fire,
+        # making looking_down_distracted unreachable on the pose path.
         self.yaw_sideways = getattr(settings, 'mind_diversion_yaw_sideways', 78) if settings else 78
         self.yaw_combined = getattr(settings, 'mind_diversion_yaw_combined', 58) if settings else 58
-        self.pitch_down = getattr(settings, 'mind_diversion_pitch_down', 45) if settings else 45
+        self.pitch_down = getattr(settings, 'mind_diversion_pitch_down', 30) if settings else 30
         self.pitch_combined = getattr(settings, 'mind_diversion_pitch_combined', 35) if settings else 35
         self.yaw_max_for_down = getattr(settings, 'mind_diversion_yaw_max_for_down', 55) if settings else 55
 

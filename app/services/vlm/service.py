@@ -957,12 +957,6 @@ class VlmVerificationService:
                         review["error"] = f"verdict not in enum: {verdict!r}"
                         continue
 
-                    # Motion-override observability: record the helper's
-                    # opinion on the activity for ops audit. _safe_motion_state
-                    # is conservative — it never flips RUNNING -> STOPPED on
-                    # its own and is purely diagnostic.
-                    act["motion_state_after_vlm"] = _safe_motion_state(act, verdict_dict)
-
                     # Motion-override active path (RUNNING -> STOPPED only).
                     # If Pipeline-1's vibration/window-flow detector missed a
                     # station stop but the VLM clearly sees a hard STOPPED cue
@@ -998,6 +992,12 @@ class VlmVerificationService:
                                 current_motion or "UNKNOWN",
                                 motion_evidence[:120],
                             )
+
+                    # Audit field: mirrors the post-override canonical motionState
+                    # so downstream consumers reading motion_state_after_vlm see
+                    # the same value gating the external API post. Written AFTER
+                    # the override block so it reflects the final decision.
+                    act["motion_state_after_vlm"] = _safe_motion_state(act, verdict_dict)
 
                     if verdict == "UNCERTAIN":
                         stats["uncertain"] += 1
@@ -1351,7 +1351,19 @@ class VlmVerificationService:
                         "speedometer_classifier": speedo_result,
                     }
 
-            if object_type not in _FULL_FRAME_OBJECT_TYPES:
+            # Window-motion override runs on any object type whose suppression
+            # would apply when STOPPED. Extended 2026-05-20 from
+            # _FULL_FRAME_OBJECT_TYPES gate to include sleep + mind_diversion,
+            # which previously had NO motion rescue (Pipeline-1 vibration is
+            # blind to diesel idle; VLM textual motion verdict is ignored
+            # per _safe_motion_state). Microsleep is excluded — it's in the
+            # MOTION_FILTER_BYPASS_TYPES set so an override would not change
+            # the final ship/drop decision.
+            _WINDOW_MOTION_TYPES = {
+                "writing", "eating_drinking", "packing_bags",
+                "cell_phone", "sleep", "mind_diversion",
+            }
+            if object_type in _WINDOW_MOTION_TYPES:
                 video_filename = activity.get("filename") or ""
                 motion_result = classify_motion(
                     video_filename, keyframes,

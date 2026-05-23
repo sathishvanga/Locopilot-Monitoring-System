@@ -53,6 +53,24 @@ class TrainMotionDetector:
         self.vibration_median_window = max(1, int(
             getattr(settings, 'train_motion_vibration_median_window', 5)
         ))
+        # Adaptive per-video vibration baseline (diesel-idle compensation).
+        # The absolute vibration_threshold/high (1.0/3.0) are blind to
+        # installations where the idle floor is e.g. 4.77 — the score
+        # saturates to 1.0 in both RUNNING and STOPPED, collapsing the
+        # decision onto the lower-weighted window-flow term. When
+        # ``vib_baseline_window > 0`` we accumulate the first N samples of
+        # vibration_mean (idle calibration), then rescale the score against
+        # that baseline using ``low_mult`` and ``high_mult`` as the ramp
+        # endpoints. Disable by setting the window to 0.
+        self.vibration_baseline_window = max(0, int(
+            getattr(settings, 'train_motion_vibration_baseline_window', 0)
+        ))
+        self.vibration_baseline_low_mult = float(
+            getattr(settings, 'train_motion_vibration_baseline_low_mult', 1.4)
+        )
+        self.vibration_baseline_high_mult = float(
+            getattr(settings, 'train_motion_vibration_baseline_high_mult', 2.0)
+        )
         # How many prior frames of person bboxes to union into the interior
         # mask (0 = current only). At low sample FPS a walking person covers
         # many pixels per sample; one-frame history isn't enough.
@@ -127,6 +145,12 @@ class TrainMotionDetector:
         # Rolling buffer of recent trimmed vibration_mean values, used to compute
         # a median-smoothed vibration_mean before scoring.
         self._vib_history: deque = deque(maxlen=self.vibration_median_window)
+        # Adaptive baseline buffer + computed value. Populated only when
+        # ``vibration_baseline_window > 0``. The buffer is fixed-size by
+        # window N; once full, ``_vib_baseline`` is set to the median and the
+        # buffer stops growing. Subsequent calls use the relative ramp.
+        self._vib_baseline_buf: deque = deque(maxlen=max(1, self.vibration_baseline_window))
+        self._vib_baseline: Optional[float] = None
         # Counter of frames seen since the last reset. Used by callers that
         # want to confirm "first frame after reset" semantics.
         self._frames_seen: int = 0
@@ -159,6 +183,8 @@ class TrainMotionDetector:
         self._prev_block_vars = None
         self.person_bbox_history_buf.clear()
         self._vib_history.clear()
+        self._vib_baseline_buf.clear()
+        self._vib_baseline = None
         self._frames_seen = 0
         self.last_raw_state = None
 
@@ -272,6 +298,43 @@ class TrainMotionDetector:
         result["vibration_std"] = float(np.std(interior_pixels))
         result["vibration_max"] = float(np.max(interior_pixels))
         result["vibration_p95"] = float(np.percentile(interior_pixels, 95))
+
+        # Adaptive baseline: collect the first N samples to estimate the
+        # per-video idle floor. While the buffer is filling we use the
+        # absolute ramp (existing behavior). Once full we switch to the
+        # relative ramp so high-idle installations (e.g. diesel idle
+        # producing vib_mean ~4.77 — well above the absolute high=3.0)
+        # produce a non-saturated score that can distinguish RUNNING from
+        # STOPPED on the same trainset.
+        if self.vibration_baseline_window > 0:
+            self._vib_baseline_buf.append(smoothed_mean)
+            if (
+                self._vib_baseline is None
+                and len(self._vib_baseline_buf) >= self.vibration_baseline_window
+            ):
+                self._vib_baseline = float(np.median(self._vib_baseline_buf))
+
+        if self._vib_baseline is not None and self._vib_baseline > 0:
+            # Relative ramp: low_mult * baseline → 0, high_mult * baseline → 1.
+            low = self._vib_baseline * self.vibration_baseline_low_mult
+            high = self._vib_baseline * self.vibration_baseline_high_mult
+            if high <= low:
+                # Degenerate config — fall through to absolute ramp.
+                pass
+            elif result["vibration_mean"] >= high:
+                result["vibration_score"] = 1.0
+                self.prev_gray = gray.copy()
+                return result
+            elif result["vibration_mean"] >= low:
+                result["vibration_score"] = (
+                    (result["vibration_mean"] - low) / (high - low)
+                )
+                self.prev_gray = gray.copy()
+                return result
+            else:
+                result["vibration_score"] = 0.0
+                self.prev_gray = gray.copy()
+                return result
 
         if result["vibration_mean"] >= self.vibration_high:
             result["vibration_score"] = 1.0
@@ -453,7 +516,10 @@ class TrainMotionDetector:
             self.cold_start_require_window_flow
             and self._frames_seen < self.cold_start_frames
         )
-        self._frames_seen += 1
+        # NOTE: ``_frames_seen`` is incremented ONCE per call, at the bottom of
+        # this function. The earlier in-place increment here was a duplicate
+        # that burned the cold-start guard out at 2.5 frames instead of 5
+        # (2026-05-20 audit). Do not re-add it.
         if combined_score >= self.running_threshold:
             if cold_start and win["window_score"] <= 0.0:
                 # Vibration alone during cold start can be person motion, not

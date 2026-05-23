@@ -55,7 +55,13 @@ class ObjectDetector:
         logger: Optional[logging.Logger] = None,
         yolo_imgsz: int = 640,
         yolo_device: Optional[str] = None,
-        cell_phone_confidence: float = 0.45,
+        # Single source of truth: settings.yolo_cell_phone_confidence
+        # (env YOLO_CELL_PHONE_CONFIDENCE). The previous mixed defaults
+        # (0.45 in this ctor, 0.3 in _create_yolo_handler / _init_thresholds)
+        # produced silent divergence — a unit test instantiating without
+        # settings used 0.45 while production used 0.3. Pass None to read
+        # from settings; explicit float to override.
+        cell_phone_confidence: Optional[float] = None,
         yolo_handler: Optional[Any] = None,
         yolo_roi_model: Optional[Any] = None
     ):
@@ -83,6 +89,13 @@ class ObjectDetector:
         self.logger = logger or logging.getLogger(__name__)
         self.yolo_imgsz = yolo_imgsz
         self.yolo_device = yolo_device
+        # Resolve the single source of truth (settings) when the caller
+        # didn't override. Settings default is 0.3 (env YOLO_CELL_PHONE_CONFIDENCE).
+        if cell_phone_confidence is None:
+            cell_phone_confidence = (
+                getattr(settings, 'yolo_cell_phone_confidence', 0.3)
+                if settings is not None else 0.3
+            )
         self.cell_phone_confidence = cell_phone_confidence
 
         # Task 0025: Set up YOLOHandler for delegation of shared methods.

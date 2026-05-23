@@ -93,20 +93,41 @@ _ROI_BY_CAMERA_ANGLE: Dict[int, Tuple[int, int, int, int]] = {
 }
 
 
-# Threshold tuned on the 7-clip batch: the lowest motion score for the
-# only TP (vid11, running) was 13.15; the highest score for the 5 actually-
-# posted FPs (excluding vid06a which was already filtered by Pipeline-1)
-# was 7.55. A threshold of 10.0 sits cleanly between the two.
-#
-# This is a CONSERVATIVE threshold — when in doubt (no camera detected,
-# OCR failure, ROI extraction failure), we DO NOT override. Falls back to
-# the existing VLM verdict pipeline.
-MOTION_DIFF_STOPPED_THRESHOLD: float = 10.0
+# Tuned on the 7-clip batch (5 FPs + 1 TP):
+#   - the only TP (vid11, running) scored 13.15
+#   - the highest FP score (vid06b/c) was 7.55
+# Two thresholds with an inconclusive band in between (8.0 .. 12.0):
+#   - score < STOPPED_THRESHOLD (8.0) → confident STOPPED, allow override
+#   - score > RUNNING_THRESHOLD (12.0) → confident RUNNING, no override
+#   - in between → inconclusive, no override (preserves TP safety margin)
+# This replaces the 2026-05-10 single-threshold gate. The 50-video load-test
+# review on 2026-05-20 found writing TPs getting dropped on borderline
+# scores; the band buys back recall while keeping the FP-suppression we
+# already get below 8.0 (still catches all 5 batch FPs, FP_max=7.55).
+MOTION_DIFF_STOPPED_THRESHOLD: float = 8.0
+MOTION_DIFF_RUNNING_THRESHOLD: float = 12.0
+
+# Minimum standard deviation in the ROI for the score to be meaningful.
+# A black-curtained / uniformly-lit window has near-zero std and would
+# always score ~0, producing a false STOPPED verdict on every activity.
+# Below this floor the classifier returns None (no override).
+MOTION_ROI_MIN_TEXTURE_STD: float = 5.0
+
+# Per-source-video OCR negative-cache TTL in seconds. The original
+# negative cache was permanent for the video, so a single occluded
+# keyframe burst at the start of a video disabled the classifier for
+# the entire run. With a TTL we retry OCR for later activities after
+# this window expires.
+_OCR_NEGATIVE_CACHE_TTL_SEC: float = 120.0
 
 
 # Per-source-video cache for the detected camera ID. Many activities share
 # a source video; OCR is expensive (~150 ms) so we pay it once and reuse.
-_camera_cache: Dict[str, str] = {}
+# Stores tuple (camera_id_or_sentinel, inserted_ts) so we can TTL-evict
+# negative entries — the original cache made every "OCR failed" permanent
+# for the whole video, disabling the classifier for the entire run when
+# the first activity's keyframes happened to occlude the overlay.
+_camera_cache: Dict[str, Tuple[str, float]] = {}
 _camera_cache_lock = threading.Lock()
 
 
@@ -205,10 +226,19 @@ def detect_camera_for_video(
     """
     if not video_filename:
         return None
+    now = time.time()
     with _camera_cache_lock:
         cached = _camera_cache.get(video_filename)
         if cached is not None:
-            return cached if cached != "__none__" else None
+            cached_id, inserted_ts = cached
+            if cached_id != "__none__":
+                # Positive entries never expire — camera ID doesn't change
+                # within a single source video.
+                return cached_id
+            # Negative entry: TTL-evict so later activities get a retry.
+            if now - inserted_ts < _OCR_NEGATIVE_CACHE_TTL_SEC:
+                return None
+            _camera_cache.pop(video_filename, None)
 
     # Iterate keyframes until one yields a recognisable camera id.
     cam_id: Optional[str] = None
@@ -219,9 +249,9 @@ def detect_camera_for_video(
                 break
 
     with _camera_cache_lock:
-        # Cache negatives too so we don't re-OCR on every activity for a
-        # video where OCR can't read the overlay.
-        _camera_cache[video_filename] = cam_id or "__none__"
+        # Cache positives permanently; cache negatives with a TTL so a
+        # later activity with a cleaner overlay can re-trigger OCR.
+        _camera_cache[video_filename] = (cam_id or "__none__", now)
     return cam_id
 
 
@@ -274,10 +304,41 @@ def compute_window_motion_score(
         for i in range(len(grays) - 1)
     ]
     score = float(np.median(diffs))
+
+    # Texture sanity: if the ROI is uniformly black/curtained, the diff
+    # collapses to ~0 regardless of motion state. Reject such ROIs so we
+    # don't synthesize false STOPPED overrides. Use the FIRST frame's ROI
+    # std (representative; ROIs are static across the burst).
+    x1, y1, x2, y2 = roi
+    h, w = grays[0].shape
+    x2c, y2c = min(x2, w), min(y2, h)
+    if x2c > x1 and y2c > y1:
+        roi_std = float(np.std(grays[0][y1:y2c, x1:x2c]))
+    else:
+        roi_std = 0.0
+
+    # Tristate decision with the new inconclusive band.
+    if roi_std < MOTION_ROI_MIN_TEXTURE_STD:
+        # Untextured ROI — diff is uninformative. No override.
+        stopped = False
+        inconclusive = True
+    elif score < MOTION_DIFF_STOPPED_THRESHOLD:
+        stopped = True
+        inconclusive = False
+    elif score > MOTION_DIFF_RUNNING_THRESHOLD:
+        stopped = False
+        inconclusive = False
+    else:
+        stopped = False
+        inconclusive = True
+
     return {
         "score": score,
         "threshold": MOTION_DIFF_STOPPED_THRESHOLD,
-        "stopped": score < MOTION_DIFF_STOPPED_THRESHOLD,
+        "running_threshold": MOTION_DIFF_RUNNING_THRESHOLD,
+        "roi_std": roi_std,
+        "stopped": stopped,
+        "inconclusive": inconclusive,
         "n_frames": len(grays),
         "n_pairs": len(diffs),
         "latency_sec": time.time() - t0,

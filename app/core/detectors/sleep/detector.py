@@ -737,14 +737,23 @@ class SleepDetector:
         if is_wrists_active:
             sleep_score -= 1
 
-        # Haar cascade eye closure boost
+        # Haar cascade eye closure boost.
+        # Gated on HAAR_EYE_DETECTION_ENABLED so the master switch actually
+        # controls the score path, not just instantiation. CLAUDE.md notes
+        # Haar is "non-functional from overhead" and the default is OFF;
+        # without this gate a single-frame Haar positive could still cross
+        # the sleep_score threshold on its own (boost=5, threshold=5).
         haar_eye_closed = False
         if haar_result is None:
             haar_result = {}
-        haar_eye_closed = haar_result.get('eyes_closed', False)
-        if haar_eye_closed:
-            haar_boost = getattr(self.settings, 'haar_eye_score_boost', 5) if self.settings else 5
-            sleep_score += haar_boost
+        _haar_enabled = bool(
+            getattr(self.settings, 'haar_eye_detection_enabled', False)
+        ) if self.settings else False
+        if _haar_enabled:
+            haar_eye_closed = haar_result.get('eyes_closed', False)
+            if haar_eye_closed:
+                haar_boost = getattr(self.settings, 'haar_eye_score_boost', 5) if self.settings else 5
+                sleep_score += haar_boost
 
         score_thresh = getattr(self.settings, 'sleep_score_threshold', 5) if self.settings else 5
         sleep_indicators_met = sleep_score >= score_thresh

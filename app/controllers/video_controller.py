@@ -73,6 +73,11 @@ from ..services.external_api_service import get_external_api_service
 from ..services.minio_service import get_minio_service
 from ..services.vlm_verification_service import get_vlm_verification_service
 from ..services.gpu_resource_manager import get_gpu_resource_manager
+from ..services.dedup_service import (
+    get_dedup_cache,
+    sha256_of_bytes,
+    sha256_of_file,
+)
 from ..utils.logger import get_logger
 from ..utils.config import get_settings
 from ..utils.url_safety import validate_external_url, URLNotAllowed
@@ -345,6 +350,10 @@ async def _run_video_pipeline(
                 logger.info(f"ALP Crew: {alpCrewName} ({alpCrewId})")
 
         # --- Acquire video bytes / save to disk -----------------------------
+        # ``video_sha256`` is populated in every branch below so that the
+        # post-processing block can cache the result by (sha256, trip_id).
+        # Default empty disables caching for that request (e.g. on hash error).
+        video_sha256: str = ""
         if not upload_to_external_api and has_url:
             # Download video from MinIO
             logger.info(f"[OK] Downloading video from MinIO: {videoUrl}")
@@ -360,6 +369,10 @@ async def _run_video_pipeline(
                 video_filename = os.path.basename(video_path)
                 file_size = os.path.getsize(video_path)
                 logger.info(f"[OK] Downloaded video: {video_filename} ({file_size / (1024*1024):.2f} MB)")
+                try:
+                    video_sha256 = sha256_of_file(video_path)
+                except Exception as e:
+                    logger.warning(f"[DEDUP] hash compute failed for {video_path}: {e}")
             except Exception as e:
                 logger.error(f"[ERROR] Failed to download video from MinIO: {e}")
                 raise HTTPException(
@@ -379,6 +392,11 @@ async def _run_video_pipeline(
             if not is_valid:
                 logger.warning(f"[WARN] Video validation failed: {error_message}")
                 raise HTTPException(status_code=400, detail=error_message)
+
+            try:
+                video_sha256 = sha256_of_bytes(video_content)
+            except Exception as e:
+                logger.warning(f"[DEDUP] hash compute failed: {e}")
 
             video_path = await video_processing_service.save_uploaded_video(
                 file_content=video_content, filename=video_filename, trip_id=tripId,
@@ -430,10 +448,51 @@ async def _run_video_pipeline(
                 logger.warning(f"[WARN] Video validation failed for trip {tripId}: {error_message}")
                 raise HTTPException(status_code=status_code, detail=error_message)
 
+            try:
+                video_sha256 = sha256_of_bytes(video_bytes)
+            except Exception as e:
+                logger.warning(f"[DEDUP] hash compute failed: {e}")
+
             video_path = await video_processing_service.save_uploaded_video(
                 video_bytes, filename, tripId,
             )
             logger.info(f"[OK] Video saved: {video_path}")
+
+        # --- Content-hash dedup lookup --------------------------------------
+        # Same SHA-256 + same tripId within the TTL window → return the cached
+        # response instead of re-running the pipeline. Same content under a
+        # different trip is intentionally NOT cached-hit: trips have different
+        # crew metadata, external-API targets, and operational context.
+        # Stops duplicate uploads (observed in the 2026-05-20 50-video load
+        # test: CH2_0000010121900000 vs CH2_00000101219000000 same bytes)
+        # from burning ~90s of GPU each.
+        # Cached value is the FINAL response (post-S3, post-external-API) so a
+        # hit does NOT re-execute side effects (S3 upload / external API post).
+        # Cache key is per-endpoint via a marker on the dict so the analyze
+        # vs process-and-upload response shapes don't cross-pollinate.
+        _cache_endpoint = "process_and_upload" if upload_to_external_api else "analyze"
+        _cache_key_sha = f"{_cache_endpoint}:{video_sha256}" if video_sha256 else ""
+        if _cache_key_sha:
+            _cache = get_dedup_cache()
+            _cached = _cache.get(_cache_key_sha, tripId)
+            if _cached is not None:
+                logger.info(
+                    f"[DEDUP] HIT for trip {tripId} sha256={video_sha256[:16]}... "
+                    f"endpoint={_cache_endpoint} — returning cached response "
+                    f"without re-processing"
+                )
+                # Release the admission slot we took in try_enqueue() above;
+                # we never reached acquire_gpu_slot() so this is the symmetric
+                # cleanup path that release_enqueue_on_error() exists for.
+                try:
+                    gpu_resource_manager.release_enqueue_on_error()
+                except Exception:
+                    pass
+                # Rebuild a fresh response from the cached payload so headers/
+                # middleware state aren't reused from the original request.
+                if upload_to_external_api:
+                    return JSONResponse(content=_cached)
+                return VideoProcessingResponse(**_cached)
 
         # --- Determine multiprocessing setting + log ------------------------
         # Priority: request parameter > config setting > default (False)
@@ -535,6 +594,13 @@ async def _run_video_pipeline(
                 f"Time: {result.get('processingTime', 0):.2f}s"
             )
 
+            if _cache_key_sha:
+                try:
+                    # Cache the dict so headers/middleware state aren't reused
+                    # by future cache-hit responses.
+                    get_dedup_cache().put(_cache_key_sha, tripId, dict(result))
+                except Exception as _cache_exc:
+                    logger.warning(f"[DEDUP] cache put failed: {_cache_exc}")
             return VideoProcessingResponse(**result)
 
         # /api/v1/video/process-and-upload: VLM verification, S3 upload of
@@ -799,6 +865,11 @@ async def _run_video_pipeline(
         }
 
         logger.info(f"[OK] Complete workflow finished for trip: {tripId}")
+        if _cache_key_sha:
+            try:
+                get_dedup_cache().put(_cache_key_sha, tripId, response_data)
+            except Exception as _cache_exc:
+                logger.warning(f"[DEDUP] cache put failed: {_cache_exc}")
         return JSONResponse(content=response_data)
 
     except HTTPException:

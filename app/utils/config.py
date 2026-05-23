@@ -68,6 +68,11 @@ class Settings(BaseSettings):
     allowed_video_extensions: List[str] = [".mp4", ".avi", ".mov", ".mkv"]
     # Use cross-platform temp directory (works on Windows, macOS, and Linux)
     upload_dir: str = os.getenv("UPLOAD_DIR", os.path.join(tempfile.gettempdir(), "locopilot_uploads"))
+    # Content-hash dedup TTL. When a video with the same SHA-256 + trip_id is
+    # uploaded within this window, the cached prior result is returned without
+    # re-running the pipeline. Set to 0 to disable. Default: 6 hours.
+    # See app/services/dedup_service.py.
+    video_dedup_ttl_seconds: float = float(os.getenv("VIDEO_DEDUP_TTL_SECONDS", "21600"))
     
     # Output settings
     # Convert to absolute path to avoid path resolution issues
@@ -708,6 +713,24 @@ class Settings(BaseSettings):
     # by a small median and a large median lags real stop transitions. Tune if
     # you observe isolated single-frame FP spikes.
     train_motion_vibration_median_window: int = int(os.getenv("TRAIN_MOTION_VIB_MEDIAN_WINDOW", "1"))
+    # Adaptive per-video baseline (diesel idle compensation). When enabled, the
+    # detector accumulates the first N samples of vibration_mean as the idle
+    # baseline and rescales subsequent samples relative to it. Required because
+    # diesel idle on this trainset produces vib_mean ~4.77 (well above the
+    # absolute vibration_threshold=1.0 and vibration_high=3.0), saturating the
+    # score in BOTH running and stopped states (CLAUDE.md "vib median 4.77
+    # RUNNING vs 2.01 STOPPED bimodal but overlapping"). Set window=0 to
+    # disable. Default 15 samples ≈ 30s at sample_fps=0.5.
+    train_motion_vibration_baseline_window: int = int(os.getenv("TRAIN_MOTION_VIB_BASELINE_WINDOW", "15"))
+    # Multipliers against the per-video baseline that map to the new ramp
+    # endpoints. low=1.4 means "1.4x the idle baseline is the start of RUNNING";
+    # high=2.0 means "2.0x baseline saturates the running score at 1.0".
+    train_motion_vibration_baseline_low_mult: float = float(
+        os.getenv("TRAIN_MOTION_VIB_BASELINE_LOW_MULT", "1.4")
+    )
+    train_motion_vibration_baseline_high_mult: float = float(
+        os.getenv("TRAIN_MOTION_VIB_BASELINE_HIGH_MULT", "2.0")
+    )
     # Number of prior frames whose person bboxes get unioned into the interior
     # mask (in addition to the current frame). At low sample FPS a walking
     # person crosses many pixels per sample, so 1-frame prev-mask isn't enough.
@@ -762,7 +785,10 @@ class Settings(BaseSettings):
     vlm_model: str = os.getenv("VLM_MODEL", "Qwen/Qwen2.5-VL-7B-Instruct-AWQ")
     # Comma-separated activity names (matches ACTIVITY_REGISTRY keys) to verify.
     # Activities not listed are passed through unchanged.
-    vlm_verify_activities: str = os.getenv("VLM_VERIFY_ACTIVITIES", "writing,eating_drinking")
+    vlm_verify_activities: str = os.getenv(
+        "VLM_VERIFY_ACTIVITIES",
+        "writing,eating_drinking,packing_bags,cell_phone,microsleep",
+    )
     # Minimum VLM confidence required to drop a Pipeline-1 detection. Set to a
     # value > 1.0 to disable dropping while still recording verdicts.
     vlm_drop_threshold: float = float(os.getenv("VLM_DROP_THRESHOLD", "0.80"))

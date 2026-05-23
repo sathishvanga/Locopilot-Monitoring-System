@@ -116,7 +116,14 @@ def _build_activity_registry() -> Dict[str, ActivityConfig]:
         ),
         'sleep': ActivityConfig(
             type_code=4,
-            description='Sleep detected (30+ seconds)',
+            # 2026-05-20: description says "30+ seconds" but min_duration was
+            # 2.0 — a 15x mismatch surfaced in the violations audit. The
+            # SleepDetector also owns its own SLEEP_STRONG_DURATION=2,
+            # SLEEP_MODERATE_DURATION=4, SLEEP_MICROSLEEP_DURATION=5 internal
+            # thresholds, so requiring a 30s registry-side minimum on top
+            # would lose all real sleep TPs. Bring the description in line
+            # with the actual gate.
+            description='Sleep detected (sustained)',
             evidence_rule='pose_indicators',
             triggering_role=None,
             min_duration=2.0,
@@ -144,12 +151,15 @@ def _build_activity_registry() -> Dict[str, ActivityConfig]:
             description='WRITING LOG BOOK WHILE RUNNING',
             evidence_rule='hand_near_book_or_wrist_proximity',
             triggering_role=None,
-            # 2026-04-23: consecutive 2->1. Writing v4 rule has two high-precision
-            # paths (book-bbox-inside AND pose-only wrists-together-in-lap).
-            # Each fire is trustworthy — requiring 2 consecutive samples drops
-            # the sparse short GT events (TV22.5_0447 5s, TV22.9 5s, TV22.8 3s).
+            # 2026-04-23: bumped 2->1 to recover sparse short GT events.
+            # 2026-05-20: re-tightened 1->2 after the 50-video load test
+            # showed Pipeline-1 firing 843 writing detections that the VLM
+            # pre-gate had to filter (no target object in keyframe — i.e.
+            # path-B posture-only). At 0.5fps, 2 consecutive samples span
+            # ~6s of evidence, enough that real writing TPs still pass
+            # (the kept v06/v21/Cabin27 TPs all had multi-frame bursts).
             min_duration=2.0,
-            required_consecutive=1,
+            required_consecutive=2,
             margin=writing_margin,
             grace_frames=10,
         ),
@@ -158,8 +168,12 @@ def _build_activity_registry() -> Dict[str, ActivityConfig]:
             description='Packing bags activity detected',
             evidence_rule='wrist_inside_backpack_bbox_or_hand_near_backpack',
             triggering_role=None,
+            # 2026-05-20: required_consecutive 1->2 paired with writing
+            # tighten above. Pipeline-1's sustained-proximity fallback fires
+            # on hand-near-bag for 4s with zero motion, so a single-frame
+            # confirm was effectively a 4s no-motion threshold — too weak.
             min_duration=0.0,
-            required_consecutive=1,
+            required_consecutive=2,
             margin=packing_margin,
             grace_frames=5,
             region_margin=packing_region_margin,
