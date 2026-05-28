@@ -82,7 +82,7 @@ def test_per_activity_exception_keeps_all_five_activities():
 
     call_idx = {"n": 0}
 
-    async def boom_on_second(activity, prompt, object_type=""):
+    async def boom_on_second(activity, prompt, object_type="", **kwargs):
         call_idx["n"] += 1
         if call_idx["n"] == 2:
             raise RuntimeError("simulated transient vLLM crash")
@@ -135,7 +135,7 @@ def test_malformed_json_response_keeps_all_activities():
     svc = _fresh_service()
     activities = [_make_activity(i) for i in range(1, 4)]
 
-    async def parse_error(activity, prompt, object_type=""):
+    async def parse_error(activity, prompt, object_type="", **kwargs):
         return {
             "status": "PARSE_ERROR",
             "verdict": None,
@@ -164,7 +164,7 @@ def test_skipped_vlm_unavailable_keeps_activity():
     svc = _fresh_service()
     activities = [_make_activity(i) for i in range(1, 4)]
 
-    async def unavailable(activity, prompt, object_type=""):
+    async def unavailable(activity, prompt, object_type="", **kwargs):
         return {
             "status": "SKIPPED_VLM_UNAVAILABLE",
             "verdict": "SKIPPED_VLM_UNAVAILABLE",
@@ -201,7 +201,7 @@ def test_classification_phase_exception_keeps_activity():
 
     activities = [bad, good]
 
-    async def ok(activity, prompt, object_type=""):
+    async def ok(activity, prompt, object_type="", **kwargs):
         return {
             "status": "OK",
             "verdict": {"verdict": "TRUE_POSITIVE", "confidence": 0.9},
@@ -238,7 +238,7 @@ def test_concurrent_dispatch_bounds_latency(monkeypatch):
     activities = [_make_activity(i) for i in range(1, 7)]
     SLEEP_S = 0.25  # half of the "timeout" budget
 
-    async def slow_ok(activity, prompt, object_type=""):
+    async def slow_ok(activity, prompt, object_type="", **kwargs):
         await asyncio.sleep(SLEEP_S)
         return {
             "status": "OK",
@@ -323,7 +323,7 @@ def test_inner_json_decode_returns_parse_error_and_does_not_trip_breaker(monkeyp
     monkeypatch.setattr(vsvc, "_resolve_keyframes", lambda act: [object()])
     monkeypatch.setattr(
         vsvc, "_stitch_keyframes",
-        lambda paths, crop_to_roi=True: b"\xff\xd8\xff\xd9",
+        lambda paths, *args, **kwargs: b"\xff\xd8\xff\xd9",
     )
 
     activity = {
@@ -385,7 +385,7 @@ def test_inner_json_decode_via_public_api_keeps_activity_and_increments_stats(mo
     monkeypatch.setattr(vsvc, "_resolve_keyframes", lambda act: [object()])
     monkeypatch.setattr(
         vsvc, "_stitch_keyframes",
-        lambda paths, crop_to_roi=True: b"\xff\xd8\xff\xd9",
+        lambda paths, *args, **kwargs: b"\xff\xd8\xff\xd9",
     )
 
     activities = [_make_activity(i) for i in range(1, 4)]

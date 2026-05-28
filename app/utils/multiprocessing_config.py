@@ -88,10 +88,6 @@ class MultiprocessingConfig:
     yolo_pose_model_path: str = os.getenv("YOLO_POSE_WEIGHTS", "yolo26n-pose.pt")  # YOLO26 nano-pose for body pose
     yolo_device: str = os.getenv("YOLO_DEVICE", "cpu")  # Device for YOLO inference (cpu, cuda:0, 0)
 
-    # ROI crop detection: separate (stronger) YOLO model for pose-guided crops
-    # Uses a more accurate model on small crops around keypoints for better small object recall
-    yolo_roi_model_path: str = os.getenv("YOLO_ROI_WEIGHTS", "yolo26s.pt")
-
     # GPU Batch Processing Settings
     # These settings optimize GPU utilization by processing multiple frames at once
     # instead of one frame at a time, keeping the GPU busy and reducing overhead.

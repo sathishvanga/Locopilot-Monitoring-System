@@ -101,7 +101,7 @@ def test_breaker_short_circuits_verify_one_no_http_attempt(monkeypatch):
     monkeypatch.setattr(vsvc, "_resolve_keyframes", lambda act: [object()])
     monkeypatch.setattr(
         vsvc, "_stitch_keyframes",
-        lambda paths, crop_to_roi=True: b"\xff\xd8\xff\xd9",
+        lambda paths, *args, **kwargs: b"\xff\xd8\xff\xd9",
     )
 
     activity = {
@@ -155,7 +155,7 @@ def test_three_consecutive_timeouts_open_breaker_via_full_pipeline(monkeypatch):
     # at module level.
     from app.services import vlm_verification_service as vsvc
     monkeypatch.setattr(vsvc, "_resolve_keyframes", lambda act: [object()])
-    monkeypatch.setattr(vsvc, "_stitch_keyframes", lambda paths, crop_to_roi=True: b"\xff\xd8\xff\xd9")
+    monkeypatch.setattr(vsvc, "_stitch_keyframes", lambda paths, *args, **kwargs: b"\xff\xd8\xff\xd9")
 
     activities = [
         {
@@ -229,7 +229,7 @@ def test_breaker_resets_after_cooldown_in_full_pipeline(monkeypatch):
     )
     from app.services import vlm_verification_service as vsvc
     monkeypatch.setattr(vsvc, "_resolve_keyframes", lambda act: [object()])
-    monkeypatch.setattr(vsvc, "_stitch_keyframes", lambda paths, crop_to_roi=True: b"\xff\xd8\xff\xd9")
+    monkeypatch.setattr(vsvc, "_stitch_keyframes", lambda paths, *args, **kwargs: b"\xff\xd8\xff\xd9")
 
     activity = {
         "id": "act-after-cooldown",

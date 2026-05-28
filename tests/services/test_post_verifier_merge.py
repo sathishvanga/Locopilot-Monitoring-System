@@ -189,7 +189,7 @@ def test_flag_off_preserves_legacy_ordering():
     svc = _fresh_service()
     seen_calls: list[dict] = []
 
-    async def fake_verify(activity, prompt, object_type):
+    async def fake_verify(activity, prompt, object_type, **kwargs):
         # Snapshot what the verifier saw so we can assert on shape AFTER
         # the call. We deepcopy the relevant fields rather than the whole
         # dict to avoid pulling in the (mutating) ``_sourceActivities`` ref.
@@ -260,7 +260,7 @@ def test_flag_on_runs_verify_before_group():
     svc = _fresh_service()
     seen_calls: list[dict] = []
 
-    async def fake_verify(activity, prompt, object_type):
+    async def fake_verify(activity, prompt, object_type, **kwargs):
         seen_calls.append({
             "object_type": object_type,
             "is_combined": bool(activity.get("_isCombined")),
@@ -336,7 +336,7 @@ def test_flag_on_drops_co_merged_fp_keeps_tp():
 
     svc = _fresh_service()
 
-    async def fake_verify(activity, prompt, object_type):
+    async def fake_verify(activity, prompt, object_type, **kwargs):
         if object_type == "writing":
             return _make_verdict("TRUE_POSITIVE", 0.90)
         if object_type == "cell_phone":

@@ -286,6 +286,7 @@ def _stitch_keyframes(
     max_strip_width: int = 1500,
     crop_to_roi: bool = True,
     stack: str = "horizontal",
+    bboxes: Optional[Dict[str, Any]] = None,
 ) -> Optional[bytes]:
     """Stitch up to 5 keyframes into a single labelled JPEG.
 
@@ -321,6 +322,14 @@ def _stitch_keyframes(
     Each frame gets a ``FRAME N`` tag in its top-left corner so the VLM
     can reference it via ``evidence_frame``. Single-frame input returns
     the original bytes unchanged regardless of mode.
+
+    ``bboxes`` is the activity dict's ``bboxes`` field — when provided,
+    :func:`_crop_to_roi` uses the stored coords directly via
+    :func:`_roi_from_bboxes` instead of recovering them from painted
+    pixels. The same dict is applied to every frame in the strip on the
+    assumption that all keyframes for one activity share the same ROI;
+    grouped activities with per-burst geometry should be split before
+    stitching once :func:`_resolve_keyframes` supports per-entry bboxes.
     """
     if not jpg_paths:
         return None
@@ -338,7 +347,7 @@ def _stitch_keyframes(
             logger.warning("[vlm] cv2.imread returned None for %s", p)
             continue
         if crop_to_roi:
-            img = _crop_to_roi(img)
+            img = _crop_to_roi(img, bboxes=bboxes)
         cv2.rectangle(img, (0, 0), (110, 30), (0, 0, 0), -1)
         cv2.putText(img, f"FRAME {idx + 1}", (8, 22), cv2.FONT_HERSHEY_SIMPLEX,
                     0.7, (255, 255, 255), 2, cv2.LINE_AA)

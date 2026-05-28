@@ -50,7 +50,7 @@ class MotionConfig:
     sample_fps: float = 0.5
 
     # YOLO person masking
-    yolo_weights: str = "yolo26n.pt"
+    yolo_weights: str = "yolo11l.pt"
     yolo_confidence: float = 0.25
     person_mask_padding: float = 0.10  # 10% bbox expansion
 
@@ -637,7 +637,7 @@ def main():
     parser = argparse.ArgumentParser(description="Train Motion Detection (Vibration+Window)")
     parser.add_argument("--video", required=True)
     parser.add_argument("--sample-fps", type=float, default=0.5)
-    parser.add_argument("--yolo-weights", default="yolo26n.pt")
+    parser.add_argument("--yolo-weights", default="yolo11l.pt")
     parser.add_argument("--vib-threshold", type=float, default=1.0)
     parser.add_argument("--vib-high", type=float, default=3.0)
     parser.add_argument("--win-threshold", type=float, default=2.0)

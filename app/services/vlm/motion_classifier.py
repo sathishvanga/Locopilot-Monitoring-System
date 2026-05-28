@@ -93,15 +93,20 @@ _ROI_BY_CAMERA_ANGLE: Dict[int, Tuple[int, int, int, int]] = {
 }
 
 
-# Threshold tuned on the 7-clip batch: the lowest motion score for the
-# only TP (vid11, running) was 13.15; the highest score for the 5 actually-
-# posted FPs (excluding vid06a which was already filtered by Pipeline-1)
-# was 7.55. A threshold of 10.0 sits cleanly between the two.
+# Original tuning note (7-clip batch): TP score 13.15, FP scores up to
+# 7.55 → 10.0 chosen as a midpoint. That tuning later proved too
+# conservative on a 10-video MinIO batch (2026-05-28): the gate dropped
+# ~75% of activities that Qwen subsequently judged TRUE_POSITIVE, because
+# the per-pixel mean diff over the WINDOW ROI is dominated by interior
+# texture and the moving-scenery signal sits well below 10. Lowered the
+# default to 3.0 and exposed as ``VLM_WINDOW_MOTION_THRESHOLD``.
 #
-# This is a CONSERVATIVE threshold — when in doubt (no camera detected,
-# OCR failure, ROI extraction failure), we DO NOT override. Falls back to
-# the existing VLM verdict pipeline.
-MOTION_DIFF_STOPPED_THRESHOLD: float = 10.0
+# This is still a CONSERVATIVE threshold — when in doubt (no camera
+# detected, OCR failure, ROI extraction failure), we DO NOT override.
+# Falls back to the existing VLM verdict pipeline.
+MOTION_DIFF_STOPPED_THRESHOLD: float = float(
+    os.getenv("VLM_WINDOW_MOTION_THRESHOLD", "3.0")
+)
 
 
 # Per-source-video cache for the detected camera ID. Many activities share

@@ -2,13 +2,30 @@
 
 Task 0008 (architecture cleanup): the per-frame multi-person dispatcher
 ``process_all_persons_activities`` previously lived as a ~1,200-line method on
-the monolith. The body has been moved here verbatim with only one mechanical
-change -- every ``self.<attr>`` access now reads the originating monitor as
-``monitor.<attr>``. The runner is stateless; all mutable per-person tracking
-state remains on the monitor.
+the monolith. The body has been moved here.
+
+2026-05-27 follow-up refactor: the ``monitor`` back-reference has been removed.
+All dependencies the runner needs are now injected explicitly at construction
+time via :meth:`__init__`:
+
+* detector instances (``yolo_pose``, ``sleep_detector``, ``object_detector``,
+  ``activity_detector``)
+* logger
+* settings + activity_thresholds (config/threshold lookup)
+* helper callables bound from the monitor (``match_pose_to_roles``,
+  ``calculate_head_pose_angles``, ``detect_hand_gesture``, etc.)
+* mutable per-person state dicts (``no_pose_sleep_tracking``,
+  ``recent_person_activities``, ``writing_last_book_seen``,
+  ``consecutive_detections``)
+
+The mutable state dicts are passed by reference: mutations the runner makes
+remain visible on the monitor because dict identity is preserved. This keeps
+behaviour byte-identical with the pre-refactor monitor back-reference while
+eliminating the back-reference itself, so ``run()`` only takes per-frame
+inputs.
 """
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 import cv2
 import math
@@ -35,13 +52,75 @@ def _zero_disabled(person_activities: Dict[str, bool]) -> None:
 class MultiPersonActivityRunner:
     """Stateless orchestrator for per-frame multi-person activity detection.
 
-    The :meth:`run` method is the relocated body of
-    ``LocopilotActivityMonitor.process_all_persons_activities``. It receives
-    the host monitor and reads every detector / tracking attribute through
-    that reference, so nothing on the monitor's side needs to be re-routed.
+    All collaborators (detector instances, helper callables, config and the
+    mutable per-person tracking dicts) are injected via :meth:`__init__`. The
+    :meth:`run` method then takes only per-frame inputs — there is no
+    ``monitor`` back-reference and no detector reaches for any other detector
+    through ``self`` on the monitor.
     """
 
-    def run(self, monitor, frame: Any, detections: Dict[str, List[Any]],
+    def __init__(
+        self,
+        *,
+        # ---- detector instances ----
+        yolo_pose: Any,
+        sleep_detector: Any,
+        object_detector: Any,
+        activity_detector: Any,
+        # ---- logger / config ----
+        logger: Any,
+        settings: Any,
+        activity_thresholds: Dict[str, Dict[str, Any]],
+        # ---- helper callables (bound methods from the monitor) ----
+        match_pose_to_roles: Callable[..., Any],
+        update_static_phone_tracking: Callable[..., Any],
+        update_static_backpack_tracking: Callable[..., Any],
+        calculate_head_pose_angles: Callable[..., Any],
+        detect_hand_gesture: Callable[..., Any],
+        get_keypoint: Callable[..., Any],
+        check_hand_object_interaction: Callable[..., Any],
+        update_per_person_detection: Callable[..., Any],
+        should_suppress_mind_diversion: Callable[..., Any],
+        analyze_packing_hand_motion: Callable[..., Any],
+        get_smoothed_hand_position: Callable[..., Any],
+        check_wrist_motion_for_packing: Callable[..., Any],
+        cleanup_stale_person_tracking: Callable[..., Any],
+        # ---- mutable state dicts (shared by reference with the monitor) ----
+        no_pose_sleep_tracking: Dict[int, Any],
+        recent_person_activities: Dict[int, Dict[str, float]],
+        writing_last_book_seen: Dict[int, float],
+        consecutive_detections: Dict[str, int],
+    ) -> None:
+        # detector instances
+        self._yolo_pose = yolo_pose
+        self._sleep_detector = sleep_detector
+        self._object_detector = object_detector
+        self._activity_detector = activity_detector
+        # logger / config
+        self._logger = logger
+        self._settings = settings
+        self._activity_thresholds = activity_thresholds
+        # helper callables
+        self._match_pose_to_roles = match_pose_to_roles
+        self._update_static_phone_tracking = update_static_phone_tracking
+        self._update_static_backpack_tracking = update_static_backpack_tracking
+        self._calculate_head_pose_angles = calculate_head_pose_angles
+        self._detect_hand_gesture = detect_hand_gesture
+        self._get_keypoint = get_keypoint
+        self._check_hand_object_interaction = check_hand_object_interaction
+        self._update_per_person_detection = update_per_person_detection
+        self._should_suppress_mind_diversion = should_suppress_mind_diversion
+        self._analyze_packing_hand_motion = analyze_packing_hand_motion
+        self._get_smoothed_hand_position = get_smoothed_hand_position
+        self._check_wrist_motion_for_packing = check_wrist_motion_for_packing
+        self._cleanup_stale_person_tracking = cleanup_stale_person_tracking
+        # mutable state (shared by reference)
+        self._no_pose_sleep_tracking = no_pose_sleep_tracking
+        self._recent_person_activities = recent_person_activities
+        self._writing_last_book_seen = writing_last_book_seen
+        self._consecutive_detections = consecutive_detections
+
+    def run(self, frame: Any, detections: Dict[str, List[Any]],
             person_roles: Dict[int, Dict[str, Any]], timestamp_sec: float,
             face_results: Any = None, frame_number: Optional[int] = None,
             precomputed_pose_results: Optional[Any] = None,
@@ -103,6 +182,25 @@ class MultiPersonActivityRunner:
                 }
             }
         """
+        # Local aliases — keep the body's structure unchanged while routing
+        # every former ``monitor.X`` access through the injected dependency.
+        logger = self._logger
+        settings = self._settings
+        sleep_detector = self._sleep_detector
+        object_detector = self._object_detector
+        activity_detector = self._activity_detector
+        no_pose_sleep_tracking = self._no_pose_sleep_tracking
+        recent_person_activities = self._recent_person_activities
+        writing_last_book_seen = self._writing_last_book_seen
+        consecutive_detections = self._consecutive_detections
+        activity_thresholds = self._activity_thresholds
+        get_keypoint = self._get_keypoint
+        check_hand_object_interaction = self._check_hand_object_interaction
+        update_per_person_detection = self._update_per_person_detection
+        analyze_packing_hand_motion = self._analyze_packing_hand_motion
+        get_smoothed_hand_position = self._get_smoothed_hand_position
+        check_wrist_motion_for_packing = self._check_wrist_motion_for_packing
+
         if not person_roles or len(person_roles) == 0:
             # No persons detected, return empty results
             return {
@@ -130,15 +228,15 @@ class MultiPersonActivityRunner:
         if precomputed_pose_results is not None:
             yolo_pose_results = precomputed_pose_results
         else:
-            yolo_pose_results = monitor.yolo_pose.process(frame)
+            yolo_pose_results = self._yolo_pose.process(frame)
 
         # Match YOLO pose detections to person_roles by bounding box IoU
-        matched_poses = monitor._match_pose_to_roles(yolo_pose_results, person_roles)
+        matched_poses = self._match_pose_to_roles(yolo_pose_results, person_roles)
 
         # Match low-confidence sleep poses as fallback for persons not found at normal confidence
         matched_sleep_poses = {}
         if precomputed_sleep_pose_results is not None and precomputed_sleep_pose_results:
-            matched_sleep_poses = monitor._match_pose_to_roles(precomputed_sleep_pose_results, person_roles)
+            matched_sleep_poses = self._match_pose_to_roles(precomputed_sleep_pose_results, person_roles)
 
         # Dark frame flag for IR forward lean detection (compute if not passed by caller)
         if is_dark_frame is None:
@@ -146,12 +244,12 @@ class MultiPersonActivityRunner:
             try:
                 gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY) if len(frame.shape) == 3 else frame
                 frame_brightness = float(np.mean(gray)) / 255.0
-                is_dark_frame = frame_brightness < monitor.settings.yolo_dark_frame_brightness_threshold
+                is_dark_frame = frame_brightness < settings.yolo_dark_frame_brightness_threshold
             except Exception as e:
-                monitor.logger.debug(f"[DARK FRAME] Failed to check frame brightness: {e}")
+                logger.debug(f"[DARK FRAME] Failed to check frame brightness: {e}")
 
         # Filter out static cell phone detections (panel instruments) before per-person processing
-        detections['cell_phone'] = monitor._update_static_phone_tracking(detections['cell_phone'])
+        detections['cell_phone'] = self._update_static_phone_tracking(detections['cell_phone'])
 
         # PRE-PASS: batch pose-guided ROI detection across ALL matched persons
         # in a single YOLO call. Downstream per-keypoint visibility check in
@@ -163,12 +261,12 @@ class MultiPersonActivityRunner:
         precomputed_rois_by_person: Dict[int, Dict[str, List[Any]]] = {}
         if matched_poses:
             try:
-                precomputed_rois_by_person = monitor.object_detector.detect_objects_multi_persons_rois(
+                precomputed_rois_by_person = object_detector.detect_objects_multi_persons_rois(
                     frame, matched_poses
                 )
             except Exception as _e:
                 # Safe fallback: main loop calls per-person detection directly.
-                monitor.logger.debug(f"[MULTI-PERSON ROI] batched call failed, falling back: {_e}")
+                logger.debug(f"[MULTI-PERSON ROI] batched call failed, falling back: {_e}")
                 precomputed_rois_by_person = {}
 
         # Process each person individually
@@ -230,7 +328,7 @@ class MultiPersonActivityRunner:
                     )
 
                     if not torso_in_bbox:
-                        monitor.logger.warning(
+                        logger.warning(
                             f"[KEYPOINT VALIDATION] Person {person_idx} ({person_data.get('role', 'UNKNOWN')}): "
                             f"Torso center ({torso_center_x:.0f}, {torso_center_y:.0f}) outside expanded bbox "
                             f"[{expanded_x1:.0f}-{expanded_x2:.0f}, {expanded_y1:.0f}-{expanded_y2:.0f}] - SKIPPING"
@@ -238,7 +336,7 @@ class MultiPersonActivityRunner:
                         has_pose = False
                         translated_landmarks = None
                     else:
-                        monitor.logger.debug(
+                        logger.debug(
                             f"[KEYPOINT VALIDATION] Person {person_idx} ({person_data.get('role', 'UNKNOWN')}): "
                             f"Torso center ({torso_center_x:.0f}, {torso_center_y:.0f}) VALID within bbox"
                         )
@@ -266,10 +364,10 @@ class MultiPersonActivityRunner:
                     # --- Object-based eating/drinking (cup directly overlaps person bbox) ---
                     if (
                         is_activity_enabled('eating_drinking')
-                        and getattr(monitor.settings, 'eating_drinking_detection_enabled', True)
+                        and getattr(settings, 'eating_drinking_detection_enabled', True)
                     ):
                         cup_bottle_bboxes = []
-                        cup_conf_threshold = getattr(monitor.settings, 'eating_drinking_cup_confidence', 0.25)
+                        cup_conf_threshold = getattr(settings, 'eating_drinking_cup_confidence', 0.25)
                         for roi_det in detections.get('roi_detections', []):
                             if roi_det['class'] in ('cup', 'bottle') and roi_det['confidence'] > cup_conf_threshold:
                                 det_bbox = roi_det['bbox']
@@ -286,7 +384,7 @@ class MultiPersonActivityRunner:
                             no_pose_debug['head_pose']['sub_type'] = 'eating_drinking'
                             no_pose_debug['head_pose']['detected'] = True
                             no_pose_debug['head_pose']['method'] = 'no_pose_cup_overlap'
-                            monitor.logger.info(
+                            logger.info(
                                 f"[NO-POSE EATING/DRINKING] Person {person_idx}: cup/bottle overlaps bbox, "
                                 f"no pose available - flagging eating/drinking"
                             )
@@ -298,7 +396,7 @@ class MultiPersonActivityRunner:
                         if sleep_fallback_landmarks is not None and len(sleep_fallback_landmarks.landmark) > 0:
                             visible_kps = sum(1 for lm in sleep_fallback_landmarks.landmark if lm.visibility > 0.3)
                             if visible_kps >= 5:
-                                sleep_det, microsleep_det, sleep_info = monitor.sleep_detector.detect_pose_based_sleep(
+                                sleep_det, microsleep_det, sleep_info = sleep_detector.detect_pose_based_sleep(
                                     sleep_fallback_landmarks, timestamp_sec, person_idx=person_idx,
                                     frame_shape=frame.shape
                                 )
@@ -311,7 +409,7 @@ class MultiPersonActivityRunner:
 
                     # --- IR forward-lean sleep detection (body-only keypoints in dark frames) ---
                     # CR-NEW-003: Safe settings access with default
-                    ir_fl_enabled = getattr(monitor.settings, 'ir_forward_lean_enabled', True) if monitor.settings else True
+                    ir_fl_enabled = getattr(settings, 'ir_forward_lean_enabled', True) if settings else True
                     if is_dark_frame and ir_fl_enabled and not no_pose_activities.get('sleep', False):
                         # Try to use low-confidence sleep landmarks for body-only analysis
                         ir_landmarks = None
@@ -321,7 +419,7 @@ class MultiPersonActivityRunner:
                             ir_landmarks = matched_poses[person_idx]
 
                         if ir_landmarks is not None and hasattr(ir_landmarks, 'landmark') and len(ir_landmarks.landmark) > 0:
-                            ir_sleep, ir_microsleep, ir_info = monitor.sleep_detector.detect_ir_forward_lean_sleep(
+                            ir_sleep, ir_microsleep, ir_info = sleep_detector.detect_ir_forward_lean_sleep(
                                 ir_landmarks, bbox, timestamp_sec, person_idx, frame.shape
                             )
                             if ir_sleep:
@@ -334,23 +432,23 @@ class MultiPersonActivityRunner:
                                 no_pose_debug['sleep_info']['method'] = 'ir_forward_lean'
 
                     # --- No-pose sleep detection (bbox stability tracking) ---
-                    sleep_no_pose_enabled = getattr(monitor.settings, 'sleep_no_pose_enabled', True)
+                    sleep_no_pose_enabled = getattr(settings, 'sleep_no_pose_enabled', True)
                     if sleep_no_pose_enabled:
                         # Use shorter duration for IR/dark frames (15s vs 30s)
                         if is_dark_frame:
-                            min_duration = getattr(monitor.settings, 'ir_sleep_no_pose_min_duration', 15.0)
+                            min_duration = getattr(settings, 'ir_sleep_no_pose_min_duration', 15.0)
                         else:
-                            min_duration = getattr(monitor.settings, 'sleep_no_pose_min_duration', 30.0)
-                        stability_threshold = getattr(monitor.settings, 'sleep_no_pose_bbox_stability_threshold', 0.15)
+                            min_duration = getattr(settings, 'sleep_no_pose_min_duration', 30.0)
+                        stability_threshold = getattr(settings, 'sleep_no_pose_bbox_stability_threshold', 0.15)
 
-                        if person_idx not in monitor.no_pose_sleep_tracking:
-                            monitor.no_pose_sleep_tracking[person_idx] = {
+                        if person_idx not in no_pose_sleep_tracking:
+                            no_pose_sleep_tracking[person_idx] = {
                                 'first_seen': timestamp_sec,
                                 'last_bbox': list(bbox),
                                 'stable_since': timestamp_sec
                             }
                         else:
-                            tracker = monitor.no_pose_sleep_tracking[person_idx]
+                            tracker = no_pose_sleep_tracking[person_idx]
                             # Calculate IoU between current and last bbox to measure stability
                             # CR-NEW-001: Use consolidated calculate_iou method
                             last_bbox = tracker['last_bbox']
@@ -369,7 +467,7 @@ class MultiPersonActivityRunner:
                                 no_pose_activities['sleep'] = True
                                 no_pose_debug['sleep_info']['no_pose_sleep'] = True
                                 no_pose_debug['sleep_info']['stable_duration'] = stable_duration
-                                monitor.logger.info(
+                                logger.info(
                                     f"[NO-POSE SLEEP] Person {person_idx}: no pose for {stable_duration:.1f}s "
                                     f"with stable bbox (change={bbox_change:.3f}) - flagging sleep"
                                 )
@@ -413,7 +511,7 @@ class MultiPersonActivityRunner:
                 if person_idx in precomputed_rois_by_person:
                     person_detections = precomputed_rois_by_person[person_idx]
                 else:
-                    person_detections = monitor.object_detector.detect_objects_person_rois(frame, translated_landmarks)
+                    person_detections = object_detector.detect_objects_person_rois(frame, translated_landmarks)
 
                 # FIX C-01: Create per-person scoped detection lists instead of mutating
                 # the shared 'detections' dict. Using .extend() on the shared dict causes
@@ -424,12 +522,12 @@ class MultiPersonActivityRunner:
 
                 # DEBUG: Log per-person ROI detection results
                 if person_detections['cell_phone']:
-                    monitor.logger.info(f"[MULTI-PERSON ROI] Person {person_idx} ({person_data.get('role', 'UNKNOWN')}): Found {len(person_detections['cell_phone'])} cell phone(s)")
+                    logger.info(f"[MULTI-PERSON ROI] Person {person_idx} ({person_data.get('role', 'UNKNOWN')}): Found {len(person_detections['cell_phone'])} cell phone(s)")
 
                 # ============ ACTIVITY DETECTION FOR THIS PERSON ============
 
                 # 1. MIND DIVERSION DETECTION
-                head_pose_info = monitor.calculate_head_pose_angles(
+                head_pose_info = self._calculate_head_pose_angles(
                     translated_landmarks,
                     face_results,
                     frame.shape
@@ -442,19 +540,13 @@ class MultiPersonActivityRunner:
                 # This allows us to check both book presence AND writing activity
 
                 # 2. SLEEP / MICROSLEEP DETECTION (pose-based)
-                # Run Haar eye detection once (shared between score boost and fallback)
-                haar_eye_result = None
-                # CR-NEW-003: Safe settings access with default
-                haar_enabled = getattr(monitor.settings, 'haar_eye_detection_enabled', True) if monitor.settings else True
-                if (haar_enabled and monitor.eye_cascade is not None):
-                    haar_eye_result = monitor.sleep_detector.detect_eye_closure_haar(
-                        frame, translated_landmarks, person_idx, bbox, timestamp_sec
-                    )
-                    person_debug_info['haar_eye_info'] = haar_eye_result
-
-                pose_sleep_detected, pose_microsleep_detected, pose_sleep_info = monitor.sleep_detector.detect_pose_based_sleep(
+                # Haar eye-closure detection was removed in the 2026-05-27
+                # cleanup (non-functional from overhead; reclined posture
+                # covers it). detect_pose_based_sleep still accepts a
+                # haar_result kwarg for back-compat but ignores it.
+                pose_sleep_detected, pose_microsleep_detected, pose_sleep_info = sleep_detector.detect_pose_based_sleep(
                     translated_landmarks, timestamp_sec, person_idx=person_idx,
-                    frame_shape=frame.shape, haar_result=haar_eye_result
+                    frame_shape=frame.shape,
                 )
                 person_debug_info['sleep_info'] = pose_sleep_info
                 person_activities['sleep'] = pose_sleep_detected
@@ -462,10 +554,10 @@ class MultiPersonActivityRunner:
 
                 # 2b. IR FORWARD LEAN FALLBACK (when dark frame and normal sleep detection missed)
                 # CR-NEW-003: Safe settings access with default
-                ir_fl_enabled = getattr(monitor.settings, 'ir_forward_lean_enabled', True) if monitor.settings else True
+                ir_fl_enabled = getattr(settings, 'ir_forward_lean_enabled', True) if settings else True
                 if (is_dark_frame and ir_fl_enabled and
                         not pose_sleep_detected and not pose_microsleep_detected):
-                    ir_sleep, ir_microsleep, ir_info = monitor.sleep_detector.detect_ir_forward_lean_sleep(
+                    ir_sleep, ir_microsleep, ir_info = sleep_detector.detect_ir_forward_lean_sleep(
                         translated_landmarks, bbox, timestamp_sec, person_idx, frame.shape
                     )
                     if ir_sleep:
@@ -477,26 +569,16 @@ class MultiPersonActivityRunner:
                         person_debug_info['sleep_info'] = ir_info
                         person_debug_info['sleep_info']['method'] = 'ir_forward_lean_pose_fallback'
 
-                # 2c. HAAR EYE CLOSURE FALLBACK (reuse result from step 2 — no second call)
-                if (haar_eye_result is not None and
-                        not person_activities.get('sleep') and not person_activities.get('microsleep')):
-                    if haar_eye_result.get('is_sleep'):
-                        person_activities['sleep'] = True
-                        person_debug_info['sleep_info'] = {'method': 'haar_eye_closure', **haar_eye_result}
-                    elif haar_eye_result.get('is_microsleep'):
-                        person_activities['microsleep'] = True
-                        person_debug_info['sleep_info'] = {'method': 'haar_eye_closure', **haar_eye_result}
-
                 # 3. CELL PHONE DETECTION (check if hand near phone in THIS person's region)
                 # MOVED BEFORE HAND GESTURE: Need to detect this first for context-aware filtering
                 _cell_phone_fired = False
                 _cell_phone_enabled = is_activity_enabled('cell_phone')
                 if _cell_phone_enabled and len(person_cell_phones) > 0:
                     # DEBUG: Log when cell phones are detected
-                    if monitor.consecutive_detections.get('cell_phone', 0) == 0:
-                        monitor.logger.info(f"[DEBUG CELL PHONE] {len(person_cell_phones)} phone(s) detected in frame")
-                    right_hand = monitor.get_keypoint(translated_landmarks, 'right_wrist')
-                    left_hand = monitor.get_keypoint(translated_landmarks, 'left_wrist')
+                    if consecutive_detections.get('cell_phone', 0) == 0:
+                        logger.info(f"[DEBUG CELL PHONE] {len(person_cell_phones)} phone(s) detected in frame")
+                    right_hand = get_keypoint(translated_landmarks, 'right_wrist')
+                    left_hand = get_keypoint(translated_landmarks, 'left_wrist')
 
                     right_hand_coords = (int(right_hand.x * w), int(right_hand.y * h))
                     left_hand_coords = (int(left_hand.x * w), int(left_hand.y * h))
@@ -510,15 +592,16 @@ class MultiPersonActivityRunner:
 
                         if phone_in_person_region:
                             # Check if hand is near the phone (stricter check)
-                            right_hand_near = monitor.check_hand_object_interaction(right_hand_coords, phone_bbox, margin)
-                            left_hand_near = monitor.check_hand_object_interaction(left_hand_coords, phone_bbox, margin)
+                            right_hand_near = check_hand_object_interaction(right_hand_coords, phone_bbox, margin)
+                            left_hand_near = check_hand_object_interaction(left_hand_coords, phone_bbox, margin)
 
                             if right_hand_near or left_hand_near:
                                 # Use per-person temporal filtering (2-3 frame requirement)
-                                should_trigger = monitor.update_per_person_detection(
+                                should_trigger = update_per_person_detection(
                                     person_idx, 'cell_phone', True, timestamp_sec
                                 )
                                 person_activities['cell_phone'] = should_trigger
+                                person_debug_info['cell_phone_object_bbox'] = [int(v) for v in phone_bbox[:4]]
                                 _cell_phone_fired = True
                                 break
 
@@ -534,7 +617,7 @@ class MultiPersonActivityRunner:
                 # don't leak through. The wrist-near-ear distance must be
                 # < 20% of bbox height — tight enough that hand-on-forehead
                 # or hand-on-chin won't match.
-                _pose_fallback_enabled = getattr(monitor.settings, 'cell_phone_pose_fallback_enabled', True) if monitor.settings else True
+                _pose_fallback_enabled = getattr(settings, 'cell_phone_pose_fallback_enabled', True) if settings else True
                 if _cell_phone_enabled and _pose_fallback_enabled and not _cell_phone_fired:
                     try:
                         _bbox_h = max(1, bbox[3] - bbox[1])
@@ -545,10 +628,10 @@ class MultiPersonActivityRunner:
                         # but rejects generic hand-to-face gestures (wrist
                         # near forehead / chin / nose = 120+ px).
                         _near_ear_thresh_px = max(30, int(0.15 * _bbox_h))
-                        _r_wrist = monitor.get_keypoint(translated_landmarks, 'right_wrist')
-                        _l_wrist = monitor.get_keypoint(translated_landmarks, 'left_wrist')
-                        _r_ear = monitor.get_keypoint(translated_landmarks, 'right_ear')
-                        _l_ear = monitor.get_keypoint(translated_landmarks, 'left_ear')
+                        _r_wrist = get_keypoint(translated_landmarks, 'right_wrist')
+                        _l_wrist = get_keypoint(translated_landmarks, 'left_wrist')
+                        _r_ear = get_keypoint(translated_landmarks, 'right_ear')
+                        _l_ear = get_keypoint(translated_landmarks, 'left_ear')
 
                         def _dist_px(a, b):
                             dx = (a.x - b.x) * w
@@ -577,30 +660,30 @@ class MultiPersonActivityRunner:
                                 break
 
                         if _any_near_ear:
-                            _should_trigger = monitor.update_per_person_detection(
+                            _should_trigger = update_per_person_detection(
                                 person_idx, 'cell_phone', True, timestamp_sec
                             )
                             person_activities['cell_phone'] = _should_trigger
-                            if _should_trigger and monitor.consecutive_detections.get('cell_phone', 0) in (0, 1):
-                                monitor.logger.info(
+                            if _should_trigger and consecutive_detections.get('cell_phone', 0) in (0, 1):
+                                logger.info(
                                     f"[CELL PHONE POSE FALLBACK] Person {person_idx}: "
                                     f"wrist-near-ear ({_debug_pair[0]} <-> {_debug_pair[1]}, "
                                     f"dist={_debug_pair[2]:.0f}px < {_near_ear_thresh_px}px) "
                                     f"— no YOLO phone detection this frame, firing on pose"
                                 )
                     except Exception as _e:
-                        monitor.logger.debug(f"[CELL PHONE POSE FALLBACK] skip: {_e}")
+                        logger.debug(f"[CELL PHONE POSE FALLBACK] skip: {_e}")
 
                 # 3b. EATING/DRINKING DETECTION (cup/bottle near face = mind diversion)
                 eating_drinking_detected = False
                 if (
                     is_activity_enabled('eating_drinking')
-                    and getattr(monitor.settings, 'eating_drinking_detection_enabled', True)
+                    and getattr(settings, 'eating_drinking_detection_enabled', True)
                     and not person_activities.get('mind_diversion', False)
                 ):
                     # Check if cup/bottle detected in ROI near this person
                     cup_bottle_bboxes = []
-                    cup_conf_threshold = getattr(monitor.settings, 'eating_drinking_cup_confidence', 0.25)
+                    cup_conf_threshold = getattr(settings, 'eating_drinking_cup_confidence', 0.25)
                     for roi_det in detections.get('roi_detections', []):
                         if roi_det['class'] in ('cup', 'bottle') and roi_det['confidence'] > cup_conf_threshold:
                             det_bbox = roi_det['bbox']
@@ -615,12 +698,12 @@ class MultiPersonActivityRunner:
 
                     if cup_bottle_bboxes:
                         # Check if hand is near face level AND holding cup/bottle
-                        right_wrist = monitor.get_keypoint(translated_landmarks, 'right_wrist')
-                        left_wrist = monitor.get_keypoint(translated_landmarks, 'left_wrist')
-                        nose = monitor.get_keypoint(translated_landmarks, 'nose')
+                        right_wrist = get_keypoint(translated_landmarks, 'right_wrist')
+                        left_wrist = get_keypoint(translated_landmarks, 'left_wrist')
+                        nose = get_keypoint(translated_landmarks, 'nose')
 
-                        hand_face_margin = getattr(monitor.settings, 'eating_drinking_hand_face_margin', 80)
-                        hand_obj_margin = getattr(monitor.settings, 'eating_drinking_hand_object_margin', 150)
+                        hand_face_margin = getattr(settings, 'eating_drinking_hand_face_margin', 80)
+                        hand_obj_margin = getattr(settings, 'eating_drinking_hand_object_margin', 150)
 
                         if nose and nose.visibility > 0.3:
                             nose_y = nose.y * h
@@ -631,8 +714,9 @@ class MultiPersonActivityRunner:
                                     # Hand is at or above shoulder/chin level (drinking position)
                                     if wrist_y < nose_y + hand_face_margin:
                                         for cb_bbox in cup_bottle_bboxes:
-                                            if monitor.check_hand_object_interaction(wrist_coords, cb_bbox, hand_obj_margin):
+                                            if check_hand_object_interaction(wrist_coords, cb_bbox, hand_obj_margin):
                                                 eating_drinking_detected = True
+                                                person_debug_info['eating_object_bbox'] = [int(v) for v in cb_bbox[:4]]
                                                 break
                                 if eating_drinking_detected:
                                     break
@@ -649,7 +733,7 @@ class MultiPersonActivityRunner:
                         # — see trips b0c3d6a6 and CH3_..239 (2026-05-28).
                         if not eating_drinking_detected:
                             fb_wrist_dist = getattr(
-                                monitor.settings, 'eating_drinking_fallback_wrist_distance', 80
+                                settings, 'eating_drinking_fallback_wrist_distance', 80
                             )
                             for wrist in (right_wrist, left_wrist):
                                 if not (wrist and wrist.visibility > 0.3):
@@ -664,7 +748,8 @@ class MultiPersonActivityRunner:
                                         and dist <= fb_wrist_dist
                                     ):
                                         eating_drinking_detected = True
-                                        monitor.logger.info(
+                                        person_debug_info['eating_object_bbox'] = [int(v) for v in cb_bbox[:4]]
+                                        logger.info(
                                             f"[EATING/DRINKING FALLBACK] Cup/bottle overlaps person {person_idx} "
                                             f"bbox AND wrist {dist:.0f}px from bottle center "
                                             f"(threshold {fb_wrist_dist}px) - flagging"
@@ -711,51 +796,16 @@ class MultiPersonActivityRunner:
                 #   both wrists in lower-2/3 of person bbox (avoid raised-hand FPs)
                 writing_detected_raw = False
                 if is_activity_enabled('writing'):  # no role filter — LP can write too (TV22.6, TV22.8)
-                    right_hand = monitor.get_keypoint(translated_landmarks, 'right_wrist')
-                    left_hand = monitor.get_keypoint(translated_landmarks, 'left_wrist')
+                    right_hand = get_keypoint(translated_landmarks, 'right_wrist')
+                    left_hand = get_keypoint(translated_landmarks, 'left_wrist')
                     rv = right_hand.visibility
                     lv = left_hand.visibility
                     min_wrist_vis = getattr(
-                        monitor.settings, 'writing_min_wrist_visibility', 0.3
+                        settings, 'writing_min_wrist_visibility', 0.3
                     )
                     allow_single_wrist = getattr(
-                        monitor.settings, 'writing_allow_single_wrist', True
+                        settings, 'writing_allow_single_wrist', True
                     )
-                    # LOG-BOOK ROI MASK: drop book detections whose centre falls
-                    # outside the desk/lap interaction zone. Most FPs in the
-                    # TV22 batch came from YOLO mis-classifying small control-
-                    # panel devices as "book" or from the wrist drifting near
-                    # an unrelated desk object during routine cab activity.
-                    # Format: ``WRITING_BOOK_ROI=x1,y1,x2,y2`` normalized to
-                    # frame size. Empty (default) keeps current behaviour.
-                    roi_str = getattr(monitor.settings, 'writing_book_roi', '') or ''
-                    if roi_str and person_books:
-                        try:
-                            r_parts = [float(v) for v in roi_str.split(',')]
-                            if len(r_parts) == 4:
-                                rx1 = r_parts[0] * w
-                                ry1 = r_parts[1] * h
-                                rx2 = r_parts[2] * w
-                                ry2 = r_parts[3] * h
-                                kept_books = []
-                                for _b in person_books:
-                                    bcx = (_b[0] + _b[2]) * 0.5
-                                    bcy = (_b[1] + _b[3]) * 0.5
-                                    if rx1 <= bcx <= rx2 and ry1 <= bcy <= ry2:
-                                        kept_books.append(_b)
-                                _filtered_n = len(person_books) - len(kept_books)
-                                if _filtered_n > 0:
-                                    monitor.logger.info(
-                                        f"[WRITING:roi-filter] P{person_idx} "
-                                        f"f{frame_number} t={timestamp_sec:.1f}s: "
-                                        f"dropped {_filtered_n}/{len(person_books)} "
-                                        f"book(s) outside ROI=[{r_parts[0]:.2f},"
-                                        f"{r_parts[1]:.2f},{r_parts[2]:.2f},"
-                                        f"{r_parts[3]:.2f}]"
-                                    )
-                                person_books = kept_books
-                        except (ValueError, IndexError):
-                            pass  # malformed; ignore
                     has_book = len(person_books) > 0
                     if rv >= min_wrist_vis and lv >= min_wrist_vis:
                         rwx, rwy = right_hand.x * w, right_hand.y * h
@@ -774,10 +824,10 @@ class MultiPersonActivityRunner:
                         # within ``writing_other_wrist_max_dist`` px of the
                         # nearest bbox edge (default 50).
                         if has_book:
-                            monitor._writing_last_book_seen[person_idx] = timestamp_sec
+                            writing_last_book_seen[person_idx] = timestamp_sec
                             bbox_pad = 10
                             other_wrist_max = getattr(
-                                monitor.settings, 'writing_other_wrist_max_dist', 50
+                                settings, 'writing_other_wrist_max_dist', 50
                             )
                             def _edge_dist(x, y, b1, b2, b3, b4):
                                 dx = max(b1 - x, 0, x - b3)
@@ -799,8 +849,9 @@ class MultiPersonActivityRunner:
                                 )
                                 if fired_strict or fired_relaxed:
                                     writing_detected_raw = True
+                                    person_debug_info['writing_object_bbox'] = [int(v) for v in book_bbox[:4]]
                                     rule = 'strict' if fired_strict else 'relaxed'
-                                    monitor.logger.info(
+                                    logger.info(
                                         f"[WRITING:book] P{person_idx} f{frame_number} "
                                         f"t={timestamp_sec:.1f}s rule={rule}: "
                                         f"wrist_dist={wr_dist:.0f} dR={dR:.0f} dL={dL:.0f} "
@@ -812,7 +863,7 @@ class MultiPersonActivityRunner:
                             if not writing_detected_raw and best_miss is not None:
                                 bb, r_in, l_in, dR, dL = best_miss
                                 bx1, by1, bx2, by2 = (int(v) for v in bb[:4])
-                                monitor.logger.info(
+                                logger.info(
                                     f"[WRITING:miss-bbox] P{person_idx} f{frame_number} "
                                     f"t={timestamp_sec:.1f}s: books={len(person_books)} "
                                     f"R=({int(rwx)},{int(rwy)})@{rv:.2f} r_in={r_in} dR={dR:.0f} "
@@ -844,16 +895,17 @@ class MultiPersonActivityRunner:
                                 if (bx1 - bbox_pad <= wx <= bx2 + bbox_pad and
                                         by1 - bbox_pad <= wy <= by2 + bbox_pad):
                                     writing_detected_raw = True
-                                    monitor.logger.info(
+                                    person_debug_info['writing_object_bbox'] = [int(v) for v in book_bbox[:4]]
+                                    logger.info(
                                         f"[WRITING:book] P{person_idx} f{frame_number} "
                                         f"t={timestamp_sec:.1f}s rule=single_wrist: "
                                         f"{wname}=({int(wx)},{int(wy)})@{wvis:.2f} "
                                         f"inside book_bbox={book_bbox}"
                                     )
-                                    monitor._writing_last_book_seen[person_idx] = timestamp_sec
+                                    writing_last_book_seen[person_idx] = timestamp_sec
                                     break
                         if not writing_detected_raw:
-                            monitor.logger.info(
+                            logger.info(
                                 f"[WRITING:miss-vis] P{person_idx} f{frame_number} "
                                 f"t={timestamp_sec:.1f}s: books={len(person_books)} "
                                 f"rv={rv:.2f} lv={lv:.2f} (need >={min_wrist_vis:.1f} each, "
@@ -876,7 +928,7 @@ class MultiPersonActivityRunner:
                         # tracking is left in place but no longer
                         # consumed by any rule path; harmless to keep.
 
-                should_trigger = monitor.update_per_person_detection(
+                should_trigger = update_per_person_detection(
                     person_idx, 'writing', writing_detected_raw, timestamp_sec
                 )
                 person_activities['writing'] = should_trigger
@@ -895,7 +947,7 @@ class MultiPersonActivityRunner:
                         # FIX C-01: Pass per-person scoped detections to avoid
                         # cross-person book contamination in suppression logic
                         person_scoped_detections = {**detections, 'book': person_books, 'cell_phone': person_cell_phones}
-                        should_suppress, suppress_reason = monitor.should_suppress_mind_diversion(
+                        should_suppress, suppress_reason = self._should_suppress_mind_diversion(
                             person_idx=person_idx,
                             person_activities=person_activities,
                             pose_landmarks=translated_landmarks,
@@ -915,10 +967,10 @@ class MultiPersonActivityRunner:
                 # 5. PACKING DETECTION (check if hand near backpack in THIS person's region)
                 # MOVED BEFORE HAND GESTURE: Need to detect this first for context-aware filtering
                 # FP-FIX: Filter out static backpacks (cabin fixtures) before detection
-                active_backpacks = monitor._update_static_backpack_tracking(detections['backpack'])
+                active_backpacks = self._update_static_backpack_tracking(detections['backpack'])
                 if is_activity_enabled('packing_bags') and len(active_backpacks) > 0:
-                    right_hand = monitor.get_keypoint(translated_landmarks, 'right_wrist')
-                    left_hand = monitor.get_keypoint(translated_landmarks, 'left_wrist')
+                    right_hand = get_keypoint(translated_landmarks, 'right_wrist')
+                    left_hand = get_keypoint(translated_landmarks, 'left_wrist')
 
                     # Check wrist visibility - only use if visible enough
                     right_wrist_visible = right_hand.visibility > 0.3
@@ -929,28 +981,28 @@ class MultiPersonActivityRunner:
                     left_hand_coords = None
 
                     if right_wrist_visible:
-                        right_hand_coords = monitor._get_smoothed_hand_position(
+                        right_hand_coords = get_smoothed_hand_position(
                             person_idx, 'right', right_hand, w, h, timestamp_sec
                         )
                     elif left_wrist_visible:
                         # Fallback: if right wrist not visible, try using right elbow as approximation
-                        right_elbow = monitor.get_keypoint(translated_landmarks, 'right_elbow')
+                        right_elbow = get_keypoint(translated_landmarks, 'right_elbow')
                         if right_elbow.visibility > 0.3:
                             right_hand_coords = (int(right_elbow.x * w), int(right_elbow.y * h))
 
                     if left_wrist_visible:
-                        left_hand_coords = monitor._get_smoothed_hand_position(
+                        left_hand_coords = get_smoothed_hand_position(
                             person_idx, 'left', left_hand, w, h, timestamp_sec
                         )
                     elif right_wrist_visible:
                         # Fallback: if left wrist not visible, try using left elbow as approximation
-                        left_elbow = monitor.get_keypoint(translated_landmarks, 'left_elbow')
+                        left_elbow = get_keypoint(translated_landmarks, 'left_elbow')
                         if left_elbow.visibility > 0.3:
                             left_hand_coords = (int(left_elbow.x * w), int(left_elbow.y * h))
 
                     # Separate margins: region overlap vs. hand proximity
-                    region_margin = monitor.activity_thresholds['packing_bags'].get('region_margin', 100)
-                    proximity_margin = monitor.activity_thresholds['packing_bags']['margin']
+                    region_margin = activity_thresholds['packing_bags'].get('region_margin', 100)
+                    proximity_margin = activity_thresholds['packing_bags']['margin']
 
                     # ============ SIMPLIFIED PACKING DETECTION ============
                     # Core logic: If wrist is inside/near backpack bbox -> Packing detected!
@@ -975,10 +1027,10 @@ class MultiPersonActivityRunner:
                             continue
 
                         # ===== SIMPLIFIED CHECK: Is wrist INSIDE backpack bbox? =====
-                        right_inside, right_dist = monitor.activity_detector.is_wrist_inside_backpack(
+                        right_inside, right_dist = activity_detector.is_wrist_inside_backpack(
                             right_hand_coords, backpack_bbox, margin=40
                         )
-                        left_inside, left_dist = monitor.activity_detector.is_wrist_inside_backpack(
+                        left_inside, left_dist = activity_detector.is_wrist_inside_backpack(
                             left_hand_coords, backpack_bbox, margin=40
                         )
 
@@ -1007,7 +1059,7 @@ class MultiPersonActivityRunner:
                         # Real packing (reach in → manipulate → pull out) passes all four.
                         # Fidgeting, sitting near a bag, or reaching past a bag for something else fails.
                         if wrist_inside_backpack:
-                            primary_motion = monitor.analyze_packing_hand_motion(
+                            primary_motion = analyze_packing_hand_motion(
                                 person_idx, translated_landmarks, frame.shape, timestamp_sec, backpack_bbox
                             )
                             strict_packing = (
@@ -1033,12 +1085,12 @@ class MultiPersonActivityRunner:
                             continue
 
                         hand_near_backpack = (
-                            monitor.check_hand_object_interaction(right_hand_coords, backpack_bbox, proximity_margin) or
-                            monitor.check_hand_object_interaction(left_hand_coords, backpack_bbox, proximity_margin)
+                            check_hand_object_interaction(right_hand_coords, backpack_bbox, proximity_margin) or
+                            check_hand_object_interaction(left_hand_coords, backpack_bbox, proximity_margin)
                         )
 
                         if hand_near_backpack:
-                            cur_motion = monitor.analyze_packing_hand_motion(
+                            cur_motion = analyze_packing_hand_motion(
                                 person_idx, translated_landmarks, frame.shape, timestamp_sec, backpack_bbox
                             )
                             motion_confirmed = cur_motion['packing_motion_detected']
@@ -1060,9 +1112,9 @@ class MultiPersonActivityRunner:
                     # FP-FIX: Wrist motion gate — require actual hand movement for packing
                     # Stationary hands near controls should not trigger packing detection
                     if best_pack_type is not None:
-                        wrist_has_motion = monitor._check_wrist_motion_for_packing(person_idx, timestamp_sec)
+                        wrist_has_motion = check_wrist_motion_for_packing(person_idx, timestamp_sec)
                         if not wrist_has_motion:
-                            monitor.logger.debug(
+                            logger.debug(
                                 f"[PACKING WRIST MOTION GATE] Person {person_idx}: "
                                 f"suppressed packing (wrists stationary)"
                             )
@@ -1070,47 +1122,49 @@ class MultiPersonActivityRunner:
 
                     if best_pack_type == 'wrist_inside':
                         packing_detected_simple = True
-                        monitor.logger.info(
+                        person_debug_info['packing_object_bbox'] = [int(v) for v in best_pack_bbox[:4]]
+                        logger.info(
                             f"PACKING DETECTED (SIMPLE): Wrist inside backpack bbox! "
                             f"Distance: {best_pack_distance:.0f}px, "
                             f"Backpack: {list(best_pack_bbox[:4])}"
                         )
-                        should_trigger = monitor.update_per_person_detection(
+                        should_trigger = update_per_person_detection(
                             person_idx, 'packing_bags', True, timestamp_sec
                         )
                         person_activities['packing_bags'] = should_trigger
-                        if person_idx not in monitor.recent_person_activities:
-                            monitor.recent_person_activities[person_idx] = {}
-                        monitor.recent_person_activities[person_idx]['packing_bags'] = timestamp_sec
+                        if person_idx not in recent_person_activities:
+                            recent_person_activities[person_idx] = {}
+                        recent_person_activities[person_idx]['packing_bags'] = timestamp_sec
 
                     elif best_pack_type == 'motion':
                         packing_motion_analysis = best_pack_motion
                         person_debug_info['packing_motion'] = packing_motion_analysis
-                        should_trigger = monitor.update_per_person_detection(
+                        person_debug_info['packing_object_bbox'] = [int(v) for v in best_pack_bbox[:4]]
+                        should_trigger = update_per_person_detection(
                             person_idx, 'packing_bags', True, timestamp_sec
                         )
                         person_activities['packing_bags'] = should_trigger
-                        if person_idx not in monitor.recent_person_activities:
-                            monitor.recent_person_activities[person_idx] = {}
-                        monitor.recent_person_activities[person_idx]['packing_bags'] = timestamp_sec
+                        if person_idx not in recent_person_activities:
+                            recent_person_activities[person_idx] = {}
+                        recent_person_activities[person_idx]['packing_bags'] = timestamp_sec
 
                     else:
                         # No match found across all backpacks - reset counter
-                        should_trigger = monitor.update_per_person_detection(
+                        should_trigger = update_per_person_detection(
                             person_idx, 'packing_bags', False, timestamp_sec
                         )
                         person_activities['packing_bags'] = should_trigger
 
                 # UPDATE TEMPORAL HISTORY for writing and cell phone too
                 if person_activities.get('writing', False):
-                    if person_idx not in monitor.recent_person_activities:
-                        monitor.recent_person_activities[person_idx] = {}
-                    monitor.recent_person_activities[person_idx]['writing'] = timestamp_sec
+                    if person_idx not in recent_person_activities:
+                        recent_person_activities[person_idx] = {}
+                    recent_person_activities[person_idx]['writing'] = timestamp_sec
 
                 if person_activities.get('cell_phone', False):
-                    if person_idx not in monitor.recent_person_activities:
-                        monitor.recent_person_activities[person_idx] = {}
-                    monitor.recent_person_activities[person_idx]['cell_phone'] = timestamp_sec
+                    if person_idx not in recent_person_activities:
+                        recent_person_activities[person_idx] = {}
+                    recent_person_activities[person_idx]['cell_phone'] = timestamp_sec
 
                 # 6. HAND GESTURE DETECTION (LP/ALP)
                 # CRITICAL: This runs AFTER packing/writing/phone detection for context-aware filtering
@@ -1119,7 +1173,7 @@ class MultiPersonActivityRunner:
                 _alp_gesture_enabled = is_activity_enabled('alp_hand_gesture')
                 if _lp_gesture_enabled or _alp_gesture_enabled:
                     single_person_roles = {person_idx: person_data}
-                    lp_gesture, alp_gesture, gesture_debug = monitor.detect_hand_gesture(
+                    lp_gesture, alp_gesture, gesture_debug = self._detect_hand_gesture(
                         translated_landmarks,
                         frame.shape,
                         single_person_roles,
@@ -1140,14 +1194,14 @@ class MultiPersonActivityRunner:
 
                 # Track hand raise timestamps for temporal coordination window
                 if person_activities['lp_hand_gesture']:
-                    if person_idx not in monitor.recent_person_activities:
-                        monitor.recent_person_activities[person_idx] = {}
-                    monitor.recent_person_activities[person_idx]['lp_hand_raise'] = timestamp_sec
+                    if person_idx not in recent_person_activities:
+                        recent_person_activities[person_idx] = {}
+                    recent_person_activities[person_idx]['lp_hand_raise'] = timestamp_sec
 
                 if person_activities['alp_hand_gesture']:
-                    if person_idx not in monitor.recent_person_activities:
-                        monitor.recent_person_activities[person_idx] = {}
-                    monitor.recent_person_activities[person_idx]['alp_hand_raise'] = timestamp_sec
+                    if person_idx not in recent_person_activities:
+                        recent_person_activities[person_idx] = {}
+                    recent_person_activities[person_idx]['alp_hand_raise'] = timestamp_sec
 
                 # Store this person's data
                 _zero_disabled(person_activities)
@@ -1161,18 +1215,18 @@ class MultiPersonActivityRunner:
                 }
 
             except Exception as e:
-                monitor.logger.error(f"Error processing person {person_idx}: {e}", exc_info=True)
+                logger.error(f"Error processing person {person_idx}: {e}", exc_info=True)
                 continue
 
         # ============ CLEAN UP STALE PER-PERSON TRACKING (CR-012) ============
         # Remove tracking for persons no longer detected to prevent stale state
         active_person_indices = set(persons_data.keys())
-        monitor._cleanup_stale_person_tracking(active_person_indices)
+        self._cleanup_stale_person_tracking(active_person_indices)
 
         # Also clear no-pose tracking for persons that now have pose (they moved to the pose path)
-        for person_idx in list(monitor.no_pose_sleep_tracking.keys()):
+        for person_idx in list(no_pose_sleep_tracking.keys()):
             if person_idx in persons_data and persons_data[person_idx].get('pose_landmarks') is not None:
-                del monitor.no_pose_sleep_tracking[person_idx]
+                del no_pose_sleep_tracking[person_idx]
 
         # ============ AGGREGATE RESULTS ACROSS ALL PERSONS ============
         # Solo-person safety net: count YOLO-pose detections that did NOT match
@@ -1215,9 +1269,23 @@ class MultiPersonActivityRunner:
                 'lp_hand_gesture': [],
                 'alp_hand_gesture': [],
                 'eating_drinking': [],
-            }
+            },
+            # Pipeline-2 ROI plumbing: per-activity object bbox from the
+            # triggering person's detector. Parallel index to
+            # triggering_persons_by_activity[<activity>] — i.e. the bbox
+            # at position i belongs to the person_idx at position i.
+            # Activity types without a target object (sleep, mind_diversion,
+            # gestures) keep an empty list. Used by end_activity to write
+            # activity['bboxes']['object'] for vlm._roi_from_bboxes.
+            'triggering_object_bboxes_by_activity': {
+                'cell_phone': [],
+                'writing': [],
+                'packing_bags': [],
+                'eating_drinking': [],
+            },
         }
         triggering_map = aggregated['triggering_persons_by_activity']
+        triggering_obj_bbox_map = aggregated['triggering_object_bboxes_by_activity']
 
         # Aggregate: if ANY person has an activity, mark it as detected
         # Per-person state machine gate (H-02 fix): only aggregate sleep/microsleep
@@ -1251,15 +1319,25 @@ class MultiPersonActivityRunner:
                 else:
                     # Suppress this person's microsleep - state machine not ready
                     activities['microsleep'] = False
+            person_dbg = person_data.get('debug_info', {})
             if activities['cell_phone']:
                 aggregated['cell_phone_detected'] = True
                 triggering_map['cell_phone'].append(person_idx)
+                triggering_obj_bbox_map['cell_phone'].append(
+                    person_dbg.get('cell_phone_object_bbox')
+                )
             if activities['writing']:
                 aggregated['writing_detected'] = True
                 triggering_map['writing'].append(person_idx)
+                triggering_obj_bbox_map['writing'].append(
+                    person_dbg.get('writing_object_bbox')
+                )
             if activities['packing_bags']:
                 aggregated['packing_detected'] = True
                 triggering_map['packing_bags'].append(person_idx)
+                triggering_obj_bbox_map['packing_bags'].append(
+                    person_dbg.get('packing_object_bbox')
+                )
             if activities['lp_hand_gesture']:
                 aggregated['lp_hand_gesture_detected'] = True
                 triggering_map['lp_hand_gesture'].append(person_idx)
@@ -1269,6 +1347,9 @@ class MultiPersonActivityRunner:
             if activities.get('eating_drinking'):
                 aggregated['eating_drinking_detected'] = True
                 triggering_map['eating_drinking'].append(person_idx)
+                triggering_obj_bbox_map['eating_drinking'].append(
+                    person_dbg.get('eating_object_bbox')
+                )
 
         # Set performing_person to the first detected person (for backward compatibility)
         if aggregated['performing_persons']:

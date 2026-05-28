@@ -94,7 +94,7 @@ proc_name = "locopilot-monitor"
 
 # Environment variables
 raw_env = [
-    f"YOLO_WEIGHTS_PRELOAD={os.getenv('YOLO_WEIGHTS_PRELOAD', 'yolo26n.pt')}",
+    f"YOLO_WEIGHTS_PRELOAD={os.getenv('YOLO_WEIGHTS_PRELOAD', 'yolo11l.pt')}",
     f"YOLO_DEVICE={os.getenv('YOLO_DEVICE', 'cpu')}",  # Pass GPU device to workers
 ]
 

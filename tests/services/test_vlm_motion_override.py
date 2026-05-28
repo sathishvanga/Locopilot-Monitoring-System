@@ -71,7 +71,7 @@ def test_vlm_motion_evidence_platform_does_not_drop_running_activity():
     svc = _fresh_service()
     act = _running_writing_activity()
 
-    async def vlm_returns_platform_motion(activity, prompt, object_type=""):
+    async def vlm_returns_platform_motion(activity, prompt, object_type="", **kwargs):
         return {
             "status": "OK",
             "verdict": {
@@ -103,7 +103,7 @@ def test_vlm_false_positive_with_platform_evidence_drops_via_verdict_only():
     svc = _fresh_service()
     act = _running_writing_activity()
 
-    async def vlm_fp(activity, prompt, object_type=""):
+    async def vlm_fp(activity, prompt, object_type="", **kwargs):
         return {
             "status": "OK",
             "verdict": {
@@ -172,7 +172,7 @@ def test_jailbroken_motion_evidence_with_uncertain_pipeline1_does_not_promote():
     act = _running_writing_activity()
     act["motionState"] = ""  # simulate UNCERTAIN
 
-    async def jailbreak(activity, prompt, object_type=""):
+    async def jailbreak(activity, prompt, object_type="", **kwargs):
         return {
             "status": "OK",
             "verdict": {

@@ -95,18 +95,15 @@ class Settings(BaseSettings):
     mp_max_workers: Optional[int] = None  # None = auto-detect (uses min(CPU count, max_workers_cap))
     mp_max_workers_cap: int = 12  # Maximum number of workers (11 cores + slight oversubscription)
     
-    # Model settings - YOLO26 (NMS-free, 43% faster CPU inference)
-    # Detection: nano for fast bulk frame processing (~57K frames)
-    yolo_weights: str = os.getenv("YOLO_WEIGHTS_PRELOAD", "yolo26n.pt")  # YOLO26 nano for object detection
-    yolo_pose_weights: str = os.getenv("YOLO_POSE_WEIGHTS", "yolo26n-pose.pt")  # YOLO26 nano-pose for multi-person pose
+    # Model settings - YOLOv11 large (stock Ultralytics, COCO classes)
+    yolo_weights: str = os.getenv("YOLO_WEIGHTS_PRELOAD", "yolo11l.pt")  # YOLOv11 large for object detection
+    yolo_pose_weights: str = os.getenv("YOLO_POSE_WEIGHTS", "yolo11l-pose.pt")  # YOLOv11 large-pose for multi-person pose
     yolo_pose_confidence: float = float(os.getenv("YOLO_POSE_CONFIDENCE", "0.45"))  # Pose detection confidence
 
-    # ROI crop detection: small model for pose-guided crop detection around wrists/hips
-    # Uses a stronger model on small crops around keypoints for better recall on
-    # small objects (cell phones, cups, bottles, books) from overhead CCTV angles.
-    # When empty, ROI detection uses the same model as full-frame detection.
-    yolo_roi_weights: str = os.getenv("YOLO_ROI_WEIGHTS", "yolo26s.pt")  # YOLO26 small for ROI crop detection
-    yolo_roi_confidence: float = float(os.getenv("YOLO_ROI_CONFIDENCE", "0.15"))  # Lower threshold for small object recall
+    # ROI confidence threshold: applies to pose-guided ROI crops processed
+    # through the main object model. Lower than full-frame to keep small-
+    # object recall on cell phones, cups, books from overhead CCTV.
+    yolo_roi_confidence: float = float(os.getenv("YOLO_ROI_CONFIDENCE", "0.15"))
 
     # Phase 2: Inference optimization settings
     # CHANGED from 416 to 640 for better accuracy on small objects (cell phones)
@@ -544,13 +541,6 @@ class Settings(BaseSettings):
     # wrist GTs (TV22.5 4:47, TV22.7 9:32) without the edge-distance slack
     # used in the dual-wrist relaxed path. Set to 0 to disable.
     writing_allow_single_wrist: bool = bool(int(os.getenv("WRITING_ALLOW_SINGLE_WRIST", "1")))
-    # Log-book ROI mask: only fire writing if the book bbox centre falls inside
-    # this normalised rectangle. Drops control-panel-device-misclassified-as-
-    # book FPs and books detected in the upper window/door area. Format:
-    # ``WRITING_BOOK_ROI=x1,y1,x2,y2`` (each in [0,1]). Empty (default)
-    # disables the mask. For the TV22 overhead camera, the desk-and-lap zone
-    # is roughly ``0.15,0.30,0.75,0.95``.
-    writing_book_roi: str = os.getenv("WRITING_BOOK_ROI", "")
     book_posture_min_duration: float = float(os.getenv("BOOK_POSTURE_MIN_DURATION", "2.0"))
     book_posture_required_consecutive: int = int(os.getenv("BOOK_POSTURE_REQUIRED_CONSECUTIVE", "2"))
 
@@ -742,9 +732,6 @@ class Settings(BaseSettings):
 
     # Halt Grace Period - allow exemptions for short time after scheduled departure
     halt_grace_period: int = int(os.getenv("HALT_GRACE_PERIOD", "120"))  # 120s after departure
-
-    # Cache TTL for delay data (in seconds, default 30 minutes)
-    etrain_cache_ttl: int = int(os.getenv("ETRAIN_CACHE_TTL", "1800"))
 
     # ==========================================
     # VLM Verification Layer (Pipeline-2 FP filter)
@@ -953,7 +940,6 @@ class Settings(BaseSettings):
             path_fields = (
                 'yolo_model_path',
                 'yolo_pose_model_path',
-                'yolo_roi_model_path',
                 'yolo_weights',
                 'yolo_pose_weights',
             )

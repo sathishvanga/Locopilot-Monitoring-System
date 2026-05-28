@@ -375,7 +375,6 @@ class LocopilotActivityMonitor:
         if preloaded_models is not None:
             # [OK] PERFORMANCE: Use pre-loaded models from worker pool (fast path)
             self.yolo_model = preloaded_models.get('yolo')
-            self.yolo_roi_model = preloaded_models.get('yolo_roi')
             self.yolo_pose = preloaded_models.get('yolo_pose')
             self.face_mesh = preloaded_models.get('face_mesh')
             self.mp_face_mesh = preloaded_models.get('mp_face_mesh')
@@ -393,8 +392,8 @@ class LocopilotActivityMonitor:
             # Load models fresh (slow path - for standalone use)
             # Get model paths from config (configurable via environment variables)
             # Note: settings is already defined above
-            yolo_weights = settings.yolo_weights if settings else 'yolo26n.pt'
-            yolo_pose_weights = settings.yolo_pose_weights if settings else 'yolo26n-pose.pt'
+            yolo_weights = settings.yolo_weights if settings else 'yolo11l.pt'
+            yolo_pose_weights = settings.yolo_pose_weights if settings else 'yolo11l-pose.pt'
             yolo_pose_conf = settings.yolo_pose_confidence if settings else 0.45
             
             self.logger.info(f"Loading YOLO model: {yolo_weights}")
@@ -404,17 +403,6 @@ class LocopilotActivityMonitor:
             if hasattr(self.yolo_model.model, 'fuse'):
                 self.yolo_model.fuse()
                 self.logger.info("YOLO model layers fused for optimized inference")
-
-            # ROI crop detection model (stronger model for small objects in pose-guided crops)
-            yolo_roi_weights = settings.yolo_roi_weights if settings else ''
-            if yolo_roi_weights and yolo_roi_weights != yolo_weights:
-                self.logger.info(f"Loading YOLO ROI model: {yolo_roi_weights}")
-                self.yolo_roi_model = YOLO(yolo_roi_weights)
-                if hasattr(self.yolo_roi_model.model, 'fuse'):
-                    self.yolo_roi_model.fuse()
-                    self.logger.info("YOLO ROI model layers fused for optimized inference")
-            else:
-                self.yolo_roi_model = None
 
             # YOLO-Pose for body pose estimation (replaces MediaPipe Pose)
             self.logger.info(f"Loading YOLO-Pose model: {yolo_pose_weights}")
@@ -499,7 +487,6 @@ class LocopilotActivityMonitor:
             yolo_imgsz=self.yolo_imgsz,
             yolo_device=self.yolo_device,
             cell_phone_confidence=self.cell_phone_confidence,
-            yolo_roi_model=getattr(self, 'yolo_roi_model', None)
         )
 
         # Initialize FrameAnnotator (extracted module for frame visualization)
@@ -816,10 +803,40 @@ class LocopilotActivityMonitor:
 
         self.logger.info("Extracted detector modules initialized: SleepDetector, ActivityDetector, GestureDetector, MindDiversionDetector")
 
-        # Task 0008: per-frame multi-person dispatcher extracted from this class.
-        # The runner is stateless and reads all detector / tracking state from
-        # this monitor instance via the ``monitor`` argument on each call.
-        self._multi_person_runner = MultiPersonActivityRunner()
+        # Task 0008 / 2026-05-27 refactor: per-frame multi-person dispatcher
+        # extracted from this class. The runner no longer takes a ``monitor``
+        # back-reference; every detector, helper, config and mutable state
+        # dict it needs is injected explicitly here. Mutable state dicts
+        # (``no_pose_sleep_tracking``, ``recent_person_activities``,
+        # ``_writing_last_book_seen``, ``consecutive_detections``) are passed
+        # by reference so mutations from the runner remain visible on the
+        # monitor — behaviour-preserving with the previous back-reference.
+        self._multi_person_runner = MultiPersonActivityRunner(
+            yolo_pose=self.yolo_pose,
+            sleep_detector=self.sleep_detector,
+            object_detector=self.object_detector,
+            activity_detector=self.activity_detector,
+            logger=self.logger,
+            settings=self.settings,
+            activity_thresholds=self.activity_thresholds,
+            match_pose_to_roles=self._match_pose_to_roles,
+            update_static_phone_tracking=self._update_static_phone_tracking,
+            update_static_backpack_tracking=self._update_static_backpack_tracking,
+            calculate_head_pose_angles=self.calculate_head_pose_angles,
+            detect_hand_gesture=self.detect_hand_gesture,
+            get_keypoint=self.get_keypoint,
+            check_hand_object_interaction=self.check_hand_object_interaction,
+            update_per_person_detection=self.update_per_person_detection,
+            should_suppress_mind_diversion=self.should_suppress_mind_diversion,
+            analyze_packing_hand_motion=self.analyze_packing_hand_motion,
+            get_smoothed_hand_position=self._get_smoothed_hand_position,
+            check_wrist_motion_for_packing=self._check_wrist_motion_for_packing,
+            cleanup_stale_person_tracking=self._cleanup_stale_person_tracking,
+            no_pose_sleep_tracking=self.no_pose_sleep_tracking,
+            recent_person_activities=self.recent_person_activities,
+            writing_last_book_seen=self._writing_last_book_seen,
+            consecutive_detections=self.consecutive_detections,
+        )
 
     def set_trip_schedule(self, trip_schedule: Any) -> None:
         """
@@ -1748,9 +1765,14 @@ class LocopilotActivityMonitor:
         return self.person_tracker.match_pose_to_roles(yolo_pose_results, person_roles)
 
     def process_all_persons_activities(self, frame: Any, detections: Dict[str, List[Any]], person_roles: Dict[int, Dict[str, Any]], timestamp_sec: float, face_results: Any = None, frame_number: Optional[int] = None, precomputed_pose_results: Optional[Any] = None, precomputed_sleep_pose_results: Optional[Any] = None, is_dark_frame: Optional[bool] = None) -> Dict[str, Any]:
-        """Delegate to :class:`MultiPersonActivityRunner` (extracted Task 0008)."""
+        """Delegate to :class:`MultiPersonActivityRunner` (extracted Task 0008).
+
+        2026-05-27: the runner no longer takes ``self`` — all dependencies are
+        injected at construction time. This shim now forwards only per-frame
+        inputs.
+        """
         return self._multi_person_runner.run(
-            self, frame, detections, person_roles, timestamp_sec,
+            frame, detections, person_roles, timestamp_sec,
             face_results=face_results, frame_number=frame_number,
             precomputed_pose_results=precomputed_pose_results,
             precomputed_sleep_pose_results=precomputed_sleep_pose_results,
@@ -1821,7 +1843,7 @@ class LocopilotActivityMonitor:
             logger=self.logger,
         )
 
-    def start_activity(self, activity_name: str, timestamp: float, fps: float, frame_count: int, person_roles: Optional[Dict[int, Dict[str, Any]]] = None, triggering_person_idx: Optional[int] = None) -> None:
+    def start_activity(self, activity_name: str, timestamp: float, fps: float, frame_count: int, person_roles: Optional[Dict[int, Dict[str, Any]]] = None, triggering_person_idx: Optional[int] = None, object_bbox: Optional[List[int]] = None) -> None:
         """Start tracking an activity
 
         Args:
@@ -1832,6 +1854,11 @@ class LocopilotActivityMonitor:
             person_roles: Dictionary of person roles (optional)
             triggering_person_idx: Index of the person who actually raised the activity
                 flag (F1 fix). None for aggregate activities (group_detected, no_person_detected).
+            object_bbox: Triggering object bbox in image coords [x1, y1, x2, y2]
+                (book / phone / cup / backpack). None for activities without a
+                target object (sleep, mind_diversion, gestures). Persisted onto
+                the activity dict so end_activity can write it into
+                ``json_data['bboxes']['object']`` for Pipeline-2 ROI cropping.
         """
         if not is_activity_enabled(activity_name):
             return
@@ -1844,6 +1871,7 @@ class LocopilotActivityMonitor:
             self.activities[activity_name]['duration'] = 0
             self.activities[activity_name]['person_roles'] = person_roles if person_roles else {}
             self.activities[activity_name]['triggering_person_idx'] = triggering_person_idx
+            self.activities[activity_name]['object_bbox'] = object_bbox
             self.activities[activity_name]['first_detection_time'] = timestamp
             self.activities[activity_name]['last_detection_time'] = timestamp
             self.activities[activity_name]['motion_state'] = self.current_motion_state
@@ -1959,6 +1987,7 @@ class LocopilotActivityMonitor:
             
             # Always save clips/images (for UI evidence), regardless of save_clips flag
             # The save_clips flag now only controls whether frames are saved
+            frame_size: Optional[Tuple[int, int]] = None
             if self.evidence_clips_dir:
                 # Extract video segment directly from source for smooth playback
                 # This preserves original frame rate instead of reconstructing from sampled frames
@@ -1980,6 +2009,8 @@ class LocopilotActivityMonitor:
                         cap.set(cv2.CAP_PROP_POS_FRAMES, middle_frame_number)
                         ret, activity_image = cap.read()
                         if ret and activity_image is not None:
+                            h, w = activity_image.shape[:2]
+                            frame_size = (int(w), int(h))
                             annotated = self._annotate_evidence_frame(
                                 activity_image, activity_name, middle_frame_number
                             )
@@ -2085,7 +2116,26 @@ class LocopilotActivityMonitor:
                         "bboxArea": role_info.get('bbox_area', 0)
                     })
                 json_data["personRoles"] = person_roles_list
-            
+
+            # Pipeline-2 ROI plumbing: persist the triggering person's bbox and
+            # the source frame dimensions so the VLM verifier can crop to a
+            # coord-driven ROI instead of recovering it from painted pixels
+            # via HSV thresholding (see vlm.image_encoder._roi_from_bboxes).
+            person_bbox = None
+            person_roles_state = activity.get('person_roles') or {}
+            trigger_idx_for_bbox = activity.get('triggering_person_idx')
+            if trigger_idx_for_bbox is not None and trigger_idx_for_bbox in person_roles_state:
+                person_bbox = person_roles_state[trigger_idx_for_bbox].get('bbox')
+            elif person_roles_state:
+                person_bbox = person_roles_state[min(person_roles_state.keys())].get('bbox')
+            object_bbox = activity.get('object_bbox')
+            if person_bbox is not None or object_bbox is not None or frame_size is not None:
+                json_data["bboxes"] = {
+                    "person": [int(v) for v in person_bbox] if person_bbox else None,
+                    "object": [int(v) for v in object_bbox] if object_bbox else None,
+                    "frame_size": list(frame_size) if frame_size else None,
+                }
+
             # Add to all activities list
             self.all_activities.append(json_data)
             
@@ -2335,6 +2385,13 @@ class LocopilotActivityMonitor:
             eating_drinking_detected = aggregated.get('eating_drinking_detected', False)
             # F1 (2026-04-06): per-activity triggering person map for correct crew attribution
             triggering_persons_by_activity = aggregated.get('triggering_persons_by_activity', {})
+            # Pipeline-2 ROI plumbing: parallel object-bbox map (same order as
+            # the person list for each activity). Populated for the 4 detectors
+            # with a target object (cell_phone / writing / packing_bags /
+            # eating_drinking); empty / absent for the rest.
+            triggering_object_bboxes_by_activity = aggregated.get(
+                'triggering_object_bboxes_by_activity', {}
+            )
 
             # Log detections for each person (only on first detection)
             if log_per_person_detections:
@@ -2706,12 +2763,20 @@ class LocopilotActivityMonitor:
                         triggering_list = triggering_persons_by_activity.get(activity_name, [])
                         triggering_person_idx = triggering_list[0] if triggering_list else None
 
+                        # Parallel-indexed object bbox for the same triggering
+                        # person, when the detector recorded one.
+                        triggering_obj_bbox_list = triggering_object_bboxes_by_activity.get(activity_name, [])
+                        triggering_object_bbox = (
+                            triggering_obj_bbox_list[0] if triggering_obj_bbox_list else None
+                        )
+
                         # Start activity if not already active
                         if not self.activities[activity_name]['active']:
                             self.start_activity(
                                 activity_name, timestamp, fps, frame_idx,
                                 person_roles=person_roles,
                                 triggering_person_idx=triggering_person_idx,
+                                object_bbox=triggering_object_bbox,
                             )
 
                         # Continue recording frames ONLY when activity is actively detected
@@ -2727,6 +2792,12 @@ class LocopilotActivityMonitor:
                             # F1: update triggering_person_idx if this frame has a fresh trigger
                             if triggering_person_idx is not None:
                                 self.activities[activity_name]['triggering_person_idx'] = triggering_person_idx
+                            # Refresh object bbox alongside the triggering person so
+                            # the middle-frame keyframe sees coords close to its own
+                            # time (the activity may run across many frames where
+                            # the object moves a little).
+                            if triggering_object_bbox is not None:
+                                self.activities[activity_name]['object_bbox'] = triggering_object_bbox
                 else:
                     # Activity not detected - use grace period before resetting
                     if self.consecutive_detections[activity_name] > 0 or self.activities[activity_name]['active']:

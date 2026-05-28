@@ -1,0 +1,49 @@
+# .understandignore — patterns for files/dirs to exclude from analysis
+# Syntax: same as .gitignore (globs, # comments, ! negation, trailing / for dirs)
+# Lines below are suggestions — uncomment to activate.
+# Use ! prefix to force-include something excluded by defaults.
+#
+# Built-in defaults (always excluded unless negated):
+#   node_modules/, .git/, dist/, build/, obj/, *.lock, *.min.js, etc.
+#
+# --- From .gitignore (uncomment to exclude) ---
+
+# example_data/
+# yolo*.pt
+# .DS_Store
+# locopilot_evidence/
+# locopilot_evidence_1/
+# uploads/
+# output/
+# desktop_app/build_config/build/
+# desktop_app/build_config/dist/
+# *.spec
+# *.pyc
+# logs/
+# logs/LocopilotMonitoring.log
+# cell_phone_frames
+# diagnostic_output*
+# roi_debug_2min.mp4
+# microsleep_debug
+# .env
+# .env.*
+# !.env.example
+# server details.txt
+# deploy-gpu.sh
+# .claude/
+# debug_frames
+# activity_frames
+# n_5_violations_frames
+# auto_label
+
+# --- Detected directories (uncomment to exclude) ---
+
+# tests/
+# docs/
+# scripts/
+
+# --- Test file patterns (uncomment to exclude) ---
+
+# *.test.*
+# *.spec.*
+# *.snap

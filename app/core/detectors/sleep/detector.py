@@ -15,10 +15,6 @@ from .pose_geometry import (
 )
 from .state_machine import update_sleep_state_machine as _sm_update_sleep_state_machine
 from .ir_fallback import detect_ir_forward_lean_sleep as _ir_detect_ir_forward_lean_sleep
-from .haar_eye_closure import (
-    _load_haar_cascades as _haar_load_haar_cascades,
-    detect_eye_closure_haar as _haar_detect_eye_closure_haar,
-)
 
 
 class SleepDetector:
@@ -36,7 +32,13 @@ class SleepDetector:
         sample_fps: float = 0.5,
         logger: Optional[logging.Logger] = None
     ):
-        """Initialize the SleepDetector."""
+        """Initialize the SleepDetector.
+
+        ``eye_cascade_path`` is kept for backwards-compatibility with callers
+        that still pass it positionally; Haar eye-closure detection has been
+        removed (non-functional from overhead — see CLAUDE.md), so the value
+        is ignored.
+        """
         self.settings = settings
         self.sample_fps = sample_fps
         self.logger = logger or logging.getLogger(__name__)
@@ -47,9 +49,6 @@ class SleepDetector:
 
         # Initialize thresholds from settings or defaults
         self._init_thresholds()
-
-        # Load Haar cascades for eye detection
-        self._load_haar_cascades(eye_cascade_path)
 
     def _init_thresholds(self) -> None:
         """Initialize detection thresholds from settings or use defaults."""
@@ -123,10 +122,6 @@ class SleepDetector:
         self.MIN_POSE_LANDMARKS = getattr(s, 'min_pose_landmarks', 10) if s else 10
         self.MIN_POSE_VISIBILITY = getattr(s, 'min_pose_visibility', 0.3) if s else 0.3
 
-    def _load_haar_cascades(self, eye_cascade_path: Optional[str]) -> None:
-        """Load Haar cascade classifiers for face and eye detection."""
-        return _haar_load_haar_cascades(self, eye_cascade_path)
-
     def _create_tracking_dict(self) -> Dict[str, Any]:
         """Create a new per-person tracking dictionary with all required fields."""
         return {
@@ -169,11 +164,6 @@ class SleepDetector:
             # Shoulder slump
             'shoulder_y_history': deque(maxlen=int(10 * self.sample_fps)),
             'shoulder_y_timestamps': deque(maxlen=int(10 * self.sample_fps)),
-            # Haar cascade eye closure tracking
-            'haar_eyes_closed_start': None,
-            'haar_eyes_closed_count': 0,
-            'haar_eyes_open_count': 0,
-            'haar_face_detected_in_roi': False,
         }
 
     def _get_per_person_sleep_tracking(self, person_idx: int) -> Dict[str, Any]:
@@ -257,9 +247,16 @@ class SleepDetector:
         timestamp_sec: float,
         person_idx: int,
         frame_shape: Tuple[int, ...],
-        haar_result: Optional[Dict[str, Any]] = None
+        haar_result: Optional[Dict[str, Any]] = None,
     ) -> Tuple[bool, bool, Dict[str, Any]]:
-        """Detect sleep/microsleep from pose landmarks."""
+        """Detect sleep/microsleep from pose landmarks.
+
+        ``haar_result`` is accepted for backwards-compatibility with callers
+        that still pass it; Haar eye-closure detection has been removed
+        (non-functional from overhead — see CLAUDE.md) and the value is
+        ignored.
+        """
+        del haar_result
         if not landmarks:
             return False, False, {}
 
@@ -737,15 +734,6 @@ class SleepDetector:
         if is_wrists_active:
             sleep_score -= 1
 
-        # Haar cascade eye closure boost
-        haar_eye_closed = False
-        if haar_result is None:
-            haar_result = {}
-        haar_eye_closed = haar_result.get('eyes_closed', False)
-        if haar_eye_closed:
-            haar_boost = getattr(self.settings, 'haar_eye_score_boost', 5) if self.settings else 5
-            sleep_score += haar_boost
-
         score_thresh = getattr(self.settings, 'sleep_score_threshold', 5) if self.settings else 5
         sleep_indicators_met = sleep_score >= score_thresh
 
@@ -770,12 +758,10 @@ class SleepDetector:
             'is_wrists_active': is_wrists_active,
             'avg_wrist_velocity': avg_wrist_velocity,
             'sleep_state': current_sleep_state,
-            'haar_eye_closed': haar_eye_closed,
-            'haar_eye_info': haar_result,
         }
 
-        # Hard gate: head drop OR haar eye closure must be detected
-        if not head_drop_detected and not haar_eye_closed:
+        # Hard gate: head drop must be detected
+        if not head_drop_detected:
             tracking['pose_sleep_start'] = None
             tracking['pose_sleep_duration'] = 0
             return False, False, debug_info
@@ -821,19 +807,6 @@ class SleepDetector:
         """Thin shim — see :mod:`.ir_fallback`."""
         return _ir_detect_ir_forward_lean_sleep(
             self, landmarks, bbox, timestamp_sec, person_idx, frame_shape,
-        )
-
-    def detect_eye_closure_haar(
-        self,
-        frame: Any,
-        landmarks: Any,
-        person_idx: int,
-        bbox: List[int],
-        timestamp_sec: float
-    ) -> Dict[str, Any]:
-        """Thin shim — see :mod:`.haar_eye_closure`."""
-        return _haar_detect_eye_closure_haar(
-            self, frame, landmarks, person_idx, bbox, timestamp_sec,
         )
 
     def cleanup_stale_tracking(self, active_person_indices: set) -> None:

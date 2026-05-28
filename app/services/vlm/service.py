@@ -1193,7 +1193,15 @@ class VlmVerificationService:
             pre_gate_enabled = bool(
                 getattr(self.settings, "vlm_pre_gate_enabled", True)
             )
-            if pre_gate_enabled and object_type not in _PRE_GATE_SKIP_OBJECT_TYPES:
+            # Shadow-mode bypass: when vlm_shadow_mode=1 we want Qwen to
+            # actually run on every candidate so we can audit its verdict.
+            # The no-subject/no-object pre-gate would otherwise short-circuit
+            # to FALSE_POSITIVE without calling the LLM.
+            if (
+                pre_gate_enabled
+                and not self.settings.vlm_shadow_mode
+                and object_type not in _PRE_GATE_SKIP_OBJECT_TYPES
+            ):
                 counts = _count_bboxes_in_keyframes(
                     keyframes,
                     min_person_area=int(
@@ -1310,7 +1318,11 @@ class VlmVerificationService:
                     )),
                     roi_overrides=_speedometer_roi_overrides(self.settings),
                 )
-                if speedo_result is not None and speedo_result.get("stopped"):
+                if (
+                    not self.settings.vlm_shadow_mode
+                    and speedo_result is not None
+                    and speedo_result.get("stopped")
+                ):
                     logger.info(
                         "[vlm] SPEEDOMETER-MOTION DROP activity type=%s at t=%s "
                         "(camera_angle=%s speedo_diff=%.2f below threshold=%.2f, "
@@ -1358,7 +1370,11 @@ class VlmVerificationService:
                     camera_angle=camera_angle,
                     roi_overrides=_window_roi_overrides(self.settings),
                 )
-                if motion_result is not None and motion_result.get("stopped"):
+                if (
+                    not self.settings.vlm_shadow_mode
+                    and motion_result is not None
+                    and motion_result.get("stopped")
+                ):
                     logger.info(
                         "[vlm] WINDOW-MOTION DROP activity type=%s at t=%s "
                         "(camera=%s window_diff=%.2f below threshold=%.2f, "
@@ -1405,8 +1421,14 @@ class VlmVerificationService:
             # are only a few percent of the frame and disappear under the
             # downscale (run_20260510_044315 root-cause analysis).
             stack = "vertical" if not crop_to_roi else "horizontal"
+            # Pipeline-1 records the triggering person's bbox (+ frame size)
+            # on the activity dict; pass it through so _crop_to_roi can
+            # use coords directly instead of HSV-masking painted pixels.
             strip_bytes = _stitch_keyframes(
-                keyframes, crop_to_roi=crop_to_roi, stack=stack,
+                keyframes,
+                crop_to_roi=crop_to_roi,
+                stack=stack,
+                bboxes=activity.get("bboxes"),
             )
             if not strip_bytes:
                 return {

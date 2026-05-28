@@ -232,19 +232,6 @@ def worker_initializer(config: MultiprocessingConfig):
                 'preprocessing_service': preprocessing_service,
             }
 
-            # 5a. Load separate ROI model if configured (stronger model for pose-guided crops)
-            if config.yolo_roi_model_path and config.yolo_roi_model_path != config.yolo_model_path:
-                logger.info(f"Worker {os.getpid()} loading ROI YOLO model: {config.yolo_roi_model_path}")
-                yolo_roi_model = YOLO(config.yolo_roi_model_path)
-                if config.yolo_device and config.yolo_device != 'cpu':
-                    device = int(config.yolo_device) if config.yolo_device.isdigit() else config.yolo_device
-                    yolo_roi_model.to(device)
-                if hasattr(yolo_roi_model.model, 'fuse'):
-                    yolo_roi_model.fuse()
-                _worker_models['yolo_roi'] = yolo_roi_model
-            else:
-                _worker_models['yolo_roi'] = None
-
             logger.info(f"Worker {os.getpid()} all models loaded successfully "
                        f"(detection: {config.yolo_model_path})")
 

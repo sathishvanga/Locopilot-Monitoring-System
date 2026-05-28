@@ -66,8 +66,8 @@ class YOLOHandler:
 
     def __init__(
         self,
-        object_model_path: str = 'yolo26n.pt',
-        pose_model_path: str = 'yolo26n-pose.pt',
+        object_model_path: str = 'yolo11l.pt',
+        pose_model_path: str = 'yolo11l-pose.pt',
         device: str = 'cpu',
         imgsz: int = 640,
         preloaded_models: Optional[Dict[str, Any]] = None,
@@ -158,8 +158,8 @@ class YOLOHandler:
         self.bag_max_area = settings.bag_max_area if settings else 100000
         self.book_person_margin = settings.book_person_margin if settings else 150
 
-        # ROI detection: use separate model if configured, otherwise fallback to object_model
-        self.roi_model = getattr(self, 'roi_model', None) or self.object_model
+        # ROI detection uses the main object_model with a lower confidence
+        # threshold for small-object recall in pose-guided crops.
         self.roi_confidence = (
             getattr(settings, 'yolo_roi_confidence', 0.15) if settings else 0.15
         )
@@ -704,9 +704,9 @@ class YOLOHandler:
         if len(roi_frames) == 0:
             return all_detections
 
-        # Batch YOLO inference on all ROI crops using ROI model (stronger model for small crops)
-        roi_model = self.roi_model or self.object_model
-        batch_results = roi_model(
+        # Batch YOLO inference on all ROI crops using the main object_model
+        # at a lower confidence threshold for small-object recall.
+        batch_results = self.object_model(
             roi_frames,
             verbose=False,
             conf=self.roi_confidence,
@@ -730,7 +730,7 @@ class YOLOHandler:
                 conf = float(box.conf[0])
                 xyxy_local = box.xyxy[0].cpu().numpy()
 
-                class_name = roi_model.names[cls]
+                class_name = self.object_model.names[cls]
                 debug_all_detections.append((class_name, conf))
 
                 if class_name in target_classes:

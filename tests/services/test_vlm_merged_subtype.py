@@ -113,7 +113,7 @@ def _make_verdict(verdict: str, conf: float, **extra) -> dict:
 def test_partial_drop_strips_fp_subtype_keeps_parent():
     svc = _fresh_service()
 
-    async def fake_verify(activity, prompt, object_type):
+    async def fake_verify(activity, prompt, object_type, **kwargs):
         if object_type == "writing":
             return _make_verdict("TRUE_POSITIVE", 0.85)
         if object_type == "cell_phone":
@@ -164,7 +164,7 @@ def test_partial_drop_strips_fp_subtype_keeps_parent():
 def test_all_subtypes_fp_drops_merged_activity():
     svc = _fresh_service()
 
-    async def fake_verify(activity, prompt, object_type):
+    async def fake_verify(activity, prompt, object_type, **kwargs):
         return _make_verdict("FALSE_POSITIVE", 0.92)
 
     svc._verify_one_async = fake_verify  # type: ignore[assignment]
@@ -184,7 +184,7 @@ def test_all_subtypes_fp_drops_merged_activity():
 def test_all_subtypes_tp_keeps_activity_unchanged():
     svc = _fresh_service()
 
-    async def fake_verify(activity, prompt, object_type):
+    async def fake_verify(activity, prompt, object_type, **kwargs):
         return _make_verdict("TRUE_POSITIVE", 0.90)
 
     svc._verify_one_async = fake_verify  # type: ignore[assignment]
@@ -217,7 +217,7 @@ def test_subtype_fp_below_threshold_does_not_strip():
     svc = _fresh_service()
     svc.settings.vlm_drop_threshold = 0.80
 
-    async def fake_verify(activity, prompt, object_type):
+    async def fake_verify(activity, prompt, object_type, **kwargs):
         if object_type == "writing":
             return _make_verdict("TRUE_POSITIVE", 0.85)
         if object_type == "cell_phone":
@@ -245,7 +245,7 @@ def test_shadow_mode_never_strips_or_drops():
     svc = _fresh_service()
     svc.settings.vlm_shadow_mode = True
 
-    async def fake_verify(activity, prompt, object_type):
+    async def fake_verify(activity, prompt, object_type, **kwargs):
         # Even with cell_phone FP at high conf, shadow mode must not strip.
         if object_type == "cell_phone":
             return _make_verdict("FALSE_POSITIVE", 0.95)
