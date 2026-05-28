@@ -637,23 +637,41 @@ class MultiPersonActivityRunner:
                                 if eating_drinking_detected:
                                     break
 
-                        # Fallback: cup directly overlaps person bbox AND at least one wrist visible
-                        # Handles overhead camera angles where hand-face proximity is unreliable
+                        # Fallback: nose not reliable (top-down cam), but still
+                        # require a visible wrist to be physically close to the
+                        # cup/bottle. The primary path's bbox-expansion check
+                        # (margin=150) is too loose here: in compact top-down
+                        # views the LP body bbox is large enough that wrist
+                        # keypoints on the throttle land inside a 150 px
+                        # expansion of a bottle on the desk. Use euclidean
+                        # distance from wrist to bottle center (default 80 px,
+                        # tunable via eating_drinking_fallback_wrist_distance)
+                        # — see trips b0c3d6a6 and CH3_..239 (2026-05-28).
                         if not eating_drinking_detected:
-                            any_wrist_visible = any(
-                                w_kp and w_kp.visibility > 0.3
-                                for w_kp in [right_wrist, left_wrist]
+                            fb_wrist_dist = getattr(
+                                monitor.settings, 'eating_drinking_fallback_wrist_distance', 80
                             )
-                            if any_wrist_visible:
+                            for wrist in (right_wrist, left_wrist):
+                                if not (wrist and wrist.visibility > 0.3):
+                                    continue
+                                wx, wy = int(wrist.x * w), int(wrist.y * h)
                                 for cb_bbox in cup_bottle_bboxes:
-                                    # Cup must directly overlap person bbox (no margin = stricter spatial check)
-                                    if bbox_overlap_with_margin(cb_bbox, bbox, 0):
+                                    cx = (cb_bbox[0] + cb_bbox[2]) / 2
+                                    cy = (cb_bbox[1] + cb_bbox[3]) / 2
+                                    dist = ((wx - cx) ** 2 + (wy - cy) ** 2) ** 0.5
+                                    if (
+                                        bbox_overlap_with_margin(cb_bbox, bbox, 0)
+                                        and dist <= fb_wrist_dist
+                                    ):
                                         eating_drinking_detected = True
                                         monitor.logger.info(
-                                            f"[EATING/DRINKING FALLBACK] Cup/bottle directly overlaps person {person_idx} bbox "
-                                            f"with wrist visible - flagging eating/drinking"
+                                            f"[EATING/DRINKING FALLBACK] Cup/bottle overlaps person {person_idx} "
+                                            f"bbox AND wrist {dist:.0f}px from bottle center "
+                                            f"(threshold {fb_wrist_dist}px) - flagging"
                                         )
                                         break
+                                if eating_drinking_detected:
+                                    break
 
                     if eating_drinking_detected:
                         person_activities['eating_drinking'] = True
